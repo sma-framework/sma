@@ -31,7 +31,7 @@ import { tick, rulesInCopy } from '../src/loop.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { recordAttempt, readAttempts, createAttemptLogWriter } from '../src/queue/attempt-ledger.mjs'
-import { pruneRunDirs, ledgerRef, runsDirOf, sanitizeRun, secretValuesOf, RUN_SCHEMA, RECEIPT_SCHEMA } from '../src/queue/run-dir.mjs'
+import { pruneRunDirs, ledgerRef, runsDirOf, sanitizeRun, secretValuesOf, RUN_SCHEMA, RECEIPT_SCHEMA, RUN_FILES } from '../src/queue/run-dir.mjs'
 
 // ── the temporary world ────────────────────────────────────────────────────────────────────
 
@@ -114,6 +114,14 @@ const gateGit = (args: string[]) => {
   return ''
 }
 
+/**
+ * Тот же git, но отвечающий на НАСТОЯЩИЙ вопрос об изменённых файлах. `gateGit` смотрит на
+ * первое слово, а вопрос об изменённых файлах начинается с `-c core.quotepath=false`, —
+ * поэтому по умолчанию список пуст, и случай «нечего передать» получается сам собой.
+ */
+const gitWithChanges = (args: string[]) =>
+  args.includes('diff') && args.includes('--name-status') ? 'M	daemon/src/loop.mjs' : gateGit(args)
+
 const GREEN_REVERIFY = { code: 0, stdout: JSON.stringify({ verdict: 'green', receiptRef: 'reverify:abc', diffStat: '+10 -2' }) }
 const RED_REVERIFY = { code: 1, stdout: JSON.stringify({ verdict: 'red' }) }
 
@@ -181,11 +189,11 @@ const readLines = (path: string) =>
 // ═══════════ THE DIRECTORY ITSELF ══════════════════════════════════════════════════════════
 
 describe('каждая попытка оставляет каталог прогона в подключённом проекте', () => {
-  it('четыре файла на месте, и они про ЭТУ попытку', async () => {
+  it('все файлы замороженного списка на месте, и они про ЭТУ попытку', async () => {
     const { res, runDir } = await runTick()
 
     expect(res.completed).toBe('BL-1')
-    for (const name of ['run.json', 'guards.jsonl', 'transcript.jsonl', 'receipt.json']) {
+    for (const name of RUN_FILES) {
       expect(existsSync(join(runDir, name))).toBe(true)
     }
 
@@ -215,10 +223,10 @@ describe('каждая попытка оставляет каталог прог
     expect(run.prompt.text).toBeUndefined()
   })
 
-  it('ни одно значение токена или ключа из spec.env не встречается НИ В ОДНОМ из четырёх файлов', async () => {
+  it('ни одно значение токена или ключа из spec.env не встречается НИ В ОДНОМ файле каталога', async () => {
     const { runDir } = await runTick()
 
-    for (const name of ['run.json', 'guards.jsonl', 'transcript.jsonl', 'receipt.json']) {
+    for (const name of RUN_FILES) {
       const bytes = readFileSync(join(runDir, name), 'utf8')
       expect(bytes).not.toContain(TOKEN_VALUE)
       expect(bytes).not.toContain(API_KEY_VALUE)
@@ -329,11 +337,11 @@ describe('красная фикстура: провалившееся чтени
 // ═══════════ ОБА ИСХОДА ════════════════════════════════════════════════════════════════════
 
 describe('каталог есть у КАЖДОГО исхода, а не только у принятого', () => {
-  it('проваленная попытка тоже оставляет четыре файла и квитанцию с причиной', async () => {
+  it('проваленная попытка тоже оставляет весь список файлов и квитанцию с причиной', async () => {
     const { res, runDir } = await runTick({ reverify: RED_REVERIFY })
 
     expect(res.failed?.taskId).toBe('BL-1')
-    for (const name of ['run.json', 'guards.jsonl', 'transcript.jsonl', 'receipt.json']) {
+    for (const name of RUN_FILES) {
       expect(existsSync(join(runDir, name))).toBe(true)
     }
     const receipt = readJson(join(runDir, 'receipt.json'))
@@ -352,6 +360,76 @@ describe('каталог есть у КАЖДОГО исхода, а не тол
     // квитанции, а не вторая, посчитанная по дороге.
     expect(row.parity).toEqual(readJson(join(runDir, 'receipt.json')).parity.summary)
     expect(row.parity.fulfilled).toBe(3)
+  })
+})
+
+// ═══════════ ПЯТЫЙ ФАЙЛ: КОНСПЕКТ ПЕРЕДАЧИ ═════════════════════════════════════════════════
+
+/**
+ * КОНСПЕКТ ПЕРЕДАЧИ — то, что попытка оставляет следующей попытке и человеку.
+ *
+ * ЧТО ЗДЕСЬ ДОКАЗЫВАЕТСЯ. Не сборка текста, а ФАЙЛ, оказавшийся в каталоге ИМЕННО ЭТОЙ
+ * попытки после настоящего тика: писатель и оба читателя сходятся только на пути, и путь —
+ * единственное, что нельзя проверить вызовом писателя напрямую.
+ *
+ * ПОЧЕМУ ПОТОЛОК ПРОВЕРЯЕТСЯ ЧИСЛОМ, А НЕ КОНСТАНТОЙ. Восемь тысяч знаков — это ДОГОВОР, а
+ * не деталь реализации: у файла два читателя, и если завтра константу подвинут, обрезка у
+ * промпта и у окна разъедутся молча. Число написано здесь буквами ровно затем, чтобы такая
+ * правка была видна как правка договора.
+ *
+ * ОБРЕЗКА ПРОВЕРЯЕТСЯ ИСКУССТВЕННО ДЛИННЫМ ВХОДОМ, потому что конспект настоящей попытки в
+ * потолок не упирается — и это ожидаемо: путь обрезки иначе не был бы пройден ни разу.
+ */
+describe('пятый файл каталога прогона — конспект передачи', () => {
+  it('замороженный список имён стал пятым по счёту, и новое имя названо в нём ровно один раз', () => {
+    expect(RUN_FILES).toHaveLength(5)
+    expect(RUN_FILES.filter((n: string) => n === 'continuation.md')).toHaveLength(1)
+    expect([...RUN_FILES]).toEqual(['run.json', 'guards.jsonl', 'transcript.jsonl', 'receipt.json', 'continuation.md'])
+  })
+
+  it('конспект лежит в каталоге ЭТОЙ попытки и собран из того, что попытка уже записала', async () => {
+    const { runDir } = await runTick({ deps: { execGit: gitWithChanges } })
+    const text = readFileSync(join(runDir, 'continuation.md'), 'utf8')
+
+    expect(text).toContain('BL-1')
+    expect(text).toContain('прямой путь') // записка о подходе — уже разобранная, не пересобранная
+    expect(text).toContain('completed') // исход, как его записала квитанция
+    expect(text).toContain('daemon/src/loop.mjs') // тронутые файлы — ответ git, уже полученный
+  })
+
+  it('короткий конспект пишется целиком и пометки обрезки не несёт', async () => {
+    const { runDir } = await runTick({ deps: { execGit: gitWithChanges } })
+    const text = readFileSync(join(runDir, 'continuation.md'), 'utf8')
+
+    expect(text.length).toBeLessThan(8000)
+    expect(text).not.toContain('обрезан')
+  })
+
+  it('конспект длиннее потолка обрезан ПРИ ЗАПИСИ, с пометкой в тексте; файл не длиннее 8000 знаков', async () => {
+    const long = 'ц'.repeat(20000)
+    const { runDir } = await runTick({ lines: [`APPROACH_NOTE: ${long}`, LESSON] })
+    const text = readFileSync(join(runDir, 'continuation.md'), 'utf8')
+
+    expect(text.length).toBeLessThanOrEqual(8000)
+    expect(text).toContain('обрезан')
+    expect(text).toContain('цццццццццц') // обрезан, а не выброшен целиком
+  })
+
+  it('передавать нечего — так и написано, а не пустой файл и не отсутствие файла', async () => {
+    const { runDir } = await runTick({ lines: [] })
+
+    expect(existsSync(join(runDir, 'continuation.md'))).toBe(true)
+    const text = readFileSync(join(runDir, 'continuation.md'), 'utf8')
+    expect(text).toContain('нечего передать')
+    expect(text.trim().length).toBeGreaterThan(0)
+  })
+
+  it('секрет из записки о подходе не доезжает до конспекта — тот же пояс, что у остальных файлов', async () => {
+    const { runDir } = await runTick({ lines: [`APPROACH_NOTE: подход с ключом ${TOKEN_VALUE} внутри`, LESSON] })
+    const text = readFileSync(join(runDir, 'continuation.md'), 'utf8')
+
+    expect(text).not.toContain(TOKEN_VALUE)
+    expect(text).toContain('[redacted]')
   })
 })
 

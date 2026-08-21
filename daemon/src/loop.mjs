@@ -108,7 +108,7 @@ import { reconcileAttempts } from './queue/reconcile.mjs'
 // would be a second ceiling waiting to drift away from the first.
 import { memorySnapshotHash, ATTEMPT_FILES_CAP } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
-import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
+import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, buildContinuationSummary, writeContinuation, readContinuation, fileWord, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
 // THE FIVE RECEIPTS, FROM THE ONE MODULE THAT DEFINES THEM. The daemon does not keep a second
 // opinion about whether the hooks fired or the memory came back: it imports the same evaluation
@@ -145,7 +145,7 @@ import {
 } from './runner/redirects.mjs'
 import { readWaveHolds, readWaveParked, markWaveParked } from './queue/wave-holds.mjs'
 import { CLAUDE_BIN } from './runner/build-args.mjs'
-import { buildMcpConfigFile } from './runner/args.mjs'
+import { buildMcpConfigFile, isResumableSessionId } from './runner/args.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
 
@@ -262,6 +262,85 @@ function gateSpawnOptions(deps, config, task) {
     }
   }
   return runDir || redirectsFile ? { gate: { runDir: runDir ?? undefined, redirectsFile: redirectsFile ?? undefined } } : {}
+}
+
+/**
+ * wakeSpawnOptions(deps, task) → `{wakeKind}`, plus `{resumeId}` when THIS wake is allowed to
+ * continue the session the previous attempt held.
+ *
+ * WHAT THE SPLIT IS FOR. Two very different events arrive at the tick looking identical — a
+ * second attempt of a task whose ledger holds a session id. One is a PERSON handing work back
+ * with a remark: he has already paid for everything the worker read and thought, and starting
+ * from zero charges him for it twice, in a head that no longer remembers what he is objecting
+ * to. The other is a TIMER: the lease expired, time passed, and the picture of the world that
+ * session ended with is no longer the picture outside. Dragging it along drags a stale one.
+ * Until this function they were one condition — «attempt > 1» — and both continued.
+ *
+ * THE ONE WORD THAT SEPARATES THEM is on the row itself: a queue row records who put it back,
+ * and a return is the only origin a person's own hands produce.
+ *
+ * AND NO SECOND LOCK IS WRITTEN HERE. A wake that must start clean is refused a continuation
+ * by the argument builder, which has said so, thrown for it and been tested on it since long
+ * before this. All this does is NAME the wake and let the existing rule act — the road the
+ * conversation lane has always taken.
+ *
+ * FAIL-FRESH: an unreadable ledger, a missing row and a session id of the wrong shape all mean
+ * a fresh session, never a wedged attempt. The shape is asked of the builder's own predicate so
+ * this side cannot offer something the other side is obliged to throw on.
+ */
+function wakeSpawnOptions(deps, task) {
+  const repeat = Number(task && task.attempt) > 1
+  if (!repeat) return { wakeKind: 'new-task' }
+  if (String(task && task.source) !== 'return') return { wakeKind: 'timer' }
+  try {
+    const prior = (deps.ledger && typeof deps.ledger.readAttempts === 'function' && deps.ledger.readAttempts(task.id)) || []
+    for (let i = prior.length - 1; i >= 0; i -= 1) {
+      const sid = prior[i] && prior[i].sessionId
+      if (isResumableSessionId(sid)) return { wakeKind: 'return', resumeId: sid }
+    }
+  } catch {
+    /* an unreadable ledger means a fresh session — never a wedged attempt */
+  }
+  return { wakeKind: 'return' }
+}
+
+/**
+ * continuationSpawnOptions(deps, config, task, wake) → `{continuationSummary}` when the PREVIOUS
+ * attempt of this task left a handover summary and this wake is allowed to read it, and `{}`
+ * in every other case.
+ *
+ * ONLY ON THE RETURN BRANCH, and for the same reason the session is only continued there. A
+ * person handing work back is objecting to something the last attempt did: what it tried, how
+ * it ended and what it touched is exactly the context that makes the objection answerable. A
+ * TIMER wake is the opposite case — the lease expired, the world moved on, and the picture the
+ * last session ended with is no longer the picture outside. Dragging its summary along would
+ * hand a fresh session a stale one and call it memory.
+ *
+ * THE PATH IS THE SAME EXPRESSION, ASKED A FOURTH TIME. The writer at the end of an attempt,
+ * the spawn at its beginning and the card door all ask `attemptRunDir`; a fourth spelling here
+ * would be a summary read from a directory nobody writes into — which looks exactly like a task
+ * that has never been tried before.
+ *
+ * THE PREDECESSOR IS THE PREVIOUS NUMBER, not «the last row with a directory». The queue mints
+ * attempt numbers in order and the run directory is named by the number; asking the ledger for
+ * a runDir instead would let a row written by an older, differently-numbered try answer for the
+ * one the person actually looked at.
+ *
+ * ABSENCE IS ORDINARY. A first attempt, a task older than this file, an unreadable directory —
+ * all yield no key at all, and the builder then assembles the prompt exactly as it always did.
+ */
+function continuationSpawnOptions(deps, config, task, wake) {
+  if (!wake || wake.wakeKind !== 'return') return {}
+  const prior = Number(task && task.attempt) - 1
+  if (!Number.isFinite(prior) || prior < 1) return {}
+  const projectDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  const dir = attemptRunDir({ runsDir: runsDirOf(projectDir), attemptId: attemptIdFor(task.id, prior) })
+  const handover = readContinuation({ dir, fsImpl: deps.fsImpl })
+  if (!handover) return {}
+  // ОДНО ИМЯ НА ВСЕХ ШВАХ — `continuationSummary`. Швов пять: запись, тик, композитор,
+  // строитель промпта и дверь карточки. Разъехавшиеся имена — самый дешёвый способ потерять
+  // провод, и потерять его так, что ни одно дело этого не заметит.
+  return { continuationSummary: handover.text }
 }
 
 /** The `data` envelope a stage task carries, or an empty one for ordinary code work. */
@@ -580,11 +659,82 @@ export function providerAbortOf(lines) {
 }
 
 /**
+ * turnCapHitOf(lines, maxTurns) → `{turns}` when THIS attempt walked into the turn ceiling,
+ * else null.
+ *
+ * WHY IT IS READ AT ALL. A worker given a ceiling stops at it in silence: no note, no receipt,
+ * and an exit. That is the same shape a provider abort leaves behind, and for the same reason —
+ * the run was ended from outside the work. Unread, such an attempt reached the window as «нет
+ * квитанции» or «ошибка работника», which sends a person to fix something that was never wrong.
+ * The ceiling is OURS: the honest answer is a bigger one or a smaller task, and neither can be
+ * offered by a screen that does not know the ceiling was reached.
+ *
+ * THE LAST TERMINAL FRAME AND ONLY IT. A stream carries one `result` at its end; a run that
+ * played on to a success after an earlier one is not a run stopped by a ceiling, so the scan
+ * goes backwards, stops at the first terminal frame it meets, and judges that one.
+ *
+ * WHAT COUNTS AS THE SIGNAL, and this boundary is the whole design: the FIELD the CLI names the
+ * outcome with, plus our OWN arithmetic — never the text of anything. A worker debugging
+ * somebody else's ceiling says the sentence about exhausted turns out loud in his own output,
+ * and an attempt declared capped for pronouncing it would be exactly the diagnosis by
+ * eavesdropping the neighbouring recogniser refuses by name. Text matching is deliberately absent.
+ *
+ * THE FALLBACK IS NOT OPTIONAL. The word is the vendor's and can change with his next binary;
+ * the turn count on the same frame and the ceiling we handed the process are both ours. So a
+ * frame that errored after taking at least as many turns as the ceiling reads as a ceiling
+ * reached whatever it calls itself. With no ceiling named there is nothing to compare against,
+ * and the fallback stays silent rather than guessing.
+ *
+ * A FRAME THE VENDOR ENDED IS NOT THIS. It is answered by the recogniser above, and the two must
+ * not both claim one run — a long attempt cut by an outage is an outage, not a ceiling.
+ *
+ * @param {string[]} lines — the attempt's stdout, as collected
+ * @param {number|null} [maxTurns] — the ceiling this daemon itself put on the command line
+ * @returns {{turns:number|null}|null}
+ */
+export function turnCapHitOf(lines, maxTurns = null) {
+  if (!Array.isArray(lines)) return null
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]
+    if (typeof line !== 'string' || !line.includes('result')) continue
+    const { event } = parseClaudeFrame(line)
+    if (!event || event.type !== 'result') continue
+    // the VENDOR ended this run, not us — the recogniser above owns it, and one run may not be
+    // claimed by both
+    if (event.terminalReason === 'api_error' || Number.isFinite(event.apiErrorStatus)) return null
+    const turns = Number.isFinite(event.numTurns) ? event.numTurns : null
+    if (event.subtype === 'error_max_turns') return { turns }
+    const cap = Number(maxTurns)
+    if (event.isError && Number.isFinite(cap) && cap > 0 && turns !== null && turns >= cap) return { turns }
+    return null // the last terminal frame has spoken; an earlier one describes an earlier run
+  }
+  return null
+}
+
+/**
+ * argMaxTurns(args) → the turn ceiling THIS spawn was actually given, read back off its own
+ * argument array, or null.
+ *
+ * The number is taken from the command line rather than from config on purpose: the fallback
+ * above compares against what the process really received, and a value read from anywhere else
+ * would be a claim about the spawn instead of a reading of it. A spawn with no ceiling on it
+ * answers null, and the fallback then stays quiet.
+ */
+function argMaxTurns(args) {
+  if (!Array.isArray(args)) return null
+  const at = args.indexOf('--max-turns')
+  if (at < 0) return null
+  const n = Number(args[at + 1])
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/**
  * classifyFailure({spawnError, providerAbort, exitCode, receipt, workerMarker}) → a
  * FAIL_REASONS code. Pure. Maps a non-completing outcome onto the failure taxonomy, sharpest
  * signal first:
  *   spawnError                     → 'runtime_offline'  (the process never ran)
  *   provider abort                 → 'provider_error'   (the run the worker did not end)
+ *   turn ceiling reached           → 'turns_exhausted'  (the run WE ended, at our own ceiling)
  *   worker marker NEEDS_DECISION   → 'needs_decision'   (a call only a human can make)
  *   worker marker MISSING_ACCESS   → 'missing_access'   (credentials/permissions absent)
  *   red reverify receipt           → 'tests_red'        (targeted tests failed)
@@ -601,12 +751,21 @@ export function providerAbortOf(lines) {
  * receipt and a red re-run are all CONSEQUENCES of the cut. There is nothing to judge, so
  * nothing is judged. Only a run that never started outranks it — there was nothing to cut.
  *
- * @param {{spawnError?:any, providerAbort?:object|null, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean}} [o]
+ * A TURN CEILING SITS DIRECTLY BELOW IT, for the same reason and with one difference. An
+ * attempt cut at the ceiling left no note and no receipt because it was stopped, exactly like
+ * one the vendor cut — so no judgement of what it left behind may stand. What differs is whose
+ * decision ended it: this one was OURS, put on the command line by this daemon, and calling it
+ * anything else would hide a number a person is entitled to change. The exit code the vendor's
+ * binary happens to use for it is NOT part of the signal — it has never been measured, and an
+ * unmeasured number must not quietly become half a diagnosis.
+ *
+ * @param {{spawnError?:any, providerAbort?:object|null, turnCapHit?:object|null, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean}} [o]
  * @returns {string}
  */
-export function classifyFailure({ spawnError, providerAbort, exitCode, receipt, workerMarker, journalComplete, lessonComplete } = {}) {
+export function classifyFailure({ spawnError, providerAbort, turnCapHit, exitCode, receipt, workerMarker, journalComplete, lessonComplete } = {}) {
   if (spawnError) return 'runtime_offline'
   if (providerAbort) return 'provider_error'
+  if (turnCapHit) return 'turns_exhausted'
   if (workerMarker === 'NEEDS_DECISION') return 'needs_decision'
   if (workerMarker === 'MISSING_ACCESS') return 'missing_access'
   if (receipt && receipt.verdict === 'red') return 'tests_red'
@@ -861,11 +1020,6 @@ function attachChangedFiles(deps, worktree) {
   if (worktree.changed) return worktree.changed // one attempt, one question to git
   worktree.changed = changedFilesOnBranch(deps, worktree.base, worktree.branch, worktree.worktreePath)
   return worktree.changed
-}
-
-/** One entry of the list as a person reads it: `M имя` — and a rename naming both sides. */
-function fileWord(f) {
-  return f && f.from ? `${f.status} ${f.from} → ${f.path}` : `${(f && f.status) || '?'} ${(f && f.path) || ''}`
 }
 
 /**
@@ -1598,6 +1752,7 @@ function writeAttemptRunDir(deps, task, {
   exit,
   gate,
   lesson,
+  approach,
 } = {}) {
   const config = deps.config || {}
   // THE SAME TREE THE COPY WAS CUT FROM — one source for both, so a run directory can never
@@ -1691,6 +1846,16 @@ function writeAttemptRunDir(deps, task, {
     // The word the attempt left about what it learned — carried to the receipt so the outcome
     // and the lesson are one record rather than two that have to be joined by an id.
     lesson: lesson ?? null,
+    // WHAT THE WORKER SAID IT WAS DOING, kept beside the outcome for the handover summary the
+    // closing door writes. It is parsed once, off the stream, at the one point every lane
+    // passes through; re-parsing it at the door would be a second reading of the same frames
+    // and the two would drift the first time either changed.
+    approach: approach ?? null,
+    // THE NEEDLES THIS ATTEMPT'S SECOND BELT LOOKS FOR — taken from the spawn's own environment
+    // HERE, where that environment is known, and carried to the closing door for the fifth
+    // file. They live in memory for the length of one tick and are written into no record: the
+    // row this object feeds names `runDir` and `parity` and nothing else of it.
+    secretValues: secretValuesOf(env),
     // The same observation the journal's layer carries, kept beside the outcome so a reader
     // of one directory never has to open a ledger to learn whether the memory was read.
     memoryLayer: {
@@ -1830,7 +1995,7 @@ function attachAttemptParity(deps, worktree) {
  * deadline filter heals the files already lying on disk; this heals the ones written from now
  * on, at the moment the truth about them changes.
  */
-function writeAttemptOutcome(deps, worktree, receipt) {
+function writeAttemptOutcome(deps, worktree, receipt, task) {
   const run = worktree && typeof worktree.run === 'object' ? worktree.run : null
   if (!run || typeof run.dir !== 'string' || run.dir === '') return false
   // Уборка за попыткой — не условие попытки: билет, который не пометился, не имеет права
@@ -1852,6 +2017,42 @@ function writeAttemptOutcome(deps, worktree, receipt) {
   // opinion. A verdict that could not be computed stays null: «nobody has checked», never
   // «checked and fine».
   const parity = attachAttemptParity(deps, worktree)
+  // ═══ И ПЯТЫЙ ФАЙЛ — КОНСПЕКТ ПЕРЕДАЧИ ═══════════════════════════════════════════════
+  //
+  // ПИШЕТСЯ ЗДЕСЬ, ПОТОМУ ЧТО ЗДЕСЬ ВПЕРВЫЕ ИЗВЕСТНО ВСЁ СРАЗУ. Подход попытка объявила
+  // потоком, исход только что решила дверь, список тронутых файлов уже спрошен у git обеими
+  // дверями, а замечание человека лежит на строке задачи. Собирать это где-то ещё значило бы
+  // спрашивать те же вопросы второй раз и получать на них другие ответы.
+  //
+  // МОДЕЛЬ ДЛЯ ЭТОГО НЕ ЗОВЁТСЯ. Всё перечисленное уже записано; обращение к модели стоило бы
+  // денег на КАЖДОЙ попытке и давало бы каждый раз другой текст об одних и тех же фактах.
+  //
+  // ПУТЬ НЕ СКЛЕИВАЕТСЯ ЗАНОВО: берётся каталог, который эта же попытка получила выражением
+  // пути в начале, — иначе конспект лёг бы рядом с квитанцией, а не среди неё.
+  const changed = (worktree && worktree.changed) || null
+  writeContinuation({
+    dir: run.dir,
+    fsImpl: deps.fsImpl,
+    log: (entry) => writeLog(deps, entry),
+    // ТОТ ЖЕ ПОЯС, ЧТО У ОСТАЛЬНЫХ ФАЙЛОВ КАТАЛОГА: значения переменных, чьи ИМЕНА говорят
+    // «секрет», вырезаются из текста. Записку о подходе пишет работник, и она может унести
+    // в себе ключ ровно так же, как его уносила бы любая другая строка потока. Иглы сняты со
+    // среды спавна ОДИН раз, там же, где она известна, — спрашивать её здесь второй раз было
+    // бы вторым мнением о том, что в этой попытке считалось секретом.
+    secretValues: run.secretValues || [],
+    text: buildContinuationSummary({
+      taskId: task && task.id,
+      attempt: task && task.attempt,
+      outcome: receipt && receipt.outcome,
+      failureReason: receipt && receipt.failureReason,
+      verdict: receipt && receipt.verdict,
+      approach: run.approach && run.approach.approach,
+      rejected: (run.approach && run.approach.rejected) || [],
+      returnNote: task && task.note,
+      files: (changed && changed.files) || [],
+      deletions: (changed && changed.deletions) || [],
+    }),
+  })
   return writeRunReceipt({
     dir: run.dir,
     fsImpl: deps.fsImpl,
@@ -2601,7 +2802,11 @@ export async function tick(deps = {}) {
       // whole day of the operator log has nothing about it but the consequences. It is
       // handed the journal rather than reaching for one: a sweep whose work depended on a
       // log being available would be a sweep that stops when the log does.
-      result.sweep = await livenessSweep({ adapter, ledger, clock, expireMs: resolveExpireMs(config), journal })
+      // AND THE KILL-HANDLE REGISTRY, which is what turns the sweep from a narrator into a
+      // sweep: it declares an attempt dead and now stops that attempt's child BEFORE the task
+      // is reissued. The registry is the SAME one the redirect and cancel doors use — handed
+      // in here rather than reached for, so a daemon assembled without it sweeps as before.
+      result.sweep = await livenessSweep({ adapter, ledger, clock, expireMs: resolveExpireMs(config), journal, attemptTurns: deps.attemptTurns })
     } catch (err) {
       if (typeof journal === 'function') journal({ type: 'sweep-error', error: String((err && err.message) || err) })
     }
@@ -3055,14 +3260,26 @@ export async function tick(deps = {}) {
       // this codebase once handed the grant to one lane and withheld it from the other; one
       // function makes that divergence impossible instead of unlikely, and the suite calls
       // both points with one envelope and compares the argument arrays they produce.
+      // WHAT WOKE THIS ATTEMPT, decided before the array is built rather than patched onto it
+      // afterwards — see wakeSpawnOptions: a person's return continues the session it is a
+      // remark about, a timer never does, and the refusal is the builder's own long-standing one.
+      const wake = wakeSpawnOptions(deps, task)
       const spec = buildArgs(task, route, {
         ...SPAWN_OPTIONS,
+        ...wake,
+        // ЧТО ПРОШЛАЯ ПОПЫТКА ОСТАВИЛА СЛЕДУЮЩЕЙ. Читается здесь, потому что только тик знает,
+        // где лежит каталог прогона прошлой попытки; заворачивается в забор строителем, потому
+        // что забор живёт там. Дописать забор здесь было бы нечем: его в этом файле нет вовсе.
+        ...continuationSpawnOptions(deps, config, task, wake),
         ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
         ...envelopeSpawnOptions(envelope),
         // The attempt directory and the correction file, created and named BEFORE the process
         // exists — the parking gate inside the child reads both out of its environment.
         ...gateSpawnOptions(deps, config, task),
       })
+      // THE LINE IS WRITTEN ONLY WHERE IT IS TRUE. A timer wake takes no session with it, so
+      // saying it resumed one would make the operator's log claim something that never happened.
+      if (wake.resumeId) writeLog(deps, { type: 'task.session_resumed', taskId: task.id, attempt: task.attempt })
       // WHAT THE ATTEMPT WAS GIVEN BEFORE IT SPOKE — the role file and the skills of the
       // routed worker. It is REMEMBERED here and written into the memory layer at the end,
       // together with what the session actually did: the declaration and the observation
@@ -3083,29 +3300,6 @@ export async function tick(deps = {}) {
           ]
         }
       }
-      // ── A RETURN CONTINUES THE SAME SESSION (phase «Двигатель», wave 4) ──
-      // A task sent back with a comment used to start attempt N+1 from zero: a fresh
-      // session that re-read the world and re-did the thinking the founder had already
-      // paid for. The prior attempt's session id is on its ledger row, so the new attempt
-      // RESUMES it — the correction lands in a head that still holds the context. Guarded
-      // to re-queues only (attempt > 1): a fresh task always gets a fresh session (PF-4),
-      // and a fresh session is also the safe default whenever the ledger cannot answer.
-      if (spec.bin === CLAUDE_BIN && Number(task.attempt) > 1 && deps.ledger && typeof deps.ledger.readAttempts === 'function') {
-        try {
-          const prior = deps.ledger.readAttempts(task.id) || []
-          for (let i = prior.length - 1; i >= 0; i -= 1) {
-            const sid = prior[i] && prior[i].sessionId
-            if (typeof sid === 'string' && /^[0-9a-f-]{32,40}$/i.test(sid)) {
-              spec.args = [...spec.args, '--resume', sid]
-              writeLog(deps, { type: 'task.session_resumed', taskId: task.id, attempt: task.attempt })
-              break
-            }
-          }
-        } catch {
-          /* an unreadable ledger means a fresh session — never a wedged attempt */
-        }
-      }
-
       const streamLines = []
       const { onLine, sessionOf, initOf, appendLine, memoryOf, guardsOf, runInitOf, permissionDenialsOf, logFileOf } = attemptStream(
         deps,
@@ -3251,6 +3445,10 @@ export async function tick(deps = {}) {
       // what the run left behind. A cut by the provider makes every such judgement a
       // statement about the outage rather than about the work.
       const providerAbort = providerAbortOf(streamLines)
+      // AND WHETHER WE ENDED IT OURSELVES — asked in the same breath and measured against the
+      // ceiling this very spawn was handed, so the reading is of the command line that ran and
+      // not of a setting somebody believes it carried.
+      const turnCapHit = turnCapHitOf(streamLines, argMaxTurns(spec.args))
 
       // (7a) WHAT IT COST — read off this attempt's own stream, before any gate decides its
       // fate. A refused attempt still spent the tokens, so the book is written for every
@@ -3331,13 +3529,14 @@ export async function tick(deps = {}) {
         exit,
         gate: isDocument ? 'document' : 'reverify',
         lesson: lessonLayerOf(lessonEval),
+        approach: note,
       })
 
       // An infra failure, a provider abort or a worker marker is the SHARPER signal and wins
       // over either gate below: a crashed attempt must not complete on a document that was
       // already there — and neither may an attempt the vendor cut off mid-word.
-      const infraReason = exit.spawnError || providerAbort || marker
-        ? classifyFailure({ spawnError: exit.spawnError, providerAbort, exitCode: exit.code, workerMarker: marker })
+      const infraReason = exit.spawnError || providerAbort || turnCapHit || marker
+        ? classifyFailure({ spawnError: exit.spawnError, providerAbort, turnCapHit, exitCode: exit.code, workerMarker: marker })
         : null
       // NEVER SILENT: an outage of the vendor's is a fact about the DAY, not about this task,
       // and the operator's log is where a person looks when three attempts died in a row.
@@ -3567,6 +3766,7 @@ export async function tick(deps = {}) {
         const reason = classifyFailure({
           spawnError: exit.spawnError,
           providerAbort,
+          turnCapHit,
           exitCode: exit.code,
           receipt,
           workerMarker: marker,
@@ -3840,7 +4040,8 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // THE STREAM IS NOT TEXT: the markers live inside JSON frames, so the raw lines are
   // unwrapped first (`approachLinesFrom`) exactly as the code path does. Reading the frames
   // raw meant the note was never found and a green draft still failed «нет записки».
-  const noteWritten = recordApproachNote(deps, task, parseApproachNote(approachLinesFrom(streamLines)))
+  const forgeNote = parseApproachNote(approachLinesFrom(streamLines))
+  const noteWritten = recordApproachNote(deps, task, forgeNote)
 
   // The forge lane creates an attempt, so the forge lane owes a MEMORY layer like any other —
   // and it owes it here, above every exit below, for the same reason the code lane writes it
@@ -3884,6 +4085,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     exit,
     gate: 'forge',
     lesson: { none: 'полоса-кузница: урок с этой попытки не требуется' },
+    approach: forgeNote,
   })
 
   if (exit.spawnError) {
@@ -4016,7 +4218,7 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
     verdict: (worktree && worktree.run && worktree.run.verdict) || 'green',
     ref: receiptRef ?? null,
     lesson: (worktree && worktree.run && worktree.run.lesson) ?? null,
-  })
+  }, task)
   if (typeof report === 'function') {
     await report({ event: 'task.completed', taskId: task.id, title: task.title, lane: task.lane, receiptVerdict: 'green', branch, attempt: task.attempt })
   }
@@ -4149,7 +4351,7 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
     verdict: (worktree && worktree.run && worktree.run.verdict) || (receiptRef ? 'red' : 'none'),
     ref: receiptRef ?? null,
     lesson: (worktree && worktree.run && worktree.run.lesson) ?? null,
-  })
+  }, task)
   if (typeof report === 'function') {
     await report({ event: 'task.failed', taskId: task.id, title: task.title, lane: task.lane, receiptVerdict: receiptRef ? 'red' : undefined, branch, attempt: task.attempt })
   }

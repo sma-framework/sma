@@ -6,18 +6,24 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-ONE routes
- *     (re-frozen 2026-08-13 — the growth past the V5.4 fifty-three is EXPLICIT, EIGHT doors,
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-TWO routes
+ *     (re-frozen 2026-08-20 — the growth past the V5.4 fifty-three is EXPLICIT, NINE doors,
  *     each declared by the release that opened it: the chat stop button in v5.4.3, the
- *     running-task steering wheel in v5.5.0, and SIX doors in v5.6.0 — the batch request,
+ *     running-task steering wheel in v5.5.0, SIX doors in v5.6.0 — the batch request,
  *     the word its owner answers a stopped batch with, the composition a phrase could have,
  *     the two doors of a task's WORDS (the one that proposes them and the one that corrects
- *     them), and the order that stops ONE echelon of ONE phase and starts it again; the
- *     previous freezes were FIFTY-FIVE, 2026-08-12, FIFTY-THREE, 2026-08-06, THIRTY,
- *     2026-08-01, and FOURTEEN, 2026-07-17). A path outside the table is 404 BEFORE any
+ *     them), and the order that stops ONE echelon of ONE phase and starts it again — and,
+ *     newest of them and NOT YET CARRYING A RELEASE OF ITS OWN, the door that CANCELS a
+ *     task, so a person can stop work with a finger and the stopping leaves no live process
+ *     behind it. That last one names no version on purpose: every other door here records
+ *     the release that actually shipped it, and writing a number before it is cut would make
+ *     this header a promise instead of a record — the stamp goes in when the release does;
+ *     the previous freezes were SIXTY-ONE,
+ *     2026-08-13, FIFTY-FIVE, 2026-08-12, FIFTY-THREE, 2026-08-06, THIRTY, 2026-08-01, and
+ *     FOURTEEN, 2026-07-17). A path outside the table is 404 BEFORE any
  *     auth-error detail (no route reflection). No command-exec endpoint exists or ever may —
  *     adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 61 is a test.
+ *     invariant that polices it. Object.keys(ROUTES).length === 62 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
@@ -86,7 +92,7 @@ import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS, attemptIdFor } from './journal.mjs'
-import { runsDirOf, attemptRunDir } from '../queue/run-dir.mjs'
+import { runsDirOf, attemptRunDir, readContinuation } from '../queue/run-dir.mjs'
 import { approvalWall, defaultEnvelope } from '../queue/capability-envelope.mjs'
 import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
@@ -217,26 +223,29 @@ const BUILD_INSTRUCTION_HTML =
   '</body></html>'
 
 /**
- * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-13; the FIFTY-THREE of the V5.4
- * freeze plus eight doors, each declared once by its own release — the chat stop button in
- * v5.4.3, the running-task steering wheel in v5.5.0, and in v5.6.0 the batch request, the
- * word its owner answers a stopped batch with, the composition a phrase could have, the
- * two doors of a task's WORDS (the one that proposes them and the one that corrects them),
- * and the order that stops ONE echelon of ONE phase and starts it again).
- * Exactly SIXTY-ONE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-20; the FIFTY-THREE of the V5.4
+ * freeze plus nine doors, eight of them declared once by the release that shipped them —
+ * the chat stop button in v5.4.3, the running-task steering wheel in v5.5.0, in v5.6.0 the
+ * batch request, the word its owner answers a stopped batch with, the composition a phrase
+ * could have, the two doors of a task's WORDS (the one that proposes them and the one that
+ * corrects them), and the order that stops ONE echelon of ONE phase and starts it again —
+ * and the ninth, carrying no release stamp until one is actually cut, the door that CANCELS
+ * a task: a person stops the work, and the row is closed only after the live child under it
+ * is dead).
+ * Exactly SIXTY-TWO entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the four dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic asset segment
  * (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 61) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 62) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time; the last eight joined one release at a time, additively — nothing was
- * removed or renamed. ALL SIXTY-ONE ARE LIVE — the table carries no stub, and the shape
+ * a time; the last nine joined one release at a time, additively — nothing was
+ * removed or renamed. ALL SIXTY-TWO ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  *
- * THREE OF THE EIGHT PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
+ * THREE OF THE NINE PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
  * two word doors are a PAIR (the first returns a draft for a person to correct, the second
  * writes only onto a task whose work is not over), and the batch-composition door is the same
  * promise about a whole batch. Between them they are the whole of «система предлагает,
@@ -313,6 +322,8 @@ export const ROUTES = Object.freeze({
   'POST /api/task/words': 'handleTaskWords',
   // ── «останови волну 2»: the one echelon of one phase stands, and starts again ──
   'POST /api/wave/hold': 'handleWaveHold',
+  // ── остановка задачи человеком: сначала убить живого ребёнка, потом закрыть строку ──
+  'POST /api/task/cancel': 'handleTaskCancel',
 })
 
 /**
@@ -784,7 +795,36 @@ async function handleTask({ res, params, config, deps }) {
   rawAttempts = foldAttemptRows(rawAttempts)
 
   const parseReceipt = typeof deps.parseReceiptSummary === 'function' ? deps.parseReceiptSummary : () => null
-  const attempts = rawAttempts.map((a) => ({
+
+  /**
+   * КОНСПЕКТ ПЕРЕДАЧИ ОДНОЙ ПОПЫТКИ — прочитанный из ТОГО ЖЕ файла, который положила она сама.
+   *
+   * ПУТЬ СОБИРАЕТСЯ ТЕМ ЖЕ ВЫРАЖЕНИЕМ, что и у писателя, и у спавна, и у билета ниже. Второе
+   * написание того же пути читало бы каталог, в который никто не пишет, — и молчало бы при этом
+   * совершенно честно на вид: экран сказал бы «конспекта нет» о задаче, у которой он есть.
+   *
+   * АДРЕСУЕТСЯ ТОЛЬКО ЗАПРОШЕННАЯ ЗАДАЧА И ЕЁ СОБСТВЕННЫЙ ПОДХОД: идентификатор каталога
+   * минтится из `id` этой двери и номера попытки её же строки, и никакого другого способа
+   * назвать каталог здесь не заводится — иначе дверь стала бы читалкой чужих файлов.
+   *
+   * `null` СНИМАЕТ КЛЮЧ ЦЕЛИКОМ, а не подставляет пустую строку: «нечего показать» и «не
+   * знаем» — разные предложения, и карточка обязана молчать только о первом.
+   */
+  const handoverOf = (attempt) => {
+    const n = Number.isFinite(Number(attempt)) ? Number(attempt) : null
+    if (n === null || n < 1) return null
+    const dir = attemptRunDir({
+      runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+      attemptId: attemptIdFor(id, n),
+    })
+    return readContinuation({ dir, fsImpl: deps.fsImpl })
+  }
+
+  const attempts = rawAttempts.map((a) => {
+    // Спрошено ОДИН раз на попытку и названо здесь, а не внутри тела: тело ниже — перечисление
+    // явных выборов, и чтение диска посреди него читалось бы как ещё одно поле.
+    const handover = handoverOf(a.attempt)
+    return {
     attempt: a.attempt ?? null,
     workerId: a.workerId ?? null,
     provider: a.provider ?? null,
@@ -892,7 +932,18 @@ async function handleTask({ res, params, config, deps }) {
     // ничего не ждёт. Назван нулём, а не опущен, по той же причине, что и поля выше:
     // карточка читает одну форму для каждой записи.
     ticket: null,
-  }))
+    // ═══ ЧТО ЭТА ПОПЫТКА ПЕРЕДАЛА СЛЕДУЮЩЕЙ ═════════════════════════════════════
+    //
+    // Тот же файл, слово в слово, который поедет в промпт следующего подхода. Двое читателей
+    // одного файла — весь смысл того, что конспект лежит файлом, а не считается на каждой
+    // стороне: человек видит РОВНО то, что получит работник, а не пересказ.
+    //
+    // Ключа нет вовсе, когда файла нет: первая попытка предшественника не имеет, и задача
+    // старше этого файла — тоже. Пустая строка на этом месте была бы утверждением, что
+    // передавать было нечего, а это совсем другой факт, и он пишется в сам конспект словами.
+    ...(handover ? { continuationSummary: handover } : {}),
+    }
+  })
 
   // THE ATTEMPT HAPPENING RIGHT NOW. The ledger holds only FINISHED attempts — a row is
   // appended when one ends — so a task with a worker inside it read as «подходов ещё не
@@ -2527,6 +2578,85 @@ async function handleChatStop({ req, res, deps }) {
   if (rejectUnknownKeys(res, b, new Set(['turnId']))) return undefined
   if (typeof b.turnId !== 'string' || !TURN_ID_RE.test(b.turnId)) return send400(res, 'invalid turnId')
   return sendJson(res, 200, { stopped: registry.stop(b.turnId) })
+}
+
+/**
+ * How long the cancel door waits for the child it has just killed to CLOSE its attempt
+ * before it writes the terminal into the queue. NAMED, because an unnamed wait is a wait
+ * nobody can argue with: three seconds is long enough for a killed process to be reaped and
+ * short enough that a person pressing a button does not think the window has frozen. When it
+ * runs out the row is closed ANYWAY and the answer says the wait ran out — see the handler.
+ */
+export const CANCEL_ATTEMPT_CLOSE_WAIT_MS = 3_000
+
+/** How often the door looks while it waits. Small enough that the usual case costs one look. */
+export const CANCEL_ATTEMPT_POLL_MS = 50
+
+/** The default nap. Injectable, so the suite can exhaust the wait without spending the time. */
+const defaultNap = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * waitForAttemptClose({registry, taskId, deps}) → true when the attempt closed inside the
+ * named cap, false when the cap ran out first.
+ *
+ * HOW «CLOSED» IS OBSERVED, AND WHY THIS WAY. The registry marks a handle stopped BEFORE it
+ * kills, and the dying child's own exit path is what removes the handle. So a handle that is
+ * still marked stopped is an attempt still unwinding, and a handle that is gone is an attempt
+ * that finished. Nothing new is registered to learn this — a second bookkeeping of the same
+ * fact is a second truth, and the two would drift.
+ */
+async function waitForAttemptClose({ registry, taskId, deps }) {
+  if (!registry || typeof registry.wasStopped !== 'function') return false
+  const nap = typeof deps.sleep === 'function' ? deps.sleep : defaultNap
+  const looks = Math.max(1, Math.ceil(CANCEL_ATTEMPT_CLOSE_WAIT_MS / CANCEL_ATTEMPT_POLL_MS))
+  for (let i = 0; i < looks; i += 1) {
+    if (registry.wasStopped(taskId) !== true) return true
+    await nap(CANCEL_ATTEMPT_POLL_MS)
+  }
+  return registry.wasStopped(taskId) !== true
+}
+
+/**
+ * POST /api/task/cancel — body {taskId}. «Остановите это», сказанное пальцем.
+ *
+ * KILL FIRST, CLOSE SECOND, AND THE ORDER IS THE WHOLE POINT. Marking the row closed while
+ * the child is still alive is the loop that burns a subscription: the process keeps working
+ * for a task nobody is waiting for, the liveness sweep sees a claim it cannot explain, and a
+ * fresh attempt is started beside the one still running. So this door (a) takes the live
+ * child's handle out of the attempt registry and tells it to die, (b) waits a NAMED, short
+ * while for that attempt to close, and only then (c) asks the queue to close the row
+ * terminally. The reverse order was measured to produce parallel processes against one row.
+ *
+ * THE ANSWER IS HONEST ABOUT ALL THREE THINGS, because the window turns them into different
+ * sentences and a person deserves to know which one happened:
+ *   killed        — there WAS a live child under this task, and it was told to die.
+ *   attemptClosed — true when the attempt finished unwinding inside the cap, false when the
+ *                   cap ran out (the row is still closed — the terminal is not negotiable),
+ *                   and null when there was nothing to kill, because «did not close» and
+ *                   «there was nothing to close» are not the same statement.
+ *   cancelled     — the queue closed the row. False is an honest «there was nothing to stop»:
+ *                   the queue cannot tell an unknown task from one that is already finished,
+ *                   and inventing that distinction here would be a distinction the storage
+ *                   does not have.
+ *
+ * The registry is OPTIONAL exactly as it is at the steering door: a daemon assembled without
+ * it still stops rows, it just never claims a kill.
+ */
+async function handleTaskCancel({ req, res, deps }) {
+  const adapter = deps.adapter
+  if (!adapter || typeof adapter.cancelTask !== 'function') return send501(res)
+  const body = await readJsonBody(req, { cap: CHAT_BODY_CAP })
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['taskId']))) return undefined
+  if (typeof b.taskId !== 'string' || !ID_RE.test(b.taskId)) return send400(res, 'invalid taskId')
+
+  const registry = deps.attemptTurns
+  const killed =
+    registry && typeof registry.stop === 'function' ? registry.stop(b.taskId) === true : false
+  const attemptClosed = killed ? await waitForAttemptClose({ registry, taskId: b.taskId, deps }) : null
+  const cancelled = (await adapter.cancelTask(b.taskId)) === true
+  return sendJson(res, 200, { cancelled, killed, attemptClosed })
 }
 
 /**
@@ -4951,6 +5081,8 @@ export const HANDLERS = Object.freeze({
   handleTaskWords,
   // «останови волну 2» — одна волна одной фазы встаёт, и она же снова идёт
   handleWaveHold,
+  // остановка задачи человеком: сначала умирает живой ребёнок, потом закрывается строка
+  handleTaskCancel,
 })
 
 // ── the dispatcher ──

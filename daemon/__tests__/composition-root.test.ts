@@ -659,3 +659,22 @@ describe('runProjectVerb — the door answers, and its children are headless', (
     expect(seen.env.SMA_DISABLE_SNAPSHOT_SPAWN).toBe('1')
   })
 })
+
+/**
+ * ЗВЕНО СБОРКА → ЦИКЛ. Реестр ручек попыток — единственное, чем сторож живости и дверь
+ * остановки МОГУТ дотянуться до живого ребёнка: он держит kill-ручку, зарегистрированную при
+ * запуске попытки под id ЗАДАЧИ. Реестр создаётся ровно один раз и раздаётся обеим сторонам;
+ * если он перестанет доезжать до зависимостей цикла, сторож снова будет только объявлять смерть,
+ * а суд по частям останется зелёным — ровно тот класс, ради которого этот файл и написан.
+ * Звено существует и до нас; дело пинит его, чтобы оно не пропало вместе с чужой правкой.
+ */
+describe('the root hands the kill-handle registry to BOTH sides', () => {
+  it('the tick deps carry the attemptTurns registry, and it is the SAME object the front got', () => {
+    expect(park.tickDeps.attemptTurns, 'цикл собран без реестра ручек — сторожу нечем убивать').toBeTruthy()
+    for (const m of ['register', 'stop', 'wasStopped', 'done']) {
+      expect(typeof park.tickDeps.attemptTurns[m], `реестр в зависимостях цикла без метода ${m}`).toBe('function')
+    }
+    // ОДИН объект, обе стороны: две копии — это две правды о том, кто сейчас жив.
+    expect(park.tickDeps.attemptTurns).toBe(park.front.deps.attemptTurns)
+  })
+})
