@@ -730,13 +730,18 @@ second challenge ledger, no second reverifier, no second preflight — the backl
 grill.mjs gates, `sma reverify` verifies, `sma preflight` guards. `batch` is a direct CLI
 command — **not** hook-facing (it may exit nonzero).
 
-### Bridges — opt-in, never headlined
+### Bridges — on by default, never headlined
 
-Each bridge sits behind a capability probe and registers a falsifiable self-removal
-prediction; it stands down the day a sufficient native equivalent ships. See the
-**Pre-compaction flight recorder** section below for the capsule bridge
-(`precompact-capsule` / `resume` / `handoff` / `flight`) and the **CLI subcommands**
-table above for the git airbag (`undo` / `airbag`).
+Each bridge runs by default, sits behind a capability probe and registers a falsifiable
+self-removal prediction; it stands down the day a sufficient native equivalent ships. On by
+default means the *protection* runs unasked, not that a *refusal* does: the airbag snapshots
+every time and only refuses once `SMA_AIRBAG_DENY` is armed (it ships unset), the spend
+ledger does nothing until a budget is set by hand, and the scope stream stays silent in a
+single window. Each keeps a named kill-switch: `SMA_AIRBAG_DISABLE`, `SMA_SPEND_DISABLE`,
+`SMA_FLIGHT_DISABLE`, `SMA_ENFORCE_SCOPES_DISABLE`. See the **Pre-compaction flight
+recorder** section below for the capsule bridge (`precompact-capsule` / `resume` /
+`handoff` / `flight`) and the **CLI subcommands** table above for the git airbag
+(`undo` / `airbag`).
 
 | Subcommand | Bridge | Key flags |
 |---|---|---|
@@ -1116,7 +1121,7 @@ the push-claim on `claimSlot` (mkdir-EEXIST) — no bespoke lockfile.
 a human-ordered ritual (slots.mjs header law). A red merge is surfaced honestly
 (the receipt records the failure), never silently blessed.
 
-**Enforcing scopes** (opt-in, default OFF behind `SMA_ENFORCE_SCOPES`) turn the collision
+**Enforcing scopes** (on by default; kill-switch `SMA_ENFORCE_SCOPES_DISABLE`) turn the collision
 WARN into a **soft-deny with an override token** for the ONE safe case: a **verified-LIVE**
 foreign claim (fresh touches + a live heartbeat, via plan 13's `verifyClaimEvidence`). A
 stale or unverified claim stays WARN-only; a cooling-down / force-cleared scope is never
