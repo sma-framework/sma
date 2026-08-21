@@ -2240,6 +2240,32 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       expect(await q.setWords('R-nobody', { description: 'x' })).toBe(false)
     })
 
+    /**
+     * РАБОТУ, ВЕРНУВШУЮСЯ В ОЧЕРЕДЬ ПОСЛЕ СОРВАННОЙ ПОПЫТКИ, МОЖНО И ПЕРЕПИСАТЬ.
+     *
+     * Она ничем не отличается от любой другой ждущей: читающий путь называет её «в очереди», и
+     * человек у доски видит ровно это. Больше того — это как раз тот момент, когда переписать
+     * слова хочется сильнее всего: попытка сорвалась, и следующей стоит уйти с исправленным
+     * заданием, а не с тем же самым. Дверь, отвечающая «нет такой задачи» на строку, которую
+     * доска показывает в очереди, — это отказ, переодетый в пустоту.
+     */
+    it('задаче, вернувшейся в очередь после сорванной попытки, слова переписать можно — и новые слова видит следующая выдача', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue(backlog({ id: 'BL-98', description: 'первая редакция' }))
+      await q.claimNext('w1', {})
+      c.advance(5000) // аренда потеряна: строка вернулась в очередь на следующую попытку
+
+      const back = (await q.list({})).find((r) => r.id === 'BL-98')
+      expect(back.status).toBe('queued') // именно это человек и видит
+
+      expect(await q.setWords('BL-98', { description: 'вторая редакция' })).toBe(true)
+
+      const next = await q.claimNext('w2', {})
+      expect(next.id).toBe('BL-98')
+      expect(next.description).toBe('вторая редакция')
+    })
+
     it('the words door is bounded by the SAME caps the enqueue is', async () => {
       const c = clockOf()
       const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
