@@ -2,17 +2,28 @@
  * Tests for daemon/src/runner/redirects.mjs + the redirect door (the steering wheel).
  *
  * The law under test: a founder's correction to RUNNING work is durable BEFORE anything
- * is killed, has a declared fate (interrupt | queue), is consumed exactly once, and a
- * torn or missing store loses corrections — never the tick.
+ * is killed, has a declared fate (interrupt | queue | steer), is consumed exactly once, and a
+ * torn or missing store loses corrections — never the tick. THREE fates, not two: the third is
+ * a word for the turn already in flight, and it kills nobody.
  *
- *   Test 1 — append validates: mode outside the pair, empty text, over-cap text refused.
+ *   Test 1 — append validates: a fate nobody declared, empty text, over-cap text refused;
+ *            every declared fate passes.
  *   Test 2 — pending reads asks in order; done-marks consume exactly the named ids.
  *   Test 3 — a torn NDJSON line is skipped; the rest of the story still reads.
  *   Test 4 — the door: 501 without a store, 400s on bad body, 200 {accepted, live} on a
- *            good one; 'interrupt' pulls the registry trigger, 'queue' does not.
+ *            good one; 'interrupt' pulls the registry trigger, 'queue' and 'steer' do not.
  *   Test 5 — THE WIRE, end to end through the PRODUCTION root: an answer sent from the
  *            window's conversation lands in the very store the tick reads before it resumes
  *            the session. Not the calculation — the wire.
+ *   Test 6 — THE WIRE of the third fate: a line the store wrote is seen by the PATH-shaped
+ *            reader the gate in the worker's child process calls live. The road, not the sums.
+ *   Test 7 — the honest refusal: a task whose last attempt ran on a channel-less executor is
+ *            told so, in words naming both shapes that DO reach it, and nothing is written;
+ *            'interrupt' on the same task still answers 200 — the old fates are not collateral.
+ *   Test 8 — no attempts yet, or a ledger that throws: the third fate is accepted and the line
+ *            lies in the store. Silence is not evidence of a missing channel.
+ *   Test 9 — one wording, two carriers: the heading correctionsPreamble mints is the literal
+ *            the continuation loop already speaks. A lock against the two drifting apart.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -24,7 +35,11 @@ import { Readable } from 'node:stream'
 import {
   appendRedirect,
   readPendingRedirects,
+  readPendingRedirectsFile,
+  redirectFileOf,
   markConsumed,
+  correctionsPreamble,
+  REDIRECT_MODES,
   REDIRECT_TEXT_CAP,
 } from '../src/runner/redirects.mjs'
 import { createTurnRegistry } from '../src/front/chat.mjs'
@@ -70,7 +85,8 @@ function mkRes() {
 describe('redirects store — durable, ordered, consumed once', () => {
   it('validates mode and text at the door of the file', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'sma-rd-'))
-    expect(appendRedirect({ dataDir, taskId: 'T1', text: 'x', mode: 'steer' as any }).ok).toBe(false)
+    expect(appendRedirect({ dataDir, taskId: 'T1', text: 'x', mode: 'shout' as any }).ok).toBe(false)
+    expect(appendRedirect({ dataDir, taskId: 'T1', text: 'слово в ход', mode: 'steer' }).ok).toBe(true)
     expect(appendRedirect({ dataDir, taskId: 'T1', text: '   ', mode: 'queue' }).ok).toBe(false)
     expect(appendRedirect({ dataDir, taskId: 'T1', text: 'y'.repeat(REDIRECT_TEXT_CAP + 1), mode: 'queue' }).ok).toBe(false)
     expect(appendRedirect({ dataDir, taskId: 'T1', text: 'нет, не так', mode: 'interrupt' }).ok).toBe(true)
@@ -118,7 +134,7 @@ describe('POST /api/redirect — the steering door', () => {
 
     for (const bad of [
       { taskId: '../evil', text: 'x', mode: 'queue' },
-      { taskId: 'T4', text: 'x', mode: 'steer' },
+      { taskId: 'T4', text: 'x', mode: 'shout' },
       { taskId: 'T4', text: '', mode: 'queue' },
       { taskId: 'T4', text: 'x', mode: 'queue', extra: 1 },
     ]) {
@@ -145,11 +161,21 @@ describe('POST /api/redirect — the steering door', () => {
     expect(JSON.parse(i.body)).toMatchObject({ accepted: true, mode: 'interrupt', live: true })
     expect(killed).toBe(1)
 
-    // both corrections are durable, in order, regardless of the kill
+    // steer: a word for the turn in flight — written, and NOBODY is killed. This task has no
+    // recorded attempts at all, so the door holds no evidence of a missing channel and takes
+    // the line: it is durable, and the first turn that has a gate collects it.
+    const s = mkRes()
+    await front.handle(mkReq({ method: 'POST', url: '/api/redirect', body: { taskId: 'T4', text: 'слово в ход', mode: 'steer' } }), s)
+    expect(s.statusCode).toBe(200)
+    expect(JSON.parse(s.body)).toMatchObject({ accepted: true, mode: 'steer', live: false })
+    expect(killed).toBe(1) // still ONE: the third fate shoots nobody, by construction
+
+    // all three corrections are durable, in order, regardless of the kill
     const stored = readFileSync(join(dataDir, 'redirects', 'T4.ndjson'), 'utf8')
     expect(stored).toContain('после хода')
     expect(stored).toContain('перебей')
-    expect(readPendingRedirects({ dataDir, taskId: 'T4' })).toHaveLength(2)
+    expect(stored).toContain('слово в ход')
+    expect(readPendingRedirects({ dataDir, taskId: 'T4' })).toHaveLength(3)
   })
 })
 
@@ -234,5 +260,141 @@ describe('ответ из окна → канал продолжения той 
       if (savedMcp === undefined) delete process.env.SMA_DAEMON_MCP
       else process.env.SMA_DAEMON_MCP = savedMcp
     }
+  })
+})
+
+/**
+ * ТРЕТЬЯ СУДЬБА — ПРОВОД, А НЕ ВЫЧИСЛЕНИЕ.
+ *
+ * Слово для идущего хода забирает не демон, а калитка ВНУТРИ дочернего процесса работника, и
+ * держит она не каталог данных, а один путь, выданный ей в окружении. Значит у утверждения
+ * «третья судьба работает» есть ровно один честный вид: строка, положенная хранилищем, видна
+ * ТОЙ САМОЙ функции-по-пути, которую калитка зовёт живьём. Тест, спросивший вместо неё
+ * удобного соседа по каталогу, проверил бы дорогу, которую сам же и построил.
+ */
+describe('слово идущему ходу доезжает до читателя в процессе работника (провод)', () => {
+  it('строка третьей судьбы видна чтению-по-пути — тому, которым пользуется калитка', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-rd-live-'))
+    const wrote = appendRedirect({ dataDir, taskId: 'live-1', text: 'сначала прочти соседний файл', mode: 'steer' })
+    expect(wrote.ok).toBe(true)
+
+    // Путь минтит САМ модуль — ровно так же, как его минтит демон перед запуском ребёнка.
+    const file = redirectFileOf({ dataDir, taskId: 'live-1' })
+    const seenByGate = readPendingRedirectsFile({ file })
+    expect(seenByGate.map((r: any) => [r.mode, r.text])).toEqual([['steer', 'сначала прочти соседний файл']])
+
+    // И судеб ровно три: список заморожен, четвёртой нет.
+    expect([...REDIRECT_MODES]).toEqual(['interrupt', 'queue', 'steer'])
+  })
+})
+
+/**
+ * ГДЕ КАНАЛА НЕТ — ДВЕРЬ ГОВОРИТ ОБ ЭТОМ, А НЕ ПОДМЕНЯЕТ.
+ *
+ * Та же дверь честно работает как «убить и продолжить», и так она и подписана. Принять слово
+ * для идущего хода у исполнителя, у которого границы вызова инструмента нет вовсе, и молча
+ * доставить вместо него убийство — подлог: основатель увидел бы «передано» и получил бы
+ * другую вещь. Подделка журнала читает АРГУМЕНТ и отвечает по нему; больше живого шва она не
+ * умеет — настоящий отдаёт ровно массив строк попыток и ничего сверх.
+ */
+describe('исполнитель без живого канала — дверь подписана честно', () => {
+  it('последняя попытка на лейне без калитки: отказ со словами и без записи; «перебить» по-прежнему 200', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-rd-nochan-'))
+    const asked: string[] = []
+    const ledger = {
+      readAttempts: (id: string) => {
+        asked.push(id)
+        return id === 'nochan-1' ? [{ attempt: 1, provider: 'claude' }, { attempt: 2, provider: 'codex' }] : []
+      },
+    }
+    const attemptTurns = createTurnRegistry()
+    const front = createFrontServer({ config: { token: TOKEN, dataDir }, deps: { attemptTurns, ledger } })
+
+    const no = mkRes()
+    await front.handle(
+      mkReq({ method: 'POST', url: '/api/redirect', body: { taskId: 'nochan-1', text: 'слово в ход', mode: 'steer' } }),
+      no,
+    )
+    expect(no.statusCode).toBe(400)
+    expect(asked).toContain('nochan-1')
+    // ОБЕ доступные формы названы словами — иначе отказ не помогает, а только запрещает.
+    expect(no.body).toContain('перебить')
+    expect(no.body).toContain('после хода')
+
+    // Отказ пришёл ДО записи: строки, которую никто не доставит, в хранилище нет.
+    expect(readPendingRedirects({ dataDir, taskId: 'nochan-1' })).toEqual([])
+
+    // Старые судьбы не задеты: та же задача, тот же журнал — «перебить» принимается и стреляет.
+    let killed = 0
+    attemptTurns.register('nochan-1', () => {
+      killed += 1
+    })
+    const yes = mkRes()
+    await front.handle(
+      mkReq({ method: 'POST', url: '/api/redirect', body: { taskId: 'nochan-1', text: 'перебей', mode: 'interrupt' } }),
+      yes,
+    )
+    expect(yes.statusCode).toBe(200)
+    expect(JSON.parse(yes.body)).toMatchObject({ accepted: true, mode: 'interrupt', live: true })
+    expect(killed).toBe(1)
+    expect(readPendingRedirects({ dataDir, taskId: 'nochan-1' })).toHaveLength(1)
+  })
+})
+
+/**
+ * МОЛЧАНИЕ ЖУРНАЛА — НЕ ДОКАЗАТЕЛЬСТВО ОТСУТСТВИЯ КАНАЛА.
+ *
+ * Задача, которую ещё ни разу не брали, и журнал, который не читается, — разные беды, но обе
+ * означают одно: дверь НЕ ЗНАЕТ, кто побежит. Строка долговечна, поэтому честный ход — принять
+ * и ждать; уронить дверь из-за нечитаемого журнала было бы худшим из всех ответов.
+ */
+describe('задача без попыток и нечитаемый журнал — слово принимается и ждёт', () => {
+  it('пустой журнал: 200 и строка в хранилище; журнал, который бросает: тоже 200', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-rd-fresh-'))
+    const front = createFrontServer({ config: { token: TOKEN, dataDir }, deps: { ledger: () => [] } })
+    const res = mkRes()
+    await front.handle(
+      mkReq({ method: 'POST', url: '/api/redirect', body: { taskId: 'fresh-1', text: 'начни с чтения', mode: 'steer' } }),
+      res,
+    )
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ accepted: true, mode: 'steer', live: false })
+    expect(readFileSync(join(dataDir, 'redirects', 'fresh-1.ndjson'), 'utf8')).toContain('начни с чтения')
+    expect(readPendingRedirectsFile({ file: redirectFileOf({ dataDir, taskId: 'fresh-1' }) })).toHaveLength(1)
+
+    const angry = createFrontServer({
+      config: { token: TOKEN, dataDir },
+      deps: {
+        ledger: () => {
+          throw new Error('журнал не читается')
+        },
+      },
+    })
+    const torn = mkRes()
+    await angry.handle(
+      mkReq({ method: 'POST', url: '/api/redirect', body: { taskId: 'torn-1', text: 'и это слово', mode: 'steer' } }),
+      torn,
+    )
+    expect(torn.statusCode).toBe(200)
+    expect(readPendingRedirects({ dataDir, taskId: 'torn-1' })).toHaveLength(1)
+  })
+})
+
+/**
+ * ОДНА ФОРМА СЛОВ, ДВА НОСИТЕЛЯ.
+ *
+ * Шапку поправки теперь несут двое: калитка в процессе работника и цикл продолжения. Пока
+ * цикл не переведён на общего производителя, между ними стоит ровно этот замок — литерал
+ * обязан присутствовать в исходнике цикла буква в букву. Разъедься формы, и основателя стали
+ * бы цитировать по-разному в зависимости от того, какой дорогой поехало его предложение.
+ */
+describe('одна форма слов поправки, два носителя', () => {
+  it('шапка производителя — тот самый литерал, которым цикл продолжения кормит возобновление', () => {
+    const built = correctionsPreamble([{ text: 'первое' }, { text: 'второе' }])
+    const heading = built.split('\n')[0]
+    expect(built).toBe(`${heading}\n\nпервое\n\nвторое`)
+
+    const loopSrc = readFileSync(new URL('../src/loop.mjs', import.meta.url), 'utf8')
+    expect(loopSrc).toContain(heading)
   })
 })
