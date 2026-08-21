@@ -429,6 +429,12 @@ const ALLOWED_DATA_KEYS = Object.freeze(['kind', 'stage', 'phase', 'wave', 'batc
 const ALLOWED_TASK_KEYS = Object.freeze([
   'id', 'source', 'title', 'lane', 'provider', 'model', 'effort',
   'priority', 'attempt', 'storyPoints', 'description', 'acceptance', 'note', 'project', 'batchId', 'forge', 'data',
+  // HOW MANY RE-ISSUES THIS WORK IS OWED, travelling on the task itself rather than as an
+  // argument of one backend's enqueue: the durable queue stores it ON THE ROW (its own
+  // `retry_limit` column, written at send), so a border kept anywhere else would be a second
+  // copy of a number the queue already holds — and the two would part company the first time
+  // either moved. Optional: a source that names none gets the default (see retryLimitOf).
+  'retryLimit',
 ])
 
 /**
@@ -513,6 +519,28 @@ export function acceptanceItems(acceptance) {
 export function isBatchParent(taskOrRow) {
   const env = taskOrRow && typeof taskOrRow === 'object' ? taskOrRow.data : null
   return !!env && typeof env === 'object' && env.batch === BATCH_PARENT
+}
+
+/**
+ * retryLimitOf(task) → HOW MANY TIMES THIS WORK MAY BE HANDED BACK after a lost lease.
+ *
+ * The one place the border is decided, for every backend: the durable one maps the answer onto
+ * its library's `retry_limit` at send, the reference one measures its own sweep against it.
+ * Written as a function rather than as a constant read at two call sites because the answer
+ * depends on WHAT THE WORK IS — a piece of a batch is never repeated by itself — and that rule
+ * had lived as a literal inside one backend's enqueue, where the other backend could not see it.
+ *
+ * A task that names its own border gets it (the gate has already refused anything that is not
+ * a whole number of retries). PURE.
+ *
+ * @param {object|null} task
+ * @returns {number}
+ */
+export function retryLimitOf(task) {
+  const named = task && typeof task === 'object' ? task.retryLimit : undefined
+  if (typeof named === 'number' && Number.isInteger(named) && named >= 0) return named
+  const piece = !!task && !isBatchParent(task) && typeof task.batchId === 'string'
+  return piece ? BATCH_ITEM_RETRY_LIMIT : DEFAULT_RETRY_LIMIT
 }
 
 /** Epoch ms out of a timestamp that may arrive as a number or as an ISO string; NaN otherwise. */
@@ -943,6 +971,15 @@ export function validateTask(task) {
   if (task.priority !== undefined && typeof task.priority !== 'number') {
     throw new InvalidTaskError(`task "${task.id}" priority must be a number`)
   }
+  // THE ATTEMPT BORDER IS AN INTEGER OR NOTHING. It travels into the durable queue's own
+  // `retry_limit`, an integer column: a border written as text or as a fraction would arrive
+  // there as a silent zero or as a driver error months later, and either way the work would
+  // be repeated a number of times nobody chose. Refused at the gate, like every other field.
+  if (task.retryLimit !== undefined) {
+    if (typeof task.retryLimit !== 'number' || !Number.isInteger(task.retryLimit) || task.retryLimit < 0) {
+      throw new InvalidTaskError(`task "${task.id}" retryLimit must be a whole number of retries, zero or more`)
+    }
+  }
   // project: STRUCTURAL only. Whether the slug names a REGISTERED project is
   // the door's question (it owns the config); the adapter never learns the registry.
   if (task.project !== undefined && (typeof task.project !== 'string' || !TASK_PROJECT_RE.test(task.project))) {
@@ -1110,6 +1147,26 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     const t = now()
     for (const rec of records.values()) {
       if (rec.status === 'claimed' && t - rec.lastTouch > expireMs) {
+        // HOW MANY TIMES THIS ROW HAS ALREADY BEEN HANDED BACK, against the border it was given.
+        // `attempt` is 1-based, so the re-issues spent so far are `attempt - 1` and the one about
+        // to happen would be the `attempt`-th.
+        //
+        // WITHOUT THIS THE SWEEP RE-ISSUED FOR EVER, and «for ever» is not a figure of speech: a
+        // task no worker can finish was claimed, went silent, came back, was claimed again — and
+        // every turn of that wheel spends a paid attempt on work that already failed the same way.
+        // The durable queue has refused past its own limit since the day it was written; this
+        // backend is the executable spec, and a spec more generous than every real backend
+        // certifies a promise nobody keeps.
+        if (rec.attempt > retryLimitOf(rec.task)) {
+          rec.status = 'failed'
+          // THE QUEUE'S OWN WORD, not a worker's: nothing is wrong with the work, and a row
+          // closed with no reason at all reaches a card as «причина не записана».
+          rec.failure_reason = ATTEMPTS_EXHAUSTED
+          rec.workerId = null
+          rec.claimedAt = null
+          rec.lastTouch = null
+          continue
+        }
         rec.status = 'queued'
         rec.workerId = null
         rec.claimedAt = null

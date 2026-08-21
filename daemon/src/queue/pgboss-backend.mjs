@@ -100,6 +100,10 @@ import {
   waveHeldOf,
   batchDecisionsOf,
   DEFAULT_EXPIRE_MS,
+  // The attempt border and the queue's own last word about a row it will not hand out again —
+  // one name for both backends, for the same reason the token above is one name.
+  retryLimitOf,
+  ATTEMPTS_EXHAUSTED,
   FAIL_REASONS,
   NoReceiptError,
   InvalidFailReasonError,
@@ -281,6 +285,19 @@ function tokenOfJob(job) {
 const WAITING_STATES = Object.freeze(['created', 'retry'])
 
 /**
+ * THE LIBRARY'S OWN WORD when it closes a row whose lease ran out and whose re-issues are
+ * spent. Copied here from its expiry plan LITERALLY (`failJobsByTimeout` writes
+ * `{"value":{"message":"job timed out"}}`), because that is the only handle the row gives us:
+ * it carries no `reason`, which is the field every reader of ours takes a cause from.
+ *
+ * It is a string of THEIRS, so it is pinned in one place and read exactly once (see
+ * exhaustedReasonOf). If a future version of the library changes the wording, this stops
+ * matching and such rows go back to saying nothing — which is what they said before, rather
+ * than something wrong.
+ */
+const LIBRARY_TIMEOUT_MESSAGE = 'job timed out'
+
+/**
  * transitionStamp({from, to, actor, taskId, attempt, log}) → `{idempotencyKey,
  * stateMachineVersion}` for a status change routed through the fleet state machine, or
  * `null` when it could not be minted.
@@ -436,7 +453,13 @@ export function createPgBossQueue({
         // silent repetition the owner forbade: a piece that broke must STOP its assembly and
         // ask him, and a queue quietly running it again two more times is the loop that cost a
         // day on 12.08.2026. Ordinary work keeps the retries it has always had.
-        retryLimit: heldItem ? 0 : 2,
+        //
+        // THE NUMBER IS NO LONGER THIS FILE'S OWN. It lived here as a literal, which meant the
+        // reference backend — the executable spec every other backend is written against — could
+        // not see the rule and kept no border at all: this queue refused past two re-issues, that
+        // one handed the same row back for ever, and the suite asked neither. One name now, and
+        // this call is where the durable half of it MAPS onto the library's own `retry_limit`.
+        retryLimit: retryLimitOf(norm),
         retryBackoff: true,
         expireInSeconds, // liveness: silent worker → job expires → requeue
         ...(heldItem ? { startAfter: HELD_UNTIL } : {}),
@@ -1074,6 +1097,27 @@ export function createPgBossQueue({
     return AWAITING_APPROVAL_STATUSES.includes(r.approval_status) ? AWAITING_APPROVAL : base
   }
 
+  /**
+   * exhaustedReasonOf(r, output) → our word for a row THE LIBRARY closed, or null.
+   *
+   * The queue expires a lease on its own schedule, and when the row has no re-issues left it
+   * closes it — with an output written in the library's language, not ours: a `value.message`
+   * saying the job timed out, and no `reason` at all. Every reader of a finished row takes its
+   * cause from `reason`, so such a row arrived on a card as «причина не записана» — a red row
+   * that explains nothing, the very thing the batch cancellation already had to fix once.
+   *
+   * ONE MESSAGE IS TRANSLATED, matched literally against the library's own plan, and only on a
+   * row that is actually CLOSED: a lease that timed out with re-issues still owed puts the row
+   * back into a waiting state, where «the attempts ran out» would be a lie. Anything else the
+   * library might write stays untranslated rather than being guessed at — an invented cause is
+   * worse than an absent one.
+   */
+  function exhaustedReasonOf(r, output) {
+    if (STATE_TO_STATUS[r.state] !== 'failed') return null
+    const said = output && output.value && output.value.message
+    return said === LIBRARY_TIMEOUT_MESSAGE ? ATTEMPTS_EXHAUSTED : null
+  }
+
   function mapRow(r) {
     const data = r.data || {}
     const retries = r.retry_count ?? 0
@@ -1130,7 +1174,7 @@ export function createPgBossQueue({
       claimedAt: r.started_on == null ? null : (data.claimedAt ?? r.started_on),
       leaseRenewedAt: r.started_on ?? null,
       completedAt: r.completed_on ?? null,
-      failure_reason: output.reason ?? null,
+      failure_reason: output.reason ?? exhaustedReasonOf(r, output),
     }
   }
 
