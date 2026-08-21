@@ -297,6 +297,45 @@ function wakeSpawnOptions(deps, task) {
   return { wakeKind: 'return' }
 }
 
+/**
+ * continuationSpawnOptions(deps, config, task, wake) → `{continuationSummary}` when the PREVIOUS
+ * attempt of this task left a handover summary and this wake is allowed to read it, and `{}`
+ * in every other case.
+ *
+ * ONLY ON THE RETURN BRANCH, and for the same reason the session is only continued there. A
+ * person handing work back is objecting to something the last attempt did: what it tried, how
+ * it ended and what it touched is exactly the context that makes the objection answerable. A
+ * TIMER wake is the opposite case — the lease expired, the world moved on, and the picture the
+ * last session ended with is no longer the picture outside. Dragging its summary along would
+ * hand a fresh session a stale one and call it memory.
+ *
+ * THE PATH IS THE SAME EXPRESSION, ASKED A FOURTH TIME. The writer at the end of an attempt,
+ * the spawn at its beginning and the card door all ask `attemptRunDir`; a fourth spelling here
+ * would be a summary read from a directory nobody writes into — which looks exactly like a task
+ * that has never been tried before.
+ *
+ * THE PREDECESSOR IS THE PREVIOUS NUMBER, not «the last row with a directory». The queue mints
+ * attempt numbers in order and the run directory is named by the number; asking the ledger for
+ * a runDir instead would let a row written by an older, differently-numbered try answer for the
+ * one the person actually looked at.
+ *
+ * ABSENCE IS ORDINARY. A first attempt, a task older than this file, an unreadable directory —
+ * all yield no key at all, and the builder then assembles the prompt exactly as it always did.
+ */
+function continuationSpawnOptions(deps, config, task, wake) {
+  if (!wake || wake.wakeKind !== 'return') return {}
+  const prior = Number(task && task.attempt) - 1
+  if (!Number.isFinite(prior) || prior < 1) return {}
+  const projectDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  const dir = attemptRunDir({ runsDir: runsDirOf(projectDir), attemptId: attemptIdFor(task.id, prior) })
+  const handover = readContinuation({ dir, fsImpl: deps.fsImpl })
+  if (!handover) return {}
+  // ОДНО ИМЯ НА ВСЕХ ШВАХ — `continuationSummary`. Швов пять: запись, тик, композитор,
+  // строитель промпта и дверь карточки. Разъехавшиеся имена — самый дешёвый способ потерять
+  // провод, и потерять его так, что ни одно дело этого не заметит.
+  return { continuationSummary: handover.text }
+}
+
 /** The `data` envelope a stage task carries, or an empty one for ordinary code work. */
 function stageDataOf(task) {
   const data = task && task.data
@@ -3175,6 +3214,10 @@ export async function tick(deps = {}) {
       const spec = buildArgs(task, route, {
         ...SPAWN_OPTIONS,
         ...wake,
+        // ЧТО ПРОШЛАЯ ПОПЫТКА ОСТАВИЛА СЛЕДУЮЩЕЙ. Читается здесь, потому что только тик знает,
+        // где лежит каталог прогона прошлой попытки; заворачивается в забор строителем, потому
+        // что забор живёт там. Дописать забор здесь было бы нечем: его в этом файле нет вовсе.
+        ...continuationSpawnOptions(deps, config, task, wake),
         ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
         ...envelopeSpawnOptions(envelope),
         // The attempt directory and the correction file, created and named BEFORE the process

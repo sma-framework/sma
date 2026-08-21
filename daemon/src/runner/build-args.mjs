@@ -338,7 +338,15 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl } = {})
     // be one of those. `stageCommand` rebuilds it from the frozen four, so the only text that
     // can ever reach a worker unfenced is one of them. The suite pins this equal to what the
     // door wrote, so the two cannot drift.
-    const prompt = stagePromptOf(task) ?? buildTaskPrompt({ task })
+    //
+    // И КОНСПЕКТ ПРОШЛОГО ПОДХОДА ЕДЕТ ТЕМ ЖЕ ПУТЁМ — через строителя, а не мимо него. Тик
+    // читает файл (только он знает, где лежит каталог прогона прошлой попытки), а забор
+    // кладёт строитель, потому что забор живёт там. Текст, приклеенный к промпту в тике,
+    // поехал бы голым: это тот же класс ошибки, что и продолжение сессии, дописанное мимо
+    // строителя аргументов, — написанное, покрытое делом, зелёное и не охраняющее ничего.
+    // Стадия конспекта не получает: её промпт — замороженная команда, а не данные задачи.
+    const prompt =
+      stagePromptOf(task) ?? buildTaskPrompt({ task, continuationSummary: options.continuationSummary })
 
     // `accountName` rides out because the SUBSCRIPTION, not the worker, is what a rate-limit
     // reading on the coming stream describes — and the caller reading that stream would
