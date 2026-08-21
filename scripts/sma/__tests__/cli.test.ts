@@ -616,3 +616,36 @@ describe('cli.mjs context — the pack compiler is on the same hybrid path as th
     expect(after.members.map((m: { id: string }) => m.id)).toContain('pangolin-fact.md')
   })
 })
+
+/**
+ * ПОТОЛОК ВРЕМЕНИ У КВИТАНЦИИ.
+ *
+ * Раньше выдача квитанции рубила команду на двух минутах и мапила снятие процесса в
+ * `exit:1` — то есть ЗЕЛЁНЫЙ сьют, идущий дольше предела, приходил в квитанцию красным.
+ * Собственный сьют продукта (~130 с) этой квитанцией не покрывался в принципе.
+ *
+ * Два утверждения, и второе важнее первого: предел настраивается, а снятие по пределу
+ * НИКОГДА не выдаёт себя за наблюдение — квитанции в этом случае нет вовсе.
+ */
+describe('receipt-hash — потолок времени команды', () => {
+  const slow = 'node -e "setTimeout(()=>process.exit(0),4000)"'
+
+  it('снятая по потолку команда не становится красной квитанцией — отказ назван, квитанции нет', () => {
+    const r = spawnSync('node', [CLI, 'receipt-hash', slow, '--unsafe-ack', '--timeout', '1'], {
+      encoding: 'utf8',
+      env: { ...process.env, SMA_ROOT_OVERRIDE: smaRoot },
+    })
+    expect(r.status, 'снятие по потолку — не успех').not.toBe(0)
+    expect(r.stderr, 'отказ обязан НАЗВАТЬ потолок, а не притвориться красным прогоном').toMatch(/предел/i)
+    expect(r.stdout, 'квитанции быть не должно: снятая команда — не наблюдение').not.toMatch(/[0-9a-f]{64}/)
+  })
+
+  it('поднятый потолок пропускает команду, которая дольше прежних двух минут не идёт', () => {
+    const r = spawnSync('node', [CLI, 'receipt-hash', slow, '--unsafe-ack', '--timeout', '30'], {
+      encoding: 'utf8',
+      env: { ...process.env, SMA_ROOT_OVERRIDE: smaRoot },
+    })
+    expect(r.status, 'при достаточном потолке команда обязана дойти до конца').toBe(0)
+    expect(r.stdout, 'дошедшая команда обязана дать квитанцию').toMatch(/[0-9a-f]{64}/)
+  })
+})
