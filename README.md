@@ -528,7 +528,7 @@ Delete the folders and your project is exactly as it was.
 By default a model *profile* answers one question — how heavy is this kind of work — and every agent follows it. When you need a single agent on a specific model, pin that agent instead of switching the whole profile:
 
 ```bash
-node .claude/sma-core/bin/sma-tools.cjs query config-set model_profile_overrides.agents.sma-executor opus
+node .claude/sma-core/bin/sma-tools.cjs query config-set model_profile_overrides.agents.sma-executor sonnet
 ```
 
 The pin wins over the profile for that agent only; every other agent stays where it was, and it holds against automatic tier escalation. A name SMA does not recognise is ignored — a typo changes nothing rather than failing a run. To lift a pin, set it to `null`: the key is removed and the agent goes back to the profile.

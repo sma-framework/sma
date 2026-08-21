@@ -1030,7 +1030,7 @@ A *profile* is a per-TIER statement — how heavy is this kind of work — so ra
 by switching profiles moves every other agent with it. A pin is the per-AGENT statement:
 
 ```bash
-sma-tools query config-set model_profile_overrides.agents.sma-executor opus
+sma-tools query config-set model_profile_overrides.agents.sma-executor sonnet
 sma-tools query config-set model_profile_overrides.agents.sma-executor null   # remove it
 ```
 

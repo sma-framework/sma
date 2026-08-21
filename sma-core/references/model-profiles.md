@@ -8,14 +8,14 @@ Model profiles control which Claude model each SMA agent uses. This allows balan
 |-------|-----------|------------|----------|------------|-----------|
 | sma-planner | opus | opus | sonnet | opus | inherit |
 | sma-roadmapper | opus | sonnet | sonnet | sonnet | inherit |
-| sma-executor | opus | sonnet | sonnet | sonnet | inherit |
+| sma-executor | opus | opus | sonnet | sonnet | inherit |
 | sma-phase-researcher | opus | sonnet | haiku | sonnet | inherit |
 | sma-project-researcher | opus | sonnet | haiku | sonnet | inherit |
 | sma-research-synthesizer | sonnet | sonnet | haiku | haiku | inherit |
 | sma-debugger | opus | sonnet | sonnet | opus | inherit |
 | sma-codebase-mapper | sonnet | haiku | haiku | haiku | inherit |
 | sma-verifier | sonnet | sonnet | haiku | sonnet | inherit |
-| sma-plan-checker | sonnet | sonnet | haiku | haiku | inherit |
+| sma-plan-checker | opus | opus | haiku | haiku | inherit |
 | sma-integration-checker | sonnet | sonnet | haiku | haiku | inherit |
 | sma-nyquist-auditor | sonnet | sonnet | haiku | haiku | inherit |
 
@@ -205,11 +205,13 @@ Override specific agents without changing the entire profile:
 {
   "model_profile": "balanced",
   "model_overrides": {
-    "sma-executor": "opus",
+    "sma-executor": "sonnet",
     "sma-planner": "haiku"
   }
 }
 ```
+
+Both entries in that example move an agent DOWN from what `balanced` hands it — an override that names the model the profile already gives you is a no-op you will later mistake for a control.
 
 Overrides take precedence over the profile. Valid values: `opus`, `sonnet`, `haiku`, `inherit`, or any fully-qualified model ID (e.g., `"o3"`, `"openai/o3"`, `"google/gemini-2.5-pro"`).
 
@@ -229,8 +231,11 @@ Per-project default: Set in `.planning/config.json`:
 **Why Opus for sma-planner?**
 Planning involves architecture decisions, goal decomposition, and task design. This is where model quality has the highest impact.
 
-**Why Sonnet for sma-executor?**
-Executors follow explicit PLAN.md instructions. The plan already contains the reasoning; execution is implementation.
+**Why Opus for sma-executor?**
+The old answer was "the plan already contains the reasoning; execution is implementation" — and it did not survive contact with real plans. An executor is the agent that decides what to do when the plan and the repository disagree: it auto-fixes bugs it finds mid-task, adds the missing validation the plan never named, recognises the change that is too structural to make without asking, and writes the commits either way. Those are judgement calls made without a reviewer in the loop, and a weaker model makes them silently and cheaply wrong. Drop the executor to Sonnet with `model_overrides` if you are running a large, well-specified mechanical phase and want the spend back — but the default now matches what the role actually does.
+
+**Why Opus for sma-plan-checker?**
+A plan checker is the last reader before a phase is executed by a machine, and the cost of a miss is a whole phase built on a bad plan. It also carried the sharper defect: it was pinned to the weakest tier under `quality` AND `balanced`, so paying for the quality profile bought a checker weaker than the balanced one. No role may be weaker under `quality` than it is under `balanced`.
 
 **Why Sonnet (not Haiku) for verifiers in balanced?**
 Verification requires goal-backward reasoning - checking if code *delivers* what the phase promised, not just pattern matching. Sonnet handles this well; Haiku may miss subtle gaps.
