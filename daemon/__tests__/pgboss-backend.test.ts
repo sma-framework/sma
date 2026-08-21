@@ -393,15 +393,11 @@ function makeFakeBackend({
         .sort((a, b) => (b.created_on ?? 0) - (a.created_on ?? 0))[0]
       return { rows: match ? [{ id: match.id, name: match.name }] : [] }
     }
-    if (sql.includes("state = 'created'") && sql.startsWith('SELECT id, name')) {
-      // resolveQueuedJob(): the waiting job carrying this task id (the mirror of the active
-      // resolution below).
-      const taskId = params[0]
-      const match = [...jobs.values()]
-        .filter((j) => j.state === 'created' && j.data && j.data.id === taskId)
-        .sort((a, b) => (b.created_on ?? 0) - (a.created_on ?? 0))[0]
-      return { rows: match ? [{ id: match.id, name: match.name }] : [] }
-    }
+    // NO CREATED-ONLY RESOLUTION IS MODELLED, because the backend no longer issues one: every
+    // door that asks this queue for a waiting row now asks about BOTH states it waits in. A
+    // fake that went on answering a statement nobody sends would be a fixture for code that
+    // does not exist — and the branch above, which shares its `SELECT id, name` prefix, would
+    // be the only thing keeping it from answering the wrong question.
     if (sql.startsWith('UPDATE pgboss.job') && sql.includes('started_on')) {
       // touch(): the lease restamp. Keyed by JOB id (params[0]), not task id, and scoped to
       // active rows — the same shape the backend sends. Must be matched BEFORE the
@@ -549,6 +545,67 @@ describe('pg-boss backend — stopping work that is waiting after a lost attempt
     const claimed: any = await adapter.claimNext('w1', {})
     expect(claimed.id).toBe('BL-196')
     expect(claimed.description).toBe('вторая редакция')
+  })
+
+  /**
+   * И РЕШЕНИЕ ВЛАДЕЛЬЦА ПО ОСТАНОВЛЕННОЙ СБОРКЕ — тоже своим решением, тоже со своим делом.
+   *
+   * Кусок стоит именно во ВТОРОМ состоянии ожидания. Читающий путь называет его «в очереди»,
+   * ветка отмены берёт из очереди всё «в очереди» — и до этого куска не доставала, потому что
+   * искала его только в первом состоянии. Результат ровно тот, ради которого отмену и писали
+   * наоборот: задержка повтора кончается, и работа брошенной сборки уходит работнику.
+   */
+  it('отмена сборки достаёт кусок из ВТОРОГО состояния ожидания — и он перестаёт быть выдаваемым', async () => {
+    const c = mkClock()
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue({ id: 'B-17', source: 'roster', title: 'сборка', lane: 'prod', batchId: 'B-17', data: { batch: 'parent' } })
+    await adapter.enqueue({ id: 'B-17-1', source: 'roster', title: 'кусок 1', lane: 'prod', batchId: 'B-17' })
+
+    const piece = [...jobs.values()].find((j: any) => j.data && j.data.id === 'B-17-1')
+    piece.state = 'retry'
+    piece.retry_count = 1
+    piece.start_after = c.clock() // задержка повтора кончилась: очередь готова его выдать
+
+    expect((await adapter.list({})).find((r: any) => r.id === 'B-17-1').status).toBe('queued')
+
+    expect(await adapter.resolveBatch('B-17', { cancel: true })).toBe(true)
+
+    expect(piece.state).toBe('cancelled')
+    expect(piece.output.reason).toBe('manual')
+    expect(await adapter.claimNext('w1', {})).toBeNull()
+  })
+
+  /**
+   * А КУСОК, КОТОРОГО ОТМЕНА НЕ НАШЛА, БОЛЬШЕ НЕ ПРОПАДАЕТ МОЛЧА.
+   *
+   * Между чтением списка и изъятием строка может уйти: другой демон её выдал, аренда истекла,
+   * человек её закрыл. Раньше такой кусок просто пропускался одной строкой `continue` — и
+   * отмена возвращала «сделано», не сделав. Здесь промах устроен нарочно: резолвер обоих
+   * состояний отвечает пустотой ровно про этот кусок, — и отмена обязана СКАЗАТЬ о нём.
+   */
+  it('кусок, которого отмена не нашла, называется вслух — молчаливого пропуска больше нет', async () => {
+    const c = mkClock()
+    const { boss, execSql, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
+    const lines: string[] = []
+    const blind = async (sql: string, params: any[]) => {
+      if (sql.includes("state IN ('created','retry')") && params[0] === 'B-18-1') return { rows: [] }
+      return execSql(sql, params)
+    }
+    const adapter = createPgBossQueue({
+      boss,
+      execSql: blind,
+      clock: c.clock,
+      expireMs: 5000,
+      log: (line: string) => lines.push(line),
+    })
+    await adapter.enqueue({ id: 'B-18', source: 'roster', title: 'сборка', lane: 'prod', batchId: 'B-18', data: { batch: 'parent' } })
+    await adapter.enqueue({ id: 'B-18-1', source: 'roster', title: 'кусок 1', lane: 'prod', batchId: 'B-18' })
+
+    expect(await adapter.resolveBatch('B-18', { cancel: true })).toBe(true)
+
+    const piece = [...jobs.values()].find((j: any) => j.data && j.data.id === 'B-18-1')
+    expect(piece.state).not.toBe('cancelled') // изъять его действительно не удалось
+    expect(lines.some((l) => l.includes('B-18-1'))).toBe(true) // и об этом сказано
   })
 })
 
