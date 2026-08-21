@@ -633,6 +633,25 @@ export function buildAccountEnv({
  * contract is stated in the same place the DoD is stated, not left to habit. The markers are
  * imported from the journal module so the prompt and the reader can never drift apart.
  *
+ * THE RIGHT TO ASK, HANDED TO THE ONE WHO NEEDS IT. The module header above states the
+ * invariant this file exists to keep: «a task that needs a judgment mid-flight is RETURNED,
+ * never guessed». Until this revision that norm had no execution anywhere the worker could
+ * read it — the mid-run question was a rule the daemon knew and the worker did not, so a
+ * session that hit a judgment had no named way to come back with one and guessed instead.
+ * Every mechanism was already built: a dangerous call parks itself and waits for a person, a
+ * turn ended with a question in words is resumed IN THE SAME session by the person's answer,
+ * and a correction may now arrive mid-run. Built, and never told to the one who would use
+ * them — the exact shape of «computed but not connected».
+ *
+ * So the «Вопрос по ходу» section IS that execution, and it says the three things a worker
+ * cannot infer from the code he stands in: a stalled tool call is a PARKED one and must not
+ * be restarted or worked around (its wait is bounded and ends in an honest refusal, never in
+ * silence); a judgment is returned by ending the turn honestly — nothing half-done committed,
+ * the question spelled out in the answer — because the reply comes back into the same
+ * session; and a correction arriving mid-run OUTRANKS instructions given earlier. The suite
+ * holds the norm and its execution together, and holds the section where the worker actually
+ * reads it: in the prompt handed to the launcher, not in this builder's return value.
+ *
  * @param {{task:{id?:string, title?:string, note?:string, description?:string, acceptance?:(string|string[])}}} args
  * @returns {string}
  */
@@ -721,6 +740,37 @@ export function buildTaskPrompt({ task } = {}) {
     'чтобы было что закоммитить: ответьте словами и не трогайте файлы вовсе. Попытка, которая',
     'не изменила ничего и оставила записку о подходе, засчитывается — ответ уезжает человеку',
     'на подтверждение. Правка, брошенная незакоммиченной, ответом НЕ считается.',
+    '',
+    // ── ПРАВО СПРОСИТЬ — СКАЗАННОЕ ТОМУ, КТО ИМ ПОЛЬЗУЕТСЯ ──
+    // Всё, о чём этот раздел говорит, было построено раньше и работнику не сообщалось: он не
+    // знал, что остановившийся вызов ЖДЁТ человека, что ход можно закончить вопросом и ответ
+    // вернётся в ту же сессию, что поправка может приехать посреди работы. Механизм, о
+    // котором потребитель не знает, для него не существует — и работник угадывал там, где
+    // норма этого файла требует вернуться с вопросом.
+    // Словами, а не именами снастей: работник читает задание, а не наш исходник, и всё
+    // названное здесь он делает своими руками в своей сессии.
+    '## Вопрос по ходу',
+    'Работа не обязана идти молча. Три вещи, о которых важно знать заранее.',
+    '',
+    '**Опасный вызов останавливается сам и ждёт человека.** Если вызов инструмента замер и',
+    'долго не отвечает — это не поломка и не зависание: вызов поставлен на паузу, и решение по',
+    'нему принимает человек. Не перезапускайте его и не ищите обходной путь: после решения',
+    'человека тот же вызов продолжится в этой же сессии, и ничего из сделанного не потеряется.',
+    'Ожидание ограничено по времени — если решения так и не пришло, вызов будет честно отклонён',
+    'с объяснением. Тогда назовите этот вызов в записке о подходе и продолжайте остальную работу.',
+    '',
+    '**Суждение не угадывается — с ним возвращаются.** Если для шага нужен выбор между',
+    'вариантами, требование читается двояко, или у действия есть последствия, которые нельзя',
+    'брать на себя, — НЕ придумывайте правку и не выбирайте молча. Закончите ход честно: не',
+    'коммитьте полуготовое, сформулируйте вопрос прямо в ответе (что решается, какие варианты',
+    'вы видите, что предлагаете), а последними строками выведите обязательные маркеры записки.',
+    'Ответ человека вернётся В ЭТУ ЖЕ сессию — контекст не потеряется, и работа продолжится с',
+    'того места, где вы задали вопрос. Заданный по делу вопрос — нормальный исход попытки, а не',
+    'её провал; угаданное за человека решение — как раз провал.',
+    '',
+    '**Слово посреди хода.** Человек может прислать поправку прямо во время работы — она',
+    'приедет отдельным сообщением между вашими действиями. Такая поправка ГЛАВНЕЕ ранее данных',
+    'указаний: учтите её сразу, а не доводя прежний план до конца.',
     '',
     // ── УРОК: ТРЕТЬЕ УСЛОВИЕ СДАЧИ, И ЕДИНСТВЕННАЯ ДВЕРЬ, ЧЕРЕЗ КОТОРУЮ ОН ПИШЕТСЯ ──
     // Слова «урок» в этом промпте не было вовсе, пока продукт обещал маховик памяти в обе
