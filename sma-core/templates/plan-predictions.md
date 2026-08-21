@@ -18,9 +18,17 @@ auto-committed; promotion needs the 3-condition review gate).
 3. **Immutable after the plan's first commit.** The `PRED-POSTEDIT` lint
    content-hashes the predictions block against the plan file's first commit —
    any post-hoc edit (HARKing) is a critical finding. New claims go in a NEW plan.
-4. **Every field is mandatory** (except `confidence`): the `PRED-NOMETRIC` lint
-   fails any entry missing `metric` / `check_command` / `comparator` /
-   `threshold` — an unscorable prediction is worthless.
+4. **Every field is mandatory** (except `confidence`, `measure` and `cwd`):
+   the `PRED-NOMETRIC` lint fails any entry missing `metric` /
+   `check_command` / `comparator` / `threshold` — an unscorable prediction is
+   worthless. Two OPTIONAL fields shape HOW the claim is measured:
+   - `measure: last-line | exit-code` — where the fact comes from. `last-line`
+     is the default and the historical reading: the numeric last line of the
+     output. `exit-code` takes the process exit code as the fact, which is what
+     a claim like «the suite is green» has always actually meant. Omit the field
+     and nothing changes.
+   - `cwd: <path>` — the directory the command runs in. It is handed to the
+     runner as a run parameter; it never becomes part of the command string.
 5. **Don't duplicate DoD.** The `PRED-DUPDOD` lint warns when a `check_command`
    duplicates an existing DoD dimension check — predict something DoD does NOT
    already verify.
@@ -29,7 +37,12 @@ auto-committed; promotion needs the 3-condition review gate).
    `pnpm vitest run ...`, `pnpm sma ...`, or the local package manager running
    the project's own manifest (`npm|pnpm|yarn test`, `... pack`,
    `... run <script>`) shapes run; anything else scores `skipped-unsafe`. The
-   command's LAST output line must be a number.
+   command's LAST output line must be a number under the default
+   `measure: last-line`; under `measure: exit-code` the exit code IS the number
+   and the output is not parsed at all. Several steps, or a run in another
+   directory, are expressed by FIELDS — `cwd`, and one prediction per claim —
+   never by a connector inside the command: `cd X && cmd` and `cmd; echo $?`
+   are refused by the charset guard, and that refusal stays exactly as it is.
 7. **`confidence` is optional and NEVER gates a verdict** — it is recorded
    verbatim for calibration only (verbalized-confidence anti-pattern lock).
 8. **`horizon` is read, not decorative.** A horizon written as a date
@@ -47,7 +60,9 @@ predictions:
   - id: P1                     # unique within the plan
     claim: "one falsifiable sentence"
     metric: exit_code          # what the number MEANS
-    check_command: "node scripts/sma/cli.mjs lint --json"  # allowlisted; numeric last line
+    check_command: "node scripts/sma/cli.mjs lint"  # allowlisted
+    measure: exit-code         # OPTIONAL — last-line (default) | exit-code
+    cwd: "packages/engine"     # OPTIONAL — where the command runs; a field, not a connector
     comparator: "=="           # one of == != >= <= > <
     threshold: 0               # numeric
     horizon: "plan close"      # when it is scored — see rule 8
@@ -70,7 +85,8 @@ predictions:
   - id: P1
     claim: "the corpus migration introduces zero critical lint findings"
     metric: lint_exit_code
-    check_command: "node scripts/sma/cli.mjs lint --json"
+    check_command: "node scripts/sma/cli.mjs lint"
+    measure: exit-code
     comparator: "=="
     threshold: 0
     horizon: "plan close"
@@ -85,6 +101,7 @@ predictions:
     claim: "the reflex suite passes with zero failures on first full run"
     metric: vitest_exit_code
     check_command: "pnpm vitest run scripts/sma/__tests__/reflex.test.ts"
+    measure: exit-code
     comparator: "=="
     threshold: 0
     horizon: "plan close"

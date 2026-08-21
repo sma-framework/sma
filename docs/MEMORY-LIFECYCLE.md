@@ -51,6 +51,14 @@ Each step records one entry in a **trace**: `{step, outcome, detail}`. The trace
 append-only — a step never edits history — so the finished walk answers "why does the
 system believe this" (or "why did it refuse") without anyone re-running anything.
 
+**Walking the pipeline is now machine-provable, not merely expected.** Steps 1 and 10
+append to the write-pipeline journal, so a note that walked this road leaves an event
+behind it and a note dropped into the corpus by hand does not — and `MEM-OFFPIPELINE`
+in `sma lint` names every note of the second kind. A note filed before the rule existed
+is reported as a **warning**, not a critical: an established corpus carries history, and
+a rule that turned every inherited note into an error would be read as noise and muted,
+which is the one outcome that would make the check worthless.
+
 ### 1.1 Step 1 — observe
 
 **Does:** appends the event to the journal. Nothing may run before it: an event the

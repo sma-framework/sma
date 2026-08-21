@@ -161,6 +161,70 @@ export function clusterMisses({ ledgers = [], events = [], classified = [], wind
 
 // ── prediction templates (append-only JSONL) ────────────────────────────────────
 
+/**
+ * The domain the re-verification path records its divergences under. Every row in it
+ * carries an EXPECTED HASH, and a hash-bearing entry is refused by the scorer BEFORE
+ * validation ever runs (receipts are re-verification territory, not prediction
+ * territory). A template built from this cluster could therefore never receive a
+ * verdict — offering one to the planner is offering something knowingly unscoreable.
+ */
+const REVERIFY_DOMAIN = 'sma.receipts'
+
+/**
+ * The horizon every generated template carries. Prose on purpose: the scorer reads it
+ * as «cannot tell» and scores the entry at plan close, instead of shelving it as
+ * not-yet-due. What matters most is that the field is PRESENT — an absent horizon is
+ * one of the things that makes an entry fail validation outright.
+ */
+const TEMPLATE_HORIZON = 'plan close'
+
+/** The cluster's command when it may be pasted into a plan and run unedited, else ''. */
+function runnableCheckCommand(cluster) {
+  const cmd = (cluster ?? {}).checkCommand
+  return cmd && SAFE_COMMAND_PATTERNS.some((re) => re.test(cmd)) && isSafeCommand(cmd) ? cmd : ''
+}
+
+/**
+ * templateGap(cluster) -> null | {key, count, reason, text}
+ *
+ * The ONE place that answers «why does this cluster get no prediction template». Both
+ * callers use it: the generator SKIPS what it returns a reason for, and the brief NAMES
+ * the same clusters in words. Two copies of this judgement would mean a cluster
+ * silently dropped by one and advertised by the other.
+ *
+ * Two reasons, both about usability rather than importance:
+ *   - re-verification territory: the scorer never scores it, by its own law;
+ *   - no allowlisted check command: nothing to run, so the entry could state no fact
+ *     even if it were pasted into a plan.
+ * A cluster with a reason keeps its line in the brief — the knowledge stays, only the
+ * false offer disappears.
+ *
+ * @param {object} cluster
+ * @returns {{key:string, count:number, reason:string, text:string}|null}
+ */
+export function templateGap(cluster) {
+  const c = cluster ?? {}
+  const key = String(c.key ?? '')
+  const count = c.count ?? 0
+  if (key === REVERIFY_DOMAIN) {
+    return {
+      key,
+      count,
+      reason: 'reverify-territory',
+      text: `«${key}» — ${count} misses, and no template on purpose: these are re-verification territory (every row carries an expected hash, which the scorer refuses to score), so they close by re-running the receipts with «sma reverify», never by predicting.`,
+    }
+  }
+  if (!runnableCheckCommand(c)) {
+    return {
+      key,
+      count,
+      reason: 'no-check-command',
+      text: `«${key}» — ${count} misses, and no template: no allowlisted check command was seen in this cluster, and an entry with nothing to run states no fact — the plan that touches it writes the command itself.`,
+    }
+  }
+  return null
+}
+
 /** Read templates.jsonl tolerantly -> {ids:Set, count, corrupt}. Never throws. */
 function readTemplateIds(file) {
   const ids = new Set()
@@ -186,11 +250,18 @@ function readTemplateIds(file) {
 
 /**
  * predictionTemplates({clusters, week, dirs}) -> template[]. One template per cluster
- * with >= 2 members. Appends new ids to dirs.curriculumDir/templates.jsonl (append-only,
- * tolerant reader); a same-ISO-week re-run adds ZERO duplicate ids (idempotent).
+ * with >= 2 members THAT CAN BECOME A PREDICTION (see templateGap). Appends new ids to
+ * dirs.curriculumDir/templates.jsonl (append-only, tolerant reader); a same-ISO-week
+ * re-run adds ZERO duplicate ids (idempotent).
  *
- * template shape: {id:'TPL-<domain>-<yyyy>W<ww>', domain, claimTemplate, metric,
- * check_command, comparator, threshold:null, evidence:{count, refs}}.
+ * Every emitted template passes the same field validation an authored prediction
+ * passes — id, claim, metric, check_command, comparator, threshold, horizon, domain —
+ * so it can be pasted into a plan and receive a verdict. It used to carry a null
+ * threshold and neither claim nor horizon, which meant validation rejected every single
+ * one: the curriculum was proposing entries the gate would refuse on sight.
+ *
+ * template shape: {id:'TPL-<domain>-<yyyy>W<ww>', domain, claim, metric, check_command,
+ * comparator, threshold:<measured base>, horizon, evidence:{count, refs}}.
  * @returns {object[]}
  */
 export function predictionTemplates({ clusters = [], week, dirs = {} } = {}) {
@@ -202,18 +273,20 @@ export function predictionTemplates({ clusters = [], week, dirs = {} } = {}) {
   const templates = []
   for (const c of Array.isArray(clusters) ? clusters : []) {
     if (!c || (c.count ?? 0) < 2) continue
+    if (templateGap(c)) continue // named in the brief in words instead — see templateGap
     const id = `TPL-${idToken(c.key)}-${w.isoLabel}`
-    // allowlist-shaped or empty: the planner may run it unedited only if it matches
-    // the anchored SAFE_COMMAND_PATTERNS shape (and the full isSafeCommand charset guard).
-    const check = c.checkCommand && SAFE_COMMAND_PATTERNS.some((re) => re.test(c.checkCommand)) && isSafeCommand(c.checkCommand) ? c.checkCommand : ''
     templates.push({
       id,
       domain: c.key,
-      claimTemplate: `«${c.key}» has ${c.count} misses in the window — the next plan touching it registers a prediction with a measured base`,
+      claim: `«${c.key}» stands at ${c.count} misses in the window — the next plan touching it predicts against that measured base`,
       metric: `${idToken(c.key)}_miss_base`,
-      check_command: check,
+      // runnable unedited: it matches the anchored allowlist shape AND the charset guard.
+      check_command: runnableCheckCommand(c),
       comparator: '>=',
-      threshold: null,
+      // the MEASURED base, never an invented number: this is what the window actually
+      // counted, so the entry states something about the world that can turn out wrong.
+      threshold: c.count,
+      horizon: TEMPLATE_HORIZON,
       evidence: { count: c.count, refs: Array.isArray(c.refs) ? c.refs.slice(0, MAX_REFS) : [] },
     })
   }
@@ -263,7 +336,7 @@ export function weakSpotsBrief({ clusters = [], proposals = [], templates = [], 
   if (!topClusters.length) lines.push('_none in the window_')
   for (const c of topClusters) {
     const refs = (Array.isArray(c.refs) ? c.refs : []).slice(0, MAX_REFS).join(', ')
-    lines.push(`- **${c.key}** (${c.kind}) — ${c.count} hits${refs ? ` · refs: ${refs}` : ''}`)
+    lines.push(`- **${c.key}** (${c.kind}) — ${c.count} misses${refs ? ` · refs: ${refs}` : ''}`)
   }
   lines.push('')
 
@@ -284,12 +357,18 @@ export function weakSpotsBrief({ clusters = [], proposals = [], templates = [], 
 
   lines.push('## New prediction templates')
   const tpls = (Array.isArray(templates) ? templates : []).slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-  if (!tpls.length) lines.push('_none_')
+  // the clusters big enough to deserve a template that cannot honestly have one. They
+  // are named here in words, with the instrument that closes them: dropping them
+  // silently would lose the knowledge, and dressing them up as templates would offer
+  // the planner something no scorer will ever judge.
+  const gaps = topClusters.filter((c) => (c.count ?? 0) >= 2).map((c) => templateGap(c)).filter(Boolean)
+  if (!tpls.length && !gaps.length) lines.push('_none_')
   for (const t of tpls) lines.push(`- \`${t.id}\` — ${t.domain} (${t.evidence ? t.evidence.count : 0} misses)`)
+  for (const g of gaps) lines.push(`- ${g.text}`)
   lines.push('')
 
   lines.push('## Ask at the next discuss')
-  const questions = topClusters.slice(0, 5).map((c) => `- «${c.key}» took ${c.count} hits this window — what changed, and what prevents the recurrence?`)
+  const questions = topClusters.slice(0, 5).map((c) => `- «${c.key}» took ${c.count} misses this window — what changed, and what prevents the recurrence?`)
   if (!questions.length) lines.push('_no weak spots surfaced_')
   for (const q of questions) lines.push(q)
   lines.push('')
@@ -343,4 +422,56 @@ export function latestBrief({ dirs = {}, now } = {}) {
   }
   const ageDays = (nowMs - mtimeMs) / DAY_MS
   return { path, ageDays, stale: nowMs - mtimeMs > STALE_MS }
+}
+
+/**
+ * The wall-clock budget one rebuild is given on the session-start path. A brief that
+ * cannot be assembled inside it is not worth a human's session start: the failure is
+ * reported in the returned result and the next session tries again.
+ */
+export const BUILD_BUDGET_MS = 15_000
+
+/**
+ * refreshIfStale({dirs, now, build, timeoutMs}) -> {stale, built, path, ageDays, clusters, error}
+ *
+ * The schedule, as ONE decision that makes ONE call. latestBrief already knew the
+ * horizon and could read the file's age; all that was ever done with the answer was
+ * printing a line that asked somebody to run the verb by hand. That reminder stood
+ * unexecuted for four weeks — which is enough to call it something other than a
+ * mechanism. Here the same answer moves a hand: stale (or never built) CALLS the
+ * injected builder, once.
+ *
+ * Fresh means nothing happens at all — no ledger read, no rewrite, no cost on the
+ * path every session opens. Fail-open in both directions: a builder that throws or
+ * overruns its budget is REPORTED in the result and never rethrown, because the brief
+ * is a convenience and the session start is not.
+ *
+ * @param {{dirs?:object, now?:number|string, build?:Function, timeoutMs?:number}} args
+ * @returns {Promise<{stale:boolean, built:boolean, path:(string|null), ageDays:(number|null), clusters:(number|null), error:(string|null)}>}
+ */
+export async function refreshIfStale({ dirs = {}, now, build, timeoutMs = BUILD_BUDGET_MS } = {}) {
+  const latest = latestBrief({ dirs, now })
+  const base = { stale: latest.stale, built: false, path: latest.path, ageDays: latest.ageDays, clusters: null, error: null }
+  if (!latest.stale) return base
+  if (typeof build !== 'function') return { ...base, error: 'no builder was given' }
+
+  let timer = null
+  try {
+    const budget = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`the rebuild overran its ${timeoutMs} ms budget`)), timeoutMs)
+      if (timer && typeof timer.unref === 'function') timer.unref() // never hold the process open
+    })
+    const out = await Promise.race([Promise.resolve().then(() => build()), budget])
+    return {
+      ...base,
+      built: true,
+      path: out && out.brief ? out.brief.path : base.path,
+      ageDays: 0,
+      clusters: out && Array.isArray(out.clusters) ? out.clusters.length : null,
+    }
+  } catch (err) {
+    return { ...base, error: err && err.message ? err.message : String(err) }
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }

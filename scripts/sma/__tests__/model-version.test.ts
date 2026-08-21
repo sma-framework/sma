@@ -32,6 +32,8 @@ import {
   stampRecords,
   resolveModelId,
   timelineSchemaOk,
+  latestVerdictPerPrediction,
+  predictionKey,
   JUDGE_MODEL_FIELD,
 } from '../lib/model-version.mjs'
 
@@ -314,6 +316,76 @@ describe('Test 8 — freshN dedupes by prediction id (latest verdict wins)', () 
   })
 })
 
+/**
+ * A prediction id is unique only INSIDE its own plan — the same short id is reused by
+ * dozens of plans. Keyed on the bare id, a single verdict therefore spoke for every other
+ * plan carrying that id, and the fresh-window count could never climb past a handful of
+ * observations no matter how many verdicts were recorded. The dedup boundary keeps its
+ * rule («the latest verdict for a prediction stands») and changes only the SPACE the key
+ * lives in: the plan file plus the id.
+ */
+describe('Test 10 — the accounting key is the plan file plus the id', () => {
+  const timeline = { sightings: [{ model: 'claude-x-1', source: 'env', at: 't0' }] }
+
+  it('the same id in two DIFFERENT plans is two predictions, not one', () => {
+    const records = [
+      rec('hit', { id: 'PX-1', plan: 'alpha-01-PLAN.md', model: 'claude-x-1', scoredAt: '2026-07-01T00:00:00Z' }),
+      rec('miss', { id: 'PX-1', plan: 'beta-02-PLAN.md', model: 'claude-x-1', scoredAt: '2026-07-02T00:00:00Z' }),
+    ]
+    expect(latestVerdictPerPrediction(records)).toHaveLength(2)
+    const g = modelGuard({ records, timeline })
+    expect(g.freshN).toBe(2)
+    expect(g.freshHits).toBe(1)
+  })
+
+  it('re-scoring ONE prediction of ONE plan still collapses to its latest verdict', () => {
+    const records = [
+      rec('hit', { id: 'PX-1', plan: 'alpha-01-PLAN.md', model: 'claude-x-1', scoredAt: '2026-07-01T00:00:00Z' }),
+      rec('miss', { id: 'PX-1', plan: 'alpha-01-PLAN.md', model: 'claude-x-1', scoredAt: '2026-07-02T00:00:00Z' }),
+    ]
+    const kept = latestVerdictPerPrediction(records)
+    expect(kept).toHaveLength(1)
+    expect(kept[0]).toMatchObject({ verdict: 'miss' }) // the later verdict stands
+    expect(modelGuard({ records, timeline }).freshN).toBe(1)
+  })
+
+  it('the same plan written as a repo-relative path and as an absolute one is ONE key', () => {
+    // the ledger stores the path relative to the workspace root; a caller walking the tree
+    // hands over an OS path — if the key kept the whole path, the two consumers of this
+    // boundary would silently disagree and neither would say so.
+    const records = [
+      rec('hit', {
+        id: 'PX-1',
+        plan: '.planning/phases/alpha/alpha-01-PLAN.md',
+        model: 'claude-x-1',
+        scoredAt: '2026-07-01T00:00:00Z',
+      }),
+      rec('miss', {
+        id: 'PX-1',
+        plan: 'C:\\work\\repo\\.planning\\phases\\alpha\\alpha-01-PLAN.md',
+        model: 'claude-x-1',
+        scoredAt: '2026-07-02T00:00:00Z',
+      }),
+    ]
+    expect(latestVerdictPerPrediction(records)).toHaveLength(1)
+    expect(predictionKey(records[0])).toBe(predictionKey(records[1]))
+  })
+
+  it('a record with no plan field stays legal history and is kept under its bare id', () => {
+    const legacy = [rec('hit', { id: 'PX-9', model: 'claude-x-1', scoredAt: '2026-07-01T00:00:00Z' })]
+    expect(latestVerdictPerPrediction(legacy)).toHaveLength(1) // never discarded
+    expect(predictionKey(legacy[0])).toBe('PX-9')
+
+    // and the anti-inflation rule holds inside the legacy generation too
+    const rescoredLegacy = [
+      rec('hit', { id: 'PX-9', model: 'claude-x-1', scoredAt: '2026-07-01T00:00:00Z' }),
+      rec('miss', { id: 'PX-9', model: 'claude-x-1', scoredAt: '2026-07-02T00:00:00Z' }),
+    ]
+    expect(latestVerdictPerPrediction(rescoredLegacy)).toHaveLength(1)
+    expect(modelGuard({ records: rescoredLegacy, timeline }).freshN).toBe(1)
+  })
+})
+
 describe('Test 9 — timelineSchemaOk: the --schema-check contract', () => {
   it('accepts the honest-empty timeline AND a populated one — the sighting COUNT never changes the verdict', () => {
     expect(timelineSchemaOk({ sightings: [], corrupt: 0 })).toBe(true)
@@ -329,5 +401,40 @@ describe('Test 9 — timelineSchemaOk: the --schema-check contract', () => {
     expect(timelineSchemaOk({ sightings: 'nope', corrupt: 0 })).toBe(false)
     expect(timelineSchemaOk({ sightings: [], corrupt: NaN })).toBe(false)
     expect(timelineSchemaOk(null)).toBe(false)
+  })
+})
+
+describe('Test 11 — the bar of twenty is reachable by real work, and only by real work', () => {
+  // The guard side of the same wire the passport tests assert end to end. A project that
+  // scores one prediction per plan across twenty plans has twenty observations; a project
+  // that scores the same prediction of the same plan twenty times has one. Under the old
+  // bare-id key both cases gave one, so no amount of honest work could ever reach the bar.
+  const timeline = { sightings: [{ model: 'claude-x-1', source: 'env', at: 't0' }] }
+
+  it('one shared id across twenty plans counts twenty times', () => {
+    const records = Array.from({ length: 20 }, (_, i) =>
+      rec(i < 17 ? 'hit' : 'miss', {
+        id: 'PX-1',
+        plan: `.planning/phases/demo/demo-${String(i + 1).padStart(2, '0')}-PLAN.md`,
+        model: 'claude-x-1',
+        scoredAt: `2026-07-${String(i + 1).padStart(2, '0')}T00:00:00.000Z`,
+      }),
+    )
+    const g = modelGuard({ records, timeline, minFresh: 20 })
+    expect(g.freshN).toBe(20)
+    expect(g.freshHits).toBe(17)
+    expect(g.status).toBe('ok')
+  })
+
+  it('the same id re-scored twenty times inside ONE plan counts once', () => {
+    const records = Array.from({ length: 20 }, (_, i) =>
+      rec('hit', {
+        id: 'PX-1',
+        plan: '.planning/phases/demo/demo-01-PLAN.md',
+        model: 'claude-x-1',
+        scoredAt: `2026-07-${String(i + 1).padStart(2, '0')}T00:00:00.000Z`,
+      }),
+    )
+    expect(modelGuard({ records, timeline, minFresh: 20 }).freshN).toBe(1)
   })
 })

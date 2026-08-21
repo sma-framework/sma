@@ -298,3 +298,74 @@ predictions:
     expect(byId['P-NOW']).toBe('pass')
   })
 })
+
+describe('the mirror measures the same way the scorer does', () => {
+  const EXIT_PLAN = `---
+phase: mirror-fixture
+plan: alpha
+predictions:
+  - id: P-EXIT
+    claim: "the suite is green"
+    metric: exit_code
+    measure: "exit-code"
+    cwd: "some/where"
+    check_command: "npm test"
+    comparator: "=="
+    threshold: 0
+    domain: sma.verification
+---
+
+# body
+`
+
+  const readFn = (f: string) => require('node:fs').readFileSync(f, 'utf8')
+
+  it('deriveChecks carries the measure and the working directory onto the check', () => {
+    const p = join(root, 'exit-PLAN.md')
+    writeFileSync(p, EXIT_PLAN, 'utf8')
+    const { checks } = deriveChecks({ planPath: p, readFn })
+    const c = checks.find((x: any) => x.id === 'P-EXIT')
+    expect(c.measure).toBe('exit-code')
+    expect(c.cwd).toBe('some/where')
+  })
+
+  it('a nonzero exit is a FAIL on the blind side too — both sides stay silent in the same places', () => {
+    const p = join(root, 'exit-PLAN.md')
+    writeFileSync(p, EXIT_PLAN, 'utf8')
+    const seen: Array<{ cmd: string; opts: { cwd?: string } }> = []
+    const runCommand = (cmd: string, opts: { cwd?: string } = {}) => {
+      seen.push({ cmd, opts })
+      return { stdout: 'log\n', exitCode: 1 }
+    }
+    const res = blindVerify({ planPath: p, runCommand, readFn, dirs })
+    const byId = Object.fromEntries(res.verdicts.map((v: any) => [v.id, v.verdict]))
+    expect(byId['P-EXIT']).toBe('fail')
+    expect(seen[0].cmd).toBe('npm test') // the directory is a parameter, not glue
+    expect(seen[0].opts.cwd).toBe('some/where')
+  })
+
+  it('a zero exit is a PASS on the blind side', () => {
+    const p = join(root, 'exit-PLAN.md')
+    writeFileSync(p, EXIT_PLAN, 'utf8')
+    const res = blindVerify({
+      planPath: p,
+      runCommand: () => ({ stdout: 'log\n', exitCode: 0 }),
+      readFn,
+      dirs,
+    })
+    const byId = Object.fromEntries(res.verdicts.map((v: any) => [v.id, v.verdict]))
+    expect(byId['P-EXIT']).toBe('pass')
+  })
+
+  it('a legacy string-returning runner keeps the numeric-last-line behaviour untouched', () => {
+    const p = join(root, 'legacy-PLAN.md')
+    writeFileSync(
+      p,
+      EXIT_PLAN.replace('    measure: "exit-code"\n', '').replace('    cwd: "some/where"\n', ''),
+      'utf8',
+    )
+    const res = blindVerify({ planPath: p, runCommand: () => 'noise\n0\n', readFn, dirs })
+    const byId = Object.fromEntries(res.verdicts.map((v: any) => [v.id, v.verdict]))
+    expect(byId['P-EXIT']).toBe('pass')
+  })
+})
