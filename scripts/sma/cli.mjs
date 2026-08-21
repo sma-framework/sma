@@ -475,6 +475,31 @@ async function cmdSessionStart({ dirs }) {
   try {
     const registry = await import('./lib/registry.mjs')
     identity = registry.resolveTerminalIdentity({ sessionToken })
+    // Hand a still-anonymous window a readable name ONCE — here, at the start — and then
+    // RE-RESOLVE, so everything below already speaks under that name: the registering beat,
+    // the label, and the session's own first journal event. Allocating later would file the
+    // very first line of the session under the machine token this exists to stop showing.
+    // Fail-open on purpose: a session start must never break over a name, so any failure
+    // leaves the previous `T-<hash>` identity exactly as it was.
+    // The token is taken from the RESOLVED IDENTITY, not from the local stdin one: the
+    // resolver is the only place that knows all the spellings a window token arrives under
+    // (the hook's stdin session_id, SMA_WINDOW_TOKEN, and the agent's own two session-id
+    // variables), and it has already picked the one in force. Reading the local variable
+    // instead looks identical and silently does nothing whenever the token came from the
+    // environment rather than stdin — a name computed and never delivered. Caught by
+    // actually running a session start rather than by reading this code.
+    const windowToken = identity && identity.sessionToken
+    if (windowToken && identity.nameSource === 'fallback') {
+      try {
+        const allocated = registry.allocateDefaultWindowName({
+          tokenHash: registry.tokenHash(windowToken),
+          env: process.env,
+        })
+        if (allocated) identity = registry.resolveTerminalIdentity({ sessionToken })
+      } catch {
+        /* fail-open — an unnamed window is a nuisance; a wedged session start is not */
+      }
+    }
     try {
       const { sessions } = registry.readSessions(dirs)
       const own = sessions.find((s) => s._file === `${identity.terminalId}.json`)
@@ -608,11 +633,19 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open — the curriculum refresh never wedges session-start */
   }
 
-  // prompt ONCE for a human window name when this window is still anonymous, so
-  // the journal + digest stop showing t-<hash> and become «P<phase> <Name>».
+  // The window-name offer. WHEN it is shown, in words: for as long as the name is still one
+  // the SYSTEM chose — either the machine token (there was no window token to key a name on,
+  // or the allocation failed) or the auto «Окно-N» just handed out. It goes quiet the moment
+  // a person names the window themselves, by the variable or by editing the record: an auto
+  // name is readable, but a chosen one is better, and asking after the answer has been given
+  // is nagging.
   let namePrompt = ''
-  if (identity && typeof identity.holderIdentity === 'string' && /^T-/i.test(identity.holderIdentity)) {
-    namePrompt = 'Задайте имя окна: переменная SMA_TERMINAL_NAME (например «Tom»), чтобы журналы были читаемы.'
+  if (identity && identity.nameAuto) {
+    namePrompt =
+      identity.nameSource === 'persist'
+        ? `Это окно записано как «${identity.holderIdentity}». Задайте своё имя: переменная SMA_TERMINAL_NAME ` +
+          '(например «Tom»), чтобы журналы читались ещё лучше.'
+        : 'Задайте имя окна: переменная SMA_TERMINAL_NAME (например «Tom»), чтобы журналы были читаемы.'
   }
 
   // the post-compact RESTORE REFLEX. Claude Code re-fires
