@@ -558,6 +558,44 @@ describe('the production composition root is COMPLETE', () => {
     expect(park.adapter.expireMs, 'the durable queue was built without the config expiry').toBe(300000)
   })
 
+  /**
+   * THE BUILT WINDOW'S DIRECTORY REACHES THE DOOR — the wire, not the calculation.
+   *
+   * The two handlers that serve the window have read `deps.staticDir || STATIC_APP_DIR`
+   * since they were written, and the door's own suite drives them through that seam. All
+   * of that was true while the seam was reachable from NOWHERE: this root — the only one
+   * production calls — never passed the key. Injectable and reachable are different
+   * properties, and the door's suite cannot tell them apart, because it supplies the key
+   * itself. Only a question put to the ROOT can.
+   *
+   * So the question is put to the root in BOTH directions. Asserting only the present case
+   * would pass on a root that hardcodes a directory, and the absent case is the one the
+   * shipped daemon actually takes: no option, no key, and the door falls back to the build
+   * that shipped beside it.
+   */
+  it('hands the built window directory to the door when one is named — and no key when none is', () => {
+    // ABSENT: the production wiring above was built with no overrides at all.
+    expect('staticDir' in park.front.deps, 'the root invented a static directory nobody named').toBe(false)
+
+    const named = join(tmpRoot, 'a-build-outside-any-working-tree')
+    const withDir = createDaemon({ staticDir: named })
+    // BLANK IS THE SAME AS ABSENT: a key holding an empty string is not a named directory.
+    const withBlank = createDaemon({ staticDir: '   ' })
+    try {
+      expect(withDir.front.deps.staticDir, 'the named build directory never reached the door').toBe(named)
+      expect('staticDir' in withBlank.front.deps, 'a blank option was passed through as a key').toBe(false)
+    } finally {
+      for (const built of [withDir, withBlank] as any[]) {
+        try {
+          if (built && built.hub && typeof built.hub.close === 'function') built.hub.close()
+          if (built && built.daemon && typeof built.daemon.stop === 'function') built.daemon.stop()
+        } catch {
+          /* best-effort, exactly as this file's own teardown does */
+        }
+      }
+    }
+  })
+
   it('derives a working data/ledger dir even from a config that names neither', () => {
     // the file above names both; the DEFAULTING path is proven in config.test.ts. Here we
     // only pin that the root actually HANDS them on — an undefined ledgerDir is how a

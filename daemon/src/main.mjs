@@ -895,6 +895,35 @@ export function createDaemon(o = {}) {
         workerStats,
         repoDir, // the tree being SERVED — reads only
         launchDir, // the process's own start directory — the write-time derive baseline
+        // ── WHERE THE BUILT WINDOW IS READ FROM ────────────────────────────────────────
+        //
+        // A SEAM THAT EXISTED AND WAS REACHABLE FROM NOWHERE. The two handlers that serve
+        // the window — the index and the hashed bundles — have read `deps.staticDir ||
+        // STATIC_APP_DIR` for as long as they have existed, and the door's own suite has
+        // been driving them through it. What was missing is the line below: THIS root, the
+        // only one production ever calls, never passed the key, so on every real daemon the
+        // seam could not be reached at all. Injectable and unreachable are not the same
+        // property, and only the second one is worth anything to anybody.
+        //
+        // That is the THIRD time this codebase has paid for the same shape in short order —
+        // the merge gate's test runner was written, covered, green and wired to nothing;
+        // the money rule that switches to the paid channel was called by no one. Each part
+        // was fine on its own. None of them was joined to its neighbour. The composition
+        // test beside this file exists so that a MACHINE catches the next one, because a
+        // reading never has: an absence is exactly what grep cannot see.
+        //
+        // WHO NEEDS IT. A drill that wants to show the daemon a FRESH build of the window
+        // has to build it somewhere, and in a linked working copy the build's own output
+        // directory is a link INTO ANOTHER TREE — building there empties the tree the
+        // person is working in, while `git status` in the copy stays clean, so the usual
+        // check is silent precisely when it is needed. Naming the directory here lets such
+        // a drill build OUTSIDE any working tree and hand the result over, touching no link
+        // at all.
+        //
+        // ABSENT MEANS ABSENT. An empty or non-string option adds NO key, so the door falls
+        // back to the build that shipped beside it — its own default, decided from its own
+        // module url and never from a process's current directory.
+        ...(typeof o.staticDir === 'string' && o.staticDir.trim() !== '' ? { staticDir: o.staticDir } : {}),
         deriveState,
         parseReceiptSummary,
         // The phase cycle's two read models. Injected like every other derive, so the door
