@@ -212,7 +212,7 @@ from your project root, with no package script and nothing on your `PATH`:
 
 ```bash
 node scripts/sma/cli.mjs status          # who is working on what, right now
-node scripts/sma/cli.mjs explain <verb>  # what any of the 93 verbs is for
+node scripts/sma/cli.mjs explain <verb>  # what any of the 94 verbs is for
 ```
 
 ## The daemon and the app (the optional V5 layer)
