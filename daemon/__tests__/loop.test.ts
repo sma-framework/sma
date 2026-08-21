@@ -4261,6 +4261,68 @@ describe('личный слой и наши серверы доезжают до
     expect(run.envNames).toContain('SMA_REDIRECTS_FILE')
   })
 
+  /**
+   * ПРОВОД ПРАВА СПРОСИТЬ — ДО РТА РАБОТНИКА, А НЕ ДО СБОРЩИКА.
+   *
+   * Раздел «Вопрос по ходу» проверен в сьюте промпта — но там утверждается ВОЗВРАТ СБОРЩИКА,
+   * то есть промежуточная строка. Работник читает не её: задание идёт через композицию
+   * аргументов в поле `prompt` и оттуда — в stdin ребёнка. Сегодня преобразований между этими
+   * точками нет, и ровно такие «сегодня нет» рвались в живых прогонах: вычисленное значение
+   * жило в журнале и не доезжало до запуска. Поэтому здесь — НАСТОЯЩИЙ сборщик аргументов
+   * (подделка закрыла бы тот самый стык) и утверждение о том, ЧТО ПОЛУЧИЛ ЗАПУСКАТЕЛЬ.
+   *
+   * Подделка запускателя здесь не умеет больше живого: она читает `spec.prompt`, `spec.onLine`
+   * и `spec.onExit` — ровно те поля, которые читает `spawnWorker` (сверено с его телом; сьют
+   * промпта отдельно доказывает, что живой запускатель пишет `prompt` в stdin ребёнка).
+   */
+  it('провод: раздел «Вопрос по ходу» доезжает до ЗАДАНИЯ, переданного запускателю', async () => {
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const projectDir = mkDir('sma-proj-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const prompts: string[] = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const config = { workers: [worker(accountDir)], repoDir: projectDir, pipeline: { enabled: true } }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        prompts.push(String(spec.prompt ?? ''))
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        projectDir: () => projectDir,
+        // НАСТОЯЩИЙ сборщик: подделка здесь закрыла бы ровно тот стык, ради которого кейс написан
+        buildArgs: createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } }),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+      },
+    })
+
+    await tick(deps)
+
+    expect(prompts).toHaveLength(1)
+    const handedOver = prompts[0]
+    // (1) право спросить доехало до задания, которое получил запускатель
+    expect(handedOver, 'раздел о вопросе по ходу остался у сборщика и до работника не доехал').toContain(
+      '## Вопрос по ходу',
+    )
+    // (2) и доехало ЦЕЛИКОМ: все три вещи, а не один заголовок
+    const section = handedOver.slice(handedOver.indexOf('## Вопрос по ходу')).replace(/\s+/g, ' ')
+    expect(section).toContain('вызов поставлен на паузу')
+    expect(section).toContain('В ЭТУ ЖЕ сессию')
+    expect(section).toContain('ГЛАВНЕЕ ранее данных указаний')
+    // (3) и это ОБЫЧНАЯ задача — та самая, у которой права спросить не было вовсе
+    expect(handedOver).toContain('BL-1')
+  })
+
   it('провод: путь каталога попытки у спавна и у записи — ОДНО выражение', () => {
     // Расход этих двух путей означал бы билеты в одном каталоге и запись в другом.
     const runsDir = runsDirOf('/p')
