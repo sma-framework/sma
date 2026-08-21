@@ -12,9 +12,13 @@
  *     running-task steering wheel in v5.5.0, SIX doors in v5.6.0 — the batch request,
  *     the word its owner answers a stopped batch with, the composition a phrase could have,
  *     the two doors of a task's WORDS (the one that proposes them and the one that corrects
- *     them), and the order that stops ONE echelon of ONE phase and starts it again — and in
- *     v5.7.0 the door that CANCELS a task, so a person can stop work with a finger and the
- *     stopping leaves no live process behind it; the previous freezes were SIXTY-ONE,
+ *     them), and the order that stops ONE echelon of ONE phase and starts it again — and,
+ *     newest of them and NOT YET CARRYING A RELEASE OF ITS OWN, the door that CANCELS a
+ *     task, so a person can stop work with a finger and the stopping leaves no live process
+ *     behind it. That last one names no version on purpose: every other door here records
+ *     the release that actually shipped it, and writing a number before it is cut would make
+ *     this header a promise instead of a record — the stamp goes in when the release does;
+ *     the previous freezes were SIXTY-ONE,
  *     2026-08-13, FIFTY-FIVE, 2026-08-12, FIFTY-THREE, 2026-08-06, THIRTY, 2026-08-01, and
  *     FOURTEEN, 2026-07-17). A path outside the table is 404 BEFORE any
  *     auth-error detail (no route reflection). No command-exec endpoint exists or ever may —
@@ -220,13 +224,14 @@ const BUILD_INSTRUCTION_HTML =
 
 /**
  * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-20; the FIFTY-THREE of the V5.4
- * freeze plus nine doors, each declared once by its own release — the chat stop button in
- * v5.4.3, the running-task steering wheel in v5.5.0, in v5.6.0 the batch request, the
- * word its owner answers a stopped batch with, the composition a phrase could have, the
- * two doors of a task's WORDS (the one that proposes them and the one that corrects them),
- * and the order that stops ONE echelon of ONE phase and starts it again, and in v5.7.0 the
- * door that CANCELS a task — a person stops the work, and the row is closed only after the
- * live child under it is dead).
+ * freeze plus nine doors, eight of them declared once by the release that shipped them —
+ * the chat stop button in v5.4.3, the running-task steering wheel in v5.5.0, in v5.6.0 the
+ * batch request, the word its owner answers a stopped batch with, the composition a phrase
+ * could have, the two doors of a task's WORDS (the one that proposes them and the one that
+ * corrects them), and the order that stops ONE echelon of ONE phase and starts it again —
+ * and the ninth, carrying no release stamp until one is actually cut, the door that CANCELS
+ * a task: a person stops the work, and the row is closed only after the live child under it
+ * is dead).
  * Exactly SIXTY-TWO entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the four dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic asset segment
