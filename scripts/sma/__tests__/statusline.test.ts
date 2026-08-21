@@ -545,7 +545,7 @@ describe('statusline CLI — Task 3 (managed install never clobbers the adopter)
     // an idle window never repaints for anything raised in a neighbouring window
     expect(after.statusLine).toEqual({
       type: 'command',
-      command: 'node scripts/sma/cli.mjs statusline --wrap',
+      command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" statusline --wrap',
       padding: 0,
       refreshInterval: 60,
     })
@@ -574,7 +574,7 @@ describe('statusline CLI — Task 3 (managed install never clobbers the adopter)
     const after = JSON.parse(readFileSync(settingsPath, 'utf8'))
     expect(after.statusLine).toEqual({
       type: 'command',
-      command: 'node scripts/sma/cli.mjs statusline', // direct, no --wrap
+      command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" statusline', // direct, no --wrap
       padding: 0,
       refreshInterval: 60,
     })

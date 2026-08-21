@@ -126,9 +126,14 @@ export function removeSmaHooks(settings) {
 
 /** True when a statusLine command string is SMA's segment — a DELIBERATE standalone copy of
  * the same test in the statusline module: the off-ramp must stay importable with nothing but
- * node built-ins behind it, so it borrows no render code to decide what to remove. */
+ * node built-ins behind it, so it borrows no render code to decide what to remove.
+ *
+ * It matches BOTH spellings the installer has written: the project-relative one, and the
+ * project-root-anchored one whose path ends in a closing quote before the verb. An off-ramp
+ * blind to either leaves our own segment sitting in a project it was told to leave. Kept in
+ * lockstep with the copy in statusline.mjs, by hand and on purpose. */
 export function isSmaStatuslineCmd(cmd) {
-  return typeof cmd === 'string' && /scripts[\\/]+sma[\\/]+cli\.mjs\s+statusline/.test(cmd)
+  return typeof cmd === 'string' && /scripts[\\/]+sma[\\/]+cli\.mjs"?\s+statusline/.test(cmd)
 }
 
 /**
