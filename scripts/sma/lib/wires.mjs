@@ -160,6 +160,29 @@ function isUnder(child, parent) {
 }
 
 /**
+ * isWithinTree(candidate, treeDir) — THE CONTAINMENT RULE, and the reason it is exported.
+ *
+ * This instrument used to answer «the path resolves» by asking the filesystem, with no
+ * boundary at all. On a machine that keeps sibling working copies next to the one under
+ * test, a declaration pointing at a sibling resolved; on a clean clone the very same
+ * declaration did not. That makes the verdict a fact about the LAPTOP rather than about
+ * the product — which is precisely the class of defect this instrument exists to catch,
+ * reappearing inside the judge itself.
+ *
+ * So: nothing outside the tree under measurement is touched. Not read, not statted, not
+ * even asked whether it exists. Containment is decided by path arithmetic ALONE, before
+ * any filesystem call, so the answer is identical on every machine — including one where
+ * no sibling copy exists at all.
+ *
+ * A boundary of null means «no tree stated»: the caller gets the old unbounded behaviour
+ * and the report says so, because an unbounded run is not a reproducible one.
+ */
+export function isWithinTree(candidate, treeDir) {
+  if (!treeDir) return true
+  return isUnder(candidate, treeDir)
+}
+
+/**
  * listPlanFiles(dir, suffix, fs) -> sorted paths. One parameterized walk, fail-soft per
  * directory — an unreadable directory yields nothing rather than an exception.
  */
@@ -229,7 +252,14 @@ export function collectScanFiles({ roots, treeDir, plansDir, fsImpl } = {}) {
     }
   }
 
-  for (const r of list) walk(isAbsolute(String(r)) ? String(r) : join(base, String(r)))
+  // A declared root that escapes the tree under measurement is REFUSED, not walked. An
+  // overridden root set is caller input, and caller input that reads `../` walks straight
+  // into somebody else's working copy — the one thing this instrument must never do.
+  for (const r of list) {
+    const p = isAbsolute(String(r)) ? String(r) : join(base, String(r))
+    if (!isWithinTree(p, treeDir ?? null)) continue
+    walk(p)
+  }
   return out.sort()
 }
 
@@ -265,11 +295,24 @@ export function applyRewrites(raw, rewrites) {
  * reports nothing wrong about the things it failed to look at. Note that `from`/`to`
  * are frequently prose rather than paths; `unresolved` therefore means «not a file in
  * any candidate root», which is a category, not an accusation.
+ *
+ * THE THIRD STATUS: `outside-tree`. Every candidate is tested for containment in the
+ * tree under measurement BEFORE the filesystem is consulted, and a candidate that lands
+ * outside is skipped without a single existence check. When no candidate lands inside at
+ * all, the declaration is not judged: it is neither green nor red, it is «this run cannot
+ * see there». That is an honest third answer, and it is the only one that reads the same
+ * on a machine with sibling working copies and on a clean clone.
+ *
+ * Note the asymmetry, which is deliberate: ONE candidate inside the tree is enough to
+ * make the path judgeable, because the outer candidates of a workshop layout are almost
+ * always outside by construction. Only a declaration with NOWHERE to look inside the
+ * tree becomes `outside-tree`.
  */
-export function resolveDeclaredPath({ raw, rewrites, treeDir, plansDir, fsImpl } = {}) {
+export function resolveDeclaredPath({ raw, rewrites, treeDir, plansDir, fsImpl, containWithin } = {}) {
   const fs = makeFs(fsImpl)
   const declared = String(raw ?? '')
   const { value: rewritten, applied } = applyRewrites(declared, rewrites)
+  const boundary = containWithin === undefined ? (treeDir ?? null) : containWithin
 
   const candidates = []
   if (isAbsolute(rewritten)) {
@@ -281,10 +324,12 @@ export function resolveDeclaredPath({ raw, rewrites, treeDir, plansDir, fsImpl }
       candidates.push({ root: c.name, path: join(root, rewritten) })
     }
   }
+  for (const c of candidates) c.inside = isWithinTree(c.path, boundary)
 
   let resolved = null
   let resolvedBy = null
   for (const c of candidates) {
+    if (!c.inside) continue // never touched: no existsSync, no stat, no read
     let ok = false
     try {
       ok = !!fs.existsSync(c.path)
@@ -298,14 +343,16 @@ export function resolveDeclaredPath({ raw, rewrites, treeDir, plansDir, fsImpl }
     }
   }
 
+  const anyInside = candidates.some((c) => c.inside)
   return {
     declared,
     rewritten,
     rewriteApplied: applied ? { prefix: applied.prefix, target: applied.target } : null,
     candidates,
+    boundary: boundary ? resolve(String(boundary)) : null,
     resolved,
     resolvedBy,
-    status: resolved ? 'resolved' : 'unresolved',
+    status: resolved ? 'resolved' : anyInside ? 'unresolved' : 'outside-tree',
   }
 }
 
@@ -466,6 +513,7 @@ export function collectInventory({ plansDir, treeDir, roots, rewrites, fsImpl } 
       linksWithBadPattern: links.filter((l) => l.patternError).length,
       artifacts: artifacts.length,
       artifactsUnresolved: artifacts.filter((a) => a.resolution.status === 'unresolved').length,
+      artifactsOutsideTree: artifacts.filter((a) => a.resolution.status === 'outside-tree').length,
       prose: prose.length,
       patternless: patternless.length,
       scanFiles: scanFiles.length,
@@ -596,6 +644,21 @@ export const YELLOW_REASONS = Object.freeze({
     en: 'the artifact record names a path and no needle — only existence was checked',
     ru: 'запись artifacts без иглы — проверено только существование файла',
   }),
+})
+
+/**
+ * NEITHER GREEN NOR RED — its own named answer, visible as a number in every report.
+ *
+ * A declaration whose path, after root rewriting, leads outside the tree under
+ * measurement cannot be judged by this run. Calling it green would be a verdict about
+ * whichever working copies happen to lie beside this one; calling it red would accuse a
+ * declaration of being wrong when the run simply was not allowed to look. Both answers
+ * would move with the machine. The third answer does not.
+ */
+export const OUTSIDE_TREE = Object.freeze({
+  id: 'outside-measured-tree',
+  en: 'the declared path leads outside the tree under measurement — not looked at, and never counted as evidence',
+  ru: 'путь вне измеряемого дерева — прибор туда не смотрит и в доказательство не берёт',
 })
 
 /** 0 — clean; 1 — red without a verdict; 2 — the inventory does not read at all. */
@@ -804,8 +867,15 @@ export function evaluateInventory({ inventory, treeDir, roots, broadLimit, verdi
   // a report about nothing looks exactly like a report about everything.
   const rootsPresent = []
   const rootsMissing = []
+  const rootsRefused = []
   for (const r of declaredRoots) {
     const p = isAbsolute(String(r)) ? String(r) : join(tree ?? '.', String(r))
+    // A root that escapes the tree is refused by arithmetic, before any existence check:
+    // the walk already declines it, and the header must say so rather than call it absent.
+    if (!isWithinTree(p, tree)) {
+      rootsRefused.push(String(r))
+      continue
+    }
     let ok = false
     try {
       ok = !!fs.existsSync(p)
@@ -856,6 +926,10 @@ export function evaluateInventory({ inventory, treeDir, roots, broadLimit, verdi
   const green = []
   const red = []
   const ahead = []
+  // Declared paths this run is not allowed to look at. Its own list, counted separately,
+  // because folding it into either colour would put the machine's directory layout into
+  // the verdict.
+  const outside = []
   const yellow = {
     broad: [],
     prose: [],
@@ -900,6 +974,26 @@ export function evaluateInventory({ inventory, treeDir, roots, broadLimit, verdi
     // is reported as such. Taking the first resolving end instead was measured against
     // this tree and let eighteen records through — which is exactly how strictness gets
     // lowered by accident and «zero failures» gets cheap.
+    // Ends that point out of the tree are NAMED before scoring. The link itself is still
+    // judged — by the tree-wide tier, which searches only inside the tree — but the report
+    // must be able to say how much of the inventory declared a place this run cannot see.
+    for (const [role, res] of [['from', link.fromPath], ['to', link.toPath]]) {
+      if (res && res.status === 'outside-tree') {
+        outside.push({
+          kind: 'link',
+          plan: link.plan,
+          planId: link.planId,
+          role,
+          declared: res.declared,
+          rewritten: res.rewritten,
+          rewriteApplied: res.rewriteApplied,
+          // The record is not dropped: the tree-wide tier still scores it, with no help
+          // from any neighbouring copy.
+          stillScored: true,
+        })
+      }
+    }
+
     const fromTargets = namedTargets(link.fromPath, scanFiles, fs)
     const toTargets = namedTargets(link.toPath, scanFiles, fs)
     const namedSides = []
@@ -963,6 +1057,23 @@ export function evaluateInventory({ inventory, treeDir, roots, broadLimit, verdi
 
     if (art.planStatus !== PLAN_STATUS.closed) {
       ahead.push({ ...base, category: 'ahead' })
+      continue
+    }
+    if (art.resolution && art.resolution.status === 'outside-tree') {
+      // Not red. The declaration names a place this run refuses to look at, and an
+      // accusation built on a directory that may or may not exist beside this checkout
+      // is not a finding — it is the machine talking.
+      outside.push({
+        kind: 'artifact',
+        plan: art.plan,
+        planId: art.planId,
+        role: 'path',
+        declared: art.resolution.declared,
+        rewritten: art.resolution.rewritten,
+        rewriteApplied: art.resolution.rewriteApplied,
+        contains: art.contains,
+        stillScored: false,
+      })
       continue
     }
     if (!art.resolution || art.resolution.status !== 'resolved') {
@@ -1077,6 +1188,7 @@ export function evaluateInventory({ inventory, treeDir, roots, broadLimit, verdi
   reviewed.sort(byKey(linkKey))
   ahead.sort(byKey(linkKey))
   stale.sort(byKey((v) => `${v.plan}|${v.pattern ?? v.path ?? ''}`))
+  outside.sort(byKey((r) => `${r.planId ?? ''}|${r.role}|${r.declared ?? ''}`))
   for (const k of Object.keys(yellow)) yellow[k].sort(byKey(linkKey))
 
   const redByReason = {}
@@ -1099,12 +1211,14 @@ export function evaluateInventory({ inventory, treeDir, roots, broadLimit, verdi
   return {
     treeDir: tree,
     plansDir,
-    roots: { declared: declaredRoots, present: rootsPresent, missing: rootsMissing },
+    roots: { declared: declaredRoots, present: rootsPresent, missing: rootsMissing, refused: rootsRefused },
+    rewrites: Array.isArray(inv.rewrites) ? [...inv.rewrites] : [],
     broadLimit: limit,
     green,
     red: redRemaining,
     reviewed,
     ahead,
+    outside,
     yellow,
     staleVerdicts: stale,
     verdictErrors,
@@ -1116,6 +1230,8 @@ export function evaluateInventory({ inventory, treeDir, roots, broadLimit, verdi
       redByReason,
       reviewed: reviewed.length,
       ahead: ahead.length,
+      outsideTree: outside.length,
+      outsideTreeUnjudged: outside.filter((o) => !o.stillScored).length,
       broad: yellow.broad.length,
       prose: yellow.prose.length,
       noTestTrace: yellow.noTestTrace.length,
@@ -1148,6 +1264,7 @@ export function toJson(evaluation) {
     treeDir: evaluation.treeDir,
     plansDir: evaluation.plansDir,
     roots: evaluation.roots,
+    rewrites: evaluation.rewrites ?? [],
     broadLimit: evaluation.broadLimit,
     exitCode: evaluation.exitCode,
     counts: evaluation.counts,
@@ -1155,6 +1272,7 @@ export function toJson(evaluation) {
     reviewed: evaluation.reviewed,
     staleVerdicts: evaluation.staleVerdicts,
     verdictErrors: evaluation.verdictErrors,
+    outsideTree: evaluation.outside ?? [],
     yellow: evaluation.yellow,
     ahead: evaluation.ahead,
     green: evaluation.green,
@@ -1174,7 +1292,7 @@ export function toJson(evaluation) {
  * The commit is passed IN. This module does not shell out to a version-control tool, and
  * an unstated commit is printed as unstated rather than skipped.
  */
-export function renderReport({ treeDir, commit, plansDir, evaluation, inventory, roots, broadLimit } = {}) {
+export function renderReport({ treeDir, commit, plansDir, evaluation, inventory, roots, broadLimit, rewrites } = {}) {
   const ev = evaluation ?? {}
   const inv = inventory ?? {}
   const tree = treeDir ?? ev.treeDir ?? inv.treeDir ?? null
@@ -1182,6 +1300,8 @@ export function renderReport({ treeDir, commit, plansDir, evaluation, inventory,
   const limit = broadLimit ?? ev.broadLimit ?? DEFAULT_BROAD_LIMIT
   const declared = Array.isArray(roots) && roots.length ? roots : (ev.roots && ev.roots.declared) || inv.roots || []
   const missing = new Set((ev.roots && ev.roots.missing) || [])
+  const refused = new Set((ev.roots && ev.roots.refused) || [])
+  const rewriteRules = Array.isArray(rewrites) && rewrites.length ? rewrites : ev.rewrites || inv.rewrites || []
   const counts = ev.counts ?? {}
   const invCounts = inv.counts ?? {}
   const out = []
@@ -1191,8 +1311,30 @@ export function renderReport({ treeDir, commit, plansDir, evaluation, inventory,
   out.push(`wires — tree ${tree ? resolve(tree) : '(tree not stated)'} @ ${commit ? String(commit) : 'commit not established'}`)
   out.push(`plans: ${plans ? resolve(plans) : '(plans directory not stated)'}`)
   out.push(
-    `walk roots (${declared.length} declared, ${declared.length - missing.size} present): ` +
-      declared.map((r) => (missing.has(r) ? `${r} [absent — not walked]` : String(r))).join(', '),
+    `walk roots (${declared.length} declared, ${declared.length - missing.size - refused.size} present): ` +
+      declared
+        .map((r) =>
+          refused.has(r)
+            ? `${r} [outside the tree — REFUSED, not walked]`
+            : missing.has(r)
+              ? `${r} [absent — not walked]`
+              : String(r),
+        )
+        .join(', '),
+  )
+  // The rewriting rules belong in the header for the same reason the roots do: they
+  // decide which declarations are inside the tree at all, so «zero failures» read without
+  // them is a number about an unknown mapping.
+  out.push(
+    rewriteRules.length
+      ? `root rewrites applied (${rewriteRules.length}): ` +
+        rewriteRules.map((r) => `${r.prefix} → ${r.target || '(stripped)'}`).join(', ')
+      : 'root rewrites applied: none — every declared path is read exactly as written',
+  )
+  out.push(
+    `containment: only paths inside the tree above are examined; anything outside is NOT looked at${
+      tree ? '' : ' — NO TREE STATED, so containment is off and this run is not reproducible'
+    }`,
   )
   out.push(`broad-trace limit: ${limit} files — a trace found in more files is NOT evidence`)
   out.push(
@@ -1280,6 +1422,26 @@ export function renderReport({ treeDir, commit, plansDir, evaluation, inventory,
   out.push(`WORK STILL AHEAD — no summary beside the plan, so NOT judged (${aheadList.length} records in ${aheadPlans.length} plans):`)
   if (!aheadPlans.length) out.push('  none')
   else for (const p of aheadPlans) out.push(`  ${p}`)
+  out.push('')
+
+  // Its own section, between «still ahead» and «yellow»: not a colour of the verdict, a
+  // statement about the REACH of this run.
+  const outsideList = Array.isArray(ev.outside) ? ev.outside : []
+  const outsidePlans = [...new Set(outsideList.map((o) => o.planId))].sort(cmp)
+  out.push(
+    `${OUTSIDE_TREE.en} — ${OUTSIDE_TREE.ru} (${outsideList.length} declared paths in ${outsidePlans.length} plans):`,
+  )
+  if (!outsideList.length) out.push('  none')
+  else {
+    const unjudged = outsideList.filter((o) => !o.stillScored).length
+    out.push(
+      `  of these, ${unjudged} record(s) are left UNJUDGED entirely; the rest are still scored by the tree-wide tier, which searches inside this tree only`,
+    )
+    for (const o of outsideList) {
+      const via = o.rewriteApplied ? ` (after rewrite ${o.rewriteApplied.prefix} → ${o.rewriteApplied.target || '(stripped)'})` : ''
+      out.push(`    ${o.planId} | ${o.kind} ${o.role} | ${o.declared}${via}`)
+    }
+  }
   out.push('')
 
   const y = ev.yellow ?? {}

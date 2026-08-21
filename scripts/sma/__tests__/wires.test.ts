@@ -44,6 +44,8 @@ import {
   RED_REASONS,
   YELLOW_REASONS,
   EXIT_CODES,
+  OUTSIDE_TREE,
+  isWithinTree,
   HONEST_BOUNDARY,
   WALK_EXCLUSIONS,
   PLANS_ARE_NOT_CODE,
@@ -162,7 +164,7 @@ describe('дискриминатор статуса — только парна�
 })
 
 describe('резолюция объявленных путей (в)', () => {
-  it('путь с чужим префиксом не резолвится без правила и находит файл с правилом', () => {
+  it('путь с чужим префиксом уходит НАРУЖУ дерева без правила и находит файл с правилом', () => {
     const { root } = caseDirs('live')
 
     const without = collect('live')
@@ -170,8 +172,14 @@ describe('резолюция объявленных путей (в)', () => {
       a.declaredPath.startsWith('../synthetic-elsewhere'),
     )
     expect(foreign, 'запись с чужим префиксом обязана быть в описи, а не пропущена').toBeTruthy()
-    expect(foreign.resolution.status).toBe('unresolved')
-    expect(without.counts.artifactsUnresolved).toBe(1)
+    // Без правила путь уводит НАРУЖУ измеряемого дерева. Это не «не нашли» — это «не
+    // смотрели»: отдельный статус, потому что ответ «не резолвится» иначе зависел бы от
+    // того, какие соседние рабочие копии случайно лежат на этой машине.
+    expect(foreign.resolution.status).toBe('outside-tree')
+    expect(without.counts.artifactsUnresolved).toBe(0)
+    expect(without.counts.artifactsOutsideTree).toBe(1)
+    // И ни один кандидат наружу не был даже проверен на существование.
+    expect(foreign.resolution.candidates.every((c: { inside: boolean }) => c.inside === false)).toBe(true)
 
     const withRule = collect('live', {
       rewrites: [{ prefix: '../synthetic-elsewhere', target: root }],
@@ -183,6 +191,75 @@ describe('резолюция объявленных путей (в)', () => {
     expect(fixed.resolution.rewriteApplied).toMatchObject({ prefix: '../synthetic-elsewhere' })
     expect(String(fixed.resolution.resolved)).toContain('alpha.txt')
     expect(withRule.counts.artifactsUnresolved).toBe(0)
+    expect(withRule.counts.artifactsOutsideTree).toBe(0)
+  })
+
+  it('ЗАМОК ГРАНИЦЫ: наружу дерева не уходит ни одного обращения к файловой системе', () => {
+    // Мутация этого замка — снять containment — возвращает прибору способность выносить
+    // вердикт о том, что лежит рядом на ноутбуке. Здесь это доказано наблюдением: подделка
+    // файловой системы ЗАПОМИНАЕТ каждый спрошенный путь, и ни один не выходит за дерево.
+    const asked: string[] = []
+    const fsImpl = {
+      existsSync: (p: string) => {
+        asked.push(String(p))
+        return false
+      },
+    }
+    const res = resolveDeclaredPath({
+      raw: '../a-neighbouring-working-copy/lib/thing.mjs',
+      treeDir: join(FIXTURES, 'live'),
+      plansDir: join(FIXTURES, 'live', 'plans'),
+      fsImpl,
+    })
+    expect(res.status).toBe('outside-tree')
+    expect(asked, 'ни одного вопроса к файловой системе за границей дерева').toEqual([])
+
+    // Контроль: без границы (дерево не названо) те же кандидаты СПРАШИВАЮТСЯ — то есть
+    // замок действительно работает, а не кейс проходит сам собой.
+    asked.length = 0
+    const unbounded = resolveDeclaredPath({
+      raw: '../a-neighbouring-working-copy/lib/thing.mjs',
+      treeDir: join(FIXTURES, 'live'),
+      plansDir: join(FIXTURES, 'live', 'plans'),
+      containWithin: null,
+      fsImpl,
+    })
+    expect(unbounded.status).toBe('unresolved')
+    expect(asked.length).toBeGreaterThan(0)
+  })
+
+  it('одного кандидата ВНУТРИ дерева достаточно, чтобы путь остался судимым', () => {
+    // Асимметрия правила намеренная: внешние кандидаты мастерской почти всегда лежат вне
+    // дерева, и «хоть один снаружи → не судим» отдало бы прибору право молчать почти обо
+    // всём. Наружу — только то, чему смотреть внутри дерева НЕГДЕ.
+    const res = resolveDeclaredPath({
+      raw: 'lib/never-written.mjs',
+      treeDir: join(FIXTURES, 'live'),
+      plansDir: join(FIXTURES, 'live', 'plans'),
+    })
+    expect(res.status).toBe('unresolved')
+    expect(res.candidates.some((c: { inside: boolean }) => c.inside)).toBe(true)
+  })
+
+  it('граница дерева считается по КАТАЛОГАМ, а не по префиксу строки', () => {
+    // Сосед с общим началом имени — классическая дыра префиксного сравнения: каталог
+    // проверяемого дерева и соседняя копия «то же имя плюс суффикс» начинаются одинаково.
+    expect(isWithinTree(join('a', 'tree', 'lib', 'x.mjs'), join('a', 'tree'))).toBe(true)
+    expect(isWithinTree(join('a', 'tree'), join('a', 'tree'))).toBe(true)
+    expect(isWithinTree(join('a', 'tree-old', 'lib', 'x.mjs'), join('a', 'tree'))).toBe(false)
+    // Граница не названа — старое неограниченное поведение, и отчёт обязан это сказать.
+    expect(isWithinTree(join('a', 'anywhere'), null)).toBe(true)
+  })
+
+  it('корень обхода, уводящий из дерева, ОТКАЗАН — а не обойдён молча', () => {
+    const files = collectScanFiles({
+      roots: ['../..', '.'],
+      treeDir: join(FIXTURES, 'live'),
+      plansDir: join(FIXTURES, 'live', 'plans'),
+    })
+    // Корень `../..` вывел бы обход в чужие каталоги; он отброшен, а `.` обойдён.
+    expect(files.length).toBeGreaterThan(0)
+    for (const f of files) expect(resolve(f).startsWith(resolve(join(FIXTURES, 'live')))).toBe(true)
   })
 
   it('переписывание корня: первое совпадение побеждает', () => {
@@ -511,10 +588,47 @@ describe('вычислитель — живое зеленеет (3), не по�
     ])
   })
 
-  it('прибор судит ТО дерево, которое ему дали: без переписывания корня чужой путь краснеет', () => {
+  it('прибор судит ТО дерево, которое ему дали: без переписывания корня чужой путь — ОТДЕЛЬНАЯ категория, не краснота', () => {
     const { evaluation: ev } = evaluate('live')
-    expect(ev.exitCode).toBe(EXIT_CODES.red)
-    expect(ev.counts.redByReason['path-unresolved']).toBe(1)
+    // Ни зелень, ни краснота. Покрасить это красным значило бы обвинить объявление в
+    // том, что прибору просто не дали туда посмотреть; покрасить зелёным — вынести
+    // вердикт о соседней рабочей копии, которой на чужой машине не существует.
+    expect(ev.counts.redByReason['path-unresolved'] ?? 0).toBe(0)
+    expect(ev.counts.outsideTree, 'один путь ушёл наружу измеряемого дерева').toBe(1)
+    expect(ev.counts.outsideTreeUnjudged, 'запись artifacts наружу не судится вовсе').toBe(1)
+    expect(ev.outside[0]).toMatchObject({ kind: 'artifact', role: 'path' })
+    expect(String(ev.outside[0].declared)).toContain('../synthetic-elsewhere')
+    // Экземпляр остальной описи при этом судится как обычно.
+    expect(ev.counts.green).toBe(2)
+    expect(ev.exitCode).toBe(EXIT_CODES.clean)
+  })
+
+  it('отчёт НАЗЫВАЕТ и границу, и правила переписывания корня — числом и словами', () => {
+    const { root } = caseDirs('live')
+    const withoutRule = evaluate('live')
+    const plain = renderReport({
+      treeDir: withoutRule.evaluation.treeDir,
+      commit: 'deadbee',
+      plansDir: withoutRule.evaluation.plansDir,
+      evaluation: withoutRule.evaluation,
+      inventory: withoutRule.inventory,
+    })
+    expect(plain).toContain('root rewrites applied: none')
+    expect(plain).toContain('containment: only paths inside the tree above are examined')
+    expect(plain).toContain('(1 declared paths in 1 plans)')
+    expect(plain).toContain(OUTSIDE_TREE.ru)
+
+    const withRule = evaluate('live', { rewrites: [{ prefix: '../synthetic-elsewhere', target: root }] })
+    const rewritten = renderReport({
+      treeDir: withRule.evaluation.treeDir,
+      commit: 'deadbee',
+      plansDir: withRule.evaluation.plansDir,
+      evaluation: withRule.evaluation,
+      inventory: withRule.inventory,
+    })
+    expect(rewritten).toContain('root rewrites applied (1):')
+    expect(rewritten).toContain('../synthetic-elsewhere →')
+    expect(rewritten).toContain('(0 declared paths in 0 plans)')
   })
 
   it('(4) плана без сводки не судят: ни зелени, ни красноты — молчание', () => {
