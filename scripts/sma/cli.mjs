@@ -2241,8 +2241,8 @@ async function cmdGatesCheck({ dirs }) {
  * airbag-check — the git airbag hook. The pre-less FALLBACK for
  * an install that has not adopted the `sma pre` multiplexer; the canonical wiring is
  * `pre` (the airbag rides inside it). Delegates to the SAME airbag stream in PRE_CHECKS
- * (the only extra deny-capable stream) — honoring its kill-switch (SMA_AIRBAG_DISABLE)
- * and its opt-in gate (SMA_AIRBAG_ENABLE). HOOK_FACING: exit 0 always, wrapped fail-open.
+ * (the only extra deny-capable stream) — which runs by default, honoring its kill-switch
+ * (SMA_AIRBAG_DISABLE). HOOK_FACING: exit 0 always, wrapped fail-open.
  */
 async function cmdAirbagCheck({ dirs }) {
   return runSingleStream(dirs, 'airbag')
@@ -2299,7 +2299,8 @@ async function cmdToolGate() {
  * separate spawn — the Task-cap spend stream rides inside `pretask-pack` (one Task
  * spawn) and inside the `pre` multiplexer. Delegates to the SAME spend stream in PRE_CHECKS
  * (a deny-capable stream that denies ONLY the Task tool past a configured cap) — honoring
- * its opt-in gate (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE). HOOK_FACING: exit 0.
+ * its kill-switch (SMA_SPEND_DISABLE); the stream runs by default and stays silent until a
+ * human configures a cap. HOOK_FACING: exit 0.
  */
 async function cmdSpendCheck({ dirs }) {
   return runSingleStream(dirs, 'spend')
@@ -8532,8 +8533,9 @@ const SUBAGENT_SPAWN_TOOLS = new Set(['Task', 'Agent'])
  * Task matcher — the Task-cap spend soft-deny stream rides INSIDE it (runStreamCollect
  * over the one 'spend' PRE_CHECK), so there is never a second node process per Task PreToolUse.
  * A spend soft-deny short-circuits (deny wins, no pack injection); spend warns merge into the
- * pack output's additionalContext. Opt-in (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE)
- * are the stream's own and unchanged. HOOK_FACING: exit 0 always; every source fail-open.
+ * pack output's additionalContext. The stream runs by default; its kill-switch
+ * (SMA_SPEND_DISABLE) is the stream's own and unchanged. HOOK_FACING: exit 0 always; every
+ * source fail-open.
  */
 async function cmdPretaskPack({ dirs }) {
   const evt = readStdinJson()
@@ -8542,8 +8544,8 @@ async function cmdPretaskPack({ dirs }) {
   // ONE SPAWN: the Task-cap spend soft-deny stream rides
   // INSIDE this single Task PreToolUse spawn — never a second scripts/sma process. Same
   // consolidation seam as plan 02's `pre` multiplexer (runStreamCollect over the ONE stream).
-  // Opt-in (SMA_SPEND_OPTIN) + kill-switch (SMA_SPEND_DISABLE) are unchanged — the stream owns
-  // them. Fail-open: a spend error never blocks the spawn. Runs FIRST so a soft-deny short-
+  // The kill-switch (SMA_SPEND_DISABLE) is unchanged — the stream owns it, and it runs by
+  // default. Fail-open: a spend error never blocks the spawn. Runs FIRST so a soft-deny short-
   // circuits before any pack work (and so it still fires when SMA_PACK_DISABLE is set).
   let spendWarns = []
   let spendDeny = null
