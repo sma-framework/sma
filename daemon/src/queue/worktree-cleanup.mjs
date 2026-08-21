@@ -33,9 +33,17 @@ import { join } from 'node:path'
 import { parseVerbResult } from '../loop.mjs'
 import { latestRowPerId } from './adapter.mjs'
 import { foldAttemptRows } from './attempt-ledger.mjs'
+import { WORKTREE_COPIES_DIR } from '../../../scripts/sma/lib/constants.mjs'
 
-/** Каталог, внутри которого только и живут копии задач. Гард пути смотрит на этот сегмент. */
-const COPIES_DIR = '.sma-worktrees'
+/**
+ * Каталог, внутри которого только и живут копии задач. Гард пути смотрит на этот сегмент.
+ *
+ * ИМЯ БЕРЁТСЯ ОТТУДА ЖЕ, ОТКУДА ЕГО БЕРЁТ ПРОВИЗИЯ, а не пишется здесь ещё раз: этот модуль
+ * ОТКАЗЫВАЕТСЯ удалять всё, что лежит вне названного каталога, — значит вторая буква того же
+ * имени означала бы, что провизия кладёт копию туда, куда уборке смотреть не позволено, и
+ * узналось бы это молчаливым «refused-path» через месяц.
+ */
+const COPIES_DIR = WORKTREE_COPIES_DIR
 
 /** Ветка копии задачи. Терминальные (`sma-wt/`), сравнительные и долгоживущие — не наши. */
 const TASK_BRANCH_RE = /^(?:refs\/heads\/)?wt\/(.+)$/

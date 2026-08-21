@@ -139,3 +139,10 @@ export const AIRBAG_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
 // auto-deploy checkout — «your push carried my half-built work» becomes impossible.
 // A slash-namespaced ref (valid in git) keeps these branches grouped + easy to sweep.
 export const WORKTREE_BRANCH_PREFIX = 'sma-wt/'
+// WHERE EVERY WORKING COPY LIVES — a SIBLING of the main checkout, never a directory inside
+// it (a nested copy makes `git worktree remove` capable of emptying the tree it sits in).
+// Named here rather than spelled at each call site because three different modules act on
+// this directory: the verb that creates a copy, the daemon that asks for one per task, and
+// the cleanup that refuses to delete anything outside it. Three spellings of one directory
+// is how provisioning comes to put a copy where cleanup is not allowed to look.
+export const WORKTREE_COPIES_DIR = '.sma-worktrees'
