@@ -5784,3 +5784,55 @@ describe('база сравнения у переиспользованной к
     expect(line.base, 'база обязана быть ТОЧКОЙ ОТВОДА, а не вершиной уехавшего проекта').toBe(CUT)
   })
 })
+
+/**
+ * ПОТОЛОК ОДНОВРЕМЕННЫХ ПОПЫТОК.
+ *
+ * Тик заводится таймером и вызывается БЕЗ ожидания предыдущего прохода, а каждый проход
+ * берёт задачу и ведёт её до конца — значит попытки идут внахлёст по устройству. Регулятора
+ * не было ни одного: поиск по исходникам не давал ни счётчика идущих, ни признака занятости.
+ * Пол под происшествием 12.08.2026, когда три параллельных процесса жгли подписку.
+ *
+ * Утверждение о ПРОВОДЕ, а не о расчёте: при достигнутом потолке очередь не спрашивается
+ * вовсе. Тик, который «посчитал потолок» и всё равно захватил задачу, — ровно тот класс,
+ * который стоил дня.
+ */
+describe('потолок одновременных попыток — тик не берёт задачу сверх него', () => {
+  it('при достигнутом потолке очередь вообще не спрашивается', async () => {
+    const base = oneTaskAdapter(backlogTask({ id: 'BL-1' }))
+    let claims = 0
+    const counting: any = {
+      ...base,
+      async claimNext(...args: any[]) {
+        claims += 1
+        return (base as any).claimNext(...args)
+      },
+    }
+    const busy = {
+      size: () => 1,
+      workers: () => new Set<string>(),
+      add() {},
+      release() {},
+    }
+    const { deps } = makeDeps({ adapter: counting, deps: { inFlight: busy } })
+    const r = await tick(deps)
+    expect(claims, 'при достигнутом потолке очередь спрашивать нельзя — иначе попытка уже выдана').toBe(0)
+    expect(r.idle, 'проход при достигнутом потолке — это простой, а не работа').toBe(true)
+  })
+
+  it('при свободном месте потолок не мешает — задача берётся как обычно', async () => {
+    const base = oneTaskAdapter(backlogTask({ id: 'BL-2' }))
+    let claims = 0
+    const counting: any = {
+      ...base,
+      async claimNext(...args: any[]) {
+        claims += 1
+        return (base as any).claimNext(...args)
+      },
+    }
+    const free = { size: () => 0, workers: () => new Set<string>(), add() {}, release() {} }
+    const { deps } = makeDeps({ adapter: counting, deps: { inFlight: free } })
+    await tick(deps)
+    expect(claims, 'свободное место обязано пропускать работу').toBe(1)
+  })
+})
