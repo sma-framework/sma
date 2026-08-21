@@ -5725,3 +5725,62 @@ describe('копия попытки провизионируется в ката
     expect(rec.removals[0][3], 'уборка целилась не в тот каталог, который положила провизия').toBe(provisioned)
   })
 })
+
+/**
+ * БАЗА СРАВНЕНИЯ У ПЕРЕИСПОЛЬЗОВАННОЙ КОПИИ.
+ *
+ * Когда верб не называет основания (замерено 12.08.2026: переиспользованная копия отвечает
+ * `base=нет reused=true expected=нет actual=нет`), цикл спрашивал у git вершину ПРОЕКТА.
+ * На первой попытке это верно — копию только что отвели оттуда. На ПОВТОРЕ проект успевает
+ * уехать вперёд, и тогда «база» указывает не туда, где ветку отвели: счёт коммитов ловит
+ * чужую историю, и в квитанцию приёмки едут работы, которых попытка не делала. Замерено
+ * тем же днём: попытка, не тронувшая ни одного файла, получила квитанцию на три коммита
+ * и одно исчезновение файла.
+ *
+ * Спрашивать надо ТОЧКУ ОТВОДА — там, где ветка задачи разошлась с проектом. На первой
+ * попытке это ровно вершина проекта, на повторе — по-прежнему место отвода.
+ */
+describe('база сравнения у переиспользованной копии — точка отвода, а не уехавшая вершина', () => {
+  const CUT = 'a'.repeat(40) // где стоял проект, когда копию отводили
+  const MOVED = 'f'.repeat(40) // куда проект уехал с тех пор
+
+  /** Верб отвечает БЕЗ основания — так отвечает переиспользованная копия. */
+  const noBaseRunner = async (_bin: string, argsArray: string[]) => {
+    const verb = argsArray[1]
+    const sub = argsArray[2]
+    if (verb === 'worktree' && sub === 'provision') {
+      const b = argsArray.indexOf('--branch')
+      const p = argsArray.indexOf('--path')
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          ok: true,
+          reused: true,
+          path: p >= 0 ? argsArray[p + 1] : '/wt/BL-1',
+          branch: b >= 0 ? argsArray[b + 1] : 'wt/BL-1',
+        }),
+      }
+    }
+    if (verb === 'worktree') return { code: 0, stdout: JSON.stringify({ worktrees: [] }) }
+    if (verb === 'reverify') return GREEN_REVERIFY
+    if (verb === 'preflight') return { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) }
+    return { code: 0, stdout: '{}' }
+  }
+
+  /** Проект уехал: его вершина и точка отвода — РАЗНЫЕ ответы, и их видно по вопросу. */
+  const movedProjectGit = (args: string[]) => {
+    if (args[0] === 'rev-parse' && args[1] === '--git-common-dir') return '/repo/.git'
+    if (args[0] === 'merge-base') return CUT
+    if (args[0] === 'rev-parse') return MOVED
+    return ''
+  }
+
+  it('база берётся из точки отвода — вершина уехавшего проекта даёт чужие коммиты в квитанции', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 2 }))
+    const { deps, journalled } = makeDeps({ adapter, verbRunner: noBaseRunner, deps: { execGit: movedProjectGit } })
+    await tick(deps)
+    const line = journalled.find((e: any) => e.type === 'task.worktree_base')
+    expect(line, 'строка об основании копии обязана быть записана').toBeTruthy()
+    expect(line.base, 'база обязана быть ТОЧКОЙ ОТВОДА, а не вершиной уехавшего проекта').toBe(CUT)
+  })
+})
