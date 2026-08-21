@@ -480,8 +480,11 @@ describe('вычислитель — мёртвое краснеет поимё�
     expect(ev.exitCode).toBe(EXIT_CODES.red)
     const link = ev.red.find((r: { kind: string }) => r.kind === 'link')
     expect(link.reason).toBe('trace-missing-in-named-file')
-    expect(link.namedSide).toBe('from')
-    expect(String(link.namedFile)).toContain('code.txt')
+    // Оба конца объявления названы файлами, и прибор проверяет ОБА: маркер лежит в
+    // получателе и отсутствует в источнике — этого одного достаточно для красноты.
+    expect(link.namedSides).toEqual(['from', 'to'])
+    expect(link.missingIn.map((f: string) => f.replace(/^.*[\\/]/, ''))).toEqual(['code.txt'])
+    expect(link.namedFiles).toHaveLength(2)
 
     // КОНТРОЛЬ, без которого кейс проходил бы и БЕЗ сужения: след действительно жив в
     // дереве, и поиск по дереву целиком назвал бы эту связь зелёной.
