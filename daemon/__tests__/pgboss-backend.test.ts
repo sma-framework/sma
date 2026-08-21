@@ -84,20 +84,41 @@ function makeFakeBackend({
   const sendCalls: any[] = []
   const createQueueCalls: any[] = []
 
-  // pg-boss maintenance, simulated: an active job past its expiry returns to 'created'
-  // (retry) with retry_count+1, or moves to the dead-letter (failed) once exhausted.
+  // pg-boss maintenance, simulated: an active job past its expiry goes back into the RETRY
+  // state with retry_count+1, or is closed once its re-issues are spent.
+  //
+  // WHICH WAITING STATE IT LANDS IN IS THE LIBRARY'S ANSWER, NOT A CONVENIENCE. `failJobs`
+  // re-inserts the row as `retry`; this fake wrote `created` — a state the library never puts
+  // an expired row into — and that one word was enough to hide a live hole, because a
+  // resolution that knows only the FIRST waiting state finds the row here and cannot find it on
+  // a real database. A fake DIFFERENT from its library is worse than one merely smaller than
+  // it: it certifies the difference.
+  //
+  // AND THE CLOSING OUTPUT IS THE LIBRARY'S TOO. Its expiry plan writes
+  // `{"value":{"message":"job timed out"}}` and no `reason` at all; the fake used to invent
+  // `reason: 'runtime_offline'`, a field pg-boss writes nowhere, so every reader of a failure
+  // cause was measured against a value no real queue has ever produced.
+  //
+  // THE PAYLOAD SURVIVES THE RE-ISSUE UNTOUCHED, and that is modelled rather than assumed: the
+  // library's own re-issue DELETES the row and INSERTS it back with the data copied, so every
+  // mark of the try that just ended — the claim time, its try counter, and now the fencing
+  // token — lives on until the next claim stamps a new one. Seen on the live queue, where the
+  // second worker's claim came back carrying the FIRST worker's marks. A fake that cleared the
+  // payload here would be tidier than the library and would certify a fence whose live version
+  // has a hole in it: «the old token is gone by itself» is exactly the belief that must not
+  // become a test.
   function maintain() {
     const t = now()
     for (const j of jobs.values()) {
       if (j.state === 'active' && j.started_on != null) {
         if (t - j.started_on > j.expireInSeconds * 1000) {
           if ((j.retry_count ?? 0) < (j.retryLimit ?? 2)) {
-            j.state = 'created'
+            j.state = 'retry'
             j.retry_count = (j.retry_count ?? 0) + 1
             j.started_on = null
           } else {
             j.state = 'failed'
-            j.output = { reason: 'runtime_offline' }
+            j.output = { value: { message: 'job timed out' } }
           }
         }
       }
@@ -228,7 +249,11 @@ function makeFakeBackend({
       const s: any = { queued: 0, active: 0, completed: 0, failed: 0 }
       for (const j of jobs.values()) {
         if (j.name !== name) continue
-        if (j.state === 'created') s.queued += 1
+        // BOTH WAITING STATES COUNT AS QUEUED, because the library's own stats plan counts
+        // `state < 'active'` — created AND retry. A fake counting only the first reports a row
+        // handed back after a lost lease as belonging to no column at all, which is exactly how
+        // «в очереди» could go on being wrong while every case stayed green.
+        if (j.state === 'created' || j.state === 'retry') s.queued += 1
         else if (j.state === 'active') s.active += 1
         else if (j.state === 'completed') s.completed += 1
         else if (j.state === 'failed') s.failed += 1
@@ -276,14 +301,28 @@ function makeFakeBackend({
       // move a value that already belongs to the attempt in flight (the queue's own retry_count
       // is what tells the two apart). A fake looser than its statement would let a renewal move
       // the clock here and stay green.
-      const [jobId, claimedAt] = params
+      //
+      // THE FENCING TOKEN RIDES THE SAME STATEMENT, and is modelled with the same guard rather
+      // than with a convenience of its own: it is written when — and only when — the claim time
+      // beside it is written, which is what makes «a new token per hand-out» a property of one
+      // statement instead of a second promise. The RETURNING clause is modelled too, because
+      // the backend READS IT BACK: a fake that answered with no rows would send the backend
+      // down its «the write did not land» path on every claim, and the suite would certify a
+      // token nobody ever hands out.
+      const [jobId, claimedAt, attemptToken] = params
       const j = jobs.get(String(jobId))
       if (j && j.state === 'active') {
         const d = j.data || {}
         const retry = j.retry_count ?? 0
         const sameAttempt = d.claimedAt != null && String(d.claimedAtRetry) === String(retry)
-        if (!sameAttempt) j.data = { ...d, claimedAt, claimedAtRetry: retry }
+        if (!sameAttempt) {
+          j.data = { ...d, claimedAt, claimedAtRetry: retry, attemptToken }
+          // RETURNING sees the row AS UPDATED — the value just written, not the one before it.
+          return { rows: [{ attempt_token: j.data.attemptToken }] }
+        }
       }
+      // The guard matched nothing: no row was updated, so the statement returns none. A fake
+      // that answered here anyway would be more generous than the UPDATE it stands for.
       return { rows: [] }
     }
     if (sql.startsWith('UPDATE pgboss.job') && sql.includes('start_after = $2')) {
@@ -354,15 +393,11 @@ function makeFakeBackend({
         .sort((a, b) => (b.created_on ?? 0) - (a.created_on ?? 0))[0]
       return { rows: match ? [{ id: match.id, name: match.name }] : [] }
     }
-    if (sql.includes("state = 'created'") && sql.startsWith('SELECT id, name')) {
-      // resolveQueuedJob(): the waiting job carrying this task id (the mirror of the active
-      // resolution below).
-      const taskId = params[0]
-      const match = [...jobs.values()]
-        .filter((j) => j.state === 'created' && j.data && j.data.id === taskId)
-        .sort((a, b) => (b.created_on ?? 0) - (a.created_on ?? 0))[0]
-      return { rows: match ? [{ id: match.id, name: match.name }] : [] }
-    }
+    // NO CREATED-ONLY RESOLUTION IS MODELLED, because the backend no longer issues one: every
+    // door that asks this queue for a waiting row now asks about BOTH states it waits in. A
+    // fake that went on answering a statement nobody sends would be a fixture for code that
+    // does not exist — and the branch above, which shares its `SELECT id, name` prefix, would
+    // be the only thing keeping it from answering the wrong question.
     if (sql.startsWith('UPDATE pgboss.job') && sql.includes('started_on')) {
       // touch(): the lease restamp. Keyed by JOB id (params[0]), not task id, and scoped to
       // active rows — the same shape the backend sends. Must be matched BEFORE the
@@ -467,8 +502,9 @@ describe('pg-boss backend — stopping work that is waiting after a lost attempt
     const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
     await adapter.enqueue(backlog())
 
-    // The state this fixture's own maintenance never produces and the real queue produces
-    // constantly: the row was handed back and waits for its next try.
+    // The state the real queue produces constantly: the row was handed back and waits for its
+    // next try. Written here by hand rather than through the fixture's own maintenance, so the
+    // case says exactly which state it is about — and keeps saying it if the maintenance changes.
     const job = [...jobs.values()][0]
     job.state = 'retry'
     job.retry_count = 1
@@ -481,6 +517,95 @@ describe('pg-boss backend — stopping work that is waiting after a lost attempt
     expect(job.state).toBe('cancelled')
     expect(job.output.reason).toBe('manual')
     expect(await adapter.claimNext('w1', {})).toBeNull()
+  })
+
+  /**
+   * И ДВЕРЬ СЛОВ ДОСТАЁТ ДО ТОЙ ЖЕ СТРОКИ — своим решением, а не заодно с остановкой.
+   *
+   * Остановка научилась видеть оба состояния ожидания раньше, и тогда же было сказано вслух:
+   * дотягиваются ли до такой строки ОСТАЛЬНЫЕ обещания — вопрос отдельный, которому положено
+   * своё решение и своё дело. Вот оно. Строка стоит именно во ВТОРОМ состоянии ожидания —
+   * состоянии, которого у памятного бэкенда нет и быть не может, — и дверь слов обязана её
+   * найти: иначе она отвечает «нет такой задачи» о работе, которую доска показывает в очереди.
+   */
+  it('дверь слов находит строку во ВТОРОМ состоянии ожидания — и следующая выдача несёт новые слова', async () => {
+    const c = mkClock()
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog({ description: 'первая редакция' }))
+
+    const job = [...jobs.values()][0]
+    job.state = 'retry'
+    job.retry_count = 1
+
+    expect((await adapter.list({})).find((r: any) => r.id === 'BL-196').status).toBe('queued')
+
+    expect(await adapter.setWords('BL-196', { description: 'вторая редакция' })).toBe(true)
+    expect(job.data.description).toBe('вторая редакция')
+
+    const claimed: any = await adapter.claimNext('w1', {})
+    expect(claimed.id).toBe('BL-196')
+    expect(claimed.description).toBe('вторая редакция')
+  })
+
+  /**
+   * И РЕШЕНИЕ ВЛАДЕЛЬЦА ПО ОСТАНОВЛЕННОЙ СБОРКЕ — тоже своим решением, тоже со своим делом.
+   *
+   * Кусок стоит именно во ВТОРОМ состоянии ожидания. Читающий путь называет его «в очереди»,
+   * ветка отмены берёт из очереди всё «в очереди» — и до этого куска не доставала, потому что
+   * искала его только в первом состоянии. Результат ровно тот, ради которого отмену и писали
+   * наоборот: задержка повтора кончается, и работа брошенной сборки уходит работнику.
+   */
+  it('отмена сборки достаёт кусок из ВТОРОГО состояния ожидания — и он перестаёт быть выдаваемым', async () => {
+    const c = mkClock()
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue({ id: 'B-17', source: 'roster', title: 'сборка', lane: 'prod', batchId: 'B-17', data: { batch: 'parent' } })
+    await adapter.enqueue({ id: 'B-17-1', source: 'roster', title: 'кусок 1', lane: 'prod', batchId: 'B-17' })
+
+    const piece = [...jobs.values()].find((j: any) => j.data && j.data.id === 'B-17-1')
+    piece.state = 'retry'
+    piece.retry_count = 1
+    piece.start_after = c.clock() // задержка повтора кончилась: очередь готова его выдать
+
+    expect((await adapter.list({})).find((r: any) => r.id === 'B-17-1').status).toBe('queued')
+
+    expect(await adapter.resolveBatch('B-17', { cancel: true })).toBe(true)
+
+    expect(piece.state).toBe('cancelled')
+    expect(piece.output.reason).toBe('manual')
+    expect(await adapter.claimNext('w1', {})).toBeNull()
+  })
+
+  /**
+   * А КУСОК, КОТОРОГО ОТМЕНА НЕ НАШЛА, БОЛЬШЕ НЕ ПРОПАДАЕТ МОЛЧА.
+   *
+   * Между чтением списка и изъятием строка может уйти: другой демон её выдал, аренда истекла,
+   * человек её закрыл. Раньше такой кусок просто пропускался одной строкой `continue` — и
+   * отмена возвращала «сделано», не сделав. Здесь промах устроен нарочно: резолвер обоих
+   * состояний отвечает пустотой ровно про этот кусок, — и отмена обязана СКАЗАТЬ о нём.
+   */
+  it('кусок, которого отмена не нашла, называется вслух — молчаливого пропуска больше нет', async () => {
+    const c = mkClock()
+    const { boss, execSql, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
+    const lines: string[] = []
+    const blind = async (sql: string, params: any[]) => {
+      if (sql.includes("state IN ('created','retry')") && params[0] === 'B-18-1') return { rows: [] }
+      return execSql(sql, params)
+    }
+    const adapter = createPgBossQueue({
+      boss,
+      execSql: blind,
+      clock: c.clock,
+      expireMs: 5000,
+      log: (line: string) => lines.push(line),
+    })
+    await adapter.enqueue({ id: 'B-18', source: 'roster', title: 'сборка', lane: 'prod', batchId: 'B-18', data: { batch: 'parent' } })
+    await adapter.enqueue({ id: 'B-18-1', source: 'roster', title: 'кусок 1', lane: 'prod', batchId: 'B-18' })
+
+    expect(await adapter.resolveBatch('B-18', { cancel: true })).toBe(true)
+
+    const piece = [...jobs.values()].find((j: any) => j.data && j.data.id === 'B-18-1')
+    expect(piece.state).not.toBe('cancelled') // изъять его действительно не удалось
+    expect(lines.some((l) => l.includes('B-18-1'))).toBe(true) // и об этом сказано
   })
 })
 
@@ -495,6 +620,25 @@ describe('pg-boss backend — job-option contract', () => {
     expect(sendCalls[0].opts.expireInSeconds).toBe(5) // ceil(5000/1000)
     expect(sendCalls[0].opts.retryLimit).toBe(2)
     expect(sendCalls[0].opts.retryBackoff).toBe(true)
+  })
+
+  /**
+   * ГРАНИЦА ПОПЫТОК ДОЕЗЖАЕТ ДО КОЛОНКИ БИБЛИОТЕКИ — дело про ПРОВОД, а не про вычисление.
+   *
+   * Решение «сколько раз перевыдавать» принимается теперь одним именем на оба бэкенда, и это
+   * значит ровно одно: число обязано оказаться В АРГУМЕНТАХ ПОСЕВА. Резолвер, который считает
+   * правильную границу и никуда её не передаёт, оставил бы живую очередь на умолчании
+   * библиотеки — тот самый класс, которым эта работа уже платила дважды.
+   */
+  it('граница попыток уезжает в посев тем числом, которое назвал контракт: своим, нулём у куска сборки, умолчанием иначе', async () => {
+    const c = mkClock()
+    const { adapter, sendCalls } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
+    await adapter.enqueue(backlog({ id: 'BL-R0', retryLimit: 0 }))
+    await adapter.enqueue(backlog({ id: 'BL-R7', retryLimit: 7 }))
+    await adapter.enqueue(backlog({ id: 'BL-RB', batchId: 'batch-9' })) // кусок сборки
+    await adapter.enqueue(backlog({ id: 'BL-RD' })) // границы никто не называл
+
+    expect(sendCalls.map((s: any) => s.opts.retryLimit)).toEqual([0, 7, 0, 2])
   })
 
   it('default expireMs maps to expireInSeconds 120 (the plan default)', async () => {
@@ -599,6 +743,90 @@ describe('the claim time and the lease clock are two different writes', () => {
     expect(row.claimedAt).toBe(job.started_on)
     expect(row.claimedAt).not.toBeNull()
     expect(row.leaseRenewedAt).toBe(job.started_on)
+  })
+})
+
+// ═══ ГДЕ ЖИВЁТ ЖЕТОН ПОПЫТКИ, И ЧТО С НИМ ДЕЛАЕТ САМА ОЧЕРЕДЬ ═══════════════════════════
+//
+// Отказ чужому жетону утверждён общим контрактным сьютом — он один на оба бэкенда. Здесь —
+// то, чего у памятного бэкенда нет и быть не может: ГРУЗ СТРОКИ и обращение очереди с ним.
+//
+// Эти дела утверждают ПРОВОД, а не вычисление: что жетон, выданный захватом, — это тот самый
+// жетон, который лежит в строке, а не значение, посчитанное рядом с ней. Вычисленный и никуда
+// не доехавший жетон — ровно тот класс, которым эта работа уже платила: посчитали, положили в
+// журнал и не передали тому, кто им пользуется.
+describe('the fencing token lives in the row, and the queue keeps it there', () => {
+  it('the token the claim handed out IS the token in the payload, and a new one is stamped only at the next claim', async () => {
+    const c = mkClock(1000)
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
+    await adapter.enqueue(backlog())
+
+    const first = await adapter.claimNext('daemon', {})
+    const job = [...jobs.values()][0]
+    // ПРОВОД: одно значение, а не два похожих.
+    expect(typeof first.attemptToken).toBe('string')
+    expect(job.data.attemptToken).toBe(first.attemptToken)
+
+    // Аренда потеряна: очередь перевыдаёт строку СВОИМ планом, и груз она копирует. Строка при
+    // этом встаёт во ВТОРОЕ состояние ожидания — так пишет план библиотеки, и подделка теперь
+    // тоже: здесь она раньше говорила «created», состояние, в которое библиотека просроченную
+    // строку не кладёт никогда.
+    c.advance(6000)
+    await adapter.list({})
+    expect(job.state).toBe('retry')
+    // ЖЕТОН УМЕРШЕЙ ПОПЫТКИ ЕЩЁ ЛЕЖИТ В ГРУЗЕ — и это не оплошность, а поведение библиотеки,
+    // снятое с живой очереди. Починка, понадеявшаяся на «при перевыдаче стёрлось», разошлась
+    // бы с ней молча.
+    expect(job.data.attemptToken).toBe(first.attemptToken)
+
+    c.advance(1000)
+    const second = await adapter.claimNext('daemon', {})
+    // Новая выдача — новый жетон, и захват вернул НОВЫЙ, а не тот, что лежал в грузе до штампа.
+    expect(second.attemptToken).not.toBe(first.attemptToken)
+    expect(job.data.attemptToken).toBe(second.attemptToken)
+  })
+
+  it('the token is written by the SAME statement as the claim time — no second write, no seam of its own', async () => {
+    const c = mkClock(1000)
+    const statements: string[] = []
+    const { boss, execSql } = makeFakeBackend({ clock: c.clock, expireMs: 60000 })
+    const adapter = createPgBossQueue({
+      boss,
+      execSql: async (sql: string, params: any[]) => {
+        statements.push(sql)
+        return execSql(sql, params)
+      },
+      clock: c.clock,
+      expireMs: 60000,
+    })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('daemon', {})
+
+    const writes = statements.filter((s) => s.includes('attemptToken'))
+    // ОДИН оператор, и это тот же, что пишет время захвата: «новый жетон на каждой выдаче»
+    // держится охраной ОДНОГО оператора, а не вторым обещанием, которое можно забыть сдержать.
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toContain('claimedAt')
+    expect(writes[0].startsWith('UPDATE pgboss.job')).toBe(true)
+  })
+
+  it('a row claimed BEFORE the token existed closes as it always did — an absence is an absence', async () => {
+    const c = mkClock(1000)
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 60000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    const claimed = await adapter.claimNext('daemon', {})
+
+    // Строка, захваченная версией, у которой жетона не было вовсе.
+    const job = [...jobs.values()][0]
+    delete job.data.attemptToken
+
+    // Звонящий предъявляет жетон, а строке предъявить нечего: отказывать ему не за что.
+    expect(await adapter.touch('BL-196', { attemptToken: claimed.attemptToken })).toBe(true)
+    expect(
+      await adapter.complete('BL-196', { receiptRef: 'reverify:old-row', attemptToken: claimed.attemptToken }),
+    ).toBe(true)
+    const [row] = await adapter.list({})
+    expect(row.status).toBe('awaiting_approval')
   })
 })
 

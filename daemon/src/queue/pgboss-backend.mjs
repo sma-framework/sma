@@ -100,10 +100,20 @@ import {
   waveHeldOf,
   batchDecisionsOf,
   DEFAULT_EXPIRE_MS,
+  // The attempt border and the queue's own last word about a row it will not hand out again —
+  // one name for both backends, for the same reason the token above is one name.
+  retryLimitOf,
+  ATTEMPTS_EXHAUSTED,
   FAIL_REASONS,
   NoReceiptError,
   InvalidFailReasonError,
   UnknownTaskError,
+  // The fencing token of an attempt: minted, judged and named in ONE place for both backends
+  // — a second expression here would be a second promise, and the two would disagree in
+  // silence the first time either was touched.
+  mintAttemptToken,
+  attemptTokenIsStale,
+  refuseStaleAttempt,
 } from './adapter.mjs'
 import {
   QueueEncodingError,
@@ -255,9 +265,37 @@ function attemptNumberOf(data, retryCount, { unclaimed = false } = {}) {
   return (Number(data.attempt) || 1) + (Number(retries) || 0)
 }
 
+/**
+ * tokenOfJob(job) → THE FENCING TOKEN THE ROW ITSELF CARRIES, or null.
+ *
+ * The one reader of that field, so «where the token is kept» is stated once. Null covers two
+ * different absences on purpose, because both mean the same thing to a caller: a row claimed
+ * before this mark existed, and a row whose stamp did not land. Neither is a licence to invent
+ * a token, and neither may be a reason to refuse the worker holding the attempt — an absence is
+ * an absence, exactly as it is for the attempt number beside it.
+ */
+function tokenOfJob(job) {
+  const data = job && job.data && typeof job.data === 'object' ? job.data : null
+  const token = data && typeof data.attemptToken === 'string' ? data.attemptToken : ''
+  return token === '' ? null : token
+}
+
 /** The pg-boss states in which NO attempt is in flight: the row is waiting to be handed out,
  *  so the claim mark in its payload describes the try that already ended. */
 const WAITING_STATES = Object.freeze(['created', 'retry'])
+
+/**
+ * THE LIBRARY'S OWN WORD when it closes a row whose lease ran out and whose re-issues are
+ * spent. Copied here from its expiry plan LITERALLY (`failJobsByTimeout` writes
+ * `{"value":{"message":"job timed out"}}`), because that is the only handle the row gives us:
+ * it carries no `reason`, which is the field every reader of ours takes a cause from.
+ *
+ * It is a string of THEIRS, so it is pinned in one place and read exactly once (see
+ * exhaustedReasonOf). If a future version of the library changes the wording, this stops
+ * matching and such rows go back to saying nothing — which is what they said before, rather
+ * than something wrong.
+ */
+const LIBRARY_TIMEOUT_MESSAGE = 'job timed out'
 
 /**
  * transitionStamp({from, to, actor, taskId, attempt, log}) → `{idempotencyKey,
@@ -415,7 +453,13 @@ export function createPgBossQueue({
         // silent repetition the owner forbade: a piece that broke must STOP its assembly and
         // ask him, and a queue quietly running it again two more times is the loop that cost a
         // day on 12.08.2026. Ordinary work keeps the retries it has always had.
-        retryLimit: heldItem ? 0 : 2,
+        //
+        // THE NUMBER IS NO LONGER THIS FILE'S OWN. It lived here as a literal, which meant the
+        // reference backend — the executable spec every other backend is written against — could
+        // not see the rule and kept no border at all: this queue refused past two re-issues, that
+        // one handed the same row back for ever, and the suite asked neither. One name now, and
+        // this call is where the durable half of it MAPS onto the library's own `retry_limit`.
+        retryLimit: retryLimitOf(norm),
         retryBackoff: true,
         expireInSeconds, // liveness: silent worker → job expires → requeue
         ...(heldItem ? { startAfter: HELD_UNTIL } : {}),
@@ -516,18 +560,41 @@ export function createPgBossQueue({
    * FAIL-OPEN: a database that refuses this write costs the row its exact claim time, never the
    * claim — mapRow then falls back to the lease clock, which is what every row recorded before
    * this existed carries.
+   *
+   * ═══ THE FENCING TOKEN RIDES THE SAME STAMP, AND FOR THE SAME REASONS ═══
+   *
+   * IT LIVES IN THE PAYLOAD, not in a Map of this process. A register of live tokens in memory
+   * would be the backend's own version of the daemon state this product has already outlawed:
+   * a restart would forget every token, and every worker alive at that moment would be refused
+   * the right to close work it really did. The payload survives a restart, and it survives the
+   * queue's own re-issue (which DELETEs the row and INSERTs it back with the data copied).
+   *
+   * IT IS RESTAMPED BY THE SAME GUARD, so «a new token per hand-out» costs no second statement
+   * and cannot drift from «a new claim time per hand-out»: the guard fires exactly when the
+   * queue's own try counter says this is a different attempt from the one the mark describes.
+   *
+   * IT RETURNS THE TOKEN THE ROW NOW CARRIES, not the one this process minted — and that is the
+   * fail-open half. If the write did not land, the row still carries what it carried (nothing,
+   * or the previous attempt's token), and handing the claimer a token no row knows about would
+   * refuse the very worker that holds the attempt: a database hiccup would then cost the WORK,
+   * not just its mark. Null says «this row has no token of mine to give».
    */
-  async function stampClaimedAt(jobId) {
+  async function stampClaimedAt(jobId, attemptToken) {
     try {
-      await runSql(
+      const res = await runSql(
         `UPDATE pgboss.job
-            SET data = data || jsonb_build_object('claimedAt', $2::bigint, 'claimedAtRetry', retry_count)
+            SET data = data || jsonb_build_object('claimedAt', $2::bigint, 'claimedAtRetry', retry_count, 'attemptToken', $3::text)
           WHERE id = $1 AND state = 'active'
-            AND (NOT (data ? 'claimedAt') OR (data->>'claimedAtRetry') IS DISTINCT FROM retry_count::text)`,
-        [jobId, now()],
+            AND (NOT (data ? 'claimedAt') OR (data->>'claimedAtRetry') IS DISTINCT FROM retry_count::text)
+        RETURNING data->>'attemptToken' AS attempt_token`,
+        [jobId, now(), attemptToken],
       )
+      const rows = res && Array.isArray(res.rows) ? res.rows : []
+      const written = rows[0] ? rows[0].attempt_token : null
+      return typeof written === 'string' && written !== '' ? written : null
     } catch (err) {
       log(`claim time not recorded for job ${jobId}: ${maskError(err)}`)
+      return null
     }
   }
 
@@ -660,8 +727,10 @@ export function createPgBossQueue({
         // the mark still in the payload belongs to the attempt that just lost the row.
         const attempt = attemptNumberOf(data, retries, { unclaimed: true })
         // The fetch above set the lease clock; this records the moment the work was taken, which
-        // the renewal must never be allowed to move (see stampClaimedAt).
-        await stampClaimedAt(job.id)
+        // the renewal must never be allowed to move (see stampClaimedAt) — AND the fencing token
+        // of this hand-out, under the same guard, so a re-issued row gets a new one by
+        // construction rather than by a second promise.
+        const attemptToken = await stampClaimedAt(job.id, mintAttemptToken())
         // READY -> CLAIMED. The fetch above IS the claim (atomic in the queue), so this
         // cannot gate it — it is minted AFTER the fact, and a refusal is logged rather
         // than acted on: nothing here can un-fetch a job, and dropping a task the queue
@@ -670,7 +739,18 @@ export function createPgBossQueue({
         // NOTE ON `workerId`: the caller claims as the daemon itself — WHICH worker will run
         // this task is decided by routing, one step later. So nothing is stamped here; the
         // executing worker is written by assignWorker() below, once it is actually known.
-        return { ...data, attempt }
+        //
+        // THE TOKEN IS WRITTEN OVER THE PAYLOAD'S OWN, DELIBERATELY. `data` is what the fetch
+        // returned — the payload as it was BEFORE this claim was stamped — so it still carries
+        // the token of the attempt that just lost the row (the queue copies the payload through
+        // its own re-issue; measured on the live queue, and the claim time beside it behaves the
+        // same way). Handing that one out would hand the new worker the dead worker's key.
+        // Nothing is carried when the stamp did not land: an absent token is an absence, and
+        // every method treats it as today's behaviour rather than as a refusal.
+        const claimed = { ...data, attempt }
+        delete claimed.attemptToken
+        if (attemptToken) claimed.attemptToken = attemptToken
+        return claimed
       }
     }
     return null
@@ -752,8 +832,23 @@ export function createPgBossQueue({
         // served from. pg-boss cancels anything short of completed (`state < 'completed'` in
         // its own plan), which is exactly the two states meant here.
         if (item.status !== 'queued' && item.status !== 'claimed') continue
-        const job = item.status === 'claimed' ? await resolveActiveJob(item.id) : await resolveQueuedJob(item.id)
-        if (!job) continue
+        // A WAITING PIECE MAY BE WAITING IN EITHER STATE, and this is the second — and last —
+        // deliberate adoption of the two-state resolution (the words door was the first). A
+        // piece whose worker went silent comes back to the queue like any other row, reads as
+        // «в очереди» on every screen, and used to be looked for in the FIRST waiting state
+        // alone: not found, silently skipped, left live. Its backoff then ran out and the queue
+        // handed the work of an abandoned assembly to a worker — the very outcome cancelling
+        // exists to prevent.
+        const job = item.status === 'claimed' ? await resolveActiveJob(item.id) : await resolveWaitingJob(item.id)
+        if (!job) {
+          // AND A PIECE THAT COULD NOT BE FOUND IS SAID OUT LOUD. The read above and the
+          // resolution here are two moments, and a row can leave between them — another daemon
+          // fetched it, its lease lapsed, a person closed it. That is a real outcome and it is
+          // survivable; being told «сборка отменена» while a piece of it was never touched, and
+          // finding nothing about it anywhere, is not.
+          log(`batch piece ${item.id} was not found to take out of the queue: it left the waiting states between the read and the cancel`)
+          continue
+        }
         try {
           await bossInstance.cancel(job.name, job.id)
           // AND THE REASON WITH IT. `cancelled` is a state, not a word: every reader of a
@@ -789,23 +884,51 @@ export function createPgBossQueue({
     if (typeof taskId !== 'string' || taskId === '') return false
     const words = validateWords(patch)
     if (Object.keys(words).length === 0) return false
-    const job = (await resolveActiveJob(taskId)) || (await resolveQueuedJob(taskId))
+    const job = (await resolveActiveJob(taskId)) || (await resolveWaitingJob(taskId))
     if (!job) return false
     await runSql(`UPDATE pgboss.job SET data = data || $2::jsonb WHERE id = $1`, [job.id, JSON.stringify(words)])
     return true
   }
 
-  /** READ-ONLY resolution of a piece that is still WAITING — the mirror of resolveActiveJob. */
-  async function resolveQueuedJob(taskId) {
+  /**
+   * THE RESOLUTION THAT SAW ONLY THE FIRST WAITING STATE IS GONE, and its absence is the point:
+   * both doors that used it — the words of a task and the owner's word about an abandoned
+   * assembly — have now each taken their own decision to reach a row waiting after a lost
+   * attempt, each with a case of its own. Nothing is left that asks this queue about ONE of
+   * its two waiting states, so keeping a resolution that answers about one would leave a
+   * loaded gun on the table for the next door somebody writes.
+   */
+
+  /**
+   * READ-ONLY resolution of a job that is WAITING — in EITHER of the two states this queue
+   * waits in — for the promises that are NOT the stop.
+   *
+   * WHY IT IS A RESOLUTION OF ITS OWN, and not the stop's one borrowed or the created-only one
+   * widened. When the stop learned to see both waiting states it was said in the same breath
+   * that whether the OTHER doors should reach a row waiting after a lost attempt is a separate
+   * promise, owed its own decision and its own case — because widening the shared resolution
+   * would have changed two promises at once, in silence, and nothing would have said which.
+   * Those decisions have now been taken, one at a time, each with a case: the words door and
+   * the owner's word about an abandoned assembly. This is where they are taken, so the reason
+   * is readable here rather than inferred from a call site.
+   *
+   * WHAT IT CHANGES, in words rather than in states: a task whose worker went silent is parked
+   * by the queue until its backoff runs out. Every reader of ours already calls that «в
+   * очереди», so a person sees ordinary waiting work — and it is precisely the moment editing
+   * the words matters most, because the next try should go out with a corrected brief rather
+   * than the one that just failed. A door answering «no such task» about a row the board shows
+   * in the queue is a refusal wearing the clothes of an absence.
+   */
+  async function resolveWaitingJob(taskId) {
     try {
       const res = await runSql(
-        `SELECT id, name FROM pgboss.job WHERE data->>'id' = $1 AND state = 'created' ORDER BY created_on DESC LIMIT 1`,
+        `SELECT id, name FROM pgboss.job WHERE data->>'id' = $1 AND state IN ('created','retry') ORDER BY created_on DESC LIMIT 1`,
         [taskId],
       )
       const rows = res && Array.isArray(res.rows) ? res.rows : []
       return rows[0] || null
     } catch (err) {
-      log(`queued job for ${taskId} not resolved: ${maskError(err)}`)
+      log(`waiting job for ${taskId} not resolved: ${maskError(err)}`)
       return null
     }
   }
@@ -834,9 +957,15 @@ export function createPgBossQueue({
    * cannot move it. A renewal that also reset «how long has this been running» is what made
    * every live task report about zero.
    */
-  async function touch(taskId) {
+  async function touch(taskId, { attemptToken } = {}) {
     const job = await resolveActiveJob(taskId)
     if (!job) return false
+    // WHOSE LEASE IS BEING HELD OPEN. The resolution above finds the row that is running under
+    // THIS task id, which is not the same question as «is the caller the one running it». A
+    // stale worker that went on renewing would keep the lease of somebody else's attempt alive
+    // for ever, and the liveness sweep — whose whole job is to take a row away from a worker
+    // that has gone quiet — would never fire. `false` is this method's own way of saying no.
+    if (attemptTokenIsStale(tokenOfJob(job), attemptToken)) return false
     await runSql(`UPDATE pgboss.job SET started_on = now() WHERE id = $1 AND state = 'active'`, [job.id])
     return true
   }
@@ -851,6 +980,10 @@ export function createPgBossQueue({
     }
     const job = await resolveActiveJob(taskId)
     if (!job) throw new UnknownTaskError(`complete: no active task "${taskId}"`)
+    // WHOSE ATTEMPT IS BEING CLOSED — asked BEFORE any mutation, like the missing receipt above.
+    // The resolution finds the ACTIVE row of this task, whichever attempt that is; this is the
+    // one question it cannot answer, and the one the live queue proved has to be asked.
+    refuseStaleAttempt('complete', taskId, tokenOfJob(job), result.attemptToken)
     await bossInstance.complete(job.name, job.id, { receiptRef: result.receiptRef })
     coalesce.delete(taskId)
     // Finished work is not finished business: the task now owes a human a word, and the
@@ -871,12 +1004,17 @@ export function createPgBossQueue({
     return true
   }
 
-  async function fail(taskId, reason) {
+  async function fail(taskId, reason, { attemptToken } = {}) {
     if (!FAIL_REASONS.includes(reason)) {
       throw new InvalidFailReasonError(`fail: "${reason}" is not one of ${FAIL_REASONS.join('|')}`)
     }
     const job = await resolveActiveJob(taskId)
     if (!job) throw new UnknownTaskError(`fail: no active task "${taskId}"`)
+    // A STALE WORKER MAY NOT BREAK SOMEBODY ELSE'S ATTEMPT EITHER, and here it matters twice
+    // over: a failure in this queue is the RETRYABLE outcome — the row is deleted and inserted
+    // back for another try — so a stranger's failure would take the work away from the worker
+    // doing it right now and hand it to a third.
+    refuseStaleAttempt('fail', taskId, tokenOfJob(job), attemptToken)
     await bossInstance.fail(job.name, job.id, { reason })
     coalesce.delete(taskId)
     if (ledgerDir) {
@@ -895,7 +1033,7 @@ export function createPgBossQueue({
    * READ-ONLY resolution of a job that is WAITING TO BE HANDED OUT — in EITHER of the two
    * states this queue waits in.
    *
-   * WHY THIS EXISTS BESIDE resolveQueuedJob, WHICH LOOKS ALMOST THE SAME. A task whose worker
+   * WHY IT EXISTS AT ALL — it was the FIRST door taught to see both. A task whose worker
    * went silent is not failed: the liveness sweep hands the row back, and the queue parks it in
    * its RETRY state until the backoff runs out. Every reader of ours already calls that state
    * «в очереди» — the state map says so — so a person looking at the board sees an ordinary
@@ -905,10 +1043,14 @@ export function createPgBossQueue({
    * is told did not happen, on work that then runs anyway, is the same mine as a stop written
    * as a failure — approached from the other side.
    *
-   * IT IS DELIBERATELY NOT A WIDENING OF resolveQueuedJob. That resolution also answers the
-   * words door and the owner's word about an abandoned assembly, and whether THOSE should
-   * reach a task waiting after a lost attempt is a separate promise, owed a decision and a
-   * case of its own rather than a side effect of this one.
+   * IT WAS DELIBERATELY NOT A WIDENING OF THE SHARED WAITING RESOLUTION, which at the time also
+   * answered the words door and the owner's word about an abandoned assembly: whether THOSE
+   * should reach a task waiting after a lost attempt was a separate promise, owed a decision
+   * and a case of its own rather than a side effect of this one. Both decisions have since been
+   * taken that way — one door at a time, one case each — and they read the same two states
+   * through resolveWaitingJob. This resolution stays the stop's own, spelled out in full rather
+   * than borrowed, so a future change to what «stoppable» means cannot silently move the
+   * other two doors with it.
    */
   async function resolveStoppableJob(taskId) {
     try {
@@ -1002,6 +1144,27 @@ export function createPgBossQueue({
     return AWAITING_APPROVAL_STATUSES.includes(r.approval_status) ? AWAITING_APPROVAL : base
   }
 
+  /**
+   * exhaustedReasonOf(r, output) → our word for a row THE LIBRARY closed, or null.
+   *
+   * The queue expires a lease on its own schedule, and when the row has no re-issues left it
+   * closes it — with an output written in the library's language, not ours: a `value.message`
+   * saying the job timed out, and no `reason` at all. Every reader of a finished row takes its
+   * cause from `reason`, so such a row arrived on a card as «причина не записана» — a red row
+   * that explains nothing, the very thing the batch cancellation already had to fix once.
+   *
+   * ONE MESSAGE IS TRANSLATED, matched literally against the library's own plan, and only on a
+   * row that is actually CLOSED: a lease that timed out with re-issues still owed puts the row
+   * back into a waiting state, where «the attempts ran out» would be a lie. Anything else the
+   * library might write stays untranslated rather than being guessed at — an invented cause is
+   * worse than an absent one.
+   */
+  function exhaustedReasonOf(r, output) {
+    if (STATE_TO_STATUS[r.state] !== 'failed') return null
+    const said = output && output.value && output.value.message
+    return said === LIBRARY_TIMEOUT_MESSAGE ? ATTEMPTS_EXHAUSTED : null
+  }
+
   function mapRow(r) {
     const data = r.data || {}
     const retries = r.retry_count ?? 0
@@ -1058,7 +1221,7 @@ export function createPgBossQueue({
       claimedAt: r.started_on == null ? null : (data.claimedAt ?? r.started_on),
       leaseRenewedAt: r.started_on ?? null,
       completedAt: r.completed_on ?? null,
-      failure_reason: output.reason ?? null,
+      failure_reason: output.reason ?? exhaustedReasonOf(r, output),
     }
   }
 

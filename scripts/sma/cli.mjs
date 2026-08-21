@@ -11208,11 +11208,14 @@ async function cmdWorktree({ positionals, flags, dirs }) {
   } catch {
     /* fail-open to a stable stub */
   }
+  // The ONE name of the copies directory, shared with the daemon (which asks for a per-task
+  // path) and with the cleanup (which refuses to delete anything outside it).
+  const { WORKTREE_COPIES_DIR } = await import('./lib/constants.mjs')
   if (!branch) branch = `${wt.WORKTREE_BRANCH_PREFIX}${terminalId}`
   const path =
     typeof flags.path === 'string' && flags.path.trim()
       ? flags.path.trim()
-      : join(dirname(mainRoot), '.sma-worktrees', terminalId) // sibling dir (avoids the nested-removal bug)
+      : join(dirname(mainRoot), WORKTREE_COPIES_DIR, terminalId) // sibling dir (avoids the nested-removal bug)
 
   // ОТКУДА ОТВОДИТСЯ КОПИЯ — ИЗ ТОГО ДЕРЕВА, КУДА ПОТОМ СЛИВАЕТ ПРИЁМКА.
   //
