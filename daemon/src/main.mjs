@@ -40,7 +40,7 @@
  */
 
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -69,6 +69,7 @@ import {
   readAttemptLog,
 } from './queue/attempt-ledger.mjs'
 import { cleanupTaskWorktree, createWorktreeSweeper } from './queue/worktree-cleanup.mjs'
+import { scanBacklog } from './intake/backlog-scan.mjs'
 import { harvestTaskMemory } from './queue/memory-harvest.mjs'
 import { attemptIdFor } from './front/journal.mjs'
 import { collectDiagnostics } from './front/diagnostics.mjs'
@@ -1143,6 +1144,37 @@ export function createDaemon(o = {}) {
       },
     })
 
+  /**
+   * The object the tick reads its secondary intake through. Built here rather than inline in
+   * `tickDeps` because it CARRIES the cadence: `lastScanAt` is the only state the tick is
+   * allowed to read back, and it has to survive between passes on the same object.
+   *
+   * The git runner is bound to the project the window is connected to — the same expression
+   * `projectDir` uses below. Unbound, the scanner's `git fetch` would run wherever the daemon
+   * process happens to stand, which is not the tree whose backlog it is about to read.
+   */
+  const createBacklogIntake = () => {
+    const backlogRoot = () => connectedProjectDir() ?? config.repoDir
+    const intake = {
+      lastScanAt: 0,
+      async scan() {
+        try {
+          return await scanBacklog({
+            repoDir: backlogRoot(),
+            execGit: (args, opts = {}) => execGit(args, { cwd: opts.cwd ?? backlogRoot() }),
+            clock,
+            fsImpl: o.fsImpl ?? { readFileSync },
+          })
+        } finally {
+          // stamped even when the scan threw: an attempt is an attempt, and only stamping
+          // successes turns a broken scan into a git fetch every five seconds.
+          intake.lastScanAt = clock()
+        }
+      },
+    }
+    return intake
+  }
+
   // (6) the stateless tick — same wrapped adapter, so its transitions emit too.
   const tickDeps = {
     clock,
@@ -1235,6 +1267,20 @@ export function createDaemon(o = {}) {
     // which is the daemon's own event log
     decisionJournal:
       o.decisionJournal ?? ((entry) => (typeof ledger.appendJournal === 'function' ? ledger.appendJournal(entry) : undefined)),
+    // THE SECONDARY INTAKE, JOINED TO THE TICK. `runIntake` asks for this object on its FIRST
+    // line and returns when it is absent — so the scanner was written, ported faithfully from
+    // the origin parser, covered by tests and asked for on every pass, while the root never
+    // built it. `backlogScanMinutes` was therefore a setting that changed nothing, and a ready
+    // backlog line never became a task. Same family as buildArgs, execGit and bookUsage above.
+    //
+    // THE CADENCE LIVES ON THIS OBJECT, not in the tick: the tick reads `lastScanAt` and stays
+    // stateless. The scan stamps itself IN A FINALLY, so a scan that threw still counts as an
+    // attempt — recording only successes would let a broken scan fetch git every five seconds.
+    //
+    // The DoR gate inside the scanner is what keeps this safe to switch on: an open line is
+    // enqueued only when it carries an estimate within the ceiling, and everything else is
+    // surfaced as not-ready rather than pulled into the queue.
+    intake: o.intake ?? createBacklogIntake(),
   }
   const daemon = runDaemon({ tickMs: config.tickMs ?? 5000, onTick: () => tick(tickDeps) })
 
