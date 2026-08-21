@@ -21,7 +21,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -31,8 +31,20 @@ import {
   resolveDeclaredPath,
   applyRewrites,
   compilePattern,
+  evaluateInventory,
+  renderReport,
+  toJson,
+  countRedWithoutVerdict,
+  parseVerdicts,
+  isTestFile,
   PLAN_STATUS,
   DEFAULT_SCAN_ROOTS,
+  DEFAULT_BROAD_LIMIT,
+  VERDICT_KINDS,
+  RED_REASONS,
+  YELLOW_REASONS,
+  EXIT_CODES,
+  HONEST_BOUNDARY,
   WALK_EXCLUSIONS,
   PLANS_ARE_NOT_CODE,
 } from '../lib/wires.mjs'
@@ -67,7 +79,7 @@ describe('сборщик описи — счёт трёх форм (а)', () => 
     const inv = collect('live')
 
     expect(inv.counts.plans).toBe(1)
-    expect(inv.counts.links, 'две структурные связи объявлены').toBe(2)
+    expect(inv.counts.links, 'одна структурная связь объявлена').toBe(1)
     expect(inv.counts.artifacts, 'две записи path+contains объявлены').toBe(2)
     expect(inv.counts.prose, 'две строки прозой объявлены').toBe(2)
     expect(inv.counts.patternless, 'записей без следа в фикстуре нет').toBe(0)
@@ -79,10 +91,7 @@ describe('сборщик описи — счёт трёх форм (а)', () => 
     expect(inv.counts.prose).toBeGreaterThan(0)
     expect(inv.counts.scanFiles).toBeGreaterThan(0)
 
-    expect(inv.links.map((l: { pattern: string }) => l.pattern)).toEqual([
-      'WIRE_MARKER_ALPHA',
-      'WIRE_MARKER_DECLARED_ONLY',
-    ])
+    expect(inv.links.map((l: { pattern: string }) => l.pattern)).toEqual(['WIRE_MARKER_ALPHA'])
     expect(inv.prose.every((p: { text: string }) => typeof p.text === 'string')).toBe(true)
   })
 
@@ -400,5 +409,434 @@ describe('резолюция одиночного пути — прямой вх
     expect(res.resolvedBy).toBe('tree')
     expect(res.candidates[0].root).toBe('tree')
     expect(res.candidates.map((c: { root: string }) => c.root)).toEqual(['tree', 'plans-parent', 'workshop'])
+  })
+})
+
+/* ==========================================================================
+ * ВЫЧИСЛИТЕЛЬ ВЕРДИКТОВ — обе половины прибора.
+ *
+ * Прибор, умеющий только зеленеть, бесполезен; прибор, умеющий только краснеть,
+ * бесполезен ровно так же. Поэтому каждая фикстура проверяется на СВОЙ ожидаемый
+ * исход, а не «лишь бы не упало»: мёртвое обязано покраснеть поимённо, живое —
+ * позеленеть, широкое — пожелтеть, пустое и малформатное — остановить прогон.
+ *
+ * Главная опасность здесь измерена, а не выдумана: на прежней строгости «0 красных»
+ * достижимо за вечер и не стоит ничего. Поэтому у трёх несущих замков стоят КОНТРОЛИ,
+ * без которых тест сторожил бы пустоту: у сужения — доказательство, что след жив в
+ * дереве (иначе кейс проходил бы и без сужения); у порога широты — прогон того же
+ * случая с порогом по умолчанию (иначе порог мог бы ни на что не влиять); у каталога
+ * планов — мутация, включающая его в зону поиска (иначе замок мог бы отсутствовать).
+ * ========================================================================== */
+
+type EvalOpts = {
+  roots?: string[]
+  broadLimit?: number
+  verdicts?: unknown
+  rewrites?: Array<{ prefix: string; target: string }>
+}
+
+function evaluate(name: string, opts: EvalOpts = {}) {
+  const { root, plansDir } = caseDirs(name)
+  const roots = opts.roots ?? ['.']
+  const inventory = collectInventory({ plansDir, treeDir: root, roots, rewrites: opts.rewrites })
+  const evaluation = evaluateInventory({
+    inventory,
+    treeDir: root,
+    roots,
+    broadLimit: opts.broadLimit,
+    verdicts: opts.verdicts,
+  })
+  return { root, plansDir, inventory, evaluation }
+}
+
+const LIB = fileURLToPath(new URL('../lib/wires.mjs', import.meta.url))
+const VERDICTS_FILE = join(FIXTURES, 'verdicts', 'verdicts.jsonl')
+
+describe('вычислитель — мёртвое краснеет поимённо (1, 2)', () => {
+  it('(1) закрытый план без предъявления: код 1, каждая находка названа, причины различены', () => {
+    const { evaluation: ev } = evaluate('closed-dead')
+
+    expect(ev.exitCode).toBe(EXIT_CODES.red)
+    expect(ev.counts.red, 'связь + игла в существующем файле + нерезолвящийся путь').toBe(3)
+    expect(Object.keys(ev.counts.redByReason).sort()).toEqual([
+      'needle-missing-in-file',
+      'path-unresolved',
+      'trace-missing-everywhere',
+    ])
+    expect(ev.counts.green).toBe(0)
+
+    // Человек обязан ПОДТВЕРЖДАТЬ, а не расследовать: у каждой находки есть план,
+    // след и причина словами.
+    for (const r of ev.red) {
+      expect(r.planId).toBe('fixture-closed-dead')
+      expect(r.kind === 'link' ? r.pattern : r.declaredPath).toBeTruthy()
+      expect(RED_REASONS[r.reason].ru).toBeTruthy()
+    }
+  })
+
+  it('(2) сужение до названного файла ловит переезд, которого дерево-широкий поиск не видит', () => {
+    const { evaluation: ev, inventory: inv } = evaluate('dead')
+
+    expect(ev.exitCode).toBe(EXIT_CODES.red)
+    const link = ev.red.find((r: { kind: string }) => r.kind === 'link')
+    expect(link.reason).toBe('trace-missing-in-named-file')
+    expect(link.namedSide).toBe('from')
+    expect(String(link.namedFile)).toContain('code.txt')
+
+    // КОНТРОЛЬ, без которого кейс проходил бы и БЕЗ сужения: след действительно жив в
+    // дереве, и поиск по дереву целиком назвал бы эту связь зелёной.
+    const alive = inv.scanFiles.filter((f: string) => readFileSync(f, 'utf8').includes('WIRE_MARKER_MOVED'))
+    expect(alive.length).toBeGreaterThan(0)
+    expect(link.treeFiles).toBeGreaterThan(0)
+  })
+})
+
+describe('вычислитель — живое зеленеет (3), не построенное молчит (4)', () => {
+  it('(3) живая фикстура: код 0, красных нет, зелень стоит на названных файлах', () => {
+    const { root } = caseDirs('live')
+    const { evaluation: ev } = evaluate('live', {
+      rewrites: [{ prefix: '../synthetic-elsewhere', target: root }],
+    })
+
+    expect(ev.counts.red).toBe(0)
+    expect(ev.exitCode).toBe(EXIT_CODES.clean)
+    expect(ev.counts.green, 'одна связь и две записи artifacts').toBe(3)
+    expect(ev.green.map((g: { evidence: string }) => g.evidence).sort()).toEqual([
+      'artifact-needle',
+      'artifact-needle',
+      'named-file',
+    ])
+  })
+
+  it('прибор судит ТО дерево, которое ему дали: без переписывания корня чужой путь краснеет', () => {
+    const { evaluation: ev } = evaluate('live')
+    expect(ev.exitCode).toBe(EXIT_CODES.red)
+    expect(ev.counts.redByReason['path-unresolved']).toBe(1)
+  })
+
+  it('(4) плана без сводки не судят: ни зелени, ни красноты — молчание', () => {
+    const closed = evaluate('closed-dead').evaluation
+    const ahead = evaluate('not-built').evaluation
+
+    expect(ahead.exitCode).toBe(EXIT_CODES.clean)
+    expect(ahead.counts.red).toBe(0)
+    expect(ahead.counts.green, 'молчание — это НЕ зелень').toBe(0)
+    expect(ahead.counts.ahead, 'связь и две записи artifacts ушли в «работа впереди»').toBe(3)
+
+    // Пара к closed-dead: блок объявления тот же буква в букву, вердикт другой.
+    expect(closed.counts.red).toBe(3)
+  })
+})
+
+describe('вычислитель — широкий след не доказательство (5)', () => {
+  it('(5) след, найденный шире порога, — жёлтый: не зелёный и не красный', () => {
+    const tight = evaluate('broad', { broadLimit: 2 }).evaluation
+
+    expect(tight.exitCode).toBe(EXIT_CODES.clean)
+    expect(tight.counts.green, 'широкий след зелёным не считается').toBe(0)
+    expect(tight.counts.broad).toBe(1)
+    expect(tight.yellow.broad[0].pattern).toBe('WIRE_BROAD_TOKEN')
+    expect(tight.yellow.broad[0].treeFiles).toBe(3)
+
+    // КОНТРОЛЬ: порог обязан на что-то влиять. Тот же случай на пороге по умолчанию —
+    // зелёный. Без этой половины тест проходил бы и при пороге, который ничего не режет.
+    const loose = evaluate('broad').evaluation
+    expect(loose.counts.broad).toBe(0)
+    expect(loose.counts.green).toBe(1)
+
+    expect(DEFAULT_BROAD_LIMIT, 'порог — объявленная константа, а не число из воздуха').toBe(20)
+    expect(YELLOW_REASONS.broad.ru).toBeTruthy()
+  })
+
+  it('порог напечатан в отчёте — иначе число красных невоспроизводимо', () => {
+    const { root, inventory, evaluation } = evaluate('broad', { broadLimit: 2 })
+    const text = renderReport({ treeDir: root, commit: 'fixture-commit', evaluation, inventory })
+    expect(text).toContain('broad-trace limit: 2 files')
+    expect(text).toContain('WIRE_BROAD_TOKEN')
+    // «3+» честнее «3»: перешагнув порог, счёт останавливается — точное число широкого
+    // следа уже ничего не решает, а досчитывать его по всему дереву стоит времени.
+    expect(text).toContain('found in 3+ files (limit 2)')
+  })
+})
+
+describe('вычислитель — красный гасится только вердиктом человека (6, 7)', () => {
+  it('(6) записанный вердикт гасит красный, протухший — виден и посчитан', () => {
+    const roots = ['tree']
+    const jsonl = readFileSync(VERDICTS_FILE, 'utf8')
+
+    const before = evaluate('verdicts', { roots }).evaluation
+    expect(before.exitCode).toBe(EXIT_CODES.red)
+    expect(before.counts.red).toBe(1)
+
+    const after = evaluate('verdicts', { roots, verdicts: jsonl }).evaluation
+    expect(after.exitCode).toBe(EXIT_CODES.clean)
+    expect(after.counts.red).toBe(0)
+    expect(after.counts.reviewed).toBe(1)
+    expect(after.reviewed[0].verdict).toBe('misdeclared')
+    expect(after.reviewed[0].author).toBe('fixture-reviewer')
+    expect(after.reviewed[0].rationale).toBeTruthy()
+    expect(after.reviewed[0].verdictLabel).toBe(VERDICT_KINDS.misdeclared.ru)
+
+    // Вердикт, не совпавший ни с одним текущим красным, не выброшен молча.
+    expect(after.counts.staleVerdicts).toBe(1)
+    expect(after.staleVerdicts[0].pattern).toBe('WIRE_MARKER_NEVER_DECLARED')
+
+    const text = renderReport({
+      treeDir: caseDirs('verdicts').root,
+      commit: 'fixture-commit',
+      evaluation: after,
+      inventory: evaluate('verdicts', { roots, verdicts: jsonl }).inventory,
+    })
+    expect(text).toContain('REVIEWED BY A HUMAN')
+    expect(text).toContain('fixture-reviewer')
+    expect(text).toContain('STALE VERDICTS')
+  })
+
+  it('(7) вердикт без автора или без обоснования — малформат: код 2, красный НЕ погашен', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sma-wires-verdicts-'))
+    try {
+      const file = join(dir, 'verdicts.jsonl')
+      writeFileSync(
+        file,
+        JSON.stringify({
+          kind: 'link',
+          plan: 'fixture-verdicts',
+          pattern: 'WIRE_MARKER_LOST',
+          verdict: 'misdeclared',
+          rationale: 'автора у этой записи нет',
+        }) + '\n',
+        'utf8',
+      )
+      const ev = evaluate('verdicts', { roots: ['tree'], verdicts: readFileSync(file, 'utf8') }).evaluation
+
+      expect(ev.exitCode).toBe(EXIT_CODES.unreadable)
+      expect(ev.counts.verdictErrors).toBeGreaterThan(0)
+      expect(ev.verdictErrors[0].line).toBe(1)
+      expect(ev.verdictErrors[0].error).toMatch(/author/)
+      expect(ev.counts.reviewed, 'малформатная запись ничего не гасит').toBe(0)
+      expect(ev.counts.red).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('словарь вердиктов закрыт, а чужое слово — малформат', () => {
+    expect(Object.keys(VERDICT_KINDS).sort()).toEqual([
+      'deferred',
+      'misdeclared',
+      'regression-filed',
+      'renamed',
+    ])
+    for (const k of Object.keys(VERDICT_KINDS)) {
+      expect(VERDICT_KINDS[k].en, 'машинное имя и английская подпись').toBeTruthy()
+      expect(VERDICT_KINDS[k].ru, 'русское слово для отчёта').toBeTruthy()
+    }
+
+    const outside = parseVerdicts(
+      JSON.stringify({
+        kind: 'link',
+        plan: 'p',
+        pattern: 'x',
+        verdict: 'да всё там в порядке',
+        author: 'a',
+        rationale: 'r',
+      }),
+    )
+    expect(outside.records).toHaveLength(0)
+    expect(outside.errors[0].error).toMatch(/closed vocabulary/)
+
+    const noReason = parseVerdicts(
+      JSON.stringify({ kind: 'link', plan: 'p', pattern: 'x', verdict: 'renamed', author: 'a' }),
+    )
+    expect(noReason.records).toHaveLength(0)
+    expect(noReason.errors[0].error).toMatch(/rationale/)
+  })
+
+  it('журнал вердиктов: комментарии и пустые строки пропускаются, битая строка названа номером', () => {
+    const good = JSON.stringify({
+      kind: 'link',
+      plan: 'p',
+      pattern: 'x',
+      verdict: 'deferred',
+      author: 'a',
+      rationale: 'r',
+    })
+    const { records, errors } = parseVerdicts(['# заголовок журнала', '', 'это не json', good].join('\n'))
+    expect(records).toHaveLength(1)
+    expect(records[0].line).toBe(4)
+    expect(errors).toHaveLength(1)
+    expect(errors[0].line).toBe(3)
+  })
+})
+
+describe('вычислитель — пустота останавливает, а не зеленеет (8)', () => {
+  it('(8) опись, из которой ничего не распарсилось, — код 2, а не «0 красных»', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sma-wires-empty-'))
+    try {
+      writeFileSync(
+        join(dir, 'fixture-empty-PLAN.md'),
+        ['---', 'phase: wires-fixture', 'type: fixture', '---', '', '# план без единого объявления', ''].join('\n'),
+        'utf8',
+      )
+      writeFileSync(join(dir, 'fixture-empty-SUMMARY.md'), '---\nphase: wires-fixture\n---\n', 'utf8')
+      mkdirSync(join(dir, 'tree'), { recursive: true })
+      writeFileSync(join(dir, 'tree', 'code.txt'), 'какой-то настоящий код\n', 'utf8')
+
+      const inventory = collectInventory({ plansDir: dir, treeDir: dir, roots: ['tree'] })
+      const evaluation = evaluateInventory({ inventory, treeDir: dir, roots: ['tree'] })
+
+      expect(inventory.counts.links + inventory.counts.artifacts).toBe(0)
+      expect(evaluation.parsedNothing).toBe(true)
+      expect(evaluation.exitCode).toBe(EXIT_CODES.unreadable)
+      expect(evaluation.counts.red).toBe(0)
+      // Ноль красных при нуле разобранных записей — это ПОЛОМКА, и отчёт говорит это словами,
+      // а не рапортует чистое дерево.
+      expect(renderReport({ treeDir: dir, evaluation, inventory })).toContain('THE INVENTORY DOES NOT READ')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('отчёт — воспроизводим и полон (9, 10)', () => {
+  it('(9) два вызова на одних данных дают побайтно равную строку', () => {
+    const { root, inventory, evaluation } = evaluate('closed-dead')
+    const args = { treeDir: root, commit: 'fixture-commit', evaluation, inventory }
+
+    const a = renderReport(args)
+    const b = renderReport(args)
+    expect(Buffer.byteLength(a, 'utf8')).toBe(Buffer.byteLength(b, 'utf8'))
+    expect(Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'))).toBe(0)
+
+    // И полный прогон целиком — сбор, вердикт, отчёт — тоже повторяется байт в байт.
+    const again = evaluate('closed-dead')
+    expect(
+      renderReport({ treeDir: again.root, commit: 'fixture-commit', evaluation: again.evaluation, inventory: again.inventory }),
+    ).toBe(a)
+
+    // Источников недетерминизма в самой библиотеке нет.
+    const src = readFileSync(LIB, 'utf8')
+    expect(src).not.toMatch(/new Date|Date\.now\(|Math\.random/)
+    expect(src).not.toMatch(/\.localeCompare\(/)
+  })
+
+  it('(10) счётчик красных без вердикта равен длине красной группы и жёлтых не считает', () => {
+    const dead = evaluate('closed-dead').evaluation
+    expect(countRedWithoutVerdict(dead)).toBe(dead.red.length)
+    expect(countRedWithoutVerdict(dead)).toBe(3)
+
+    const reviewed = evaluate('verdicts', {
+      roots: ['tree'],
+      verdicts: readFileSync(VERDICTS_FILE, 'utf8'),
+    }).evaluation
+    expect(countRedWithoutVerdict(reviewed)).toBe(0)
+
+    const broad = evaluate('broad', { broadLimit: 2 }).evaluation
+    expect(broad.counts.broad).toBe(1)
+    expect(countRedWithoutVerdict(broad), 'жёлтое — не красное').toBe(0)
+  })
+
+  it('шапка отчёта несёт пять чисел воспроизводимости', () => {
+    const { root, inventory, evaluation } = evaluate('closed-dead')
+    const head = renderReport({ treeDir: root, commit: 'fixture-commit', evaluation, inventory })
+      .split('\n')
+      .slice(0, 9)
+      .join('\n')
+
+    expect(head, 'дерево под проверкой и его коммит').toContain(resolve(root))
+    expect(head).toContain('fixture-commit')
+    expect(head, 'каталог планов').toContain(resolve(join(root, 'plans')))
+    expect(head, 'набор корней обхода').toContain('walk roots (1 declared, 1 present)')
+    expect(head, 'порог широты').toContain('broad-trace limit: 20 files')
+    expect(head, 'счёт разобранного по формам').toContain('parsed: 1 structural links, 2 artifact records')
+    expect(head).toContain('1 with a summary (judged)')
+    expect(head).toContain('prohibitions block')
+
+    // Коммит не передан — говорится прямо, строка не пропадает.
+    expect(renderReport({ treeDir: root, evaluation, inventory })).toContain('commit not established')
+  })
+
+  it('корень, которого нет, назван в отчёте отброшенным, а не пропущен молча', () => {
+    const { root, plansDir } = caseDirs('closed-dead')
+    const roots = ['.', 'такого-корня-нет']
+    const inventory = collectInventory({ plansDir, treeDir: root, roots })
+    const evaluation = evaluateInventory({ inventory, treeDir: root, roots })
+
+    expect(evaluation.roots.missing).toEqual(['такого-корня-нет'])
+    expect(renderReport({ treeDir: root, evaluation, inventory })).toContain('absent — not walked')
+  })
+
+  it('честная граница прибора печатается в конце каждого отчёта', () => {
+    const { root, inventory, evaluation } = evaluate('live')
+    const text = renderReport({ treeDir: root, commit: 'fixture-commit', evaluation, inventory })
+
+    expect(text.trimEnd().endsWith(HONEST_BOUNDARY)).toBe(true)
+    expect(HONEST_BOUNDARY).toMatch(/A string is not a call/)
+    expect(HONEST_BOUNDARY).toMatch(/RECEIVER/)
+  })
+
+  it('красные сгруппированы по причине, и каждая группа названа словами', () => {
+    const { root, inventory, evaluation } = evaluate('closed-dead')
+    const text = renderReport({ treeDir: root, commit: 'fixture-commit', evaluation, inventory })
+
+    expect(text).toContain('RED — declared, closed, and not there (3)')
+    expect(text).toContain(RED_REASONS['trace-missing-everywhere'].ru)
+    expect(text).toContain(RED_REASONS['needle-missing-in-file'].ru)
+    expect(text).toContain(RED_REASONS['path-unresolved'].ru)
+    expect(text).toContain('fixture-closed-dead')
+    expect(text, 'человек подтверждает, а не расследует').toContain('suggested:')
+  })
+})
+
+describe('жёлтое видно, а не спрятано', () => {
+  it('ярус «след в тестах» считается и называется, но вердикта не меняет', () => {
+    const { root } = caseDirs('live')
+    const ev = evaluate('live', { rewrites: [{ prefix: '../synthetic-elsewhere', target: root }] }).evaluation
+
+    // В фикстуре нет ни одного тестового файла — значит ярус обязан сработать...
+    expect(ev.counts.noTestTrace).toBe(1)
+    // ...и при этом НИЧЕГО не покрасить: та же связь стоит в зелёных.
+    expect(ev.counts.red).toBe(0)
+    const flagged = ev.yellow.noTestTrace[0]
+    expect(ev.green.some((g: { pattern: string }) => g.pattern === flagged.pattern)).toBe(true)
+
+    expect(isTestFile(join('scripts', '__tests__', 'x.ts'))).toBe(true)
+    expect(isTestFile('x.test.ts')).toBe(true)
+    expect(isTestFile(join('scripts', 'lib', 'x.mjs'))).toBe(false)
+  })
+
+  it('машинный вывод несёт жёлтые поимённо там, где текст даёт число', () => {
+    const machine = toJson(evaluate('broad', { broadLimit: 2 }).evaluation)
+    expect(machine.yellow.broad[0].pattern).toBe('WIRE_BROAD_TOKEN')
+    expect(machine.counts.broad).toBe(1)
+    expect(machine.honestBoundary).toBe(HONEST_BOUNDARY)
+
+    const prose = toJson(evaluate('live').evaluation)
+    expect(prose.counts.prose).toBe(2)
+    expect(prose.yellow.prose[0].text).toContain('прозой')
+  })
+})
+
+describe('каталог планов не доказательство — замок на стороне вердикта', () => {
+  it('след, живущий только в собственном объявлении, краснеет; включи планы в обход — позеленеет', () => {
+    const { root, plansDir, evaluation: ev, inventory } = evaluate('self-declared')
+    const planPath = join(plansDir, 'fixture-self-declared-PLAN.md')
+
+    // Без этой строки тест был бы пустым: маркер обязан реально стоять в плане.
+    expect(readFileSync(planPath, 'utf8')).toContain('WIRE_MARKER_SELF_DECLARED')
+
+    const link = ev.red.find((r: { kind: string }) => r.kind === 'link')
+    expect(link.reason).toBe('trace-missing-everywhere')
+    expect(ev.counts.green, 'контроль: зона поиска не пуста').toBe(1)
+
+    // МУТАЦИЯ ПРЯМО ЗДЕСЬ: добавим файл плана в зону поиска — и прибор поздравит сам
+    // себя собственным объявлением. Красный станет зелёным, то есть замок несёт вес.
+    const mutated = evaluateInventory({
+      inventory: { ...inventory, scanFiles: [...inventory.scanFiles, planPath] },
+      treeDir: root,
+      roots: ['.'],
+    })
+    expect(mutated.counts.red).toBe(0)
+    expect(mutated.counts.green).toBe(2)
   })
 })
