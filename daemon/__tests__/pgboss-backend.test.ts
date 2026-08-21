@@ -84,8 +84,20 @@ function makeFakeBackend({
   const sendCalls: any[] = []
   const createQueueCalls: any[] = []
 
-  // pg-boss maintenance, simulated: an active job past its expiry returns to 'created'
-  // (retry) with retry_count+1, or moves to the dead-letter (failed) once exhausted.
+  // pg-boss maintenance, simulated: an active job past its expiry goes back into the RETRY
+  // state with retry_count+1, or is closed once its re-issues are spent.
+  //
+  // WHICH WAITING STATE IT LANDS IN IS THE LIBRARY'S ANSWER, NOT A CONVENIENCE. `failJobs`
+  // re-inserts the row as `retry`; this fake wrote `created` — a state the library never puts
+  // an expired row into — and that one word was enough to hide a live hole, because a
+  // resolution that knows only the FIRST waiting state finds the row here and cannot find it on
+  // a real database. A fake DIFFERENT from its library is worse than one merely smaller than
+  // it: it certifies the difference.
+  //
+  // AND THE CLOSING OUTPUT IS THE LIBRARY'S TOO. Its expiry plan writes
+  // `{"value":{"message":"job timed out"}}` and no `reason` at all; the fake used to invent
+  // `reason: 'runtime_offline'`, a field pg-boss writes nowhere, so every reader of a failure
+  // cause was measured against a value no real queue has ever produced.
   //
   // THE PAYLOAD SURVIVES THE RE-ISSUE UNTOUCHED, and that is modelled rather than assumed: the
   // library's own re-issue DELETES the row and INSERTS it back with the data copied, so every
@@ -101,12 +113,12 @@ function makeFakeBackend({
       if (j.state === 'active' && j.started_on != null) {
         if (t - j.started_on > j.expireInSeconds * 1000) {
           if ((j.retry_count ?? 0) < (j.retryLimit ?? 2)) {
-            j.state = 'created'
+            j.state = 'retry'
             j.retry_count = (j.retry_count ?? 0) + 1
             j.started_on = null
           } else {
             j.state = 'failed'
-            j.output = { reason: 'runtime_offline' }
+            j.output = { value: { message: 'job timed out' } }
           }
         }
       }
@@ -237,7 +249,11 @@ function makeFakeBackend({
       const s: any = { queued: 0, active: 0, completed: 0, failed: 0 }
       for (const j of jobs.values()) {
         if (j.name !== name) continue
-        if (j.state === 'created') s.queued += 1
+        // BOTH WAITING STATES COUNT AS QUEUED, because the library's own stats plan counts
+        // `state < 'active'` — created AND retry. A fake counting only the first reports a row
+        // handed back after a lost lease as belonging to no column at all, which is exactly how
+        // «в очереди» could go on being wrong while every case stayed green.
+        if (j.state === 'created' || j.state === 'retry') s.queued += 1
         else if (j.state === 'active') s.active += 1
         else if (j.state === 'completed') s.completed += 1
         else if (j.state === 'failed') s.failed += 1
@@ -520,6 +536,25 @@ describe('pg-boss backend — job-option contract', () => {
     expect(sendCalls[0].opts.retryBackoff).toBe(true)
   })
 
+  /**
+   * ГРАНИЦА ПОПЫТОК ДОЕЗЖАЕТ ДО КОЛОНКИ БИБЛИОТЕКИ — дело про ПРОВОД, а не про вычисление.
+   *
+   * Решение «сколько раз перевыдавать» принимается теперь одним именем на оба бэкенда, и это
+   * значит ровно одно: число обязано оказаться В АРГУМЕНТАХ ПОСЕВА. Резолвер, который считает
+   * правильную границу и никуда её не передаёт, оставил бы живую очередь на умолчании
+   * библиотеки — тот самый класс, которым эта работа уже платила дважды.
+   */
+  it('граница попыток уезжает в посев тем числом, которое назвал контракт: своим, нулём у куска сборки, умолчанием иначе', async () => {
+    const c = mkClock()
+    const { adapter, sendCalls } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
+    await adapter.enqueue(backlog({ id: 'BL-R0', retryLimit: 0 }))
+    await adapter.enqueue(backlog({ id: 'BL-R7', retryLimit: 7 }))
+    await adapter.enqueue(backlog({ id: 'BL-RB', batchId: 'batch-9' })) // кусок сборки
+    await adapter.enqueue(backlog({ id: 'BL-RD' })) // границы никто не называл
+
+    expect(sendCalls.map((s: any) => s.opts.retryLimit)).toEqual([0, 7, 0, 2])
+  })
+
   it('default expireMs maps to expireInSeconds 120 (the plan default)', async () => {
     const c = mkClock()
     const { adapter, sendCalls } = makeFakeBackend({ clock: c.clock, expireMs: 120000 })
@@ -646,10 +681,13 @@ describe('the fencing token lives in the row, and the queue keeps it there', () 
     expect(typeof first.attemptToken).toBe('string')
     expect(job.data.attemptToken).toBe(first.attemptToken)
 
-    // Аренда потеряна: очередь перевыдаёт строку СВОИМ планом, и груз она копирует.
+    // Аренда потеряна: очередь перевыдаёт строку СВОИМ планом, и груз она копирует. Строка при
+    // этом встаёт во ВТОРОЕ состояние ожидания — так пишет план библиотеки, и подделка теперь
+    // тоже: здесь она раньше говорила «created», состояние, в которое библиотека просроченную
+    // строку не кладёт никогда.
     c.advance(6000)
     await adapter.list({})
-    expect(job.state).toBe('created')
+    expect(job.state).toBe('retry')
     // ЖЕТОН УМЕРШЕЙ ПОПЫТКИ ЕЩЁ ЛЕЖИТ В ГРУЗЕ — и это не оплошность, а поведение библиотеки,
     // снятое с живой очереди. Починка, понадеявшаяся на «при перевыдаче стёрлось», разошлась
     // бы с ней молча.
