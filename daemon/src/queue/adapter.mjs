@@ -250,6 +250,19 @@ export const TASK_STATUSES = Object.freeze([
  *   timeout / runtime_offline / window_exhausted — infra causes
  *   manual          — a human stopped it
  */
+/**
+ * THE QUEUE'S OWN LAST WORD ABOUT A ROW IT WILL NOT HAND OUT AGAIN.
+ *
+ * Named apart from every worker's reason because nothing is wrong with the WORK here and
+ * nobody did anything wrong: the row simply used up the re-issues it was given, and the queue
+ * stopped. A person reading `tests_red` goes and looks at tests; a person reading this one
+ * either raises the ceiling or cuts the task in half — the same distinction `turns_exhausted`
+ * already draws for a ceiling of a different kind. Kept apart from `timeout` too: a lease
+ * timing out is what STARTS a re-issue and is survivable, and using one name for both would
+ * make «it timed out again» and «it will never be tried again» indistinguishable on a card.
+ */
+export const ATTEMPTS_EXHAUSTED = 'attempts_exhausted'
+
 export const FAIL_REASONS = Object.freeze([
   'no_receipt',
   'no_journal',
@@ -276,6 +289,10 @@ export const FAIL_REASONS = Object.freeze([
   'timeout',
   'runtime_offline',
   'window_exhausted',
+  // THE RE-ISSUES RAN OUT. Not the worker's failure and not an outage: the row was handed
+  // back as many times as it was allowed to be, and the queue closed it rather than spending
+  // another paid attempt on the same work. See ATTEMPTS_EXHAUSTED above.
+  ATTEMPTS_EXHAUSTED,
   'personal_layer_error',
   'manual',
 ])
@@ -295,6 +312,7 @@ export const REASON_LABELS = Object.freeze({
   timeout: 'истекло время',
   runtime_offline: 'среда исполнения недоступна',
   window_exhausted: 'окно подписки исчерпано',
+  [ATTEMPTS_EXHAUSTED]: 'попытки исчерпаны — очередь больше не перевыдаёт эту работу',
   personal_layer_error: 'личный слой не перенесён в аккаунт работника — запускать было нельзя',
   manual: 'остановлено вручную',
 })
@@ -310,6 +328,29 @@ export const REASON_LABELS = Object.freeze({
  * owns a private copy of the number.
  */
 export const DEFAULT_EXPIRE_MS = 120000
+
+/**
+ * THE ONE ATTEMPT BORDER. How many times a row may be handed back after a lost lease —
+ * the ceiling `fail`/expiry is measured against, in ONE place for every backend.
+ *
+ * It lives here, beside the lease duration, for the same reason that one does: two mechanisms
+ * answer «may this be tried again» — the durable queue's own re-issue plan and the reference
+ * backend's sweep — and until this constant existed they answered DIFFERENTLY. The durable one
+ * has always refused past its limit; the reference one, which is the executable spec every
+ * other backend is written against, had no limit at all and re-issued for ever. Nothing said
+ * so: the suite asked neither backend the question.
+ *
+ * The number is the one the durable seeding already used, so nothing about live behaviour
+ * moves — it is lifted out of a literal at the send call, not invented here.
+ *
+ * A PIECE OF A BATCH GETS ZERO, and that is a decision, not a tuning: the library's own retry
+ * is exactly the silent repetition the owner forbade — a piece that broke must STOP its
+ * assembly and ask him, and a queue quietly running it again two more times is the loop that
+ * cost a day. It has been true of the durable backend since that day; it is stated here so it
+ * is true of every backend.
+ */
+export const DEFAULT_RETRY_LIMIT = 2
+export const BATCH_ITEM_RETRY_LIMIT = 0
 
 /**
  * resolveExpireMs(config) → the liveness/lease duration in ms for THIS config.
@@ -1660,6 +1701,89 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       const [r] = await q.list({})
       expect(r.status).toBe('queued')
       expect(r.attempt).toBe(2)
+    })
+
+    /**
+     * A RE-ISSUE HAS A CEILING, AND THE CEILING IS PART OF THE CONTRACT.
+     *
+     * A lost lease hands the row back for another try — and without a limit it hands it back
+     * for ever: a task nobody can finish is claimed, expires, is claimed again, and every one
+     * of those turns spends a paid attempt on work that has already failed the same way twice.
+     * The durable queue has always had the ceiling (its library refuses to re-issue past
+     * `retry_limit`); the reference backend had none at all, so the two backends kept
+     * DIFFERENT promises about the same call — and the reference one is the executable spec
+     * every future backend is written against. These cases are what makes the ceiling one
+     * promise instead of two.
+     */
+    it('строка с границей в ноль повторов после первой потерянной аренды закрывается — и больше не выдаётся', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-90', retryLimit: 0 }))
+      expect(await q.claimNext('w1', {})).not.toBeNull()
+      c.advance(6000) // аренда потеряна, и повторов этой строке не отпущено
+
+      const [r] = await q.list({})
+      expect(r.status).toBe('failed')
+      expect(await q.claimNext('w2', {})).toBeNull() // никакой перевыдачи
+    })
+
+    it('строка с границей в два повтора переживает две потерянные аренды и закрывается на третьей', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-91', retryLimit: 2 }))
+
+      // первая попытка + два повтора: три выдачи, и все три состоялись
+      for (const worker of ['w1', 'w2', 'w3']) {
+        expect(await q.claimNext(worker, {})).not.toBeNull()
+        c.advance(6000)
+      }
+
+      const [r] = await q.list({})
+      expect(r.status).toBe('failed')
+      expect(await q.claimNext('w4', {})).toBeNull()
+    })
+
+    /**
+     * ЧЕМ ЗАКРЫТА ИСЧЕРПАННАЯ СТРОКА — ВОПРОС К ОЧЕРЕДИ, А НЕ К РАБОТНИКУ.
+     *
+     * Причина провала едет на карточку словами, и «попытки кончились» — это другой разговор с
+     * человеком, чем «тесты красные»: во втором случае есть что чинить, в первом — работу надо
+     * пересобрать или поднять границу. Строка, закрытая очередью без своей причины, приходит на
+     * экран как «причина не записана» — ровно тот красный без объяснения, который отмена сборки
+     * уже однажды закрывала.
+     */
+    it('причина закрытия по исчерпанной границе — своя, а не та, что записал бы работник', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-92', retryLimit: 0 }))
+      await q.claimNext('w1', {})
+      c.advance(6000)
+
+      const exhausted = (await q.list({})).find((r) => r.id === 'BL-92')
+      expect(exhausted.failure_reason).toBe(ATTEMPTS_EXHAUSTED)
+
+      // а рядом — строка, которую закрыл работник: её причина осталась её собственной
+      await q.enqueue(backlog({ id: 'BL-93' }))
+      await q.claimNext('w2', {})
+      await q.fail('BL-93', 'tests_red')
+      const byWorker = (await q.list({})).find((r) => r.id === 'BL-93')
+      expect(byWorker.failure_reason).toBe('tests_red')
+    })
+
+    it('без явной границы работа держит ровно столько повторов, сколько даёт умолчание — расхождения умолчаний нет', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 5000 })
+      await q.enqueue(backlog({ id: 'BL-89' })) // границы не назвал никто
+
+      // первая выдача + DEFAULT_RETRY_LIMIT перевыдач — все состоялись
+      for (let i = 0; i <= DEFAULT_RETRY_LIMIT; i += 1) {
+        expect(await q.claimNext(`w${i}`, {})).not.toBeNull()
+        c.advance(6000)
+      }
+
+      const [r] = await q.list({})
+      expect(r.status).toBe('failed')
+      expect(await q.claimNext('wN', {})).toBeNull()
     })
 
     it('touch keeps a claimed task alive past what would otherwise expire it', async () => {
