@@ -179,16 +179,26 @@ const fail = (msg) => {
 const info = (msg) => say(`  ..  ${msg}`)
 const head = (msg) => say(`\n=== ${msg}`)
 
-/** Единственный выход с кодом 3. Причина называется всегда. */
-function notRun(reason) {
-  try {
-    settleRestores()
-  } catch {
-    /* возврат чужого файла пробуется и на аварийном выходе, но не мешает назвать причину */
+/**
+ * Единственный выход с кодом 3. Причина называется всегда.
+ *
+ * ОН БРОСАЕТ, А НЕ ГАСИТ ПРОЦЕСС, и это не стиль. Первая редакция звала `process.exit(3)`
+ * прямо здесь — а немедленный выход перепрыгивает через ВСЕ `finally`: база очереди половины
+ * оставалась на общем сервере, временное дерево — на диске, и учение, которое в шапке обещает
+ * убирать за собой, оставляло мусор ровно в тот момент, когда что-то пошло не так. Проверено
+ * фактом: после двух оборванных половин на сервере остались две их базы. Теперь причина
+ * едет наверх исключением, по дороге срабатывают уборка половины и уборка прогона, и только
+ * потом печатается исход.
+ */
+class NotRunError extends Error {
+  constructor(reason) {
+    super(reason)
+    this.name = 'NotRunError'
   }
-  say(`\nНЕ ПРОГНАНО: ${reason}`)
-  say('RESULT: НЕ ПРОГНАНО (exit 3) — это НЕ проход и никогда в проход не переписывается.')
-  process.exit(3)
+}
+
+function notRun(reason) {
+  throw new NotRunError(reason)
 }
 
 // ── мелкая механика ────────────────────────────────────────────────────────────────
@@ -315,6 +325,27 @@ async function ensureDb(name) {
     }
   }
   await client.end()
+}
+
+/**
+ * Смести базы ПРОШЛЫХ прогонов этого учения — и только их: имена, которые оно само же и
+ * минтит. Оборванный прогон оставляет базу на общем сервере, и уборка на входе — то же
+ * правило, что и для временного дерева: она надёжнее уборки на выходе, потому что выход
+ * может не наступить.
+ */
+async function dropOwnStaleDbs() {
+  const client = new pg.Client({ connectionString: ADMIN_URL })
+  await client.connect()
+  let names = []
+  try {
+    const q = await client.query("SELECT datname FROM pg_database WHERE datname LIKE 'sma_steer_drill_%'")
+    names = q.rows.map((r) => r.datname)
+    for (const n of names) await client.query(`DROP DATABASE IF EXISTS ${n} WITH (FORCE)`)
+  } finally {
+    await client.end()
+  }
+  if (names.length) info(`смещены базы прошлых прогонов ЭТОГО учения: ${names.join(', ')}`)
+  else info('баз прошлых прогонов этого учения на сервере нет')
 }
 
 async function dropDb(name) {
@@ -1436,6 +1467,7 @@ async function main() {
   removeDrillTree()
   mkdirSync(DRILL_ROOT, { recursive: true })
   info('дерево прошлой попытки убрано (уборка на ВХОДЕ, а не только на выходе)')
+  await dropOwnStaleDbs()
 
   const results = {}
   let nextPort = 0
@@ -1526,6 +1558,11 @@ main().catch((err) => {
     settleRestores()
   } catch {
     /* аварийный выход всё равно пробует вернуть чужой файл на место */
+  }
+  if (err instanceof NotRunError) {
+    say(`\nНЕ ПРОГНАНО: ${err.message}`)
+    say('RESULT: НЕ ПРОГНАНО (exit 3) — это НЕ проход и никогда в проход не переписывается.')
+    process.exit(3)
   }
   console.error('УЧЕНИЕ УПАЛО:', err && err.stack ? err.stack : err)
   console.error(`Временное дерево могло остаться: ${DRILL_ROOT} — убрать руками, если оно там.`)
