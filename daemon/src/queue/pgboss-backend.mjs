@@ -832,8 +832,23 @@ export function createPgBossQueue({
         // served from. pg-boss cancels anything short of completed (`state < 'completed'` in
         // its own plan), which is exactly the two states meant here.
         if (item.status !== 'queued' && item.status !== 'claimed') continue
-        const job = item.status === 'claimed' ? await resolveActiveJob(item.id) : await resolveQueuedJob(item.id)
-        if (!job) continue
+        // A WAITING PIECE MAY BE WAITING IN EITHER STATE, and this is the second — and last —
+        // deliberate adoption of the two-state resolution (the words door was the first). A
+        // piece whose worker went silent comes back to the queue like any other row, reads as
+        // «в очереди» on every screen, and used to be looked for in the FIRST waiting state
+        // alone: not found, silently skipped, left live. Its backoff then ran out and the queue
+        // handed the work of an abandoned assembly to a worker — the very outcome cancelling
+        // exists to prevent.
+        const job = item.status === 'claimed' ? await resolveActiveJob(item.id) : await resolveWaitingJob(item.id)
+        if (!job) {
+          // AND A PIECE THAT COULD NOT BE FOUND IS SAID OUT LOUD. The read above and the
+          // resolution here are two moments, and a row can leave between them — another daemon
+          // fetched it, its lease lapsed, a person closed it. That is a real outcome and it is
+          // survivable; being told «сборка отменена» while a piece of it was never touched, and
+          // finding nothing about it anywhere, is not.
+          log(`batch piece ${item.id} was not found to take out of the queue: it left the waiting states between the read and the cancel`)
+          continue
+        }
         try {
           await bossInstance.cancel(job.name, job.id)
           // AND THE REASON WITH IT. `cancelled` is a state, not a word: every reader of a
@@ -876,24 +891,13 @@ export function createPgBossQueue({
   }
 
   /**
-   * READ-ONLY resolution of a piece that is still WAITING in the FIRST state — the mirror of
-   * resolveActiveJob, and the resolution the owner's word about an abandoned assembly still
-   * uses. It is deliberately left as it is: which doors reach a row waiting after a lost
-   * attempt is decided one door at a time (see below), and the assembly's decision is its own.
+   * THE RESOLUTION THAT SAW ONLY THE FIRST WAITING STATE IS GONE, and its absence is the point:
+   * both doors that used it — the words of a task and the owner's word about an abandoned
+   * assembly — have now each taken their own decision to reach a row waiting after a lost
+   * attempt, each with a case of its own. Nothing is left that asks this queue about ONE of
+   * its two waiting states, so keeping a resolution that answers about one would leave a
+   * loaded gun on the table for the next door somebody writes.
    */
-  async function resolveQueuedJob(taskId) {
-    try {
-      const res = await runSql(
-        `SELECT id, name FROM pgboss.job WHERE data->>'id' = $1 AND state = 'created' ORDER BY created_on DESC LIMIT 1`,
-        [taskId],
-      )
-      const rows = res && Array.isArray(res.rows) ? res.rows : []
-      return rows[0] || null
-    } catch (err) {
-      log(`queued job for ${taskId} not resolved: ${maskError(err)}`)
-      return null
-    }
-  }
 
   /**
    * READ-ONLY resolution of a job that is WAITING — in EITHER of the two states this queue
@@ -1029,7 +1033,7 @@ export function createPgBossQueue({
    * READ-ONLY resolution of a job that is WAITING TO BE HANDED OUT — in EITHER of the two
    * states this queue waits in.
    *
-   * WHY THIS EXISTS BESIDE resolveQueuedJob, WHICH LOOKS ALMOST THE SAME. A task whose worker
+   * WHY IT EXISTS AT ALL — it was the FIRST door taught to see both. A task whose worker
    * went silent is not failed: the liveness sweep hands the row back, and the queue parks it in
    * its RETRY state until the backoff runs out. Every reader of ours already calls that state
    * «в очереди» — the state map says so — so a person looking at the board sees an ordinary
@@ -1039,10 +1043,14 @@ export function createPgBossQueue({
    * is told did not happen, on work that then runs anyway, is the same mine as a stop written
    * as a failure — approached from the other side.
    *
-   * IT IS DELIBERATELY NOT A WIDENING OF resolveQueuedJob. That resolution also answers the
-   * words door and the owner's word about an abandoned assembly, and whether THOSE should
-   * reach a task waiting after a lost attempt is a separate promise, owed a decision and a
-   * case of its own rather than a side effect of this one.
+   * IT WAS DELIBERATELY NOT A WIDENING OF THE SHARED WAITING RESOLUTION, which at the time also
+   * answered the words door and the owner's word about an abandoned assembly: whether THOSE
+   * should reach a task waiting after a lost attempt was a separate promise, owed a decision
+   * and a case of its own rather than a side effect of this one. Both decisions have since been
+   * taken that way — one door at a time, one case each — and they read the same two states
+   * through resolveWaitingJob. This resolution stays the stop's own, spelled out in full rather
+   * than borrowed, so a future change to what «stoppable» means cannot silently move the
+   * other two doors with it.
    */
   async function resolveStoppableJob(taskId) {
     try {
