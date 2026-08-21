@@ -11,7 +11,11 @@
  *                     (core load / per note / per INDEX-*.md / top-N heaviest).
  *   2. selfCost     — the framework's OWN static per-session injection overhead
  *                     (SMA:RULES span, emitted corpus block span, MEMORY.md core);
- *                     names what is NOT counted (variable per-turn hook stdout).
+ *                     names what is NOT counted (the variable channels).
+ *   2b. promptSize  — the FULL prompt breakdown: those static surfaces PLUS the
+ *                     variable channels, priced from measured history (subagent-pack
+ *                     journal bytes, the capsule on disk, per-turn hook telemetry),
+ *                     each with its declared ceiling printed beside the fact.
  *   3. lane budgets — per-lane (fix/quick/batch/build) window budgets derived from
  *                     the project's own spend-ledger percentiles (p75 default);
  *                     an overrun is a SCORED calibration miss + an auto-drafted
@@ -50,6 +54,9 @@ import { join } from 'node:path'
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
 import { anchorMarkers } from './emit.mjs'
 import { RULES_MARKERS } from './claude-embed.mjs'
+// The injection ceilings live in ONE file so a channel's cap can be printed beside its
+// fact without the meter ever inventing a number of its own.
+import { PACK_BUDGET, RESTORE_BUDGET, ALWAYS_LOAD_BUDGET, EMIT_BUDGETS } from './constants.mjs'
 
 // ═══════════════════════════ the versioned estimator ════════════════════════════
 
@@ -155,8 +162,8 @@ export function corpusStats({ corpusDir, readFile, listFiles, topN = 10 } = {}) 
 
 // ═══════════════════════════ self-cost (SMA's own overhead) ═════════════════════
 
-/** Token count of the [beginPrefix .. end] line span in `text`, or null if absent. */
-function spanTokens(text, beginPrefix, endMarker) {
+/** The [beginPrefix .. end] line span of `text`, or null if the opening marker is absent. */
+function spanText(text, beginPrefix, endMarker) {
   const lines = String(text ?? '').split(/\r?\n/)
   let start = -1
   for (let i = 0; i < lines.length; i++) {
@@ -174,7 +181,13 @@ function spanTokens(text, beginPrefix, endMarker) {
     }
   }
   if (end === -1) end = lines.length - 1
-  return estimateTokens(lines.slice(start, end + 1).join('\n'))
+  return lines.slice(start, end + 1).join('\n')
+}
+
+/** Token count of the [beginPrefix .. end] line span in `text`, or null if absent. */
+function spanTokens(text, beginPrefix, endMarker) {
+  const span = spanText(text, beginPrefix, endMarker)
+  return span == null ? null : estimateTokens(span)
 }
 
 /**
@@ -220,8 +233,185 @@ export function selfCost({ readFile, paths } = {}) {
     total,
     estimatorVersion: ESTIMATOR_VERSION,
     notCounted:
-      'НЕ учитывается: переменный вывод хуков за ход (per-turn hook stdout) — он зависит от ' +
-      'действий сессии и не является статической инъекцией, поэтому в статический self-cost не входит.',
+      'Здесь только статическая инъекция; переменные каналы (пакет подагенту, капсула ' +
+      'восстановления, поштучный вывод хука за ход) считает раскладка размера промпта. ' +
+      'Нигде пока не меряется вывод подсказки после инструмента (PostToolUse).',
+    caveat: APPROX_CAVEAT,
+  }
+}
+
+// ═══════════════════════ prompt size (all injection channels) ═══════════════════
+
+/**
+ * promptSize({readFile, paths, journalEvents}) -> the FULL breakdown of what SMA adds
+ * to a prompt, channel by channel.
+ *
+ * selfCost above prices the three surfaces that are STATIC — readable off disk, paid
+ * once per session — and names the rest as its own hole. This meter closes the named
+ * part of that hole using history the framework ALREADY records, never an estimate of
+ * how big something probably is:
+ *   - subagent pack     — from the `bytes` field of the subagent-pack journal events
+ *                         (measured history: what was actually injected, how often);
+ *   - restore capsule   — the size of the capsule file that sits on disk right now;
+ *   - session-start     — NOT measurable off disk (it is composed live from sessions,
+ *                         collisions and claims that exist only in a running window);
+ *                         said in words rather than guessed at;
+ *   - per-turn pre stdout — p95 over the turns in the pre telemetry, summing the
+ *                         per-stream `bytes` each turn recorded.
+ *
+ * BYTES ARE THE COUNT, TOKENS ARE THE ESTIMATE. An exact token count needs the model's
+ * tokenizer, which is an external dependency, and the substrate law here is zero
+ * dependencies. The question this report answers is one of PROPORTION — what is the
+ * fattest thing we inject — and bytes carry proportion faithfully. Tokens ride along
+ * only through the versioned estimator, with its caveat attached.
+ *
+ * A channel that has nothing to measure is never dropped and never zero-filled: it is
+ * listed with measured:false and a sentence saying why. Only measured channels enter
+ * the total, and the total mixes clocks on purpose (per session / per subagent spawn /
+ * per turn) — the `clock` field on each channel is what keeps that honest.
+ *
+ * Every source is injectable so tests never touch a real .sma.
+ *
+ * @param {{readFile?:Function, paths:{claudeMd?:string, memoryMd?:string,
+ *          capsule?:string, perf?:string}, journalEvents?:Array}} opts
+ * @returns {{channels:object[], total:number, totalTokens:number, measuredCount:number,
+ *            estimatorVersion:string, unitNote:string, clockNote:string,
+ *            notCounted:string, caveat:string}}
+ */
+export function promptSize({ readFile, paths, journalEvents } = {}) {
+  const rf = typeof readFile === 'function' ? readFile : defaultReadFile
+  const p = paths || {}
+  const readSafe = (path) => {
+    try {
+      return typeof path === 'string' && path ? rf(path) : null
+    } catch {
+      return null
+    }
+  }
+  const bytesOf = (s) => Buffer.byteLength(String(s ?? ''), 'utf8')
+
+  const channels = []
+  /** A measured channel: bytes counted, tokens estimated, ceiling printed beside the fact. */
+  const measured = (channel, clock, text, cap, extra = {}) =>
+    channels.push({
+      channel,
+      clock,
+      measured: true,
+      bytes: typeof text === 'number' ? text : bytesOf(text),
+      tokens: typeof text === 'number' ? Math.ceil(text / 4) : estimateTokens(text),
+      cap: cap ?? null,
+      ...extra,
+    })
+  /** An unmeasurable channel: no number invented, the reason said in words. */
+  const unmeasured = (channel, clock, cap, note) =>
+    channels.push({ channel, clock, measured: false, bytes: null, tokens: null, cap: cap ?? null, note })
+
+  // ── the three static surfaces (the same spans selfCost prices) ────────────
+  const claudeText = readSafe(p.claudeMd)
+  const md = anchorMarkers('md')
+  const rulesSpan = claudeText != null ? spanText(claudeText, RULES_MARKERS.beginPrefix, RULES_MARKERS.end) : null
+  const emittedSpan = claudeText != null ? spanText(claudeText, md.beginPrefix, md.end) : null
+  const memText = readSafe(p.memoryMd)
+
+  if (rulesSpan != null) measured('блок правил в CLAUDE.md', 'сессия', rulesSpan, null, { path: p.claudeMd })
+  else unmeasured('блок правил в CLAUDE.md', 'сессия', null, 'блока в CLAUDE.md нет — правила не впрыскиваются')
+  if (emittedSpan != null) measured('выгруженный блок корпуса', 'сессия', emittedSpan, EMIT_BUDGETS.claude, { path: p.claudeMd })
+  else unmeasured('выгруженный блок корпуса', 'сессия', EMIT_BUDGETS.claude, 'выгрузки в CLAUDE.md нет')
+  if (memText != null) measured('загрузка ядра MEMORY.md', 'сессия', memText, ALWAYS_LOAD_BUDGET, { path: p.memoryMd })
+  else unmeasured('загрузка ядра MEMORY.md', 'сессия', ALWAYS_LOAD_BUDGET, 'MEMORY.md не найден — ядро не грузится')
+
+  // ── subagent pack: MEASURED history, not a guess ──────────────────────────
+  const packBytes = (Array.isArray(journalEvents) ? journalEvents : [])
+    .filter((e) => e && e.type === 'subagent-pack' && e.detail && Number.isFinite(Number(e.detail.bytes)))
+    .map((e) => Number(e.detail.bytes))
+  if (packBytes.length) {
+    const avg = Math.round(packBytes.reduce((a, b) => a + b, 0) / packBytes.length)
+    measured('пакет подагенту', 'запуск подагента', percentile(packBytes, 95), PACK_BUDGET, {
+      n: packBytes.length,
+      avgBytes: avg,
+      p95Bytes: Math.round(percentile(packBytes, 95)),
+    })
+  } else {
+    unmeasured('пакет подагенту', 'запуск подагента', PACK_BUDGET, 'запусков подагентов в журнале нет — мерить нечего')
+  }
+
+  // ── restore capsule: the file that is on disk right now ───────────────────
+  const capsuleText = readSafe(p.capsule)
+  if (capsuleText != null) {
+    // The ceiling is the RESTORE cap, not the write cap: on re-injection the capsule is
+    // clipped to it, so that is the most the prompt can ever pay for this channel.
+    measured('капсула восстановления', 'сжатие', capsuleText, RESTORE_BUDGET, { path: p.capsule })
+  } else {
+    unmeasured('капсула восстановления', 'сжатие', RESTORE_BUDGET, 'сжатий не было — капсулы на диске нет')
+  }
+
+  // ── session-start output: honestly not measurable off disk ────────────────
+  unmeasured(
+    'вывод старта сессии',
+    'сессия',
+    null,
+    'потолка не объявлено, и факт статически не измерить — вывод складывается живой сессией ' +
+      'из её сессий, коллизий и заявок; меряется только живым запуском',
+  )
+
+  // ── per-turn pre stdout: p95 over the recorded turns ──────────────────────
+  const perfText = readSafe(p.perf)
+  const turnBytes = []
+  let legacyTurns = 0
+  if (perfText != null) {
+    for (const line of String(perfText).split('\n')) {
+      const t = line.trim()
+      if (!t) continue
+      try {
+        const s = JSON.parse(t)
+        const checks = Array.isArray(s.checks) ? s.checks : []
+        // A turn recorded BEFORE the bytes field existed carries no byte truth. Folding it
+        // in as a zero-byte turn would drag the percentile down and report a cheapness that
+        // was never measured — the meter would be lying with real data. Counted apart.
+        if (!checks.some((c) => c && Number.isFinite(Number(c.bytes)))) {
+          legacyTurns += 1
+          continue
+        }
+        turnBytes.push(checks.reduce((n, c) => n + (Number.isFinite(Number(c.bytes)) ? Number(c.bytes) : 0), 0))
+      } catch {
+        /* a corrupt telemetry line is skipped, never counted as a zero-byte turn */
+      }
+    }
+  }
+  if (turnBytes.length) {
+    // No declared BYTE ceiling for this channel — the hook's budget is a TIME budget.
+    measured('поштучный вывод хука за ход', 'ход', Math.round(percentile(turnBytes, 95)), null, {
+      n: turnBytes.length,
+      legacyTurns,
+      p95Bytes: Math.round(percentile(turnBytes, 95)),
+      note: 'p95 по ходам; потолок у хука временной, не байтовый',
+    })
+  } else {
+    unmeasured(
+      'поштучный вывод хука за ход',
+      'ход',
+      null,
+      legacyTurns
+        ? `телеметрия есть (${legacyTurns} ходов), но она старше поля байтов — числа появятся с новых ходов`
+        : 'телеметрии ходов ещё нет — мерить нечего',
+    )
+  }
+
+  const measuredChannels = channels.filter((c) => c.measured)
+  const total = measuredChannels.reduce((n, c) => n + c.bytes, 0)
+  const totalTokens = measuredChannels.reduce((n, c) => n + c.tokens, 0)
+
+  return {
+    channels,
+    total,
+    totalTokens,
+    measuredCount: measuredChannels.length,
+    estimatorVersion: ESTIMATOR_VERSION,
+    unitNote: 'Байты — счёт, токены — оценка: точный счёт токенов требует токенизатора модели, а это внешняя зависимость.',
+    clockNote:
+      'Итог складывает разные часы: постоянное платится раз за сессию, пакет — на каждый запуск ' +
+      'подагента, вывод хука — на каждый ход. Часы канала указаны в его строке.',
+    notCounted: 'Не учитывается: вывод подсказки после инструмента (PostToolUse) — своей телеметрии байтов у него пока нет.',
     caveat: APPROX_CAVEAT,
   }
 }

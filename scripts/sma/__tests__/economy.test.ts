@@ -9,6 +9,9 @@
  *   Test 4 — derivation honesty: budget only for >=5 closed CLEAN runs; overlap excluded; <5 -> insufficient; p75 exact; maxLaneClosedRuns
  *   Test 5 — overrun consumption: over-budget CLEAN run consumes appendVerdict + draftLesson once; within/no-budget/overlap consume neither
  *   Test 6 — self-cost: per-surface tokens over a fixture CLAUDE.md + MEMORY.md; MEMORY.md-only repo -> total>0; no surfaces -> 0; not-counted caveat present
+ *   promptSize — the full injection breakdown: bytes counted / tokens estimated, each
+ *     ceiling beside its fact, measured channels from real history (journal pack bytes,
+ *     capsule on disk, per-turn telemetry), empty sources answered in words not zeros
  */
 
 import { describe, it, expect } from 'vitest'
@@ -21,6 +24,7 @@ import {
   maxLaneClosedRuns,
   checkLaneOverrun,
   selfCost,
+  promptSize,
   pickOpenRunToClose,
 } from '../lib/economy.mjs'
 
@@ -271,7 +275,10 @@ describe('economy — selfCost (Test 6)', () => {
     expect(surfaces).toContain('MEMORY.md core load')
     expect(s.total).toBeGreaterThan(0)
     expect(s.estimatorVersion).toBe(ESTIMATOR_VERSION)
-    expect(s.notCounted).toMatch(/per-turn hook stdout/i)
+    // The not-counted line was SHORTENED to what stays true: the variable channels are
+    // measured now (by promptSize), so this line may no longer claim they are not counted.
+    expect(s.notCounted).toMatch(/PostToolUse/)
+    expect(s.notCounted).toMatch(/раскладка размера промпта/i)
   })
 
   it('the dogfood shape — a MEMORY.md but NO managed blocks — returns the MEMORY surface alone with total>0', () => {
@@ -291,5 +298,122 @@ describe('economy — selfCost (Test 6)', () => {
     })
     expect(s.surfaces.length).toBe(0)
     expect(s.total).toBe(0)
+  })
+})
+
+// ── promptSize — the FULL injection breakdown ────────────────────────────────
+describe('economy — promptSize', () => {
+  const claudeWithBlocks =
+    'intro line\n' +
+    '<!-- SMA:RULES:BEGIN v1 -->\nrule one\nrule two\n<!-- SMA:RULES:END -->\n' +
+    'middle user bytes\n' +
+    '<!-- SMA:EXPORT:BEGIN v1 fmt=md commit=abc -->\nnote line\n<!-- SMA:EXPORT:END -->\n' +
+    'tail\n'
+
+  /** Two turns of pre telemetry: 100+50 bytes and 10+0 bytes. */
+  const perfLines =
+    JSON.stringify({ ts: 'a', toolName: 'Edit', totalMs: 3, checks: [{ id: 'x', ms: 1, warns: 1, bytes: 100 }, { id: 'y', ms: 1, warns: 1, bytes: 50 }] }) +
+    '\n' +
+    JSON.stringify({ ts: 'b', toolName: 'Edit', totalMs: 1, checks: [{ id: 'x', ms: 0, warns: 1, bytes: 10 }, { id: 'y', ms: 0, warns: 0, bytes: 0 }] }) +
+    '\n'
+
+  const files: Record<string, string> = {
+    'CLAUDE.md': claudeWithBlocks,
+    'MEMORY.md': 'm'.repeat(200),
+    'intent.md': 'c'.repeat(300),
+    'pre.jsonl': perfLines,
+  }
+  const paths = { claudeMd: 'CLAUDE.md', memoryMd: 'MEMORY.md', capsule: 'intent.md', perf: 'pre.jsonl' }
+  const journalEvents = [
+    { type: 'subagent-pack', detail: { bytes: 4000 } },
+    { type: 'subagent-pack', detail: { bytes: 8000 } },
+    { type: 'claim', detail: { bytes: 999999 } }, // a DIFFERENT event type never counts
+  ]
+  const read = (p: string) => {
+    if (!(p in files)) throw new Error('ENOENT')
+    return files[p]
+  }
+  const byName = (r: any, name: string) => r.channels.find((c: any) => c.channel === name)
+
+  it('counts every channel in BYTES, estimates tokens, and prints each ceiling beside its fact', () => {
+    const r = promptSize({ readFile: read, paths, journalEvents })
+
+    const core = byName(r, 'загрузка ядра MEMORY.md')
+    expect(core.measured).toBe(true)
+    expect(core.bytes).toBe(200) // the count is exact bytes, not an estimate
+    expect(core.tokens).toBe(estimateTokens('m'.repeat(200))) // tokens ride the versioned estimator
+    expect(core.cap).toBeGreaterThan(core.bytes) // the ceiling travels WITH the fact
+
+    const capsule = byName(r, 'капсула восстановления')
+    expect(capsule.measured).toBe(true)
+    expect(capsule.bytes).toBe(300)
+    expect(capsule.cap).toBeGreaterThan(0)
+
+    expect(byName(r, 'блок правил в CLAUDE.md').measured).toBe(true)
+    expect(byName(r, 'выгруженный блок корпуса').measured).toBe(true)
+
+    expect(r.estimatorVersion).toBe(ESTIMATOR_VERSION)
+    expect(r.unitNote).toMatch(/Байты — счёт, токены — оценка/)
+    expect(r.caveat).toMatch(/приблизительная/i)
+  })
+
+  it('the subagent-pack channel comes from MEASURED journal bytes, and ignores other event types', () => {
+    const r = promptSize({ readFile: read, paths, journalEvents })
+    const pack = byName(r, 'пакет подагенту')
+    expect(pack.measured).toBe(true)
+    expect(pack.n).toBe(2) // the 'claim' event with a bytes field is NOT a pack
+    expect(pack.avgBytes).toBe(6000)
+    expect(pack.bytes).toBe(8000) // p95 over [4000, 8000] — nearest rank
+    expect(pack.clock).toBe('запуск подагента')
+  })
+
+  it('the per-turn channel is p95 over recorded turns; telemetry OLDER than the bytes field is not counted as zero', () => {
+    const r = promptSize({ readFile: read, paths, journalEvents })
+    const turn = byName(r, 'поштучный вывод хука за ход')
+    expect(turn.measured).toBe(true)
+    expect(turn.n).toBe(2)
+    expect(turn.bytes).toBe(150) // p95 over [150, 10]
+
+    // the same file WITHOUT the bytes field: those turns carry no byte truth, so the
+    // channel goes honestly unmeasured rather than reporting a fabricated 0.
+    const legacy = { ...files, 'pre.jsonl': JSON.stringify({ ts: 'a', toolName: 'Edit', totalMs: 3, checks: [{ id: 'x', ms: 1, warns: 1 }] }) + '\n' }
+    const r2 = promptSize({ readFile: (p: string) => { if (!(p in legacy)) throw new Error('ENOENT'); return legacy[p] }, paths, journalEvents })
+    const turn2 = byName(r2, 'поштучный вывод хука за ход')
+    expect(turn2.measured).toBe(false)
+    expect(turn2.bytes).toBeNull()
+    expect(turn2.note).toMatch(/старше поля байтов/)
+  })
+
+  it('empty sources give honest words, never zeros, and never enter the total', () => {
+    const r = promptSize({ readFile: () => { throw new Error('ENOENT') }, paths, journalEvents: [] })
+    expect(r.total).toBe(0)
+    expect(r.measuredCount).toBe(0)
+    for (const c of r.channels) {
+      expect(c.measured).toBe(false)
+      expect(c.bytes).toBeNull()
+      expect(typeof c.note).toBe('string')
+      expect(c.note.length).toBeGreaterThan(0)
+    }
+    expect(byName(r, 'пакет подагенту').note).toMatch(/запусков подагентов в журнале нет/)
+    expect(byName(r, 'капсула восстановления').note).toMatch(/сжатий не было/)
+  })
+
+  it('session-start is never given an invented number', () => {
+    const r = promptSize({ readFile: read, paths, journalEvents })
+    const ss = byName(r, 'вывод старта сессии')
+    expect(ss.measured).toBe(false)
+    expect(ss.bytes).toBeNull()
+    expect(ss.note).toMatch(/живой сессией/)
+  })
+
+  it('the total sums ONLY measured channels, and the mixed clocks are named', () => {
+    const r = promptSize({ readFile: read, paths, journalEvents })
+    const sum = r.channels.filter((c: any) => c.measured).reduce((n: number, c: any) => n + c.bytes, 0)
+    expect(r.total).toBe(sum)
+    expect(r.measuredCount).toBe(r.channels.filter((c: any) => c.measured).length)
+    expect(r.clockNote).toMatch(/разные часы/)
+    // the channels that are now measured must NOT be claimed as uncounted
+    expect(r.notCounted).not.toMatch(/пакет подагенту/)
+    expect(r.notCounted).toMatch(/PostToolUse/)
   })
 })
