@@ -2784,6 +2784,17 @@ async function runIntake(deps, now, result) {
 }
 
 /**
+ * СКОЛЬКО ПОПЫТОК ЭТОТ ДЕМОН ВЕДЁТ ОДНОВРЕМЕННО. Умолчание — ОДНА, и это осознанно: до сих пор
+ * потолка не было вовсе, а единственная известная авария этого класса стоила трёх параллельных
+ * процессов на одну подписку. У кого работников несколько и они не мешают друг другу — поднимает
+ * число настройкой; молчание настройки означает безопасный пол, а не «сколько получится».
+ */
+function concurrencyCap(config) {
+  const raw = Number(config && config.maxConcurrentAttempts)
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 1
+}
+
+/**
  * tick(deps) — ONE stateless pass. deps: {adapter, ledger, config, routing, windows,
  * buildArgs, spawnWorker, verbRunner, report, clock, journal, intake?, workerReady?}.
  * Returns a summary {idle, sweep?, claimed?, completed?, failed?, intake?}.
@@ -2793,6 +2804,12 @@ export async function tick(deps = {}) {
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   const now = () => clock()
   const result = { idle: false }
+  /**
+   * МЕСТО В ДОМЕ ИДУЩИХ ПОПЫТОК, взятое этим проходом. Объявлено ЗДЕСЬ, выше общего try, по
+   * единственной причине: отдать его обязан ЛЮБОЙ выход из тика — и ранний возврат, и провал,
+   * и исключение. Забытое место дороже отсутствия потолка: конвейер встал бы навсегда и молча.
+   */
+  let seat = null
 
   // (0) IS THE CONVEYOR SWITCHED ON? Asked FIRST, before the sweep and before the intake,
   // because «off» here means the machine does nothing at all — not «claims nothing». The
@@ -2883,6 +2900,44 @@ export async function tick(deps = {}) {
       result.idle = true
       return result
     }
+    // (3a) ПОТОЛОК — ДО ЗАХВАТА, А НЕ ПОСЛЕ. Спросить очередь и потом отказаться от строки
+    // означало бы выдать задачу и тут же уронить её обратно: в долговременной очереди выборка
+    // И ЕСТЬ захват. Поэтому проход при полном доме — простой, и он назван вслух: пустая доска
+    // при работающих процессах ровно так и выглядела 12.08, и понять это было нечем.
+    const inFlight = deps.inFlight
+    const cap = concurrencyCap(config)
+    if (inFlight && typeof inFlight.reserve === 'function') {
+      // Место берётся ОДНИМ синхронным шагом и ДО захвата. Иначе два проходящих внахлёст тика
+      // оба увидели бы пустой дом (захват — это await), оба прошли бы потолок и оба взяли бы
+      // по задаче — ровно то, ради чего потолок и заводится.
+      seat = inFlight.reserve(cap)
+      if (!seat) {
+        writeLog(deps, {
+          type: 'tick.concurrency_cap',
+          detail: `идущих попыток ${inFlight.size()} при потолке ${cap} — задача в этом проходе не берётся`,
+        })
+        result.idle = true
+        result.concurrencyCap = { inFlight: inFlight.size(), cap }
+        return result
+      }
+    }
+    // …И НИ ОДНОГО СВОБОДНОГО МЕСТА — тоже причина не брать. Проверяется ЗДЕСЬ, до захвата, а
+    // не в маршрутизаторе: в долговременной очереди выборка И ЕСТЬ захват, вернуть строку
+    // назад нечем, а провалить её значило бы сжечь попытку из отпущенной границы за то, что
+    // работа просто идёт. Маршрутизатор своим фильтром занятости остаётся вторым рубежом.
+    if (inFlight && typeof inFlight.workers === 'function') {
+      const busyNow = inFlight.workers()
+      const enabled = (Array.isArray(config.workers) ? config.workers : []).filter((w) => w && w.enabled !== false)
+      if (enabled.length > 0 && enabled.every((w) => busyNow.has(w.id))) {
+        writeLog(deps, {
+          type: 'tick.all_workers_busy',
+          detail: `все работники (${enabled.length}) уже ведут попытку — задача в этом проходе не берётся`,
+        })
+        result.idle = true
+        result.allWorkersBusy = enabled.length
+        return result
+      }
+    }
     const workerId = 'daemon' // the claim is against durable state; identity is the ledger's job
     // THE STOP TRAVELS INTO THE CLAIM ITSELF, not around it. Filtering after the checkout would
     // be too late in the durable queue — there the fetch IS the claim, and a row recognised as
@@ -2894,6 +2949,9 @@ export async function tick(deps = {}) {
       return result
     }
     result.claimed = task.id
+    // Место уже взято до захвата — теперь у него появляется имя задачи. Имя работника впишется
+    // ниже, когда маршрут его назовёт; отдаётся место в `finally` всего тика.
+    if (inFlight && typeof inFlight.name === 'function') inFlight.name(seat, task.id, null)
 
     // (3a0) THE LANE'S CAPABILITY ENVELOPE. Resolved here because it is a
     // property of the LANE the task was claimed into — known before the route is, and
@@ -2930,7 +2988,7 @@ export async function tick(deps = {}) {
     try {
       // The router writes its OWN dispatcher layer at the decision — the tick
       // only hands it the sink; it never narrates the routing reason on the router's behalf.
-      const route = deps.routing.resolveRoute(task, {
+      const routeDeps = {
         // The pool, with this assembly's own worker offered first (poolFor) — for a task with
         // no batch this IS config.workers.
         workers: await poolFor(deps, task),
@@ -2941,7 +2999,23 @@ export async function tick(deps = {}) {
         // The money rule travels with the route decision — the dispatcher is the only place
         // that knows both «no seat anywhere» and «this task asked for the paid channel».
         budget: deps.budget,
-      })
+        // WHO IS ALREADY WORKING — so the router can skip an account that has a live attempt
+        // instead of stacking a second one on it. Computed, until now, by nobody.
+        busyWorkers: inFlight && typeof inFlight.workers === 'function' ? inFlight.workers() : null,
+      }
+      let route = deps.routing.resolveRoute(task, routeDeps)
+      // ГОНКА МЕЖДУ ПРОВЕРКОЙ И МАРШРУТОМ. Место проверялось до захвата; пока задачу забирали,
+      // соседний проход мог занять последнего свободного. Задача УЖЕ захвачена, вернуть её
+      // нечем — и умирать ей за то, что работа идёт, нельзя. Поэтому фильтр занятости здесь
+      // отступает: он предпочтение, а регулятор стоит на захвате.
+      if (route && route.reasonCode === 'worker_busy') {
+        writeLog(deps, {
+          type: 'task.route_busy_race',
+          taskId: task.id,
+          detail: 'место занято между проверкой и маршрутом — фильтр занятости отступает, задача не гибнет',
+        })
+        route = deps.routing.resolveRoute(task, { ...routeDeps, busyWorkers: null })
+      }
       if (!route || (!route.workerId && !route.useApiFallback)) {
         // Claimed but no runnable target after the real route (rare race) — degrade honestly.
         await failTask(deps, task, { reason: 'window_exhausted', now: now(), envelope, from: fleetState })
@@ -2956,6 +3030,8 @@ export async function tick(deps = {}) {
       // the board showed an empty queue and an idle worker THROUGHOUT a running attempt.
       // Fail-open and optional by design — an adapter without the seam (or a write that
       // fails) must never cost an attempt that is otherwise ready to run.
+      // Имя работника в занятое место — теперь маршрут его назвал.
+      if (inFlight && typeof inFlight.name === 'function' && route.workerId) inFlight.name(seat, task.id, route.workerId)
       if (route.workerId && typeof deps.adapter.assignWorker === 'function') {
         try {
           await deps.adapter.assignWorker(task.id, route.workerId)
@@ -3764,6 +3840,11 @@ export async function tick(deps = {}) {
     if (typeof journal === 'function') journal({ type: 'tick-error', error: String((err && err.message) || err) })
     result.error = true
     return result
+  } finally {
+    // МЕСТО ОТДАЁТСЯ ВСЕГДА — на успехе, на провале, на исключении и на КАЖДОМ раннем возврате
+    // выше. Стоит на самом внешнем уровне именно поэтому: выходов из тика много, и пропущенный
+    // хотя бы один означал бы дом, который никогда не пустеет, и конвейер, вставший молча.
+    if (seat && deps.inFlight && typeof deps.inFlight.release === 'function') deps.inFlight.release(seat)
   }
 }
 
