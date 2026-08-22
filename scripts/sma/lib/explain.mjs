@@ -84,6 +84,9 @@ export const COMMAND_TOPICS = {
   nearmiss: 'gates',
   preflight: 'gates',
 
+  // declared wires — is the plumbing the plans promised still there in the code?
+  wires: 'wires',
+
   // memory-layers — core / topic notes / corpus health
   lint: 'memory-layers',
   'build-index': 'memory-layers',

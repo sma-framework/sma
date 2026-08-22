@@ -1,0 +1,4 @@
+# журнал решений человека: одна запись на строку, комментарии и пустые строки пропускаются
+{"kind":"link","plan":"fixture-verdicts","pattern":"WIRE_MARKER_LOST","verdict":"misdeclared","author":"fixture-reviewer","date":"2026-01-01","rationale":"следу не место было в описи: он назван именем читателя, а файл рядом — данные"}
+
+{"kind":"link","plan":"fixture-verdicts","pattern":"WIRE_MARKER_NEVER_DECLARED","verdict":"renamed","author":"fixture-reviewer","date":"2026-01-01","rationale":"запись о находке, которой в этом прогоне нет — протухший вердикт обязан быть видимым"}
