@@ -706,6 +706,75 @@ describe('deriveState — the one-poll payload', () => {
     expect(out.attempts[0].continuationSummary.text).toContain('конспект обрезан по потолку')
   })
 
+  /**
+   * ═══ СНИМОК КОНТЕКСТА: ОКНО ЧИТАЕТ СВИДЕТЕЛЯ ПОПЫТКИ, А НЕ СТРОКУ ОЧЕРЕДИ ═══
+   *
+   * ЭТО РАЗНЫЕ ПРАВДЫ, И РАСХОДЯТСЯ ОНИ ЗАКОНОМЕРНО. Человек правит слова задачи после
+   * сорванной попытки — строка становится другой, а попытка уже ушла с тем снимком, который
+   * ей ДАЛИ. Карточка показывает историю подходов, значит и снимок берёт исторический: файл
+   * у попытки, а не поле строки. Прочитанное со строки выглядело бы точно так же и врало бы
+   * ровно в тот момент, когда человек разбирается, почему подход сорвался.
+   *
+   * ПУТЬ — ТЕМ ЖЕ ЕДИНСТВЕННЫМ ВЫРАЖЕНИЕМ, что у писателя и у спавна: дело кладёт ответ
+   * файловой системы на КОНКРЕТНЫЙ путь и требует, чтобы дверь спросила именно его. Дверь,
+   * собравшая путь вторым способом, не нашла бы ничего и молчала бы честно на вид.
+   */
+  const ctxPath = (attempt: number) =>
+    join(attemptRunDir({ runsDir: runsDirOf('/projects/app') as string, attemptId: `BL-cont#${attempt}` }) as string, 'task_context.md')
+
+  it('у попытки есть свидетель снимка → дверь отдаёт его текст, и путь спрошен ТОТ ЖЕ', async () => {
+    const text = 'СНИМОК-ОКНА: ключи в менеджере паролей, стенд поднимать на своём порту\n'
+    const asked: string[] = []
+    const front = contFront(CONT_ROWS, { [ctxPath(1)]: text }, asked)
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.attempts[0].taskContext).toBe(text)
+    // дверь спросила ИМЕННО тот файл, который положил писатель свидетеля
+    expect(asked).toContain(ctxPath(1))
+  })
+
+  it('свидетеля нет → поля нет ВОВСЕ: «нечего показать» и «не знаем» — разные предложения', async () => {
+    const front = contFront(CONT_ROWS, {})
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    const out = JSON.parse(res.body)
+    expect(Object.prototype.hasOwnProperty.call(out.attempts[0], 'taskContext')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(out.attempts[1], 'taskContext')).toBe(false)
+  })
+
+  it('снимок принадлежит СВОЕЙ попытке: второй подход не показывает снимок первого', async () => {
+    const front = contFront(CONT_ROWS, { [ctxPath(1)]: 'СНИМОК ПЕРВОГО ПОДХОДА\n' })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    const out = JSON.parse(res.body)
+    expect(out.attempts[0].taskContext).toBe('СНИМОК ПЕРВОГО ПОДХОДА\n')
+    expect(out.attempts[1].taskContext).toBeUndefined()
+  })
+
+  it('пустой файл свидетеля читается как отсутствие, а не как пустая панель', async () => {
+    const front = contFront(CONT_ROWS, { [ctxPath(1)]: '   \n' })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    const out = JSON.parse(res.body)
+    expect(Object.prototype.hasOwnProperty.call(out.attempts[0], 'taskContext')).toBe(false)
+  })
+
+  it('свидетель снимка и конспект передачи — два РАЗНЫХ файла и два разных поля', async () => {
+    const front = contFront(CONT_ROWS, { [ctxPath(1)]: 'ЭТО СНИМОК\n', [contPath(1)]: 'ЭТО КОНСПЕКТ\n' })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    const out = JSON.parse(res.body)
+    expect(out.attempts[0].taskContext).toBe('ЭТО СНИМОК\n')
+    expect(out.attempts[0].continuationSummary).toEqual({ text: 'ЭТО КОНСПЕКТ\n', truncated: false })
+  })
+
   it('идущая прямо сейчас попытка несёт те же шесть полей пустыми — карточке нечего показывать', async () => {
     const front = createFrontServer({
       config: { token: MIGRATION_TOKEN, workers: [] },

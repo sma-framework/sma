@@ -529,6 +529,35 @@ export function writeTaskContext({ dir, text, secretValues, fsImpl, log } = {}) 
 }
 
 /**
+ * readTaskContext({dir, fsImpl}) → текст свидетеля снимка, или null, если его нет.
+ *
+ * ЧИТАТЕЛЬ ЖИВЁТ РЯДОМ С ПИСАТЕЛЕМ, а не у двери, которой он понадобился первой: имя файла
+ * принадлежит замороженному списку этого каталога, и второе написание имени в другом модуле —
+ * ровно тот способ прочитать не тот файл, который положили. Читателей у свидетеля будет больше
+ * одного (дверь карточки — только первый), и все они спрашивают отсюда.
+ *
+ * NULL — ЭТО УТВЕРЖДЕНИЕ. Снимка не было вовсе, попытка старше этого файла, файл пуст — всё
+ * это «показывать нечего», и вызывающий превращает его в ОТСУТСТВИЕ поля, а не в пустую
+ * строку: «нечего показать» и «не знаем» — разные предложения.
+ *
+ * НИЧЕГО НЕ РЕЖЕТ И НЕ ПРАВИТ: текст отдаётся ровно тем, чем лежит на диске. Второй потолок у
+ * читателя означал бы, что человек в окне видит не то, что получил работник.
+ *
+ * @returns {string|null}
+ */
+export function readTaskContext({ dir, fsImpl } = {}) {
+  if (typeof dir !== 'string' || dir.trim() === '') return null
+  const fs = io(fsImpl)
+  let raw
+  try {
+    raw = String(fs.readFileSync(join(dir, TASK_CONTEXT_FILE), 'utf8'))
+  } catch {
+    return null
+  }
+  return raw.trim() === '' ? null : raw
+}
+
+/**
  * readContinuation({dir, fsImpl}) → `{text, truncated}`, or null when this attempt left none.
  *
  * NULL IS A STATEMENT. A first attempt has no predecessor, and a task older than this file has
