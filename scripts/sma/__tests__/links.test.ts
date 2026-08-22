@@ -8,6 +8,14 @@
  * first refuses: a projection over an unvalidated field is a graph of whatever
  * anyone happened to type.
  *
+ * A third block asserts the CONSUMPTION MAP (§10.2): for each of the eleven names,
+ * either a reader is named, or the name stands in the doc's record of types that
+ * are validated and deliberately not consumed. It reddens on three distinct edits —
+ * a name added to or removed from the vocabulary without moving between the two
+ * lists here, a name quietly dropped from the doc record, and the revisit condition
+ * being replaced by a promise. Validation is not consumption, and a closed enum with
+ * no reader looks from the outside exactly like a feature that runs.
+ *
  * NAME-COLLISION GUARD: `links` here is the machine layer of typed `{type, ref}`
  * edges between memory records. It is unrelated to the wikilinks the corpus lint
  * checks (`[[note]]` references inside note BODIES) and unrelated to the
@@ -69,9 +77,114 @@ describe('LINK_TYPES — the closed edge vocabulary (canon §10)', () => {
     expect([...LINK_TYPES]).toEqual(CANON_SECTION_10)
   })
 
+  it('holds eleven names and no twelfth', () => {
+    // The count is asserted apart from the composition on purpose: an edit that
+    // appends a name AND updates the list above would keep the equality green,
+    // and the number is the thing the doc, the record and this suite all quote.
+    expect(LINK_TYPES).toHaveLength(11)
+    expect(CANON_SECTION_10).toHaveLength(11)
+  })
+
   it('is frozen — widening the vocabulary is a schema decision, not a runtime one', () => {
     expect(Object.isFrozen(LINK_TYPES)).toBe(true)
   })
+})
+
+// ── The consumption map: validated is not the same as consumed ───────────────
+
+/**
+ * The names whose readers live OUTSIDE this vocabulary — as top-level pointer
+ * fields, or as a model of their own — written out by hand as a second yardstick.
+ * Moving a name between these two lists must be a deliberate edit here, and the
+ * doc record has to move with it, or the assertions below refuse.
+ */
+const CONSUMED_ELSEWHERE = ['derived_from', 'contradicts', 'supersedes']
+
+/** The names that are validated fail-closed and read by no query at all. */
+const DELIBERATELY_NOT_CONSUMED = [
+  'supports',
+  'caused_by',
+  'applies_to',
+  'exception_to',
+  'requires',
+  'verified_by',
+  'owned_by',
+  'part_of',
+]
+
+/**
+ * docs/MEMORY-MODEL.md as shipped, read from the tree rather than paraphrased.
+ * Line endings are normalized because the doc is checked out with the platform's
+ * own — a paragraph boundary that only matches on LF would make these assertions
+ * a statement about the checkout rather than about the document.
+ */
+function memoryModelDoc(): string {
+  const text = readFileSync(fileURLToPath(new URL('../../../docs/MEMORY-MODEL.md', import.meta.url)), 'utf8')
+  return text.replace(/\r\n/g, '\n')
+}
+
+describe('every name in the vocabulary has a stated fate (canon §10.2)', () => {
+  it('the two lists together are exactly the vocabulary — no name lost, none counted twice', () => {
+    const union = [...CONSUMED_ELSEWHERE, ...DELIBERATELY_NOT_CONSUMED]
+    expect(union).toHaveLength(LINK_TYPES.length)
+    expect(new Set(union).size).toBe(union.length)
+    expect([...union].sort()).toEqual([...LINK_TYPES].sort())
+  })
+
+  it('names every deliberately-unconsumed type in the doc record, so the record cannot vanish quietly', () => {
+    const doc = memoryModelDoc()
+    expect(doc).toContain('deliberately not consumed')
+    for (const type of DELIBERATELY_NOT_CONSUMED) {
+      expect(doc, `the record must name "${type}"`).toContain(type)
+    }
+  })
+
+  it('lists in that record exactly the unconsumed names — a silent reclassification is refused', () => {
+    // The union assertion above cannot see a name MOVED from one list to the
+    // other: the union stays the same. This one can, because the doc's own
+    // sentence has to move with it.
+    const doc = memoryModelDoc()
+    const at = doc.indexOf('**The remaining eight')
+    expect(at, 'the record paragraph must exist in docs/MEMORY-MODEL.md §10.2').toBeGreaterThan(-1)
+    const end = doc.indexOf('\n\n', at)
+    const paragraph = doc.slice(at, end === -1 ? undefined : end)
+
+    for (const type of DELIBERATELY_NOT_CONSUMED) {
+      expect(paragraph, `the record sentence must name "${type}"`).toContain(type)
+    }
+    for (const type of CONSUMED_ELSEWHERE) {
+      expect(paragraph, `"${type}" has a named reader — it does not belong in this record`).not.toContain(type)
+    }
+  })
+
+  it('states the condition that would give an unconsumed type a reader', () => {
+    // "Deferred" is not a decision. The record carries a checkable condition, and
+    // this assertion is what keeps it from decaying into an apology.
+    expect(memoryModelDoc()).toContain('a type gets a reader together with the first query that needs it')
+  })
+
+  it('names, for each consumed type, that its reader is not the edge itself', () => {
+    const doc = memoryModelDoc()
+    for (const type of CONSUMED_ELSEWHERE) {
+      expect(doc, `the map must name "${type}"`).toContain(type)
+    }
+    expect(doc).toContain('No query dispatches on an edge type')
+  })
+
+  it('validates an unconsumed type exactly as strictly as a consumed one — on the live validator', () => {
+    // The whole point of the record: these eight are not second-class members.
+    // A record that spells one of them out is legal today, and it stays legal.
+    for (const type of DELIBERATELY_NOT_CONSUMED) {
+      const record = baseRecord({ links: [{ type, ref: 'cart-abandon-rate' }] })
+      expect(checkLinks(record), `unconsumed type "${type}" must still validate clean`).toEqual([])
+      expect(validateRecord(record).errors).toEqual([])
+    }
+    for (const type of CONSUMED_ELSEWHERE) {
+      const record = baseRecord({ links: [{ type, ref: 'cart-abandon-rate' }] })
+      expect(checkLinks(record), `consumed type "${type}" must validate clean`).toEqual([])
+    }
+  })
+
 })
 
 // ── checkLinks: the fail-closed validator ────────────────────────────────────
