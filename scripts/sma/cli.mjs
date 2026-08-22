@@ -31,7 +31,7 @@
  * Node built-ins only; zero npm deps.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, realpathSync } from 'node:fs'
 import { join, dirname, basename, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -634,6 +634,31 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open — the curriculum refresh never wedges session-start */
   }
 
+  // How full is the always-loaded memory, said at the one moment the session is about to
+  // start paying for it. The byte budget has existed in the constants and in the size lint
+  // all along; what was missing was a place where a live session could SEE it without
+  // knowing to ask. The line only READS and prints — consolidation stays an act a person
+  // (or an agent) performs deliberately, never something a hook does behind their back.
+  // Its OWN try/catch: fail-open — the memory budget line never wedges session-start.
+  let memLine = ''
+  try {
+    const { alwaysLoadReport } = await import('./lib/economy.mjs')
+    const mem = await alwaysLoadReport({ corpusDir: join(repoRoot, '.claude', 'memory'), smaRoot: dirs.smaRoot })
+    // No corpus, no reading — a project without memory hears nothing about memory.
+    if (mem.bytes > 0) {
+      memLine = `SMA: память MEMORY.md — ${mem.pct}% бюджета всегда-загружаемого (${mem.bytes}/${mem.budget} байт)`
+      if (mem.tier === 'warn') memLine += ' — приближается к пределу (порог 80%)'
+      if (mem.tier === 'critical') {
+        memLine +=
+          '\nSMA: память переполнена — консолидируй сейчас: `node scripts/sma/cli.mjs consolidate` ' +
+          '(предложит слияния и промоушены, ничего не применяет) или `node scripts/sma/cli.mjs trim` ' +
+          '(понизит слои — авто-починка)'
+      }
+    }
+  } catch {
+    /* fail-open — the memory budget line never wedges session-start */
+  }
+
   // The window-name offer. WHEN it is shown, in words: for as long as the name is still one
   // the SYSTEM chose — either the machine token (there was no window token to key a name on,
   // or the allocation failed) or the auto «Окно-N» just handed out. It goes quiet the moment
@@ -693,13 +718,15 @@ async function cmdSessionStart({ dirs }) {
     digest ||
     namePrompt ||
     disarmLine ||
-    curriculumLine
+    curriculumLine ||
+    memLine
   ) {
     const parts = [lines.join(' ')]
     if (preAct) parts.push(preAct)
     if (digest) parts.push(digest)
     if (disarmLine) parts.push(disarmLine)
     if (curriculumLine) parts.push(curriculumLine)
+    if (memLine) parts.push(memLine)
     if (namePrompt) parts.push(namePrompt)
     if (restore) parts.unshift(restore) // the capsule body is the FIRST part after compaction
     printJson({
@@ -1697,6 +1724,28 @@ async function cmdBuildIndex({ flags, dirs }) {
         ? `  лексический индекс пересобран — движок ${lexicalReport.engine}, записей ${lexicalReport.indexed}\n`
         : `  лексический индекс НЕ пересобран — ${lexicalReport.reason ?? 'причина не названа'}\n`,
     )
+
+    // The index has just been rewritten, so this is the one moment its author is
+    // certainly looking at it: say how much of the always-load budget it now takes.
+    // Bytes and percent come from the SHARED reading (economy.alwaysLoadReport) — the
+    // same one session-start and the statusline print, so no two surfaces can disagree
+    // about the same file. Fail-open: a signal never gates a successful build.
+    try {
+      const { alwaysLoadReport } = await import('./lib/economy.mjs')
+      const mem = await alwaysLoadReport({ corpusDir, smaRoot: dirs?.smaRoot })
+      process.stdout.write(
+        `SMA: это ${mem.pct}% бюджета всегда-загружаемого (${mem.bytes}/${mem.budget} байт)\n`,
+      )
+      if (mem.tier === 'critical') {
+        process.stdout.write(
+          'SMA: память переполнена — консолидируй сейчас: `node scripts/sma/cli.mjs consolidate` ' +
+            '(предложит слияния и промоушены, ничего не применяет) или `node scripts/sma/cli.mjs trim` ' +
+            '(понизит слои — авто-починка)\n',
+        )
+      }
+    } catch {
+      /* fail-open — the budget line is a signal, never a gate on a written index */
+    }
     return 0
   }
 
@@ -2944,8 +2993,9 @@ async function cmdSpendPromptSize({ flags, dirs }) {
  *   memory stats --selftest — the deterministic, VERSIONED corpus token-cost report
  * Prices MEMORY.md (core load), each note, each INDEX-*.md, and the top-N
  *   heaviest, with ESTIMATOR_VERSION stamped so numbers reproduce run-to-run and are never
- *   billing truth. NOT hook-facing. Compress is DEFERRED by design (memory stats is its
- *   evidence gate — no corpus rewrite in this plan). Fail-open.
+ *   billing truth. NOT hook-facing. Shortening the TEXT of a note that grew heavy lives in
+ *   the `compress` subcommand next door, and these numbers are the evidence it stands on:
+ *   compress names its targets out of this very report, never out of a guess. Fail-open.
  */
 async function cmdMemory({ positionals, flags, dirs }) {
   const sub = positionals[0]
@@ -2955,9 +3005,10 @@ async function cmdMemory({ positionals, flags, dirs }) {
   if (sub === 'explain') return cmdMemoryExplain({ flags, dirs })
   if (sub === 'index') return cmdMemoryIndex({ positionals, flags, dirs })
   if (sub === 'forget') return cmdMemoryForget({ positionals, flags, dirs })
+  if (sub === 'compress') return cmdMemoryCompress({ flags, dirs })
 
   if (sub !== 'stats') {
-    process.stdout.write('usage: sma memory <stats|migrate|write|explain|index|forget>\n')
+    process.stdout.write('usage: sma memory <stats|migrate|write|explain|index|forget|compress>\n')
     process.stdout.write('  stats [--json] [--top N] [--stat core-tokens|corpus-tokens] [--selftest]\n')
     process.stdout.write('  migrate [--preview] | --apply <draft> --confirm <source-file> --yes\n')
     process.stdout.write('  write --type <memory_type> --truth <truth_mode> --claim <text> (see --help)\n')
@@ -2965,7 +3016,9 @@ async function cmdMemory({ positionals, flags, dirs }) {
     process.stdout.write('  explain --task "<text>" [--json] [--stat <name>]\n')
     process.stdout.write('  index rebuild|status [--json] [--stat <name>] — производный индекс лексического слоя выдачи\n')
     process.stdout.write('  forget <id> [--reason "…"|--replaced-by <id>|--expire|--archive] [--erase --yes]\n')
-    process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
+    process.stdout.write(
+      '  compress: предложить ужатие текста тяжёлых заметок (preview; применение --apply --confirm --yes по одному)\n',
+    )
     return 1
   }
 
@@ -3000,7 +3053,9 @@ async function cmdMemory({ positionals, flags, dirs }) {
   )
   for (const n of stats.top) process.stdout.write(`  ${n.file}: ~${n.tokens}\n`)
   process.stdout.write(`  ${stats.caveat}\n`)
-  process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
+  process.stdout.write(
+    '  подсказка: тяжёлые заметки можно ужать — sma memory compress (preview, сам ничего не меняет)\n',
+  )
   return 0
 }
 
@@ -3774,6 +3829,119 @@ async function cmdMemoryMigrate({ flags, dirs }) {
   return 0
 }
 
+const MEMORY_COMPRESS_USAGE = [
+  'usage: sma memory compress [--top N] [--corpus <dir>] [--json]',
+  '       sma memory compress --apply <draft> --confirm <note-file> --yes [--corpus <dir>]',
+  '',
+  '  (default)            name the notes whose TEXT grew heavy — by the token meter and by',
+  '                       the per-note byte budget, in numbers — and stage one proposal',
+  '                       template per target in .claude/memory/drafts/. PREVIEW-ONLY:',
+  '                       outside drafts/ not one byte of the corpus is written.',
+  '                       The shortened text is written by YOU inside the template; this',
+  '                       verb never rewrites a note it was not handed.',
+  '  --apply <draft>      apply exactly ONE filled proposal. --confirm must name the',
+  '                       proposal\'s own target note and --yes must be present: acceptance',
+  '                       is per-file, by hand. There is no bulk apply. The original is',
+  '                       copied to <draft>.orig before the overwrite, so the rollback is',
+  '                       one copy command.',
+].join('\n')
+
+/**
+ * memory compress — the preview-only proposal of SHORTENING NOTE TEXT.
+ *
+ * A subcommand of `memory` on purpose: the corpus namespace already exists and this is a
+ * question about the corpus, so no top-level verb is minted for it.
+ *
+ * Default action is a REPORT standing on the numbers `memory stats` already produces —
+ * which notes are heavy, on what grounds, and where each proposal template is staged. The
+ * corpus is untouched. Applying is a separate, explicit, one-file-at-a-time act
+ * (--apply + --confirm + --yes), because this door overwrites something already accepted.
+ */
+async function cmdMemoryCompress({ flags, dirs }) {
+  const compress = await import('./lib/compress.mjs')
+
+  if (flags.help === true) {
+    process.stdout.write(`${MEMORY_COMPRESS_USAGE}\n`)
+    return 0
+  }
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join(repoRoot, '.claude', 'memory')
+
+  if (!existsSync(corpusDir)) {
+    process.stderr.write(`SMA memory compress: корпус не найден — ${corpusDir}\n`)
+    return 1
+  }
+
+  // ── apply: one draft, one confirmation, one explicit yes ───────────────────
+  if (flags.apply != null && flags.apply !== true) {
+    const draftPath = String(flags.apply)
+    const confirmFile = typeof flags.confirm === 'string' ? flags.confirm : ''
+    if (!confirmFile || flags.yes !== true) {
+      process.stdout.write(`${MEMORY_COMPRESS_USAGE}\n`)
+      process.stderr.write(
+        'SMA memory compress: --apply требует --confirm <заметка-цель> И --yes — приёмка пофайловая, по одному предложению\n',
+      )
+      return 1
+    }
+    const res = compress.apply({ draftPath, corpusDir, confirmFile })
+    if (wantsJson(flags)) printJson(res)
+    else if (res.applied) {
+      process.stdout.write(`SMA memory compress: применено → ${res.target}\n`)
+      process.stdout.write(`  байты: было ${res.bytesBefore} · стало ${res.bytesAfter}\n`)
+      process.stdout.write(`  копия исходника: ${res.orig}\n`)
+      process.stdout.write(`  откат: скопируйте ${res.orig} поверх ${res.target}\n`)
+    } else process.stdout.write(`SMA memory compress: ОТКАЗ — ${res.reason}\n`)
+    return res.applied ? 0 : 1
+  }
+
+  // ── preview (default) ──────────────────────────────────────────────────────
+  const topN = Number.isFinite(Number(flags.top)) ? Number(flags.top) : 10
+  const report = compress.preview({ corpusDir, topN })
+  if (wantsJson(flags)) {
+    printJson(report)
+    return 0
+  }
+
+  if (report.total === 0) {
+    // An honest empty answer, and it is a SUCCESS: a corpus with nothing heavy in it is
+    // the state this verb exists to arrive at, not a failure to find work.
+    process.stdout.write('SMA memory compress: целей ужатия нет — ни одна заметка не тяжела по числам\n')
+    process.stdout.write(
+      `  порог предъявлен: тяжёлой считается заметка из top-${topN} по весу корпуса ` +
+        `или занявшая ≥ ${report.warnBytes} из ${report.budget} байт своего бюджета\n`,
+    )
+    return 0
+  }
+
+  process.stdout.write(
+    `SMA memory compress [PREVIEW — ни один байт корпуса не изменён]: ${report.total} целей · шаблоны в ${report.draftsDir}\n`,
+  )
+  const byFile = new Map(report.targets.map((t) => [t.file, t]))
+  for (const d of report.drafts) {
+    const t = byFile.get(d.target)
+    process.stdout.write(
+      `  ${d.target}: ${t.bytes} байт (${t.pct}% бюджета заметки) · основания: ${t.grounds.join('; ')}\n`,
+    )
+    if (d.status === 'kept-existing') {
+      process.stdout.write(
+        `      ! черновик на диске ОТЛИЧАЕТСЯ от свежего шаблона и оставлен как есть (${d.path}) — правка человека или шаблон из прошлого прогона; удалите файл, чтобы пересобрать\n`,
+      )
+    } else if (d.status === 'already-applied') {
+      process.stdout.write(`      · предложение уже применено (маркер .applied рядом с ${d.path})\n`)
+    } else {
+      process.stdout.write(`      · шаблон: ${d.path}\n`)
+    }
+  }
+  process.stdout.write(
+    '  текст ужатия пишете вы: впишите заметку ЦЕЛИКОМ (с фронтматтером) в секцию шаблона — модели внутри этого глагола нет\n',
+  )
+  process.stdout.write(
+    '  применить: sma memory compress --apply <draft> --confirm <заметка-цель> --yes (по одному файлу, массового применения нет)\n',
+  )
+  return 0
+}
+
 /** The usage block, built from the schema's own closed vocabularies — never a second list. */
 function memoryWriteUsage(schema) {
   return [
@@ -3856,6 +4024,80 @@ async function resolveCorpusDefault({ cwd = process.cwd(), dirs } = {}) {
 }
 
 /**
+ * isForeignCorpus({requested, resolvedDefault}) — is this corpus somebody ELSE's?
+ *
+ * A WORKING COPY IS ITS OWN PROJECT, and that is the law the answer above is
+ * written to protect: `resolveCorpusDefault` answers with the corpus of the
+ * CURRENT tree, so a lesson a worker writes inside its copy is a legitimate local
+ * case, not a write into a stranger's memory. This function must never break that
+ * case, and it cannot: the default IS the current tree, so no flag means not
+ * foreign, and a `--corpus` that NAMES the current tree's own corpus is not
+ * foreign either. Foreign is one thing only — the corpus of ANOTHER tree, named
+ * out loud.
+ *
+ * The comparison is between paths canonicalised by the FILESYSTEM, not merely by
+ * string surgery — see `canonicalPath`. Two spellings of one directory that
+ * compared unequal would stage a record over a difference in punctuation, and the
+ * law above would be broken by exactly the case it exists to protect.
+ *
+ * FAILS CLOSED. A default that cannot be read is not evidence that the requested
+ * corpus is ours; the safe answer is "foreign", which costs a draft and a sentence
+ * and never costs an unreviewed write into somebody else's memory.
+ */
+function isForeignCorpus({ requested, resolvedDefault } = {}) {
+  if (typeof requested !== 'string' || requested.trim() === '') return false
+  if (typeof resolvedDefault !== 'string' || resolvedDefault.trim() === '') return true
+  return canonicalPath(requested) !== canonicalPath(resolvedDefault)
+}
+
+/**
+ * One directory, one spelling. A path is made absolute, then handed to the
+ * filesystem for its REAL name, then levelled to forward slashes with no trailing
+ * separator and lower-cased on Windows.
+ *
+ * WHY THE FILESYSTEM IS ASKED AT ALL. On Windows the same directory has more than
+ * one legal name: the 8.3 short form (`C:\Users\LONGNA~1\...`) and the long form
+ * are the same place, git answers in the long one, and a path inherited from the
+ * environment — the temp directory above all — is very often the short one. String
+ * normalisation cannot reconcile those; `realpath` can, and it also collapses
+ * symlinks and junctions — the shape a linked working copy is usually reached by.
+ *
+ * A path that does not exist yet is still answerable: the deepest ancestor that
+ * DOES exist is canonicalised and the remaining names are put back on. Nothing is
+ * created, and the fallback for a path with no readable ancestor at all is the
+ * plain absolute form.
+ */
+function canonicalPath(input) {
+  const level = (p) => {
+    const flat = String(p).replace(/[\\/]+/g, '/').replace(/\/+$/, '')
+    return process.platform === 'win32' ? flat.toLowerCase() : flat
+  }
+  const absolute = resolve(String(input ?? '').trim())
+  let current = absolute
+  const tail = []
+  for (;;) {
+    try {
+      const real = realpathSync.native(current)
+      return level([real, ...tail].join('/'))
+    } catch {
+      const parent = dirname(current)
+      if (parent === current) return level(absolute)
+      tail.unshift(basename(current))
+      current = parent
+    }
+  }
+}
+
+/**
+ * Why a record addressed at another project's corpus is staged instead of
+ * written. English, like every other reason in the pipeline trace, because the
+ * trace is the machine trail. What the PERSON is told is printed separately, in
+ * their own language, together with the command that applies the draft by hand.
+ */
+const FOREIGN_CORPUS_STAGE_REASON =
+  'foreign-project corpus — approval required before this record becomes active'
+
+/**
  * memory write — the memory-write surface of the canon pipeline.
  *
  * One event in, one traced verdict out. The verb itself decides NOTHING about
@@ -3874,8 +4116,11 @@ async function cmdMemoryWrite({ flags, dirs }) {
     return 0
   }
 
-  const corpusDir =
-    typeof flags.corpus === 'string' ? flags.corpus : await resolveCorpusDefault({ cwd: process.cwd(), dirs })
+  // The default is resolved even when `--corpus` wins, because it is the only way
+  // to answer the second question this verb has to answer: whose corpus is this.
+  const requestedCorpus = typeof flags.corpus === 'string' ? flags.corpus : ''
+  const defaultCorpus = await resolveCorpusDefault({ cwd: process.cwd(), dirs })
+  const corpusDir = requestedCorpus !== '' ? requestedCorpus : defaultCorpus
 
   // ── apply: one staged draft, one named confirmation, one explicit yes ──────
   // The door OUT of drafts/. It is the same shape `memory migrate --apply`
@@ -4005,9 +4250,22 @@ async function cmdMemoryWrite({ flags, dirs }) {
 
   const body = typeof flags.body === 'string' ? `\n${flags.body.trim()}\n` : '\n'
 
+  // A RECORD ADDRESSED AT ANOTHER PROJECT NEVER BECOMES ITS ACTIVE MEMORY DIRECTLY.
+  // The fact is computed here because only this layer knows which corpus WOULD have
+  // been the default; the outcome is decided by the pipeline, because that is where
+  // the door lives. So the fact travels as an option and closes the automatic door
+  // before the record's own class is ever asked about — a record staged this way is
+  // applied by the hand of whoever owns that corpus, through --apply --confirm --yes.
+  const foreignCorpus = isForeignCorpus({ requested: requestedCorpus, resolvedDefault: defaultCorpus })
+
   const result = pipeline.runPipeline(
     { record, body },
-    { corpusDir, journalDir: dirs?.journalDir, ...(await pipelineRuntime()) },
+    {
+      corpusDir,
+      journalDir: dirs?.journalDir,
+      ...(foreignCorpus ? { forceStage: { reason: FOREIGN_CORPUS_STAGE_REASON } } : {}),
+      ...(await pipelineRuntime()),
+    },
   )
 
   if (wantsJson(flags)) {
@@ -4024,6 +4282,15 @@ async function cmdMemoryWrite({ flags, dirs }) {
     process.stdout.write(`  → отложено черновиком (в корпус НЕ попало): ${result.path}\n`)
   } else {
     process.stdout.write(`  → ОТКАЗ: ${last?.detail?.reason ?? 'см. трассировку выше'}\n`)
+  }
+  // Чужой корпус — не отказ и не ошибка: запись сделана, но принята она будет рукой
+  // того, чья это память. Поэтому строка не пугает, а называет причину и сразу даёт
+  // команду применения — иначе черновик в чужом дереве останется лежать молча.
+  if (foreignCorpus && result.outcome === 'staged-draft') {
+    process.stdout.write(
+      `SMA: корпус ${corpusDir} — чужой проект: запись принудительно в staged-draft, ` +
+        `применение — руками: sma memory write --apply ${result.path} --confirm ${id}.md --yes --corpus ${corpusDir}\n`,
+    )
   }
   return result.outcome === 'rejected' ? 1 : 0
 }
@@ -11049,17 +11316,220 @@ async function cmdMemoryPreview({ flags, dirs }) {
  * Tolerant hook-stdin read; fully fail-open.
  */
 async function cmdSessionEnd({ dirs }) {
+  // Declared out here so the farewell move below can speak about the SAME session the
+  // release path resolved. The hook's stdin can be read exactly once, so re-deriving the
+  // identity in the second block would read an empty frame and address the wrong window.
+  let identity = null
   try {
     const evt = readStdinJson()
     const sessionToken = windowTokenFrom(evt)
     const registry = await import('./lib/registry.mjs')
     const claims = await import('./lib/claims.mjs')
-    const identity = registry.resolveTerminalIdentity({ sessionToken })
+    identity = registry.resolveTerminalIdentity({ sessionToken })
     claims.sessionEnd({ identity, claimsDir: dirs.claimsDir, journalDir: dirs.journalDir })
   } catch {
     /* fail-open — a session-end failure must never surface */
   }
+
+  // The farewell move, in its OWN try/catch and strictly after the claims are back:
+  // fail-open — the farewell move must never surface; the hook has a 10-second timeout,
+  // so cheap reads only. A session may end with nothing worth remembering, and that is a
+  // legal outcome said in words, never a lesson invented to fill the silence.
+  try {
+    await farewellMove({ dirs, identity })
+  } catch {
+    /* fail-open — a farewell that fails costs the draft, never the released claims */
+  }
   return 0
+}
+
+/** The journal event type the farewell move leaves behind, whatever its outcome. */
+const FAREWELL_EVENT_TYPE = 'farewell'
+
+/**
+ * The journal types that are the session's OWN bookkeeping rather than something the
+ * session did. Read off the product, not off a wish list: `release` is what
+ * `claims.sessionEnd` writes moments earlier, `farewell` is this block's own trace. The
+ * canon's «session-start» and «heartbeat» are NOT journal types in this engine — nothing
+ * appends them — so naming them here would have been a set that filters nothing.
+ */
+const FAREWELL_SERVICE_TYPES = new Set(['release', FAREWELL_EVENT_TYPE])
+
+/**
+ * The journal types that name something that WENT WRONG. Taken from the vocabulary
+ * journal.mjs documents on `appendEvent` plus the incident kinds the engine appends
+ * elsewhere; a type outside this set still counts as material, it just does not earn a
+ * verbatim excerpt in the candidate's body.
+ */
+const FAREWELL_INCIDENT_TYPES = new Set([
+  'warn',
+  'collision',
+  'steal',
+  'snapshot-fail',
+  'incident',
+  'reap-fail',
+  'stall',
+  'airbag',
+])
+
+/** How many of this terminal's journal lines the farewell reads. A tail, never the tree. */
+const FAREWELL_TAIL = 200
+
+/** How many incident lines reach the candidate's body — the hook's budget, in lines. */
+const FAREWELL_EXCERPTS = 10
+
+/** Make a value safe to be half of a filename: the draft id is joined onto a path. */
+function farewellSafe(value) {
+  return String(value ?? '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+}
+
+/**
+ * farewellMove({dirs, identity}) — the last thing a session does.
+ *
+ * WHAT IT DOES. Reads the tail of THIS terminal's coordination journal, asks one question
+ * of it — did this session do anything, or was it only bookkeeping — and answers in one of
+ * two ways. With material it assembles a candidate lesson DETERMINISTICALLY from the facts
+ * on those lines (counts by type, verbatim incident lines) and hands it to the EXISTING
+ * write pipeline. Without material it says so, in words, and invents nothing.
+ *
+ * WHY IT CANNOT WRITE ACTIVE MEMORY, and this is the load-bearing half. The classification
+ * it declares — `episodic` + `inferred` — resolves on the approval ladder to `auto-draft`,
+ * and `auto-draft` is automatic about DRAFTING, not about believing: the pipeline's risk
+ * step stages every path but `auto-ttl`. So the outcome is `staged-draft` by the ladder's
+ * own arithmetic rather than by a promise made here, and the file lands in `drafts/`, which
+ * no corpus reader indexes. There is deliberately no branch in this function that could
+ * produce a persisted record, and no LLM anywhere in it: a machine that may author a belief
+ * about its own session is a machine that can talk itself into anything.
+ *
+ * COST. One `journalTail` read of one file, one pipeline walk that stops at step 7. No git,
+ * no network, no timers, no scan of the notes corpus beyond the single flat listing the
+ * pipeline does for itself. Everything that can throw is caught by the caller.
+ */
+async function farewellMove({ dirs, identity }) {
+  // Without an identity there is no session to speak about: the release path above is the
+  // one that resolves it, and if that failed the honest move is silence, not a guess.
+  if (!identity || !identity.terminalId) return
+
+  const journal = await import('./lib/journal.mjs')
+  const events = journal.journalTail(identity.terminalId, FAREWELL_TAIL, { journalDir: dirs.journalDir })
+  const material = events.filter((e) => e && typeof e.type === 'string' && !FAREWELL_SERVICE_TYPES.has(e.type))
+
+  /** One journal line per farewell, whatever the outcome — the machine-readable trace. */
+  const note = (detail) => {
+    try {
+      journal.appendEvent(
+        {
+          type: FAREWELL_EVENT_TYPE,
+          actors: [identity.holderIdentity ?? identity.terminalId],
+          scope: 'session',
+          detail,
+        },
+        { terminalId: identity.terminalId, journalDir: dirs.journalDir },
+      )
+    } catch {
+      /* best-effort — a journal that cannot be written does not undo the draft */
+    }
+  }
+
+  if (!material.length) {
+    note({ outcome: 'no-material' })
+    process.stdout.write('SMA: прощальный ход — материала сессии нет, урок не собран\n')
+    return
+  }
+
+  const counts = new Map()
+  for (const e of material) counts.set(e.type, (counts.get(e.type) ?? 0) + 1)
+  const byType = [...counts.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([type, n]) => `${type} ${n}`)
+    .join(', ')
+
+  // The id is deterministic from the session and the day, so a second SessionEnd on the
+  // same window resolves to the SAME file — and the pipeline's staging door never clobbers
+  // a draft a person may already have edited. The day is part of it so that tomorrow's
+  // session in the same window is not silently denied its own candidate.
+  const day = new Date().toISOString().slice(0, 10)
+  const id = `session-lesson-${farewellSafe(identity.terminalId)}-${day}`
+
+  const excerpts = material.filter((e) => FAREWELL_INCIDENT_TYPES.has(e.type)).slice(0, FAREWELL_EXCERPTS)
+  const claim =
+    `сессия ${identity.terminalId} закрылась, оставив в журнале координации ` +
+    `${material.length} событ. (${byType}) — кандидат-урок собран из фактов журнала, не из рассуждения`
+
+  const body = [
+    '',
+    '<!--',
+    '  ЧЕРНОВИК — НЕ часть корпуса памяти. Собран прощальным ходом session-end',
+    '  ДЕТЕРМИНИРОВАННО, из фактов журнала координации: ни одна строка ниже не является',
+    '  суждением машины. В активную память он не попадает никак — только руками:',
+    '  `node scripts/sma/cli.mjs memory write --apply <файл> --confirm <файл> --yes`.',
+    '-->',
+    '',
+    '## Чем была сессия (факты журнала)',
+    '',
+    `- дата: ${day}`,
+    `- терминал: ${identity.terminalId}`,
+    `- событий: ${material.length} (${byType})`,
+    '',
+    '## Что пошло не так (дословно из журнала)',
+    '',
+    ...(excerpts.length
+      ? excerpts.map((e) => `- ${e.ts ?? '—'} · ${e.type} · ${e.scope ?? '—'}`)
+      : ['_Событий-инцидентов в журнале этой сессии нет._']),
+    '',
+    '## Урок',
+    '',
+    '_Заполняется человеком при приёмке: механизм, а не происшествие._',
+    '',
+  ].join('\n')
+
+  const record = {
+    id,
+    schema_version: '2',
+    status: 'draft',
+    memory_type: 'episodic',
+    truth_mode: 'inferred',
+    claim,
+    language: 'ru',
+    sensitivity: 'internal',
+    risk: 'low',
+    source: { authority: 'self-observed' },
+    retrieval: { areas: ['workflow'] },
+  }
+
+  // The corpus is resolved the way the sibling hook resolves it — from the state root's
+  // parent. NOT through the corpus default of `memory write`: that one asks git for the
+  // repository top level, and a hook on a ten-second budget does not spawn a process.
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const pipeline = await import('./lib/write-pipeline.mjs')
+  const result = pipeline.runPipeline(
+    { record, body },
+    {
+      corpusDir: join(repoRoot, '.claude', 'memory'),
+      journalDir: dirs?.journalDir,
+      repoRoot,
+      terminalId: identity.terminalId,
+    },
+  )
+
+  if (result.outcome !== 'staged-draft') {
+    // The pipeline refused the candidate — a legal answer (a secret in the material, a
+    // grammar it will not write). Recorded as what it is; nothing is written anywhere.
+    note({ outcome: 'refused', id, reason: result.trace[result.trace.length - 1]?.detail?.reason ?? null })
+    process.stdout.write('SMA: прощальный ход — конвейер записи отказал, черновик не положен\n')
+    return
+  }
+
+  const staged = result.trace.find((t) => t.outcome === 'staged')
+  const outcome = staged?.detail?.draft === 'draft-exists' ? 'draft-exists' : 'drafted'
+  note({ outcome, id, path: result.path })
+  process.stdout.write(
+    `SMA: прощальный ход — кандидат-урок положен черновиком: ${result.path} ` +
+      '(в корпус НЕ попал; применение — руками: `memory write --apply`)\n',
+  )
 }
 
 /**
@@ -12166,7 +12636,7 @@ const HANDLERS = {
   explain: cmdExplain, // in-product explainers ([topic]|--list|--coverage [--count]|--lang en|ru|--json)
   'doc-audit': cmdDocAudit, // deterministic docs honesty audit (--target manual|readme|numbers|all|--count|--json; --write only with numbers)
   vendor: cmdVendor, // standing Anthropic-update triage ledger linter (--count untriaged|--selftest|--json); zero network
-  memory: cmdMemory, // deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress deferred by design
+  memory: cmdMemory, // deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress lives as a memory SUBCOMMAND — a top-level verb is deliberately not minted for it
   history: cmdHistory, // streaming read-only search across the journal, the plan-execution records, the session transcripts and the lesson bodies (search <слово…> [--limit|--source|--corpus|--json]); no derived index, every fragment credential-screened
   'ship-lane': cmdShipLane, // ship-lane precondition + changelog drafter + lane records (check|changelog|record|report|--stat|--selftest); read-only, never pushes
   decisions: cmdDecisions, // decision-corpus miner (mine|stats); drafts-only, LOCAL corpus, never auto-committed

@@ -206,7 +206,7 @@ The coordination + accountability CLI runs underneath — 95 verbs, and the sect
 | `pre` · `pre-bench` | The one-spawn PreToolUse multiplexer (collision → reflex → gates → airbag → spend) and its SLO instrument; `collision-check` / `reflex-check` / `gates-check` remain as deprecated single-stream aliases |
 | `stall-check` | PostToolUse stall/loop detector; drops a flight mark |
 | `gates` · `gates-report` · `gates-ack` | Checkable project rules: advisory warns, evidence-gated soft-deny, acknowledgements |
-| `lint` · `build-index` · `load` · `snapshot` · `usage` · `consolidate` · `trim` | The memory corpus toolchain: quality lint, machine-built index, tag-scoped loading, usage citations, scheduled consolidation, layer-aware trim |
+| `lint` · `build-index` · `load` · `snapshot` · `usage` · `consolidate` · `trim` · `memory compress` | The memory corpus toolchain: quality lint, machine-built index (a `--write` also prints how full the always-loaded budget is, and offers consolidation in words when it is over), tag-scoped loading, usage citations, scheduled consolidation, layer-aware trim, and `compress` — shrink note text (proposals only, staged in `drafts/` and applied one-by-one by hand, the original copied aside before the overwrite) |
 | `predict-score` · `calibration` | Settle registered predictions with a script; read the per-domain hit-rate ledger |
 | `state` · `exec-journal` · `metrics` · `report` | Where a plan stands, the per-plan progress journal, and the whole-system report |
 
@@ -243,7 +243,7 @@ The coordination + accountability CLI runs underneath — 95 verbs, and the sect
 | `arena` | The comparative benchmark arena scorer + static graphs page (raw data and negative results published) |
 | `batch` | The `sma batch` middle lane: risk filter, grill-lite, mandatory receipts |
 | `worktree` · `merge` | Per-terminal worktree isolation — `provision` copies the untracked layer named by `.sma/worktree-include` and links dependencies instead of installing them, `remove` unlinks first and only then removes the tree (`--delete-branch` takes the branch too) — and the serialized local-only merge gate (the push itself stays a human-ordered ritual) |
-| `session-end` | SessionEnd hook: release this terminal's own claims so stale leases never haunt teammates |
+| `session-end` | SessionEnd hook: release this terminal's own claims so stale leases never haunt teammates, then make the farewell move — a session that left material gets a candidate lesson staged as a DRAFT through the write pipeline (never active memory), a session that left none says so in words |
 | `ask` | *(experimental stub)* — the fingerprint demand surface (`--unmet-count`); the full feature matures in a later release |
 | `explain` · `doc-audit` | 26 plain-language explainer topics with a command-coverage tripwire (every verb resolves to one); the deterministic docs honesty audit |
 
@@ -388,7 +388,7 @@ flowchart TD
 | **PreToolUse** (Edit/Write/Bash) | `pre` | **One spawn** runs the ordered stream pipeline — collision → reflex → gates → airbag → spend — replacing V2's 3–4 spawns. |
 | **PreToolUse** (subagent spawn, `Task\|Agent`) | `pretask-pack` | Injects the assembled context pack into a subagent — inheritance by construction. |
 | **PostToolUse** | `stall-check` | Notices a stuck/looping run so an executor death becomes a five-minute resume; also appends one flight mark. |
-| **SessionEnd** | `session-end` | Hands back the claims this window is holding, so a terminal that simply went away never leaves a teammate blocked on a scope nobody is editing. |
+| **SessionEnd** | `session-end` | Hands back the claims this window is holding, so a terminal that simply went away never leaves a teammate blocked on a scope nobody is editing. Then the **farewell move**, in its own try/catch so it can never cost the release: where the session left material, a candidate lesson is assembled deterministically from the journal's own facts and staged as a DRAFT through the write pipeline — never active memory, never a sentence a model composed; where it left none, that is said in words instead of a lesson being invented. Either outcome is written to the journal. |
 | **SubagentStop** | `subagent-verify` | Verifies every claimed file write against the real tree; phantom writes are flagged. |
 | **PreCompact** | `precompact-capsule` | Deterministically writes the flight capsule *before* compaction deletes the working state. |
 | **Stop** | `turn-diff` | At the boundary of every turn: the files changed since the claim was taken, and whether any of them fell outside the area that claim declared. A comparison of two git trees — never a re-run of recorded check commands. |

@@ -14,7 +14,10 @@
  *     capsule on disk, per-turn telemetry), empty sources answered in words not zeros
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   ESTIMATOR_VERSION,
   estimateTokens,
@@ -26,7 +29,9 @@ import {
   selfCost,
   promptSize,
   pickOpenRunToClose,
+  alwaysLoadReport,
 } from '../lib/economy.mjs'
+import { ALWAYS_LOAD_BUDGET, BUDGET_WARN_FRACTION } from '../lib/constants.mjs'
 
 // ── Test 1 — the versioned estimator ─────────────────────────────────────────
 describe('economy — estimator (Test 1)', () => {
@@ -415,5 +420,100 @@ describe('economy — promptSize', () => {
     // the channels that are now measured must NOT be claimed as uncounted
     expect(r.notCounted).not.toMatch(/пакет подагенту/)
     expect(r.notCounted).toMatch(/PostToolUse/)
+  })
+})
+
+// ── alwaysLoadReport — ONE always-load reading, shared by every budget signal ─
+//
+// The budget is BYTES and it already exists (constants.mjs + the size lint). This
+// helper does not invent a second threshold; it reads MEMORY.md, asks the lint's OWN
+// sizeTier where that lands, and hands the same {bytes, budget, pct, tier} to all three
+// signal points (session-start, statusline, build-index). The cases below pin exactly
+// that: the default comes from the constant, the config key can override it, a broken
+// config and a missing corpus degrade instead of throwing.
+describe('economy — alwaysLoadReport', () => {
+  let root: string
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'sma-econ-always-'))
+  })
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true, maxRetries: 3 })
+  })
+
+  /** A corpus dir whose MEMORY.md is EXACTLY `bytes` UTF-8 bytes (ASCII filler). */
+  function corpusOf(bytes: number): string {
+    const corpusDir = join(root, '.claude', 'memory')
+    mkdirSync(corpusDir, { recursive: true })
+    writeFileSync(join(corpusDir, 'MEMORY.md'), 'x'.repeat(bytes))
+    return corpusDir
+  }
+  /** An .sma root, optionally carrying a config.json with the given RAW text. */
+  function smaRootOf(configRaw: string | null): string {
+    const smaRoot = join(root, '.sma')
+    mkdirSync(smaRoot, { recursive: true })
+    if (configRaw !== null) writeFileSync(join(smaRoot, 'config.json'), configRaw)
+    return smaRoot
+  }
+
+  it('the default budget IS the shipped constant — never a number copied into this module', async () => {
+    // The literal pin lives in the TEST (as in lint.test.ts): the production code must
+    // read the constant, and the test is what notices if the constant itself moves.
+    expect(ALWAYS_LOAD_BUDGET).toBe(12288)
+    const r = await alwaysLoadReport({ corpusDir: corpusOf(6144) })
+    expect(r.budget).toBe(ALWAYS_LOAD_BUDGET)
+    expect(r.bytes).toBe(6144)
+    expect(r.pct).toBe(50)
+    expect(r.tier).toBeNull() // half a budget is not a signal
+  })
+
+  it('tiers come from the lint arithmetic: warn at the warn fraction, critical at 100%', async () => {
+    const warnBytes = Math.ceil(ALWAYS_LOAD_BUDGET * BUDGET_WARN_FRACTION) + 1
+    const warn = await alwaysLoadReport({ corpusDir: corpusOf(warnBytes) })
+    expect(warn.tier).toBe('warn')
+    expect(warn.pct).toBeGreaterThanOrEqual(80)
+
+    const crit = await alwaysLoadReport({ corpusDir: corpusOf(ALWAYS_LOAD_BUDGET) })
+    expect(crit.tier).toBe('critical')
+    expect(crit.pct).toBe(100)
+  })
+
+  it('the config key memoryAlwaysLoadBudget overrides the budget for the signal', async () => {
+    const corpusDir = corpusOf(6144)
+    const smaRoot = smaRootOf(JSON.stringify({ memoryAlwaysLoadBudget: 4096 }))
+    const r = await alwaysLoadReport({ corpusDir, smaRoot })
+    expect(r.budget).toBe(4096)
+    expect(r.bytes).toBe(6144)
+    expect(r.pct).toBe(150)
+    expect(r.tier).toBe('critical') // the SAME corpus that was quiet at 12288 is loud at 4096
+  })
+
+  it('a corrupt / absent / nonsense config falls back to the constant, never throws', async () => {
+    const corpusDir = corpusOf(6144)
+    const broken = await alwaysLoadReport({ corpusDir, smaRoot: smaRootOf('{ this is not json') })
+    expect(broken.budget).toBe(ALWAYS_LOAD_BUDGET)
+
+    const absent = await alwaysLoadReport({ corpusDir, smaRoot: join(root, 'no-such-sma-root') })
+    expect(absent.budget).toBe(ALWAYS_LOAD_BUDGET)
+
+    // a non-numeric / zero / negative override is not an override at all
+    for (const bad of ['"lots"', '0', '-5', 'null']) {
+      const r = await alwaysLoadReport({ corpusDir, smaRoot: smaRootOf(`{"memoryAlwaysLoadBudget": ${bad}}`) })
+      expect(r.budget).toBe(ALWAYS_LOAD_BUDGET)
+    }
+  })
+
+  it('a missing or unreadable MEMORY.md reports zero bytes and no tier — the signal goes quiet, it never falls over', async () => {
+    const emptyCorpus = join(root, '.claude', 'memory')
+    mkdirSync(emptyCorpus, { recursive: true })
+    const r = await alwaysLoadReport({ corpusDir: emptyCorpus })
+    expect(r.bytes).toBe(0)
+    expect(r.tier).toBeNull()
+    expect(r.pct).toBe(0)
+    expect(r.budget).toBe(ALWAYS_LOAD_BUDGET)
+
+    // no corpusDir at all is the same honest quiet, not a throw
+    const none = await alwaysLoadReport({})
+    expect(none.bytes).toBe(0)
+    expect(none.tier).toBeNull()
   })
 })

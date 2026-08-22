@@ -160,6 +160,68 @@ export function corpusStats({ corpusDir, readFile, listFiles, topN = 10 } = {}) 
   return { core, notes, indexes, top, totals, estimatorVersion: ESTIMATOR_VERSION, caveat: APPROX_CAVEAT }
 }
 
+// ═══════════════════════ the always-load budget reading ═════════════════════════
+
+/**
+ * alwaysLoadReport({corpusDir, smaRoot}) -> {bytes, budget, pct, tier}. ONE reading of
+ * how full the always-loaded memory is, shared by every place that shows it (session
+ * start, the statusline segment, `build-index --write`). One computation, three windows —
+ * so two surfaces can never disagree about the same file.
+ *
+ * THE BUDGET IS BYTES, and it is the budget that already exists. `ALWAYS_LOAD_BUDGET`
+ * from constants.mjs is the default and the lint's own `sizeTier` decides the tier — no
+ * second threshold is invented here, and no number is copied. A char-based limit was
+ * considered and rejected on measurement: the same MEMORY.md reads 34% by bytes and 135%
+ * by chars, so a second yardstick would have two surfaces contradicting each other.
+ *
+ * Override: the `memoryAlwaysLoadBudget` key in `<smaRoot>/config.json` (fail-soft — a
+ * missing, corrupt or nonsense value simply leaves the shipped default standing). Only a
+ * finite positive number is an override.
+ *
+ * ASYNC ON PURPOSE. `sizeTier` is imported LAZILY: lint.mjs pulls in ~20 heavy modules at
+ * its top (predict, calibration, consolidate, write-pipeline, gates, …), and this helper
+ * runs on the statusline's 15-second path, where that graph would be paid on every render.
+ * The lazy import keeps the arithmetic SHARED without dragging the lint's weight into
+ * every consumer of economy.mjs.
+ *
+ * Fail-open by construction: an absent or unreadable MEMORY.md is {bytes:0, tier:null} —
+ * the signal goes quiet, it never throws at the caller.
+ *
+ * @param {{corpusDir?:string, smaRoot?:string}} [opts]
+ * @returns {Promise<{bytes:number, budget:number, pct:number, tier:(string|null)}>}
+ */
+export async function alwaysLoadReport({ corpusDir, smaRoot } = {}) {
+  let budget = ALWAYS_LOAD_BUDGET
+  if (typeof smaRoot === 'string' && smaRoot) {
+    try {
+      const parsed = JSON.parse(readFileSync(join(smaRoot, 'config.json'), 'utf8'))
+      const override = parsed && typeof parsed === 'object' ? Number(parsed.memoryAlwaysLoadBudget) : NaN
+      if (Number.isFinite(override) && override > 0) budget = override
+    } catch {
+      /* fail-soft — no config, bad JSON or a nonsense value keeps the shipped default */
+    }
+  }
+
+  let bytes = 0
+  if (typeof corpusDir === 'string' && corpusDir) {
+    try {
+      bytes = Buffer.byteLength(readFileSync(join(corpusDir, 'MEMORY.md'), 'utf8'), 'utf8')
+    } catch {
+      bytes = 0 // no index yet is a normal state, not an error to report
+    }
+  }
+
+  let tier = null
+  try {
+    const { sizeTier } = await import('./lint.mjs')
+    tier = sizeTier(bytes, budget)
+  } catch {
+    /* fail-open — without the lint there is no tier, but the bytes are still true */
+  }
+
+  return { bytes, budget, pct: Math.round((bytes / budget) * 100), tier }
+}
+
 // ═══════════════════════════ self-cost (SMA's own overhead) ═════════════════════
 
 /** The [beginPrefix .. end] line span of `text`, or null if the opening marker is absent. */

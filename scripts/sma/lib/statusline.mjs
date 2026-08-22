@@ -40,6 +40,14 @@ import { homedir } from 'node:os'
 import { execSync } from 'node:child_process'
 
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
+import { BUDGET_WARN_FRACTION } from './constants.mjs'
+
+/**
+ * The fill from which the memory axis is worth a place on the line. It is the SHIPPED
+ * warn fraction, not a display number of its own: the statusline agrees with the lint
+ * and with the session-start line about when memory has become a matter.
+ */
+const MEM_DISPLAY_FROM_PCT = Math.ceil(BUDGET_WARN_FRACTION * 100)
 
 /** Fast-tier cache TTL (window-budget % + open gates). 15 s — cheap enough for the
  * per-update statusline cadence, fresh enough that a just-tripped gate shows quickly. */
@@ -89,9 +97,14 @@ export function renderSegment(state = {}, opts = {}) {
       `claim ${claim}`,
       `coll ${coll}`,
       `win ${win}`,
-      `gates ${gates}`,
-      `preds ${preds}`,
     ]
+    // The memory axis is the ONE sub-segment that can be absent entirely. Its neighbours
+    // print '—' when they have no reading, because «this axis exists and is empty» is
+    // itself news. A corpus at 30% is not empty — it is fine, and saying so on every
+    // render would be a permanent line of noise on the surface built to be glanced at.
+    // So memory takes its place only from the warn fraction up, where it is a signal.
+    if (Number.isFinite(s.memPct) && s.memPct >= MEM_DISPLAY_FROM_PCT) parts.push(`mem ${s.memPct}%`)
+    parts.push(`gates ${gates}`, `preds ${preds}`)
     const seg = 'sma ' + parts.join(' · ')
     return opts && opts.ansi ? colorize(seg, pulse) : seg
   } catch {
@@ -156,7 +169,11 @@ export async function readStatuslineState(opts = {}) {
     if (!fastFresh) {
       const windowPct = await safeLoad(loaders.loadSpend || defaultLoadSpend, dirs)
       const gates = await safeLoad(loaders.loadGates || defaultLoadGates, dirs)
-      fast = { windowPct, gates, refreshedAt: now }
+      // The memory fill rides the FAST tier: it is one stat() + one read of a file that
+      // is 12 KB by law, and a corpus that has just crossed its budget should be visible
+      // within the same 15 seconds as a gate that has just tripped.
+      const memPct = await safeLoad(loaders.loadMem || defaultLoadMem, dirs)
+      fast = { windowPct, gates, memPct, refreshedAt: now }
     }
 
     // ── slow tier: the expensive unscored-predictions scan ───────────────────
@@ -181,6 +198,7 @@ export async function readStatuslineState(opts = {}) {
       collisions: Number.isFinite(summary.collisions) ? summary.collisions : 0,
       // the injected subscription reading first, the cached spend figure as the fallback
       windowPct: Number.isFinite(opts.vendorWindowPct) ? Number(opts.vendorWindowPct) : numOrNull(fast.windowPct),
+      memPct: numOrNull(fast.memPct),
       gates: numOrNull(fast.gates),
       unscored: numOrNull(preds.unscored),
     }
@@ -637,6 +655,24 @@ async function defaultLoadGates(dirs = {}) {
     /* breaker absent */
   }
   return any ? count : null
+}
+
+/**
+ * always-load fill %, or null when the corpus has not reached the warn tier — the axis
+ * answers «is memory a matter right now», not «how big is memory». The reading itself is
+ * the SHARED one (economy.alwaysLoadReport), the same computation session-start and
+ * build-index print, so two surfaces can never quote different percentages for one file.
+ * Lazy import + fail-open: no economy module, no corpus, no reading — never a throw.
+ */
+async function defaultLoadMem(dirs = {}) {
+  try {
+    const repoRoot = dirs.repoRoot || (dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd())
+    const { alwaysLoadReport } = await import('./economy.mjs')
+    const report = await alwaysLoadReport({ corpusDir: join(repoRoot, '.claude', 'memory'), smaRoot: dirs.smaRoot })
+    return report && report.tier ? report.pct : null
+  } catch {
+    return null
+  }
 }
 
 /** unscored-predictions count over the repo's .planning/phases tree; null when absent.

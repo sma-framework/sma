@@ -10,6 +10,8 @@ Your project's knowledge lives as small notes, one fact per note, each carrying 
 
 The index is machine-built by a script from the notes, so a manual edit is caught by the checker immediately.
 
+The always-loaded layer has a byte budget, and how full it is no longer needs looking up: the session start prints the fill, `build-index --write` prints it again the moment the index is rewritten, and the statusline carries it once it approaches the limit. Over budget, the message is not a scolding but a ready offer — consolidate now, with the command beside it. Nothing is rewritten for you.
+
 Forgetting is one command. `memory forget <id>` makes the assistant stop treating a note as true: the file stays on disk, but the note never reaches a conversation again, and the command tells you which state it applied. Name a replacement and the old note is linked to the new one instead. Erasing is a separate and irreversible act: `--erase` on its own only shows what would go and deletes nothing, and it happens only when you repeat it with `--yes`. Even then, a note that once reached a commit is still in that commit and in every copy of the repository, which the command says out loud rather than hides.
 
 The commands:
@@ -28,6 +30,8 @@ Example: `node scripts/sma/cli.mjs load --tags security` returns only the securi
 - Рефлексы это уроки из промахов, которые срабатывают предупреждением в момент похожего действия.
 
 Индекс строит скрипт из заметок, поэтому ручную правку проверяющий ловит сразу.
+
+У всегда загружаемого слоя есть байтовый бюджет, и за его заполненностью больше не надо ходить: старт сессии печатает её сам, `build-index --write` печатает её ещё раз в момент перезаписи индекса, а строка состояния несёт её, когда бюджет близок к пределу. При переполнении сообщение это не выговор, а готовое предложение: консолидируй сейчас, и рядом стоит команда. Ничего за Вас не переписывается.
 
 Забыть можно одной командой. `memory forget <id>` заставляет ассистента перестать считать заметку верной: файл на диске остаётся, но в разговор заметка больше не попадает, и команда сама печатает, что именно она применила. Если назвать замену, старая заметка просто свяжется с новой. Стереть совсем это отдельное и необратимое действие: один флаг `--erase` ничего не удаляет, он только показывает, что уйдёт, а само удаление происходит, лишь если повторить то же самое с `--yes`. И даже тогда заметка, которая когда-то попала в коммит, остаётся в этом коммите и во всех копиях репозитория; команда говорит это вслух, а не умалчивает.
 
