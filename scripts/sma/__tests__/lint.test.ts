@@ -22,6 +22,9 @@ import { execFileSync } from 'node:child_process'
 
 import { LINT_CHECKS, runLint, computeTreeHash } from '../lib/lint.mjs'
 import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
+// LINK-PROSE обязано различать форму ТЕМ ЖЕ разбором, что сборщик описи — паритет
+// утверждается прогоном обоих на одном плане, а не чтением кода.
+import { collectInventory } from '../lib/wires.mjs'
 // The other writer of the supersession fields: a pointer this check judges is
 // most often one applyLifecycle wrote, so the two must agree on its spelling.
 import { applyLifecycle } from '../lib/write-pipeline.mjs'
@@ -2070,6 +2073,126 @@ describe('MEM-OFFPIPELINE — the corpus is compared with the pipeline journal, 
       rmSync(corpus, { recursive: true, force: true, maxRetries: 3 })
       rmSync(byId, { recursive: true, force: true, maxRetries: 3 })
       rmSync(byFileName, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+})
+
+// ── LINK-PROSE: the lock against the inventory drifting further into prose ────
+//
+// The share of wires a machine can check was not merely low — it was FALLING, and the
+// freshest plans were the prose-written ones. So the lock aims where the cost is a minute:
+// at plans whose work is still AHEAD. Closed plans are the historic border, counted and
+// left alone — rewriting the record of finished work to improve a number is not repair,
+// and it is the same posture the neighbouring rule takes about unscored predictions.
+//
+// The discriminator is the paired summary, and the structural/prose distinction is the
+// collector's own reader — tested here on the shapes the real inventory actually contains.
+
+/** A plan declaring its wires. `entries` is the raw YAML body under must_haves.key_links. */
+function planWithLinks(entries: string): string {
+  return '---\nphase: test\nplan: 01\nmust_haves:\n  key_links:\n' + entries + '---\n\nfixture plan\n'
+}
+
+const LINK_PROSE_LINE = '    - "оба конца названы словами, машинного следа нет"\n'
+const LINK_STRUCTURAL =
+  '    - from: "src/a.mjs"\n' +
+  '      to: "src/b.mjs"\n' +
+  '      via: "первый зовёт второй"\n' +
+  '      pattern: "MARKER_ONE"\n'
+
+/** Only the accusations — the border line is an `info` finding and is asserted separately. */
+function proseWarnings(plansDir: string) {
+  return findingsOf(runPredLint(plansDir), 'LINK-PROSE').filter((f: { tier: string }) => f.tier === 'warn')
+}
+
+describe('LINK-PROSE — проза в незакрытом плане видима, закрытая история — граница', () => {
+  it('Случай 1: незакрытый план с прозаической связью → находка с ИМЕНЕМ плана и ЧИСЛОМ прозаических записей', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-linkprose-1-'))
+    try {
+      writeFileSync(join(tmp, 'alpha-01-PLAN.md'), planWithLinks(LINK_PROSE_LINE + LINK_PROSE_LINE))
+      const f = proseWarnings(tmp)
+      expect(f).toHaveLength(1)
+      expect(f[0].file).toContain('alpha-01-PLAN.md')
+      expect(f[0].message).toContain('alpha-01-PLAN.md')
+      expect(f[0].message).toContain('2 of its 2 wires in prose')
+      // Находка обязана СКАЗАТЬ, что делать: иначе замок только шумит.
+      expect(f[0].message).toContain('from, to, via')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Случай 2: ТОТ ЖЕ план со сводкой рядом → обвинения нет, а число закрытых названо отдельной строкой', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-linkprose-2-'))
+    try {
+      // Текст плана буква в букву тот же, что в случае 1. Меняется ОДИН факт о дереве.
+      writeFileSync(join(tmp, 'alpha-01-PLAN.md'), planWithLinks(LINK_PROSE_LINE + LINK_PROSE_LINE))
+      expect(proseWarnings(tmp)).toHaveLength(1)
+
+      writeFileSync(join(tmp, 'alpha-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      expect(proseWarnings(tmp)).toHaveLength(0)
+
+      // Граница названа ЧИСЛОМ, а не молчанием: необъявленное исключение — это как гейт
+      // хвалит сам себя.
+      const info = findingsOf(runPredLint(tmp), 'LINK-PROSE').filter((f: { tier: string }) => f.tier === 'info')
+      expect(info).toHaveLength(1)
+      expect(info[0].message).toContain('1 closed plans')
+      expect(info[0].message).toContain('NOT flagged')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Случай 3: незакрытый план со СТРУКТУРНЫМИ записями → находок нет вовсе', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-linkprose-3-'))
+    try {
+      writeFileSync(join(tmp, 'alpha-01-PLAN.md'), planWithLinks(LINK_STRUCTURAL))
+      expect(findingsOf(runPredLint(tmp), 'LINK-PROSE')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Случай 4: план ВОВСЕ без блока связей → не дело этого правила, находок нет', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-linkprose-4-'))
+    try {
+      writeFileSync(join(tmp, 'alpha-01-PLAN.md'), '---\nphase: test\nplan: 01\n---\n\nни слова о связях\n')
+      expect(findingsOf(runPredLint(tmp), 'LINK-PROSE')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Случай 5: смешанный незакрытый план → считаются ТОЛЬКО прозаические записи, структурные названы отдельно', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-linkprose-5-'))
+    try {
+      writeFileSync(join(tmp, 'alpha-01-PLAN.md'), planWithLinks(LINK_STRUCTURAL + LINK_PROSE_LINE))
+      const f = proseWarnings(tmp)
+      expect(f).toHaveLength(1)
+      expect(f[0].message).toContain('1 of its 2 wires in prose')
+      expect(f[0].message).toContain('1 declared structurally')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Замок различает форму ТЕМ ЖЕ разбором, что сборщик описи: один и тот же план читают оба и видят одно', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-linkprose-parity-'))
+    try {
+      const planPath = join(tmp, 'alpha-01-PLAN.md')
+      writeFileSync(planPath, planWithLinks(LINK_STRUCTURAL + LINK_PROSE_LINE + LINK_PROSE_LINE))
+
+      // Сборщик описи читает тот же блок тем же ключом — и обязан насчитать столько же
+      // прозы, сколько правило. Два разных разбора разошлись бы к следующему утру.
+      const inv = collectInventory({ plansDir: tmp, treeDir: tmp, roots: ['.'] })
+      expect(inv.prose).toHaveLength(2)
+      expect(inv.links).toHaveLength(1)
+
+      const f = proseWarnings(tmp)
+      expect(f).toHaveLength(1)
+      expect(f[0].message).toContain(`${inv.prose.length} of its 3 wires in prose`)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
     }
   })
 })

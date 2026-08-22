@@ -35,7 +35,12 @@ import {
   isSafeCommand,
   horizonReached,
   isReceiptEntry,
+  parseFrontmatterEntries,
 } from './predict.mjs'
+// LINK-PROSE tells a structural wire from a wire written in words with the SAME reader and
+// the SAME key the inventory collector uses. A second hand-rolled scan of that block would
+// become a second opinion about what counts as a declared wire.
+import { KEY_LINKS_KEY } from './wires.mjs'
 // PRED-UNSCORED reads the calibration ledger and keys it with the ONE accounting
 // key the verdict side dedupes by — the gate and the passport must never hold
 // two opinions about which predictions have been scored.
@@ -1578,6 +1583,100 @@ const PRED_UNSCORED = {
   },
 }
 
+// ── LINK-PROSE — a wire declared in words is a wire nobody can check ──────────
+
+/**
+ * A plan whose work is STILL AHEAD declares its wiring structurally, not in prose.
+ *
+ * Plans in this house have declared their own plumbing for years, and the inventory that
+ * reads those declarations back can only check a record that names its ends and its trace
+ * in the code. A wire written as a sentence is neither a pass nor a failure — a machine
+ * cannot check a sentence — so every prose line silently shrinks the part of the inventory
+ * that is checkable at all. Measured, the share was not merely low: it was FALLING. The
+ * prose was not old sediment; the freshest plans were written that way, and until this rule
+ * there was nothing anywhere to notice.
+ *
+ * WHY ONLY THE PLANS THAT ARE NOT CLOSED. History stays a visible BORDER, not a task: a
+ * plan with a summary beside it has been executed, and rewriting its declarations now would
+ * edit the record of work already done to make a number look better. The closed ones are
+ * counted instead — by the inventory's own report, and by the info finding below — so the
+ * size of the legacy is stated rather than hidden. This is the same posture as the
+ * neighbouring rule about unscored predictions, which refuses to accuse anybody on a gap in
+ * its OWN evidence. Ahead of execution the cost of writing the wire properly is a minute;
+ * that is the only moment the demand is fair.
+ *
+ * WHY WARN AND NOT CRITICAL. The form of a declaration is a debt, not a broken claim, and
+ * critical blocks a commit hook — a lock that stops the house's own work on the day it
+ * lands teaches people to disable it. It is loud, counted, and impossible to miss; that is
+ * what «cannot fall unnoticed» requires.
+ *
+ * ONE PARSER, NOT TWO. The structural/prose discriminator is `parseFrontmatterEntries` with
+ * the SAME key the inventory collector uses — imported from it, never re-implemented. A
+ * second hand-rolled reader of the same block would become a second opinion about what
+ * counts as a wire, and would drift from the collector by the next morning.
+ */
+const LINK_PROSE = {
+  id: 'LINK-PROSE',
+  title: 'A plan whose work is still ahead declares its wires structurally, not in prose',
+  tier: 'warn',
+  run(ctx) {
+    const out = []
+    const plans = ctx.plans ?? []
+    if (!plans.length) return out
+
+    // The ONE discriminator of «closed», identical to the inventory's: a summary of its
+    // own lying beside it on disk. Nothing about dates, nothing about wording.
+    const summaryNames = new Set((ctx.summaries ?? []).map((s) => basename(s.path)))
+    let closedWithProse = 0
+
+    for (const plan of plans) {
+      const read = parseFrontmatterEntries(plan.path, KEY_LINKS_KEY, {
+        readFn: () => plan.text, // the text is already in memory — buildContext read it once
+        scalars: true,
+      })
+      if (read.error) continue // unreadable is somebody else's finding, not an accusation here
+      const entries = read.entries ?? []
+      if (!entries.length) continue // no wiring block at all — not this rule's business
+
+      // Prose is exactly what the collector calls prose: a scalar entry, i.e. a line of
+      // words where a record with named ends and a trace was expected.
+      const prose = entries.filter((e) => typeof e === 'string')
+      if (!prose.length) continue
+
+      if (summaryNames.has(basename(plan.path).replace(/-PLAN\.md$/i, '-SUMMARY.md'))) {
+        closedWithProse += 1
+        continue
+      }
+
+      const structural = entries.length - prose.length
+      out.push(
+        finding(
+          'LINK-PROSE',
+          'warn',
+          basename(plan.path),
+          `${basename(plan.path)} has work still ahead of it and declares ${prose.length} of its ${entries.length} wires in prose` +
+            `${structural ? ` (${structural} declared structurally)` : ''} — a wire is declared structurally or not at all: from, to, via, and the trace in the code that proves it. A sentence cannot be checked by anything, so it is counted and never scored`,
+        ),
+      )
+    }
+
+    // THE BORDER, NAMED BY A NUMBER. Without this line the rule would look like a claim
+    // that prose is rare, when in truth most of it simply sits behind the closed-plan cut
+    // and is deliberately not judged. An unstated exemption is how a gate flatters itself.
+    if (closedWithProse) {
+      out.push(
+        finding(
+          'LINK-PROSE',
+          'info',
+          '',
+          `${closedWithProse} closed plans also declare wires in prose and are NOT flagged: their work is done, and rewriting the record of finished work to improve a number is not repair. They are the legacy border, counted here and listed by the inventory report`,
+        ),
+      )
+    }
+    return out
+  },
+}
+
 const PRED_DUPDOD = {
   id: 'PRED-DUPDOD',
   title: 'Prediction check_command duplicates a DoD dimension check (B19)',
@@ -2666,6 +2765,7 @@ export const LINT_CHECKS = [
   PRED_SKEPTIC,
   PRED_DUPDOD,
   PRED_UNSCORED,
+  LINK_PROSE,
   CONS_SCHEMA,
   CONS_POSTEDIT,
   CONS_NOBLOCK,
