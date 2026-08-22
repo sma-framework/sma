@@ -30,14 +30,14 @@ npm dependencies, resting on two pillars:
 
 Every subcommand accepts `--json` for a single-line JSON object (the
 statusline / hook contract). Hook-facing subcommands (`session-start`,
-`session-end`, `pre`, `heartbeat`, `pretask-pack`, `subagent-verify`,
+`session-end`, `turn-diff`, `pre`, `heartbeat`, `pretask-pack`, `subagent-verify`,
 `precompact-capsule`, `airbag-check`, `spend-check`, `stall-check`, `pulse`,
 `statusline`) ALWAYS exit 0 — fail-open, see the contract at the end of this
 page; direct-CLI subcommands return meaningful exit codes.
 
 ## Every verb at a glance
 
-All 93, grouped by what they are for. The sections after this table go deeper
+All 94, grouped by what they are for. The sections after this table go deeper
 on the ones with real surface area; `sma explain <verb>` answers for any of
 them in plain language, in English or Russian.
 
@@ -49,6 +49,7 @@ them in plain language, in English or Russian.
 | `heartbeat` | Renew this session's lease (cadence: every 3 minutes) |
 | `session-start` | Register this terminal's session lease — the SessionStart hook |
 | `session-end` | Release every claim this window still holds, so a closed terminal never haunts a teammate |
+| `turn-diff` | The Stop hook: at every turn boundary, which files moved since the claim was taken and whether any fell outside it — two git trees compared, nothing re-run |
 | `claim` | Take a work scope: `claim <name> --globs "<glob>" --desc "<text>"` |
 | `release` | Release your OWN claim |
 | `force-clear` | Clear a stale or foreign claim, with confirmation and recorded provenance |
@@ -235,6 +236,7 @@ section: **[V3 trust-spine subcommands](#v3-trust-spine-subcommands)**.
 | `status` | statusline/hook JSON: active sessions (live only) + stale sessions, collisions, next slots | `--json` |
 | `heartbeat` | renew this session's lease (cadence: every 3 min) | — |
 | `session-start` | register this terminal's session lease | — |
+| `turn-diff` | **the Stop hook** — the diff verdict against the base commit the claim recorded; silent without a claim, releases nothing | — (hook-facing) |
 | `pre` | **the PreToolUse multiplexer — ONE spawn per Edit/Write/Bash** dispatching collision → reflex → gates | — |
 | `pre-bench` | SLO instrument for `pre`: full-spawn p95, spawn-count, dispatch parity | `--runs N` \| `--metric spawn-count\|parity` |
 | `collision-check` | DEPRECATED single-stream alias (delegates to `pre`'s collision stream; kept for back-compat) | `--json` |
@@ -418,18 +420,22 @@ and what to write by hand if you wire SMA into a harness it does not install int
 ```json
 "PreToolUse": [
   { "matcher": "Task|Agent",
-    "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs pretask-pack", "timeout": 10 } ] }
+    "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs\" pretask-pack", "timeout": 10 } ] }
 ],
 "SubagentStop": [
-  { "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs subagent-verify", "timeout": 15 } ] }
+  { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs\" subagent-verify", "timeout": 15 } ] }
 ]
 ```
 
-Two details worth copying exactly. The matcher names the spawn tool under **both** names it
-has carried across agent versions: one that knows a single name installs cleanly, fires, and
-does nothing at all. And the budgets are 10 and 15 seconds rather than the 5 the editing-path
-hooks get, because both of these walk git and the working tree; a run cut short by the budget
-is a lost pack or a lost receipt.
+Three details worth copying exactly. The path is **anchored** to the project root rather
+than written relative to it: a hook inherits the session's working directory, so a relative
+path makes node fail to resolve the module before any of this code runs — and the fallback
+`:-.` keeps the command identical to the relative spelling wherever the harness does not set
+that variable. The matcher names the spawn tool under **both** names it has carried across
+agent versions: one that knows a single name installs cleanly, fires, and does nothing at
+all. And the budgets are 10 and 15 seconds rather than the 5 the editing-path hooks get,
+because both of these walk git and the working tree; a run cut short by the budget is a lost
+pack or a lost receipt.
 
 ### Measurement — `bench`
 
@@ -998,10 +1004,23 @@ outside the allowlist is stripped defensively before send.
 
 | Env var | Purpose |
 |---|---|
-| `SMA_TERMINAL_NAME` | the stable per-window human name (e.g. «Мозг»); falls back to `T-<pid>` |
+| `SMA_TERMINAL_NAME` | the stable per-window human name (e.g. «Мозг»). Unset, the window is not left nameless: see below |
 | `SMA_SNAPSHOT_TOKEN` | auth token for the CRM receiver route (operator-provisioned) |
 | `SMA_SNAPSHOT_URL` | receiver URL; REQUIRED alongside the token — there is no built-in default (without it the sender no-ops with reason `no-url`) |
 | `SMA_DISABLE_SNAPSHOT_SPAWN` | kill-switch: never launch the detached reporter child |
+
+**A window nobody named still has a name.** A name you have to export by hand, in every
+window, every time, is a name most windows never get — and the trail of an unnamed window
+used to be filed under a machine token, which is a trail nobody reads. So the first session
+start of a nameless window is handed a readable default, «Окно-1», «Окно-2», …, recorded in
+`.sma/terminal-names.json` against the window's token and picked up again by every later
+one-shot hook process of that same window. It reaches both places a reader looks: the actors
+of a journal event and the NAME OF THE FILE the event landed in (`okno-1-<token>.jsonl`).
+Precedence, highest first: the name you set by hand, then the recorded one, then the machine
+fallback. Nothing is ever renamed — existing files keep the names they were born with, and a
+missing or unreadable names file simply means «no name», exactly as before. The start summary
+keeps offering you the chance to name the window yourself for as long as the name is still an
+automatic one, and goes quiet the moment you do.
 
 **No receiver, no child.** A heartbeat spawns the detached one-shot reporter ONLY when
 BOTH `SMA_SNAPSHOT_TOKEN` and `SMA_SNAPSHOT_URL` are set — on an unprovisioned checkout
@@ -1030,7 +1049,7 @@ A *profile* is a per-TIER statement — how heavy is this kind of work — so ra
 by switching profiles moves every other agent with it. A pin is the per-AGENT statement:
 
 ```bash
-sma-tools query config-set model_profile_overrides.agents.sma-executor opus
+sma-tools query config-set model_profile_overrides.agents.sma-executor sonnet
 sma-tools query config-set model_profile_overrides.agents.sma-executor null   # remove it
 ```
 
@@ -1194,7 +1213,7 @@ immediately when you touch a file/scope inside B's fingerprint.
 Claims auto-release on **exactly two triggers** — never an idle timer (a timer would reap a
 terminal that thinks/researches long before editing):
 
-1. **SessionEnd** — a NEW `SessionEnd` hook (`node scripts/sma/cli.mjs session-end`) releases
+1. **SessionEnd** — a NEW `SessionEnd` hook (`node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" session-end`) releases
    all of the window's own claims («сессия завершена»). It does NOT touch the `Stop` hook
    (Stop fires per turn — releasing every claim per turn would destroy the system).
 2. **Commit-evidence** — when the claimed scope is clean vs HEAD AND a commit landed in scope
@@ -1255,7 +1274,7 @@ which reads the hook event once and dispatches the ordered internal stream pipel
 ```json
 "PreToolUse": [
   { "matcher": "Edit|Write|Bash",
-    "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs pre", "timeout": 5 } ] }
+    "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs\" pre", "timeout": 5 } ] }
 ]
 ```
 
@@ -1305,7 +1324,7 @@ spend tokens). It generalizes the V2 per-executor exec-journal to ALL sessions.
 
 ```json
 "PreCompact": [
-  { "hooks": [ { "type": "command", "command": "node scripts/sma/cli.mjs precompact-capsule", "timeout": 10 } ] }
+  { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs\" precompact-capsule", "timeout": 10 } ] }
 ]
 ```
 

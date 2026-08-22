@@ -32,11 +32,17 @@ import {
  * only where the test needs to talk about "whatever the core considers canonical". */
 const CANONICAL_DIRECT = {
   type: 'command',
-  command: 'node scripts/sma/cli.mjs statusline',
+  command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" statusline',
   padding: 0,
   refreshInterval: 60,
 }
-const CANONICAL_WRAP = { ...CANONICAL_DIRECT, command: 'node scripts/sma/cli.mjs statusline --wrap' }
+const CANONICAL_WRAP = { ...CANONICAL_DIRECT, command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" statusline --wrap' }
+
+/** The spelling the segment carried before it was anchored to the project root. Kept here
+ * as a LITERAL on purpose: this is a string that left our hands and now sits in adopters'
+ * settings files, so it can never be derived from whatever the current one happens to be. */
+const PRE_ANCHOR_CMD = 'node scripts/sma/cli.mjs statusline'
+const PRE_ANCHOR_WRAP_CMD = 'node scripts/sma/cli.mjs statusline --wrap'
 
 let repo: string
 let settingsPath: string
@@ -96,6 +102,42 @@ describe('statusline install core — the entry it writes', () => {
     // the only verbatim copy of their command is still there, byte for byte
     expect(readFileSync(wrappedPath, 'utf8')).toBe(saved)
     expect(readSettings().model).toBe('opus')
+  })
+
+  it('the pre-anchor command is recognised as OURS and healed — never wrapped as a stranger', async () => {
+    // The install that ships the anchor runs over files that still hold yesterday's
+    // spelling. Read as foreign, our own line would be PRESERVED and WRAPPED: this CLI
+    // would then be spawned twice on every repaint, once by us and once as "the adopter's
+    // own status line" — and the uninstall would hand that copy back as if it were theirs.
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ statusLine: { type: 'command', command: PRE_ANCHOR_CMD, padding: 0, refreshInterval: 60 }, model: 'opus' }, null, 2),
+    )
+
+    const res = await install()
+
+    expect(res).toEqual({ status: 'installed', wrote: true })
+    expect(readSettings().statusLine).toEqual(CANONICAL_DIRECT)
+    // nothing was "saved" — there was no foreign line here to give back
+    expect(existsSync(wrappedPath)).toBe(false)
+    expect(readSettings().model).toBe('opus')
+  })
+
+  it('the pre-anchor WRAP spelling heals to the anchored wrap entry and leaves the saved foreign line alone', async () => {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ statusLine: { type: 'command', command: PRE_ANCHOR_WRAP_CMD, padding: 0, refreshInterval: 60 } }, null, 2),
+    )
+    mkdirSync(dirs.statuslineDir, { recursive: true })
+    const saved = JSON.stringify({ command: 'their-line.sh', original: { type: 'command', command: 'their-line.sh' }, hadNone: false })
+    writeFileSync(wrappedPath, saved)
+
+    const res = await install()
+
+    expect(res).toEqual({ status: 'installed-wrap', wrote: true })
+    expect(readSettings().statusLine).toEqual(CANONICAL_WRAP)
+    // the only verbatim copy of their command is still there, byte for byte
+    expect(readFileSync(wrappedPath, 'utf8')).toBe(saved)
   })
 
   it('an entry already equal to the canonical one is left alone — the file is not rewritten', async () => {

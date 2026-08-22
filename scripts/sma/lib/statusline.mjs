@@ -427,9 +427,15 @@ export function recordTerminalWindows({ rateLimits, dataDir, clock = Date.now, f
 /** True when a statusLine command already points into our own cli.mjs statusline —
  * the self-reference guard, and the SOURCE of the same test for the install core, which
  * imports this one instead of carrying its own. (The off-ramp module keeps a standalone
- * copy on purpose: it must stay importable with nothing but node built-ins behind it.) */
+ * copy on purpose: it must stay importable with nothing but node built-ins behind it.)
+ *
+ * BOTH SPELLINGS COUNT AS OURS: the project-relative one this installer used to write, and
+ * the project-root-anchored one it writes now, where the path ends in a closing quote
+ * before the verb. Our own yesterday's line is not a stranger's command — read as one, an
+ * install would preserve it and WRAP it (this CLI spawned twice on every repaint) and an
+ * uninstall would hand our own copy back as though the adopter had written it. */
 export function isSmaStatuslineCmd(cmd) {
-  return typeof cmd === 'string' && /scripts[\\/]+sma[\\/]+cli\.mjs\s+statusline/.test(cmd)
+  return typeof cmd === 'string' && /scripts[\\/]+sma[\\/]+cli\.mjs"?\s+statusline/.test(cmd)
 }
 
 /**

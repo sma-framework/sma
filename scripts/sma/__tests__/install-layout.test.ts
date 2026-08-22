@@ -315,9 +315,24 @@ describe('preset — what a stranger actually receives (Tests 5-8)', () => {
     expect(existsSync(join(proj, '.claude', 'sma-core', 'bin', 'sma-tools.cjs'))).toBe(true)
     expect(existsSync(join(proj, 'scripts', 'sma', 'cli.mjs'))).toBe(true)
     const settings = JSON.parse(readFileSync(join(proj, '.claude', 'settings.json'), 'utf8'))
-    const commands = JSON.stringify(settings.hooks)
-    expect(commands).toContain('node scripts/sma/cli.mjs pre')
-    expect(commands).toContain('node scripts/sma/cli.mjs session-start')
+    const commands = (Object.values(settings.hooks) as any[][])
+      .flat()
+      .flatMap((g: any) => g.hooks)
+      .map((h: any) => String(h.command))
+    expect(commands.some((c) => c.endsWith(' pre'))).toBe(true)
+    expect(commands.some((c) => c.endsWith(' session-start'))).toBe(true)
+    // The WIRE rather than the spelling: take the path out of each written command,
+    // expand the project-root anchor the way the shell will expand it when the harness
+    // runs the hook, and require that what comes out is a file that was actually
+    // delivered. A command asserted as a literal only ever proves that two strings in
+    // this repository agree with each other — it cannot notice a runtime that never
+    // arrived, or a path the hook can no longer reach from where it is run.
+    for (const command of commands) {
+      const quoted = command.match(/"([^"]+)"/)
+      expect(quoted, `hook command carries no quoted path: ${command}`).toBeTruthy()
+      const resolved = String(quoted?.[1]).replace('${CLAUDE_PROJECT_DIR:-.}', proj)
+      expect(existsSync(resolved), `${command} resolves to nothing on disk`).toBe(true)
+    }
   })
 
   it('delivers the memory SYSTEM: the corpus skeleton exists, and is only the skeleton', () => {

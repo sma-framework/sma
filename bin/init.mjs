@@ -74,9 +74,27 @@ const COMMANDS = [
 // ── hooks the installer manages (matched by command string for idempotency) ──
 // Exported so the installer's own suite asserts the shipped set from THIS list
 // instead of keeping a second copy of it, which would quietly drift apart.
+//
+// EVERY COMMAND IS ANCHORED TO THE PROJECT ROOT — `${CLAUDE_PROJECT_DIR:-.}` — and that
+// is the whole point of this table's spelling. A hook is a one-shot process whose working
+// directory is INHERITED from the session, not fixed at the project root: the moment a
+// session stands somewhere else, a command written relative to the project makes node fail
+// to resolve the module BEFORE a single line of engine code runs. Which means none of the
+// fail-open wrapping inside the CLI can catch it, and it is not one entry that breaks —
+// the entire table goes down at once, plus the status line, because they all share the one
+// spelling. The agent harness sets the project-root variable when it runs hooks; where it
+// is not set the fallback `.` resolves to exactly what this table said before the anchor
+// existed, so the command is never WORSE than the relative form, anywhere.
+//
+// The path is quoted so a project directory containing spaces stays one argument.
+//
+// CHANGING ANY COMMAND STRING HERE IS A TWO-PART EDIT: the merge below recognises OUR
+// entries by their exact command string, so the string it replaces has to be listed in
+// STALE_SMA_HOOK_COMMANDS at the same time — otherwise every existing install gets the new
+// entry ADDED BESIDE the old one on its next update, and both keep firing forever.
 
 export const SMA_HOOKS = [
-  { event: 'SessionStart', matcher: null, command: 'node scripts/sma/cli.mjs session-start', timeout: 10 },
+  { event: 'SessionStart', matcher: null, command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" session-start', timeout: 10 },
   // the whole PreToolUse pipeline is ONE `pre` multiplexer
   // spawn — collision → reflex → gates run as ordered streams inside a single
   // node process, so sibling ordering is internal to the CLI, not a property
@@ -84,21 +102,21 @@ export const SMA_HOOKS = [
   // reflex-check / gates-check × 'Edit|Write' and 'Bash') are listed in
   // STALE_SMA_HOOK_COMMANDS below and removed by mergeHooks, so an existing
   // install heals to the single spawn on update.
-  { event: 'PreToolUse', matcher: 'Edit|Write|Bash', command: 'node scripts/sma/cli.mjs pre', timeout: 5 },
+  { event: 'PreToolUse', matcher: 'Edit|Write|Bash', command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" pre', timeout: 5 },
   // the context pack rides PreToolUse on the Task tool, so every subagent is
   // spawned already carrying the project's claims, gates and open questions
   // instead of rediscovering them. It is its OWN matcher group rather than a
   // wider matcher on the multiplexer above, because `pre` is wired for the
   // editing tools and knows nothing about Task; the consumer invariant is
   // "exactly one SMA chain PER MATCHER", which a second group keeps.
-  { event: 'PreToolUse', matcher: 'Task|Agent', command: 'node scripts/sma/cli.mjs pretask-pack', timeout: 10 },
+  { event: 'PreToolUse', matcher: 'Task|Agent', command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" pretask-pack', timeout: 10 },
   // the stall detector feeds on PostToolUse. Advisory additionalContext nudge
   // only, never a block. NOT absorbed by `pre` (that multiplexer is
   // PreToolUse-only), so it stays its own entry. The merge below is additive in
   // EVERY event: foreign entries — a project's own security guard, say — are
   // never dropped or reordered, including in the events this template now
   // writes to as well.
-  { event: 'PostToolUse', matcher: 'Edit|Write|Bash', command: 'node scripts/sma/cli.mjs stall-check', timeout: 5 },
+  { event: 'PostToolUse', matcher: 'Edit|Write|Bash', command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" stall-check', timeout: 5 },
   // The three entries below carry NO matcher on purpose. These events do accept
   // matchers (end reason, compaction trigger, subagent type); leaving the field
   // out is how one entry covers every value of them, which is what all three
@@ -106,27 +124,67 @@ export const SMA_HOOKS = [
   //   session-end releases the claims this window is holding, so a terminal
   //   that was simply closed never leaves a teammate blocked on a scope nobody
   //   is editing any more.
-  { event: 'SessionEnd', matcher: null, command: 'node scripts/sma/cli.mjs session-end', timeout: 10 },
+  { event: 'SessionEnd', matcher: null, command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" session-end', timeout: 10 },
   //   precompact-capsule writes the flight capsule BEFORE the context is
   //   trimmed. It walks git and the working tree to build one, and a capsule
   //   cut short by the hook budget is state lost for good — so these two get a
   //   longer budget than the editing-path hooks, still short enough that a
   //   person does not feel it.
-  { event: 'PreCompact', matcher: null, command: 'node scripts/sma/cli.mjs precompact-capsule', timeout: 15 },
+  { event: 'PreCompact', matcher: null, command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" precompact-capsule', timeout: 15 },
   //   subagent-verify matches what a finishing subagent claimed to have written
   //   against the tree — the same git-and-disk walk, the same reasoning.
-  { event: 'SubagentStop', matcher: null, command: 'node scripts/sma/cli.mjs subagent-verify', timeout: 15 },
+  { event: 'SubagentStop', matcher: null, command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" subagent-verify', timeout: 15 },
+  //   turn-diff brings the diff verdict back into the window at the boundary of
+  //   every turn: which files moved since the claim was taken, and whether any of
+  //   them fell outside the area that claim declared. It gets the EDITING-PATH
+  //   budget, not the fifteen seconds the two entries above have, and the reason
+  //   is the event itself — Stop fires every turn, so its price is paid every turn.
+  //
+  //   NOTHING HEAVY IS EVER HUNG HERE. Re-running the check commands recorded in
+  //   summary files would mean executing strings that arrived as data on a
+  //   schedule instead of by a person's decision, and paying a test suite's price
+  //   to do it; that re-check belongs to the verb a person types and to the
+  //   acceptance ritual. This table already refused to hang even the CHEAP release
+  //   of claims on this event, for the same reason — a turn is not an ending.
+  { event: 'Stop', matcher: null, command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" turn-diff', timeout: 5 },
 ];
 
-// PreToolUse commands this installer USED to ship before the `pre` multiplexer
-// replaced them. They are SMA-managed by construction — these exact strings only
-// ever came from this template — so mergeHooks may drop them without touching
-// foreign hooks. Kept so an install that still carries the legacy 3-spawn
-// chains is healed (not doubled) on update.
-const STALE_SMA_HOOK_COMMANDS = new Set([
+// Command strings this installer USED to ship and no longer does. They are SMA-managed BY
+// CONSTRUCTION — these exact strings only ever came from this template — so mergeHooks may
+// drop them without touching foreign hooks. Kept so an existing install is healed (not
+// doubled) on update.
+//
+// This list is not documentation, it is the ONLY thing standing between a changed command
+// string and a doubled hook on every machine that ever ran this installer: the merge below
+// recognises our entries by their exact string, so an entry it no longer recognises is left
+// where it is AND the new spelling is added beside it. Two live processes per event, one of
+// them a command we deliberately stopped shipping.
+//
+// Two generations are listed:
+//   1. the per-stream PreToolUse chain that the `pre` multiplexer replaced;
+//   2. the PROJECT-RELATIVE spelling of the whole table, replaced by the anchored form
+//      above after it turned out to bring the entire table down whenever a session was
+//      standing in some other directory.
+//
+// AN ENTRY BORN ANCHORED NEVER BELONGS HERE. A string this installer never wrote cannot be
+// left behind by it, and listing one would hand the sweep permission to delete a command
+// that, for all it knows, somebody else put there on purpose. The list is a record of what
+// WAS shipped, not a wish about what should disappear.
+//
+// EXPORTED so the suite builds its «install made before the anchor» fixture from this list
+// instead of manufacturing a legacy spelling for every shipped row — a fixture that invents
+// history proves the sweep removes strings that never existed.
+export const STALE_SMA_HOOK_COMMANDS = new Set([
   'node scripts/sma/cli.mjs collision-check',
   'node scripts/sma/cli.mjs reflex-check',
   'node scripts/sma/cli.mjs gates-check',
+  'node scripts/sma/cli.mjs session-start',
+  'node scripts/sma/cli.mjs pre',
+  'node scripts/sma/cli.mjs pretask-pack',
+  'node scripts/sma/cli.mjs stall-check',
+  'node scripts/sma/cli.mjs session-end',
+  'node scripts/sma/cli.mjs precompact-capsule',
+  'node scripts/sma/cli.mjs subagent-verify',
 ]);
 
 // ── tiny arg parser ──────────────────────────────────────────────────────────
@@ -217,32 +275,40 @@ function rewriteMarkdownPaths(dir) {
 // ── hooks merge (additive, idempotent, order-preserving) ─────────────────────
 
 /**
- * Drop the legacy per-stream PreToolUse entries this installer itself shipped
- * before the `pre` multiplexer (STALE_SMA_HOOK_COMMANDS) from a parsed settings
- * object IN PLACE. Exact command-string match only — foreign hooks are never
- * touched. A matcher group left empty is removed; a PreToolUse event left empty
- * is removed. Returns the number of entries dropped.
+ * Drop the command strings this installer itself used to ship (STALE_SMA_HOOK_COMMANDS)
+ * from a parsed settings object IN PLACE. Exact command-string match only — foreign hooks
+ * are never touched. A matcher group left empty is removed; an event left empty is removed.
+ * Returns the number of entries dropped.
+ *
+ * EVERY EVENT, not just PreToolUse. It was PreToolUse-only while the only superseded
+ * strings were the per-stream chain, which lived nowhere else — and that narrowness is
+ * precisely what would have doubled the other six entries the moment the whole table was
+ * respelled: a stale SessionStart entry the scan never looked at is a stale entry that
+ * survives and then gets a second, live sibling added next to it.
  */
 export function removeStaleSmaHooks(settings) {
   if (!settings || typeof settings.hooks !== 'object' || settings.hooks === null) return 0;
-  const groups = settings.hooks.PreToolUse;
-  if (!Array.isArray(groups)) return 0;
   let removed = 0;
-  for (const g of groups) {
-    if (!g || !Array.isArray(g.hooks)) continue;
-    const kept = g.hooks.filter((h) => !(h && STALE_SMA_HOOK_COMMANDS.has(h.command)));
-    removed += g.hooks.length - kept.length;
-    g.hooks = kept;
+  for (const event of Object.keys(settings.hooks)) {
+    const groups = settings.hooks[event];
+    if (!Array.isArray(groups)) continue;
+    for (const g of groups) {
+      if (!g || !Array.isArray(g.hooks)) continue;
+      const kept = g.hooks.filter((h) => !(h && STALE_SMA_HOOK_COMMANDS.has(h.command)));
+      removed += g.hooks.length - kept.length;
+      g.hooks = kept;
+    }
+    settings.hooks[event] = groups.filter((g) => g && Array.isArray(g.hooks) && g.hooks.length > 0);
+    if (settings.hooks[event].length === 0) delete settings.hooks[event];
   }
-  settings.hooks.PreToolUse = groups.filter((g) => g && Array.isArray(g.hooks) && g.hooks.length > 0);
-  if (settings.hooks.PreToolUse.length === 0) delete settings.hooks.PreToolUse;
   return removed;
 }
 
 /**
  * Merge SMA hook entries into a parsed settings object IN PLACE.
- * - first drops SMA's OWN known-stale entries (removeStaleSmaHooks) so an
- *   install carrying the legacy 3-spawn PreToolUse chains heals on update
+ * - first drops SMA's OWN known-stale entries (removeStaleSmaHooks) so an install
+ *   carrying a superseded spelling — the legacy 3-spawn PreToolUse chains, or the
+ *   project-relative commands of any event — heals on update instead of doubling
  * - never removes or reorders FOREIGN entries
  * - idempotent: an entry whose command string already exists under the same
  *   event (and matcher, for matcher events) is skipped
@@ -430,7 +496,7 @@ async function main() {
   // Two different repairs, named apart: one replaced a command we stopped shipping, the
   // other removed a copy of a command we still ship that sat under a matcher we moved.
   // One sentence for both would tell the operator the wrong story about their own file.
-  const staleNote = removedStale ? `, ${removedStale} legacy per-stream entries replaced by the \`pre\` multiplexer` : '';
+  const staleNote = removedStale ? `, ${removedStale} superseded entries replaced (legacy per-stream entries, project-relative commands)` : '';
   const movedNote = removedMoved ? `, ${removedMoved} entries dropped from a matcher this installer no longer uses` : '';
   console.log(`  + hooks         ${added} added${staleNote}${movedNote}, foreign entries preserved (${settingsPath})`);
 
