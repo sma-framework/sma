@@ -46,9 +46,12 @@ reads is inert — the consumption mechanism is what gives an artifact meaning.
 
 ### HANDOFF.json / .continue-here.md
 - **Shape**: Structured pause state (JSON machine-readable + Markdown human-readable)
-- **Lifecycle**: Created on pause → Consumed on resume → Replaced by next pause
+- **Lifecycle**: Created on pause → Consumed on resume → **deleted by the resume, in the same breath** → next pause writes a fresh one
 - **Location**: `.planning/HANDOFF.json` + `.planning/phases/XX-name/.continue-here.md` (or spike/deliberation path)
 - **Consumed by**: `resume-project` workflow
+- **A surviving copy is a corpse, not a spare.** The file is declared the *primary*
+  resumption source, so one left behind by a run that never finished presents old state as
+  the current position. Check its date before trusting it; delete it once it has been used.
 
 ---
 
