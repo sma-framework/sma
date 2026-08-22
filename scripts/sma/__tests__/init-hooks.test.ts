@@ -53,7 +53,7 @@ import { canonicalStatuslineEntry, SMA_STATUSLINE_CMD } from '../lib/statusline-
 
 const repoRoot = join(__dirname, '..', '..', '..')
 const initPath = join(repoRoot, 'bin', 'init.mjs')
-const { mergeHooks, removeStaleSmaHooks, SMA_HOOKS } = await import(/* @vite-ignore */ pathToFileURL(initPath).href)
+const { mergeHooks, removeStaleSmaHooks, SMA_HOOKS, STALE_SMA_HOOK_COMMANDS } = await import(/* @vite-ignore */ pathToFileURL(initPath).href)
 
 type HookDef = { event: string; matcher: string | null; command: string; timeout: number }
 
@@ -205,7 +205,11 @@ describe('init hooks — chains AND multiplexer dedup to one (Test 3)', () => {
 describe('init hooks — foreign hooks survive byte-identically (Test 4)', () => {
   it('a non-SMA entry sharing a group with stale entries is untouched; other events too', () => {
     const guard = { type: 'command', command: 'node my-guard.mjs --strict', timeout: 30 }
-    const stop = { hooks: [{ type: 'command', command: 'node security-scan.mjs' }] }
+    // A project's own turn-boundary guard. The engine now ships into this event too, so the
+    // claim under test is the one that was always meant: the foreign ENTRY survives byte for
+    // byte and keeps its place, while the engine entry JOINS the group beside it.
+    const scan = { type: 'command', command: 'node security-scan.mjs' }
+    const stop = { hooks: [scan] }
     const settings: any = {
       model: 'opus',
       hooks: {
@@ -222,7 +226,7 @@ describe('init hooks — foreign hooks survive byte-identically (Test 4)', () =>
       },
     }
     const guardBytes = JSON.stringify(guard)
-    const stopBytes = JSON.stringify(stop)
+    const scanBytes = JSON.stringify(scan)
     const { removedStale } = mergeHooks(settings)
     expect(removedStale).toBe(1)
     // the foreign sibling stays in its original group, byte-identical
@@ -232,8 +236,10 @@ describe('init hooks — foreign hooks survive byte-identically (Test 4)', () =>
     // the multiplexer arrives as its own group alongside it
     const mux = settings.hooks.PreToolUse.find((g: any) => g.matcher === 'Edit|Write|Bash')
     expect(mux.hooks).toEqual([{ type: 'command', command: PRE_CMD, timeout: 5 }])
-    // foreign event untouched, other settings untouched
-    expect(JSON.stringify(settings.hooks.Stop[0])).toBe(stopBytes)
+    // the foreign turn-boundary guard keeps its bytes and its place at the head of the group
+    expect(JSON.stringify(settings.hooks.Stop[0].hooks[0])).toBe(scanBytes)
+    expect(smaEntriesIn(settings.hooks.Stop[0])).toEqual([entryOf(defFor('Stop', null))])
+    // other settings untouched
     expect(settings.model).toBe('opus')
   })
 
@@ -367,10 +373,20 @@ function legacyRelativeCommand(def: HookDef) {
   return `node scripts/sma/cli.mjs ${verb}`
 }
 
+/**
+ * The shipped rows that really did once carry the project-relative spelling — read off the
+ * installer's own stale list, never manufactured for every row. A row born anchored never
+ * had a legacy form, and a fixture that invents one would be asking the sweep to remove a
+ * string that never existed anywhere.
+ */
+function rowsWithALegacySpelling(): HookDef[] {
+  return (SMA_HOOKS as HookDef[]).filter((d) => (STALE_SMA_HOOK_COMMANDS as Set<string>).has(legacyRelativeCommand(d)))
+}
+
 /** A settings object shaped like an install made before the anchor existed. */
 function legacyRelativeSettings() {
   const hooks: any = {}
-  for (const def of SMA_HOOKS as HookDef[]) {
+  for (const def of rowsWithALegacySpelling()) {
     const groups = (hooks[def.event] ??= [])
     const entry = { type: 'command', command: legacyRelativeCommand(def), timeout: def.timeout }
     const group = groups.find((g: any) => (def.matcher === null ? !g.matcher : g.matcher === def.matcher))
@@ -395,7 +411,9 @@ describe('init hooks — relative-command entries are healed, not doubled (Test 
 
     // every pre-anchor entry is ours BY CONSTRUCTION — those exact strings only ever came
     // from this template — so dropping them touches nobody else's file
-    expect(removedStale).toBe(SMA_HOOKS.length)
+    expect(rowsWithALegacySpelling().length, 'the fixture must carry a real legacy install').toBeGreaterThan(0)
+    expect(removedStale).toBe(rowsWithALegacySpelling().length)
+    // every shipped row lands, including the ones that had nothing to heal away
     expect(added).toBe(SMA_HOOKS.length)
     for (const def of SMA_HOOKS as HookDef[]) {
       expect(smaEntriesIn(groupFor(settings, def.event, def.matcher))).toEqual([entryOf(def)])

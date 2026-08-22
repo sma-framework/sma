@@ -254,7 +254,10 @@ describe('the verbs a person actually types leave the trail — end to end, in a
 
     const turn = run(['turn-diff'], '{}')
     expect(turn.status, `${turn.stdout}${turn.stderr}`).toBe(0)
-    expect(turn.stdout, 'the turn gate said nothing at all').toContain('src/a.txt')
+    // the line names the base the claim recorded and the verdict about the claimed area —
+    // the measurement reached the window, not just the disk
+    expect(turn.stdout, 'the turn gate said nothing at all').toContain(started[0].base.slice(0, 7))
+    expect(turn.stdout).toContain('в области')
 
     const released = run(['release', 'proba'])
     expect(released.status, `${released.stdout}${released.stderr}`).toBe(0)

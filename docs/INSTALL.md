@@ -78,11 +78,11 @@ zero dependencies).
 | Subagent definitions (`sma-*.md`) | `<project>/.claude/agents/` | `~/.claude/agents/` |
 | Command skills (`/sma-*`, 14 commands) | `<project>/.claude/skills/` | `~/.claude/skills/` |
 | Transitional `/gsd-*` aliases (flag-gated) | `<project>/.claude/skills/` | `~/.claude/skills/` |
-| Hooks — seven entries across six agent events (spelled out under the table) | `<project>/.claude/settings.json` | `~/.claude/settings.json` |
+| Hooks — eight entries across seven agent events (spelled out under the table) | `<project>/.claude/settings.json` | `~/.claude/settings.json` |
 | Status-line segment (the `statusLine` entry, installed by default) | `<project>/.claude/settings.json` | `<project>/.claude/settings.json` (always project-level — reason under the table) |
 | Runtime scaffold | `<project>/.sma/{sessions,claims,journal,reflex}` | same (project-level) |
 
-### The seven hook entries
+### The eight hook entries
 
 The installer writes these and nothing else into `settings.json`. Entries you put
 there yourself are never dropped or reordered — an SMA entry is added beside them.
@@ -98,6 +98,7 @@ tree get a longer one, still short enough that a person does not feel the pause.
 | `SessionEnd` | every end reason | `node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" session-end` | 10 |
 | `PreCompact` | every compaction trigger | `node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" precompact-capsule` | 15 |
 | `SubagentStop` | every subagent type | `node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" subagent-verify` | 15 |
+| `Stop` | every turn boundary | `node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" turn-diff` | 5 |
 
 Five of the rows want a word of explanation:
 
@@ -116,21 +117,29 @@ Five of the rows want a word of explanation:
   renamed between agent versions. A matcher that knows only one of the names still
   installs and still fires — and does nothing at all, silently. Matching both names
   is how an agent upgrade in either direction cannot unhook the context pack.
-- **The three matcher-less entries cover every value, on purpose.** These events
+- **The four matcher-less entries cover every value, on purpose.** These events
   *do* accept matchers (end reason, compaction trigger, subagent type). Leaving the
-  field out is how a single entry catches all of them, which is what all three want.
+  field out is how a single entry catches all of them, which is what all four want.
 - **`SessionEnd` means the session ended, however it ended** — the window closed,
   `/clear`, a logout. It is not a close-the-window hook, and the claims this window
   held are handed back in every one of those cases.
 - **`PreCompact` runs when your agent version announces that event.** Older versions
   do not announce it; the command then exits without an error and without a capsule.
   The entry is installed either way, so it starts working the moment you upgrade.
+- **`Stop` fires at the boundary of every turn, and that fixes what may hang on it.**
+  It reads two git trees and compares the answer with the area your claim declared —
+  milliseconds, on the editing-path budget rather than the fifteen seconds the two
+  tree-walking entries get. It never re-runs the check commands recorded in your
+  summary files: those arrive as data, and executing them on a schedule rather than on
+  your decision is not something a per-turn hook may do. It also releases nothing —
+  a turn is not an ending, and dropping a live claim here would take away a protection
+  mid-session.
 
 Updating an existing install heals it rather than doubling it: an entry this
 installer used to ship under a different matcher is removed when — and only when —
 the command is ours *and* that command has a home under this event in the list
 above. A foreign entry sitting in the same group survives byte for byte.
-`/sma-deleteme` removes all seven symmetrically, again leaving foreign entries alone.
+`/sma-deleteme` removes all eight symmetrically, again leaving foreign entries alone.
 
 ### The status-line entry
 
@@ -232,7 +241,7 @@ from your project root, with no package script and nothing on your `PATH`:
 
 ```bash
 node scripts/sma/cli.mjs status          # who is working on what, right now
-node scripts/sma/cli.mjs explain <verb>  # what any of the 93 verbs is for
+node scripts/sma/cli.mjs explain <verb>  # what any of the 94 verbs is for
 ```
 
 ## The daemon and the app (the optional V5 layer)

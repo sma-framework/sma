@@ -192,7 +192,7 @@ goals, and exactly where each remaining edge is.
 
 ## The CLI reference, by version layer
 
-The coordination + accountability CLI runs underneath — 93 verbs, and the sections below group by the version layer that introduced them the ones this document walks through. Sessions and hooks call the CLI for you; you can also call any verb directly with `node scripts/sma/cli.mjs <verb>`, and every one has an in-product explainer (`node scripts/sma/cli.mjs explain <verb>`). **This grouping is not the complete list** — a few later verbs are described in the release sections further down and a few are not described here at all; the list with a line for every single verb lives in [`scripts/sma/README.md`](../scripts/sma/README.md), and that one is checked against the dispatch table by a gate.
+The coordination + accountability CLI runs underneath — 94 verbs, and the sections below group by the version layer that introduced them the ones this document walks through. Sessions and hooks call the CLI for you; you can also call any verb directly with `node scripts/sma/cli.mjs <verb>`, and every one has an in-product explainer (`node scripts/sma/cli.mjs explain <verb>`). **This grouping is not the complete list** — a few later verbs are described in the release sections further down and a few are not described here at all; the list with a line for every single verb lives in [`scripts/sma/README.md`](../scripts/sma/README.md), and that one is checked against the dispatch table by a gate.
 
 **The count moved by one, and that is worth saying out loud.** For several releases it did not move at all: real new abilities — forgetting, erasing, storage classes, the fleet's formal layer — arrived as subcommands of namespaces that already existed (`memory forget`, `memory index`) rather than as new top-level names. This release added one new top-level name, deliberately and as a decision. The alternative is a surface that grows a little every release until nobody can hold it in their head, and the growth is never anybody's decision because each single addition looked small. The number in the sentence above is not typed by hand either: a gate reads it out of the dispatch table in every document that names it, so the day it moves again no document can quietly stay behind — which is exactly what happened to this file until the gate was widened to watch it.
 
@@ -377,6 +377,8 @@ flowchart TD
     W -->|SubagentStop| SV["subagent-verify → check every claimed write against the tree"]
     W -->|PreCompact| PC["precompact-capsule → write the flight capsule BEFORE context is cut"]
     W -->|SessionEnd| SE["session-end → hand back the claims this window is holding"]
+    W -->|Stop| TD["turn-diff → which files moved since the claim, and did any fall outside it"]
+    TD --> W
     PO --> W
 ```
 
@@ -389,10 +391,15 @@ flowchart TD
 | **SessionEnd** | `session-end` | Hands back the claims this window is holding, so a terminal that simply went away never leaves a teammate blocked on a scope nobody is editing. |
 | **SubagentStop** | `subagent-verify` | Verifies every claimed file write against the real tree; phantom writes are flagged. |
 | **PreCompact** | `precompact-capsule` | Deterministically writes the flight capsule *before* compaction deletes the working state. |
+| **Stop** | `turn-diff` | At the boundary of every turn: the files changed since the claim was taken, and whether any of them fell outside the area that claim declared. A comparison of two git trees — never a re-run of recorded check commands. |
 
-Seven entries across those six events, and that is the entire integration surface. The hooks call the same CLI you can run by hand (`node scripts/sma/cli.mjs …`), so nothing happens that you cannot reproduce and inspect yourself. The canonical PreToolUse wiring is a **single entry per matcher** — one `pre` multiplexer for the editing tools, one `pretask-pack` for the spawn tool; the old per-stream commands remain as deprecated aliases for back-compat.
+Eight entries across those seven events, and that is the entire integration surface. The hooks call the same CLI you can run by hand (`node scripts/sma/cli.mjs …`), so nothing happens that you cannot reproduce and inspect yourself. The canonical PreToolUse wiring is a **single entry per matcher** — one `pre` multiplexer for the editing tools, one `pretask-pack` for the spawn tool; the old per-stream commands remain as deprecated aliases for back-compat.
 
-Three limits, named rather than glossed over. The **spawn tool is matched under both names it has carried** (`Task|Agent`): it was renamed between agent versions, and a matcher that knows only one name installs cleanly, fires, and does nothing — matching both is what survives the rename in either direction. **`SessionEnd` fires on every way a session can end** — the window closed, `/clear`, a logout — because the claims want handing back in all three; a `/clear` simply gets a new session id and takes its claims again. And the **`PreCompact` capsule depends on your agent version announcing that event**: where it does not, the command exits without an error and without a capsule, and the entry sits installed until an upgrade makes it live. One more thing not promised: if another tool in your project also rewrites the spawn call's input, the agent keeps whichever hook finished last — SMA does not claim compatibility with a second such modifier.
+Four limits, named rather than glossed over. The **`Stop` verdict re-runs nothing**: it reads
+two git trees and compares the answer with the claimed area, because the check commands written
+into summary files arrive as data, and running them on a schedule rather than on a person's
+decision is not a thing a per-turn hook may do — that re-check stays in `reverify` and in the
+acceptance ritual. It releases no claim either: a turn is not an ending. The **spawn tool is matched under both names it has carried** (`Task|Agent`): it was renamed between agent versions, and a matcher that knows only one name installs cleanly, fires, and does nothing — matching both is what survives the rename in either direction. **`SessionEnd` fires on every way a session can end** — the window closed, `/clear`, a logout — because the claims want handing back in all three; a `/clear` simply gets a new session id and takes its claims again. And the **`PreCompact` capsule depends on your agent version announcing that event**: where it does not, the command exits without an error and without a capsule, and the entry sits installed until an upgrade makes it live. One more thing not promised: if another tool in your project also rewrites the spawn call's input, the agent keeps whichever hook finished last — SMA does not claim compatibility with a second such modifier.
 
 ## Terminal parity, receipt by receipt
 

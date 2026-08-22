@@ -67,13 +67,13 @@ your-project/
 │  ├─ agents/            ← the helpers those commands call on
 │  ├─ sma-core/          ← the engine: the instructions behind each command
 │  ├─ memory/            ← your project's notes — installed EMPTY, the notes stay yours
-│  └─ settings.json      ← 7 hooks + the engine's statusline segment (your own entries are kept)
+│  └─ settings.json      ← 8 hooks + the engine's statusline segment (your own entries are kept)
 ├─ scripts/sma/          ← the command-line tool the commands use underneath
 ├─ .sma/                 ← working state: who is editing what, and the log of checks
 └─ CLAUDE.md             ← one short marked block is added; your own text is untouched
 ```
 
-Those hooks are **seven entries across six agent events**, and together they are the
+Those hooks are **eight entries across seven agent events**, and together they are the
 whole of SMA's grip on a session. `SessionStart` — pick up what this window was doing.
 `PreToolUse` twice: once on the editing tools `Edit`/`Write`/`Bash`, where the collision,
 reflex and gate checks run as one process, and once on the tool that spawns a subagent
@@ -82,9 +82,15 @@ cannot quietly unhook it), so the subagent starts already holding the project's 
 and open questions. `PostToolUse` on the same editing tools — the stall check.
 `SessionEnd` — hand back the claims this window is holding. `PreCompact` — write a flight
 capsule before the context is trimmed. `SubagentStop` — check what a finishing subagent
-said it wrote against what is actually in the tree.
+said it wrote against what is actually in the tree. `Stop` — at the boundary of every turn,
+say which files have moved since you claimed the scope you are working in, and whether any
+of them fell outside the area that claim declared.
 
-Two things stated honestly, because a promise is worth less than a limit named out loud.
+Three things stated honestly, because a promise is worth less than a limit named out loud.
+The turn verdict is a **comparison of two git trees and nothing else** — it never re-runs the
+check commands recorded in your summaries. Those are strings that arrive as data, and running
+them on a schedule instead of on your decision is not a thing a hook should do; that re-check
+stays in the verb you type and in the acceptance ritual.
 `SessionEnd` fires whenever the session ends — you close the window, you type `/clear`,
 you log out — not only on a closed window. And the `PreCompact` capsule is written **when
 your version of the agent announces that event**; on a version that does not, the command
@@ -564,7 +570,7 @@ The `/sma-*` workflow family (run inside a Claude Code session):
 | `/sma-deleteme` | Remove SMA in one action; your memory corpus stays |
 | `/sma-update` | Check installed vs available versions and update via the standard installer; everything local stays |
 
-Underneath runs the coordination + accountability CLI — 93 verbs, each with an in-product explainer. Call it from your project root, the way the hooks do:
+Underneath runs the coordination + accountability CLI — 94 verbs, each with an in-product explainer. Call it from your project root, the way the hooks do:
 
 ```bash
 node scripts/sma/cli.mjs status            # who is working on what, right now
