@@ -435,6 +435,20 @@ const ALLOWED_TASK_KEYS = Object.freeze([
   // copy of a number the queue already holds — and the two would part company the first time
   // either moved. Optional: a source that names none gets the default (see retryLimitOf).
   'retryLimit',
+  // ЧТО ЧЕЛОВЕК ЗНАЕТ ОБ ЭТОЙ ЗАДАЧЕ И ЧЕГО НЕ ЗНАЕТ РАБОТНИК — снимок контекста, живущий
+  // НА СТРОКЕ и нигде больше. Одно имя на всех швах: словарь, валидатор, двери, строитель
+  // промпта, дверь карточки. Всё остальное — файл в рабочей копии, забор в промпте, панель
+  // окна — это МАТЕРИАЛИЗАЦИИ этой строки, а не вторые её копии: снимок, положенный ещё
+  // куда-нибудь, разъедется с ней при первой же правке, и тогда работник получит один
+  // текст, а человек будет смотреть на другой.
+  //
+  // ЭТО ДАННЫЕ, А НЕ КОМАНДА. Текст пишет человек, и в промпт он поедет за забором, как
+  // конспект-передача, — приклеивать его к инструкциям нельзя ни здесь, ни ниже по течению.
+  //
+  // НЕ ЕДЕТ В КАЖДЫЙ ПОЛЛ. Читающая форма строки (см. row() ниже) его НЕ отдаёт намеренно:
+  // окно перечитывает список по нескольку раз в секунду, а снимок нужен дважды за попытку —
+  // при провизии рабочей копии и когда человек открыл карточку. Отдаёт его дверь карточки.
+  'taskContext',
 ])
 
 /**
@@ -820,6 +834,24 @@ export const DEFAULT_PROJECT_ID = 'default'
 export const CAP_TITLE = 200
 const CAP_TEXT = 2000
 
+/**
+ * Потолок снимка контекста задачи — СВОЙ, и он крупнее потолка описания намеренно.
+ *
+ * Снимок — это то, что человек рассказывает работнику про мир вокруг задачи: где лежат
+ * данные, к кому идти за доступом, чего делать нельзя. Это абзацы, а не строка, поэтому
+ * мерить его потолком описания было бы враньём про то, чего мы ждём.
+ *
+ * И всё же потолок обязателен: снимок едет в промпт И в рабочую копию КАЖДОЙ попытки,
+ * а у долговечной очереди — ещё и в payload джоба, который копируется при каждой
+ * перевыдаче. Безразмерный снимок — это безразмерный промпт, оплачиваемый на каждой
+ * попытке, и распухающая строка в базе. Масштаб взят с потолка конспекта-передачи: тот же
+ * род текста — одна сторона пишет, двое читают.
+ *
+ * Экспортирован, потому что двери, собирающие это поле из чужого ввода, обязаны знать
+ * число: две копии капа — это два капа, и работает более слабый.
+ */
+export const TASK_CONTEXT_CAP = 8000
+
 // ── named errors ──
 
 export class InvalidTaskError extends Error {
@@ -946,6 +978,18 @@ export function validateTask(task) {
   }
   if (task.description !== undefined && String(task.description).length > CAP_TEXT) {
     throw new InvalidTaskError(`task "${task.id}" description exceeds ${CAP_TEXT} chars`)
+  }
+  // СНИМОК КОНТЕКСТА — ТЕКСТ И ТОЛЬКО ТЕКСТ, и слишком длинный снимок дверь ОТВЕРГАЕТ, а не
+  // подрезает. Это слова человека: обрезанный на середине мысли абзац уехал бы работнику как
+  // законченное указание, и не узнал бы об этом никто — ни тот, кто писал, ни тот, кто читал.
+  // Так же ведут себя все прочие поля словаря; форма отказа повторена с них.
+  if (task.taskContext !== undefined) {
+    if (typeof task.taskContext !== 'string') {
+      throw new InvalidTaskError(`task "${task.id}" taskContext must be a string`)
+    }
+    if (task.taskContext.length > TASK_CONTEXT_CAP) {
+      throw new InvalidTaskError(`task "${task.id}" taskContext exceeds ${TASK_CONTEXT_CAP} chars`)
+    }
   }
   // ONE FIELD, TWO FORMATS (see the header). A string is what every row written before this
   // existed carries and it is bounded exactly as it always was; a list is bounded twice —
@@ -1093,6 +1137,11 @@ export function validateTask(task) {
   // explicit-pick normalized copy (allowlist) + defaults
   const out = {}
   for (const k of ALLOWED_TASK_KEYS) if (task[k] !== undefined) out[k] = task[k]
+  // ПУСТОЙ СНИМОК ЕСТЬ ОТСУТСТВИЕ СНИМКА. Поле, которого нет, и поле, в котором пусто, вниз
+  // по течению читаются по-разному: пустая строка положила бы в рабочую копию пустой файл, а
+  // в промпт — пустой забор, и оба сказали бы «человек ничего не написал» так, будто он писал.
+  // Текст, в котором есть хоть что-то, сохраняется КАК ЕСТЬ — его отступы и переносы тоже его.
+  if (typeof out.taskContext === 'string' && out.taskContext.trim() === '') delete out.taskContext
   out.priority = typeof task.priority === 'number' ? task.priority : 0
   out.attempt = typeof task.attempt === 'number' && task.attempt >= 1 ? task.attempt : 1
   return out
