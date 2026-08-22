@@ -2993,8 +2993,9 @@ async function cmdSpendPromptSize({ flags, dirs }) {
  *   memory stats --selftest — the deterministic, VERSIONED corpus token-cost report
  * Prices MEMORY.md (core load), each note, each INDEX-*.md, and the top-N
  *   heaviest, with ESTIMATOR_VERSION stamped so numbers reproduce run-to-run and are never
- *   billing truth. NOT hook-facing. Compress is DEFERRED by design (memory stats is its
- *   evidence gate — no corpus rewrite in this plan). Fail-open.
+ *   billing truth. NOT hook-facing. Shortening the TEXT of a note that grew heavy lives in
+ *   the `compress` subcommand next door, and these numbers are the evidence it stands on:
+ *   compress names its targets out of this very report, never out of a guess. Fail-open.
  */
 async function cmdMemory({ positionals, flags, dirs }) {
   const sub = positionals[0]
@@ -3004,9 +3005,10 @@ async function cmdMemory({ positionals, flags, dirs }) {
   if (sub === 'explain') return cmdMemoryExplain({ flags, dirs })
   if (sub === 'index') return cmdMemoryIndex({ positionals, flags, dirs })
   if (sub === 'forget') return cmdMemoryForget({ positionals, flags, dirs })
+  if (sub === 'compress') return cmdMemoryCompress({ flags, dirs })
 
   if (sub !== 'stats') {
-    process.stdout.write('usage: sma memory <stats|migrate|write|explain|index|forget>\n')
+    process.stdout.write('usage: sma memory <stats|migrate|write|explain|index|forget|compress>\n')
     process.stdout.write('  stats [--json] [--top N] [--stat core-tokens|corpus-tokens] [--selftest]\n')
     process.stdout.write('  migrate [--preview] | --apply <draft> --confirm <source-file> --yes\n')
     process.stdout.write('  write --type <memory_type> --truth <truth_mode> --claim <text> (see --help)\n')
@@ -3014,7 +3016,9 @@ async function cmdMemory({ positionals, flags, dirs }) {
     process.stdout.write('  explain --task "<text>" [--json] [--stat <name>]\n')
     process.stdout.write('  index rebuild|status [--json] [--stat <name>] — производный индекс лексического слоя выдачи\n')
     process.stdout.write('  forget <id> [--reason "…"|--replaced-by <id>|--expire|--archive] [--erase --yes]\n')
-    process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
+    process.stdout.write(
+      '  compress: предложить ужатие текста тяжёлых заметок (preview; применение --apply --confirm --yes по одному)\n',
+    )
     return 1
   }
 
@@ -3049,7 +3053,9 @@ async function cmdMemory({ positionals, flags, dirs }) {
   )
   for (const n of stats.top) process.stdout.write(`  ${n.file}: ~${n.tokens}\n`)
   process.stdout.write(`  ${stats.caveat}\n`)
-  process.stdout.write('  compress: отложено, пока stats не покажет измеренную боль (по замыслу не реализовано)\n')
+  process.stdout.write(
+    '  подсказка: тяжёлые заметки можно ужать — sma memory compress (preview, сам ничего не меняет)\n',
+  )
   return 0
 }
 
@@ -3819,6 +3825,119 @@ async function cmdMemoryMigrate({ flags, dirs }) {
   )
   process.stdout.write(
     '  применить: sma memory migrate --apply <draft> --confirm <source-file> --yes (по одному файлу, массового применения нет)\n',
+  )
+  return 0
+}
+
+const MEMORY_COMPRESS_USAGE = [
+  'usage: sma memory compress [--top N] [--corpus <dir>] [--json]',
+  '       sma memory compress --apply <draft> --confirm <note-file> --yes [--corpus <dir>]',
+  '',
+  '  (default)            name the notes whose TEXT grew heavy — by the token meter and by',
+  '                       the per-note byte budget, in numbers — and stage one proposal',
+  '                       template per target in .claude/memory/drafts/. PREVIEW-ONLY:',
+  '                       outside drafts/ not one byte of the corpus is written.',
+  '                       The shortened text is written by YOU inside the template; this',
+  '                       verb never rewrites a note it was not handed.',
+  '  --apply <draft>      apply exactly ONE filled proposal. --confirm must name the',
+  '                       proposal\'s own target note and --yes must be present: acceptance',
+  '                       is per-file, by hand. There is no bulk apply. The original is',
+  '                       copied to <draft>.orig before the overwrite, so the rollback is',
+  '                       one copy command.',
+].join('\n')
+
+/**
+ * memory compress — the preview-only proposal of SHORTENING NOTE TEXT.
+ *
+ * A subcommand of `memory` on purpose: the corpus namespace already exists and this is a
+ * question about the corpus, so no top-level verb is minted for it.
+ *
+ * Default action is a REPORT standing on the numbers `memory stats` already produces —
+ * which notes are heavy, on what grounds, and where each proposal template is staged. The
+ * corpus is untouched. Applying is a separate, explicit, one-file-at-a-time act
+ * (--apply + --confirm + --yes), because this door overwrites something already accepted.
+ */
+async function cmdMemoryCompress({ flags, dirs }) {
+  const compress = await import('./lib/compress.mjs')
+
+  if (flags.help === true) {
+    process.stdout.write(`${MEMORY_COMPRESS_USAGE}\n`)
+    return 0
+  }
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const corpusDir = typeof flags.corpus === 'string' ? flags.corpus : join(repoRoot, '.claude', 'memory')
+
+  if (!existsSync(corpusDir)) {
+    process.stderr.write(`SMA memory compress: корпус не найден — ${corpusDir}\n`)
+    return 1
+  }
+
+  // ── apply: one draft, one confirmation, one explicit yes ───────────────────
+  if (flags.apply != null && flags.apply !== true) {
+    const draftPath = String(flags.apply)
+    const confirmFile = typeof flags.confirm === 'string' ? flags.confirm : ''
+    if (!confirmFile || flags.yes !== true) {
+      process.stdout.write(`${MEMORY_COMPRESS_USAGE}\n`)
+      process.stderr.write(
+        'SMA memory compress: --apply требует --confirm <заметка-цель> И --yes — приёмка пофайловая, по одному предложению\n',
+      )
+      return 1
+    }
+    const res = compress.apply({ draftPath, corpusDir, confirmFile })
+    if (wantsJson(flags)) printJson(res)
+    else if (res.applied) {
+      process.stdout.write(`SMA memory compress: применено → ${res.target}\n`)
+      process.stdout.write(`  байты: было ${res.bytesBefore} · стало ${res.bytesAfter}\n`)
+      process.stdout.write(`  копия исходника: ${res.orig}\n`)
+      process.stdout.write(`  откат: скопируйте ${res.orig} поверх ${res.target}\n`)
+    } else process.stdout.write(`SMA memory compress: ОТКАЗ — ${res.reason}\n`)
+    return res.applied ? 0 : 1
+  }
+
+  // ── preview (default) ──────────────────────────────────────────────────────
+  const topN = Number.isFinite(Number(flags.top)) ? Number(flags.top) : 10
+  const report = compress.preview({ corpusDir, topN })
+  if (wantsJson(flags)) {
+    printJson(report)
+    return 0
+  }
+
+  if (report.total === 0) {
+    // An honest empty answer, and it is a SUCCESS: a corpus with nothing heavy in it is
+    // the state this verb exists to arrive at, not a failure to find work.
+    process.stdout.write('SMA memory compress: целей ужатия нет — ни одна заметка не тяжела по числам\n')
+    process.stdout.write(
+      `  порог предъявлен: тяжёлой считается заметка из top-${topN} по весу корпуса ` +
+        `или занявшая ≥ ${report.warnBytes} из ${report.budget} байт своего бюджета\n`,
+    )
+    return 0
+  }
+
+  process.stdout.write(
+    `SMA memory compress [PREVIEW — ни один байт корпуса не изменён]: ${report.total} целей · шаблоны в ${report.draftsDir}\n`,
+  )
+  const byFile = new Map(report.targets.map((t) => [t.file, t]))
+  for (const d of report.drafts) {
+    const t = byFile.get(d.target)
+    process.stdout.write(
+      `  ${d.target}: ${t.bytes} байт (${t.pct}% бюджета заметки) · основания: ${t.grounds.join('; ')}\n`,
+    )
+    if (d.status === 'kept-existing') {
+      process.stdout.write(
+        `      ! черновик на диске ОТЛИЧАЕТСЯ от свежего шаблона и оставлен как есть (${d.path}) — правка человека или шаблон из прошлого прогона; удалите файл, чтобы пересобрать\n`,
+      )
+    } else if (d.status === 'already-applied') {
+      process.stdout.write(`      · предложение уже применено (маркер .applied рядом с ${d.path})\n`)
+    } else {
+      process.stdout.write(`      · шаблон: ${d.path}\n`)
+    }
+  }
+  process.stdout.write(
+    '  текст ужатия пишете вы: впишите заметку ЦЕЛИКОМ (с фронтматтером) в секцию шаблона — модели внутри этого глагола нет\n',
+  )
+  process.stdout.write(
+    '  применить: sma memory compress --apply <draft> --confirm <заметка-цель> --yes (по одному файлу, массового применения нет)\n',
   )
   return 0
 }
@@ -12517,7 +12636,7 @@ const HANDLERS = {
   explain: cmdExplain, // in-product explainers ([topic]|--list|--coverage [--count]|--lang en|ru|--json)
   'doc-audit': cmdDocAudit, // deterministic docs honesty audit (--target manual|readme|numbers|all|--count|--json; --write only with numbers)
   vendor: cmdVendor, // standing Anthropic-update triage ledger linter (--count untriaged|--selftest|--json); zero network
-  memory: cmdMemory, // deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress deferred by design
+  memory: cmdMemory, // deterministic versioned corpus token-cost report (stats [--top N]|--stat core-tokens|corpus-tokens|--selftest); compress lives as a memory SUBCOMMAND — a top-level verb is deliberately not minted for it
   history: cmdHistory, // streaming read-only search across the journal, the plan-execution records, the session transcripts and the lesson bodies (search <слово…> [--limit|--source|--corpus|--json]); no derived index, every fragment credential-screened
   'ship-lane': cmdShipLane, // ship-lane precondition + changelog drafter + lane records (check|changelog|record|report|--stat|--selftest); read-only, never pushes
   decisions: cmdDecisions, // decision-corpus miner (mine|stats); drafts-only, LOCAL corpus, never auto-committed
