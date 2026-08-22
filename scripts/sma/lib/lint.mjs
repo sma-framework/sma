@@ -1940,7 +1940,7 @@ function byteLen(s) {
 }
 
 /** WARN at 80% of budget, critical at 100%; below the warn line → null. */
-function sizeTier(bytes, budget) {
+export function sizeTier(bytes, budget) {
   if (bytes >= budget) return 'critical'
   if (bytes >= budget * BUDGET_WARN_FRACTION) return 'warn'
   return null

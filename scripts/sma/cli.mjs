@@ -1697,6 +1697,28 @@ async function cmdBuildIndex({ flags, dirs }) {
         ? `  лексический индекс пересобран — движок ${lexicalReport.engine}, записей ${lexicalReport.indexed}\n`
         : `  лексический индекс НЕ пересобран — ${lexicalReport.reason ?? 'причина не названа'}\n`,
     )
+
+    // The index has just been rewritten, so this is the one moment its author is
+    // certainly looking at it: say how much of the always-load budget it now takes.
+    // Bytes and percent come from the SHARED reading (economy.alwaysLoadReport) — the
+    // same one session-start and the statusline print, so no two surfaces can disagree
+    // about the same file. Fail-open: a signal never gates a successful build.
+    try {
+      const { alwaysLoadReport } = await import('./lib/economy.mjs')
+      const mem = await alwaysLoadReport({ corpusDir, smaRoot: dirs?.smaRoot })
+      process.stdout.write(
+        `SMA: это ${mem.pct}% бюджета всегда-загружаемого (${mem.bytes}/${mem.budget} байт)\n`,
+      )
+      if (mem.tier === 'critical') {
+        process.stdout.write(
+          'SMA: память переполнена — консолидируй сейчас: `node scripts/sma/cli.mjs consolidate` ' +
+            '(предложит слияния и промоушены, ничего не применяет) или `node scripts/sma/cli.mjs trim` ' +
+            '(понизит слои — авто-починка)\n',
+        )
+      }
+    } catch {
+      /* fail-open — the budget line is a signal, never a gate on a written index */
+    }
     return 0
   }
 
