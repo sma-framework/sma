@@ -661,13 +661,65 @@ export function renderCoverage(coverage) {
   return lines.join('\n')
 }
 
+/**
+ * Query-string names whose VALUE is a credential rather than a coordinate.
+ *
+ * Matched case-insensitively and by whole name, so `token` and `access_token` are caught
+ * while `tokenizer` or `secretary` are not — over-redaction costs the reader the very
+ * detail the receipt exists to give.
+ */
+const SECRET_PARAM_RE = /^(?:token|access[_-]?token|id[_-]?token|refresh[_-]?token|auth|authorization|api[_-]?key|apikey|key|secret|client[_-]?secret|password|passwd|pwd|sig|signature|session)$/i
+
+/** What replaces a credential — a word, so the reader sees a removal rather than a gap. */
+export const REDACTED = 'REDACTED'
+
+/**
+ * redactUrl(u) — the address a run was pointed at, with any credential in it destroyed.
+ *
+ * A RECEIPT IS EVIDENCE, AND EVIDENCE TRAVELS. These files are committed by design: the
+ * law that a UI change is proved by running it — never by reading the code — rests on
+ * them, so they go into git, into the planning tree, and from there to a remote. An
+ * address that carries the key to the door therefore publishes that key, once, to
+ * everyone who can read the history. This was measured rather than feared: 338 receipts
+ * carrying 22 distinct daemon front tokens, all published in a single push.
+ *
+ * And the value is not a nonce that dies with the process — the front server reads it
+ * from configuration, so a receipt written in August still opens the door in December.
+ *
+ * WHAT SURVIVES: scheme, host, port, path, and every ordinary parameter. A reader must be
+ * able to walk the same path again; a receipt nobody can follow would trade one defect for
+ * another. Only the credential's VALUE is replaced, and the parameter keeps its name so
+ * the reader is told a removal happened instead of being left to wonder.
+ *
+ * NEVER THROWS. It is handed whatever the operator typed and whatever the browser
+ * reported. It runs at the very end of a run that already happened, on the writing step —
+ * a redactor that died there would destroy the evidence in the act of protecting it, so
+ * anything unparseable is returned exactly as it came.
+ */
+export function redactUrl(u) {
+  if (typeof u !== 'string' || u === '') return u
+  try {
+    const parsed = new URL(u)
+    let touched = false
+    for (const name of [...parsed.searchParams.keys()]) {
+      if (!SECRET_PARAM_RE.test(name)) continue
+      parsed.searchParams.set(name, REDACTED)
+      touched = true
+    }
+    return touched ? parsed.toString() : u
+  } catch {
+    // not an address this runtime can parse — hand it back untouched rather than lose it
+    return u
+  }
+}
+
 export function renderReceipt({ url, steps = [], shots = [], findings = [], verdict: v, startedAt = '', coverage } = {}) {
   const bySeverity = (sev) => findings.filter((f) => f.severity === sev)
   const line = (f) => `- **${f.kind}** — ${f.detail}${f.occurrences > 1 ? ` _(seen ${f.occurrences}×)_` : ''}`
   const out = [
     '# Live UI run',
     '',
-    `- URL: ${url}`,
+    `- URL: ${redactUrl(url)}`,
     startedAt ? `- started: ${startedAt}` : '',
     `- verdict: **${v?.status ?? 'UNKNOWN'}** (${v?.blockers ?? 0} blocking, ${v?.warnings ?? 0} warning)`,
     '',
