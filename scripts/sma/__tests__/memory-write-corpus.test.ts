@@ -260,6 +260,20 @@ function corpusFiles(root: string): string[] {
     .sort()
 }
 
+/**
+ * THE ROUTE THESE CASES PIN, END TO END. Nothing below reaches into it — every
+ * case spawns the real verb and reads the real filesystem — but a reader has to
+ * know which door is being held, or a green run here proves only that something
+ * somewhere staged a record:
+ *
+ *   --corpus  →  isForeignCorpus() in cmdMemoryWrite  →  the pipeline option
+ *   `forceStage: {reason}`  →  the first check in assignRisk  →  stage()  →  a
+ *   file in the FOREIGN corpus' drafts/ and a sentence to the person.
+ *
+ * The middle of that chain is exercised directly by write-pipeline.test.ts; what
+ * these cases add is the part no unit test can claim — that the chain is
+ * CONNECTED, from a flag a person types to a file on disk in another tree.
+ */
 describe('memory write — a corpus that belongs to another project is never written to directly', () => {
   it('Case E: an explicit --corpus of ANOTHER tree forces the record into that tree\'s drafts, with the reason in words', () => {
     const id = 'working-foreign-corpus-epsilon'
