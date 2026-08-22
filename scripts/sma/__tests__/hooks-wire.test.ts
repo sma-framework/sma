@@ -45,6 +45,8 @@ import { applyDeleteme } from '../lib/deleteme.mjs'
 // entry has ONE definition: a literal retyped in a test is how two truths start
 // disagreeing, and the test is then the one that lies.
 import { canonicalStatuslineEntry, SMA_STATUSLINE_WRAP_CMD } from '../lib/statusline-install.mjs'
+// The always-load budget the signal is measured against — imported for the same reason.
+import { ALWAYS_LOAD_BUDGET } from '../lib/constants.mjs'
 
 const repoRoot = join(__dirname, '..', '..', '..')
 const initPath = join(repoRoot, 'bin', 'init.mjs')
@@ -558,5 +560,86 @@ describe('hook contract: subagent pack and receipts', () => {
     const records = listDir(join(proj, '.sma', 'subagents'))
     const record = JSON.parse(readFileSync(join(proj, '.sma', 'subagents', records[0]), 'utf8'))
     expect(record.consumed).toBe(true)
+  }, 60000)
+})
+
+// ── budget-signal: the always-load fill reaches the live session ──────────────
+//
+// The byte budget existed for months in constants.mjs and the size lint, and a session
+// could still run for a whole day without ever being told how full its always-loaded
+// memory was — the number was reachable only by someone who thought to go and ask for
+// it. These cases drive the REAL session-start verb with a REAL frame on stdin, over a
+// corpus whose MEMORY.md is a known size, and read the answer out of the hook's own
+// JSON. The exit code proves nothing here (this verb exits 0 whatever happens) — the
+// printed context does.
+describe('hook contract: budget-signal on session start', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'sma-hooks-budget-'))
+
+  afterAll(() => {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+  })
+
+  /** A fresh project whose corpus MEMORY.md is exactly `bytes` bytes (null → no corpus). */
+  function projWithMemory(name: string, bytes: number | null): string {
+    const proj = join(tmp, name)
+    mkdirSync(proj, { recursive: true })
+    if (bytes !== null) {
+      const corpus = join(proj, '.claude', 'memory')
+      mkdirSync(corpus, { recursive: true })
+      writeFileSync(join(corpus, 'MEMORY.md'), 'x'.repeat(bytes))
+    }
+    return proj
+  }
+
+  /**
+   * The additionalContext the hook actually printed. A session-start with nothing worth
+   * surfacing prints nothing at all — that is a legal outcome, not a parse failure, so
+   * an empty stdout reads as an empty context rather than throwing.
+   */
+  function contextOf(res: { stdout: string }): string {
+    const out = String(res.stdout ?? '').trim()
+    if (!out) return ''
+    return JSON.parse(out)?.hookSpecificOutput?.additionalContext ?? ''
+  }
+
+  // The threshold is IMPORTED, never retyped: when the shipped budget moves, these
+  // cases move with it instead of quietly testing a number that no longer exists.
+  const OVER = ALWAYS_LOAD_BUDGET + 512
+  const HALF = Math.floor(ALWAYS_LOAD_BUDGET / 2)
+
+  it('an overflowing corpus brings the fill AND the ready-to-run consolidation commands', () => {
+    const proj = projWithMemory('over', OVER)
+    const res = runHook('session-start', { session_id: WINDOW_TOKEN, hook_event_name: 'SessionStart' }, proj)
+    expect(res.status).toBe(0)
+
+    const context = contextOf(res)
+    expect(context, 'an overflowing corpus must say so in the session context').toContain('бюджета всегда-загружаемого')
+    expect(context).toContain(String(OVER)) // the real byte count, not a rounded story
+    expect(context).toContain('консолидируй сейчас')
+    // both tools are named by what they do — the lint's advice (trim) is not contradicted
+    expect(context).toContain('consolidate')
+    expect(context).toContain('trim')
+  }, 60000)
+
+  it('a corpus at half the budget states the percentage and proposes nothing', () => {
+    const proj = projWithMemory('half', HALF)
+    const res = runHook('session-start', { session_id: WINDOW_TOKEN, hook_event_name: 'SessionStart' }, proj)
+    expect(res.status).toBe(0)
+
+    const context = contextOf(res)
+    expect(context, 'the fill is printed ALWAYS, not only on overflow').toContain('бюджета всегда-загружаемого')
+    expect(context).toContain('50%')
+    expect(context).not.toContain('консолидируй сейчас')
+  }, 60000)
+
+  it('no corpus at all leaves the session start exactly as it was — no line, no throw, exit 0', () => {
+    const proj = projWithMemory('none', null)
+    const res = runHook('session-start', { session_id: WINDOW_TOKEN, hook_event_name: 'SessionStart' }, proj)
+    expect(res.status).toBe(0)
+    expect(res.stderr ?? '').not.toContain('Error')
+
+    const context = contextOf(res)
+    expect(context).not.toContain('бюджета всегда-загружаемого')
+    expect(context).not.toContain('консолидируй сейчас')
   }, 60000)
 })
