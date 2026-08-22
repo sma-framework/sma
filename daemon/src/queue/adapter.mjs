@@ -454,6 +454,20 @@ const ALLOWED_TASK_KEYS = Object.freeze([
   // copy of a number the queue already holds — and the two would part company the first time
   // either moved. Optional: a source that names none gets the default (see retryLimitOf).
   'retryLimit',
+  // ЧТО ЧЕЛОВЕК ЗНАЕТ ОБ ЭТОЙ ЗАДАЧЕ И ЧЕГО НЕ ЗНАЕТ РАБОТНИК — снимок контекста, живущий
+  // НА СТРОКЕ и нигде больше. Одно имя на всех швах: словарь, валидатор, двери, строитель
+  // промпта, дверь карточки. Всё остальное — файл в рабочей копии, забор в промпте, панель
+  // окна — это МАТЕРИАЛИЗАЦИИ этой строки, а не вторые её копии: снимок, положенный ещё
+  // куда-нибудь, разъедется с ней при первой же правке, и тогда работник получит один
+  // текст, а человек будет смотреть на другой.
+  //
+  // ЭТО ДАННЫЕ, А НЕ КОМАНДА. Текст пишет человек, и в промпт он поедет за забором, как
+  // конспект-передача, — приклеивать его к инструкциям нельзя ни здесь, ни ниже по течению.
+  //
+  // НЕ ЕДЕТ В КАЖДЫЙ ПОЛЛ. Читающая форма строки (см. row() ниже) его НЕ отдаёт намеренно:
+  // окно перечитывает список по нескольку раз в секунду, а снимок нужен дважды за попытку —
+  // при провизии рабочей копии и когда человек открыл карточку. Отдаёт его дверь карточки.
+  'taskContext',
 ])
 
 /**
@@ -508,11 +522,45 @@ export function validateWords(patch = {}) {
   const probe = { id: 'words', source: 'roster', title: 'words', lane: 'prod' }
   if (patch.description !== undefined) probe.description = patch.description
   if (patch.acceptance !== undefined) probe.acceptance = patch.acceptance
+  // СНИМОК КОНТЕКСТА ПРАВИТСЯ ТОЙ ЖЕ ДВЕРЬЮ, ЧТО И ОСТАЛЬНЫЕ СЛОВА ЗАДАЧИ, и через тот же
+  // единственный гейт: попытка сорвалась — человек дописывает то, чего работнику не хватило,
+  // и СЛЕДУЮЩАЯ выдача уходит с исправленным снимком, а не с тем, с которым сорвалось.
+  if (patch.taskContext !== undefined) probe.taskContext = patch.taskContext
   validateTask(probe)
   const out = {}
   if (patch.description !== undefined) out.description = patch.description
   if (patch.acceptance !== undefined) out.acceptance = patch.acceptance
+  // СТЁРТЫЙ СНИМОК ОСТАЁТСЯ НА СТРОКЕ ПУСТОЙ СТРОКОЙ, а не исчезает ключом, и это не
+  // небрежность: правка слов у долговечной очереди — это слияние объектов в payload'е джоба,
+  // которое умеет ЗАПИСАТЬ поле и не умеет его удалить. Удаление ключа памятным бэкендом
+  // сделало бы два хранилища РАЗНЫМИ на одном и том же действии человека — а это ровно тот
+  // класс, ради которого контракт и общий. Пустое и отсутствующее сводит воедино одна
+  // читающая тропа (taskContextOf), а не догадка каждого следующего читателя.
+  if (patch.taskContext !== undefined) out.taskContext = patch.taskContext
   return out
+}
+
+/**
+ * taskContextOf(taskOrRow) → снимок контекста ТЕКСТОМ, или пустая строка.
+ *
+ * ЕДИНСТВЕННАЯ ЧИТАЮЩАЯ ТРОПА к этому полю на весь продукт — по образцу acceptanceItems.
+ * Читателей у снимка будет много и все разные: провизия рабочей копии, строитель промпта,
+ * дверь карточки, окно. Каждый из них, спрашивая поле напрямую, завёл бы свою догадку о том,
+ * что считать «снимка нет»: у одного пусто — это `undefined`, у другого — пустая строка после
+ * стирания дверью слов, у третьего — пробелы, оставшиеся от вставки из буфера. Три догадки
+ * разъедутся, и человек увидит снимок в окне, которого работник не получил.
+ *
+ * Отсутствие, пустая строка и текст из одних пробелов отвечают ОДНО И ТО ЖЕ — пустую строку.
+ * Текст, в котором есть хоть что-то, отдаётся КАК ЕСТЬ: его отступы и переносы тоже его.
+ * Чистая функция; ничего не бросает.
+ *
+ * @param {object|null|undefined} taskOrRow
+ * @returns {string}
+ */
+export function taskContextOf(taskOrRow) {
+  const raw = taskOrRow && typeof taskOrRow === 'object' ? taskOrRow.taskContext : undefined
+  if (typeof raw !== 'string' || raw.trim() === '') return ''
+  return raw
 }
 
 export function acceptanceItems(acceptance) {
@@ -839,6 +887,24 @@ export const DEFAULT_PROJECT_ID = 'default'
 export const CAP_TITLE = 200
 const CAP_TEXT = 2000
 
+/**
+ * Потолок снимка контекста задачи — СВОЙ, и он крупнее потолка описания намеренно.
+ *
+ * Снимок — это то, что человек рассказывает работнику про мир вокруг задачи: где лежат
+ * данные, к кому идти за доступом, чего делать нельзя. Это абзацы, а не строка, поэтому
+ * мерить его потолком описания было бы враньём про то, чего мы ждём.
+ *
+ * И всё же потолок обязателен: снимок едет в промпт И в рабочую копию КАЖДОЙ попытки,
+ * а у долговечной очереди — ещё и в payload джоба, который копируется при каждой
+ * перевыдаче. Безразмерный снимок — это безразмерный промпт, оплачиваемый на каждой
+ * попытке, и распухающая строка в базе. Масштаб взят с потолка конспекта-передачи: тот же
+ * род текста — одна сторона пишет, двое читают.
+ *
+ * Экспортирован, потому что двери, собирающие это поле из чужого ввода, обязаны знать
+ * число: две копии капа — это два капа, и работает более слабый.
+ */
+export const TASK_CONTEXT_CAP = 8000
+
 // ── named errors ──
 
 export class InvalidTaskError extends Error {
@@ -965,6 +1031,18 @@ export function validateTask(task) {
   }
   if (task.description !== undefined && String(task.description).length > CAP_TEXT) {
     throw new InvalidTaskError(`task "${task.id}" description exceeds ${CAP_TEXT} chars`)
+  }
+  // СНИМОК КОНТЕКСТА — ТЕКСТ И ТОЛЬКО ТЕКСТ, и слишком длинный снимок дверь ОТВЕРГАЕТ, а не
+  // подрезает. Это слова человека: обрезанный на середине мысли абзац уехал бы работнику как
+  // законченное указание, и не узнал бы об этом никто — ни тот, кто писал, ни тот, кто читал.
+  // Так же ведут себя все прочие поля словаря; форма отказа повторена с них.
+  if (task.taskContext !== undefined) {
+    if (typeof task.taskContext !== 'string') {
+      throw new InvalidTaskError(`task "${task.id}" taskContext must be a string`)
+    }
+    if (task.taskContext.length > TASK_CONTEXT_CAP) {
+      throw new InvalidTaskError(`task "${task.id}" taskContext exceeds ${TASK_CONTEXT_CAP} chars`)
+    }
   }
   // ONE FIELD, TWO FORMATS (see the header). A string is what every row written before this
   // existed carries and it is bounded exactly as it always was; a list is bounded twice —
@@ -1112,6 +1190,11 @@ export function validateTask(task) {
   // explicit-pick normalized copy (allowlist) + defaults
   const out = {}
   for (const k of ALLOWED_TASK_KEYS) if (task[k] !== undefined) out[k] = task[k]
+  // ПУСТОЙ СНИМОК ЕСТЬ ОТСУТСТВИЕ СНИМКА. Поле, которого нет, и поле, в котором пусто, вниз
+  // по течению читаются по-разному: пустая строка положила бы в рабочую копию пустой файл, а
+  // в промпт — пустой забор, и оба сказали бы «человек ничего не написал» так, будто он писал.
+  // Текст, в котором есть хоть что-то, сохраняется КАК ЕСТЬ — его отступы и переносы тоже его.
+  if (typeof out.taskContext === 'string' && out.taskContext.trim() === '') delete out.taskContext
   out.priority = typeof task.priority === 'number' ? task.priority : 0
   out.attempt = typeof task.attempt === 'number' && task.attempt >= 1 ? task.attempt : 1
   return out
@@ -1571,6 +1654,26 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       const claimed = await q.claimNext('w1', {})
       expect(claimed.id).toBe('BL-96')
       expect(await q.claimNext('w2', {})).toBeNull()
+    })
+
+    /**
+     * ═══════ ЧТО ЧЕЛОВЕК НАПИСАЛ О ЗАДАЧЕ, ТО РАБОТНИК И ПОЛУЧАЕТ ═══════
+     *
+     * ПОЧЕМУ ЭТО ДЕЛО ЖИВЁТ ЗДЕСЬ, А НЕ В ФАЙЛЕ ОДНОГО БЭКЕНДА. Снимок контекста едет в
+     * рабочую копию и в промпт КАЖДОЙ попытки, и единственный его источник — строка очереди.
+     * «Захваченная задача несёт снимок» — утверждение о ХРАНИЛИЩЕ, а хранилищ у контракта два:
+     * памятное отдаёт нормализованную задачу как есть, долговечное везёт её в payload'е джоба
+     * и собирает обратно после выборки. Проверенное на одном и не проверенное на другом —
+     * ровно тот класс, который стоил дня: каждый кусок написан, покрыт делами и зелёный, и ни
+     * один не присоединён к соседнему. Это дело утверждает ПРОВОД, а не вычисление.
+     */
+    it('captured task carries taskContext — the human\'s snapshot survives the hand-out', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      const snapshot = 'счета лежат в /invoices, доступ у Ольги'
+      await q.enqueue(backlog({ taskContext: snapshot }))
+      const claimed = await q.claimNext('w1', {})
+      expect(claimed.taskContext).toBe(snapshot)
     })
 
     it('a repeated enqueue while pending coalesces to one entry with a counter', async () => {

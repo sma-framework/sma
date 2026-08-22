@@ -96,11 +96,12 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, mkdirSync as fsMkdirSync } from 'node:fs'
+import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, mkdirSync as fsMkdirSync, writeFileSync as fsWriteFileSync, rmSync as fsRmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { pipelineEnabled } from './config.mjs'
-import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS } from './queue/adapter.mjs'
+import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS, taskContextOf } from './queue/adapter.mjs'
+import { WORKER_SKILLS } from './queue/worker-skills.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
 // ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
@@ -108,7 +109,7 @@ import { reconcileAttempts } from './queue/reconcile.mjs'
 // would be a second ceiling waiting to drift away from the first.
 import { memorySnapshotHash, safeName, ATTEMPT_FILES_CAP } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
-import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, createToolPairing, buildContinuationSummary, writeContinuation, readContinuation, fileWord, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
+import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, sanitizeRun, createToolPairing, buildContinuationSummary, writeContinuation, readContinuation, writeTaskContext, fileWord, RUN_DIRS_KEEP, TASK_CONTEXT_FILE } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
 // THE FIVE RECEIPTS, FROM THE ONE MODULE THAT DEFINES THEM. The daemon does not keep a second
 // opinion about whether the hooks fired or the memory came back: it imports the same evaluation
@@ -222,6 +223,12 @@ function resolveIo(fsImpl) {
     existsSync: io.existsSync ?? fsExistsSync,
     readdirSync: io.readdirSync ?? fsReaddirSync,
     readFileSync: io.readFileSync ?? fsReadFileSync,
+    // ПИШУЩАЯ ПОЛОВИНА ТОГО ЖЕ ШВА. До материализации снимка и навыков тик в рабочую копию
+    // ничего не писал вовсе, и шов был только читающим. Он остаётся ОДНИМ швом: два разных
+    // способа добраться до диска — это два разных мира в делах и один на машине.
+    mkdirSync: io.mkdirSync ?? fsMkdirSync,
+    writeFileSync: io.writeFileSync ?? fsWriteFileSync,
+    rmSync: io.rmSync ?? fsRmSync,
   }
 }
 
@@ -1705,6 +1712,153 @@ export function rulesInCopy(io, workDir, worktree) {
   }
 }
 
+// Имя файла со снимком контекста В КОРНЕ РАБОЧЕЙ КОПИИ — `task_context.md`, рядом с правилами
+// проекта, куда работник и придёт его читать. Имя НЕ пишется здесь второй раз: оно приходит
+// от владельца — замороженного списка файлов каталога прогона, — потому что это ОДИН документ
+// «что попытке дали» в двух экземплярах для двух читателей, и два написания одного имени
+// разъехались бы в тот день, когда правят одно из них.
+
+/** Пометка «этот навык положили МЫ» — сосед файла навыка внутри его же каталога. */
+const BUILTIN_SKILL_MARK = '.sma-builtin-skill'
+
+/**
+ * materializeTaskContext(deps, task, workDir) — ЧТО ПОПЫТКА НАХОДИТ В СВОЕЙ КОПИИ.
+ *
+ * ОДНА ФУНКЦИЯ НА ОБЕ ДВЕРИ, и это не стилистика. Дверей провизии две — путь кода-работы и
+ * путь Творца, — и правка одной из них оставляет мину во второй: этот класс уже дважды стоил
+ * этому файлу отдельного разбора (флаг пути копии, объект строки копии). Второе написание
+ * той же материализации разъехалось бы с первым в тот день, когда правят одно из них, и
+ * работник одной из дорожек молча остался бы без контекста и без навыков.
+ *
+ * ПУТЬ КОПИИ НЕ СОБИРАЕТСЯ ЗДЕСЬ. Он приходит аргументом — тем самым, что ОТВЕТИЛ верб
+ * провизии. Третье написание того же пути есть способ положить файл туда, куда уборке
+ * смотреть не позволено: провизия и уборка уже согласованы по одному выражению, и вклиниться
+ * между ними своей сборкой значит оставить после себя каталог, который никто не снимет.
+ *
+ * КАТАЛОГА КОПИИ МЫ НЕ СОЗДАЁМ. Его делает верб; если его на диске нет — писать в него
+ * значит выдумать копию. Со снимком это ОТКАЗ (человек написал слова, и они обязаны доехать),
+ * с навыками — громкая строка журнала: наши тексты полезны, но их отсутствие не делает
+ * указание человека неверным.
+ *
+ * СЕКРЕТЫ РЕЖУТСЯ ПЕРВЫМИ, тем же поясом и по строкам, что у файлов каталога прогона. Иголки
+ * берутся из среды САМОГО ДЕМОНА, а не из среды спавна: среда спавна на этом шаге ещё не
+ * собрана, а собирается она ИЗ среды демона — значит здешний набор иголок шире, и это
+ * ошибка в безопасную сторону.
+ *
+ * ВТОРОГО ПОТОЛКА НЕТ. Потолок применён у единственного входа — двери постановки, — и там он
+ * ОТКАЗЫВАЕТ, а не режет. Вторая правда о длине разъехалась бы с первой молча.
+ */
+function materializeTaskContext(deps, task, workDir) {
+  const io = resolveIo(deps.fsImpl)
+  const snapshot = taskContextOf(task)
+  const named = typeof workDir === 'string' && workDir.trim() !== ''
+  let copyExists = false
+  if (named) {
+    try {
+      copyExists = io.existsSync(workDir) === true
+    } catch {
+      copyExists = false // нечитаемый каталог — это отсутствие свидетельства, не бросок
+    }
+  }
+
+  // ── СНИМОК ──────────────────────────────────────────────────────────────────────────────
+  if (snapshot) {
+    if (!copyExists) {
+      throw new Error(
+        `worktree ${workDir || 'без имени'} не существует — отказываюсь запускать попытку с копией без снимка контекста`,
+      )
+    }
+    const safe = sanitizeRun(
+      { lines: snapshot.split('\n') },
+      { secretValues: secretValuesOf(deps.env || process.env) },
+    ).lines.join('\n')
+    try {
+      // БЕЗУСЛОВНАЯ ПЕРЕЗАПИСЬ. Ретрай честно переиспользует копию, и файл прошлого захода
+      // без перезаписи молча врал бы попытке о том, чего человек уже не просит.
+      io.writeFileSync(join(workDir, TASK_CONTEXT_FILE), `${safe}\n`, 'utf8')
+    } catch (err) {
+      throw new Error(`снимок контекста не записан в копию: ${String((err && err.message) || err)}`)
+    }
+  } else if (copyExists) {
+    // СНЯТЫЙ СНИМОК УБИРАЕТ ЗА СОБОЙ, И УБОРКА ОСТАВЛЯЕТ СЛЕД: удаление существующего файла
+    // без строки в журнале — ровно то, чего дом не терпит.
+    let stale = false
+    try {
+      stale = io.existsSync(join(workDir, TASK_CONTEXT_FILE)) === true
+    } catch {
+      stale = false
+    }
+    if (stale) {
+      try {
+        io.rmSync(join(workDir, TASK_CONTEXT_FILE), { force: true })
+        writeLog(deps, {
+          type: 'task.task_context_removed',
+          taskId: task.id,
+          detail: `снимок снят со строки — протухший ${TASK_CONTEXT_FILE} удалён из копии ${workDir}`,
+        })
+      } catch (err) {
+        writeLog(deps, {
+          type: 'task.task_context_remove_failed',
+          taskId: task.id,
+          detail: String((err && err.message) || err),
+        })
+      }
+    }
+  }
+
+  // ── ВСТРОЕННЫЕ НАВЫКИ ───────────────────────────────────────────────────────────────────
+  if (!copyExists) {
+    writeLog(deps, {
+      type: 'task.worker_skills_no_copy',
+      taskId: task.id,
+      detail: `каталога копии ${workDir || 'без имени'} нет на диске — встроенные навыки не положены`,
+    })
+    return
+  }
+  for (const skill of WORKER_SKILLS) {
+    // ИМЯ КАТАЛОГА — ТОЛЬКО ИЗ ЗАМОРОЖЕННОГО СПИСКА ПРОДУКТА. Сырой строки человека в пути
+    // нет ни на одном шаге, поэтому и санитизации здесь нечего делать: чистят вход, которого
+    // не бывает, ровно там, где однажды заводят второй вход.
+    const dir = join(workDir, '.claude', 'skills', skill.slug)
+    const file = join(dir, 'SKILL.md')
+    const mark = join(dir, BUILTIN_SKILL_MARK)
+    try {
+      let theirs = false
+      try {
+        // ЧЕЙ ЭТО ФАЙЛ — ВОПРОС ФАКТА, А НЕ ДОГАДКИ ПО ТЕКСТУ. Пометку ставим мы сами, когда
+        // кладём свой экземпляр; догадка по содержимому объявила бы чужим наш собственный
+        // файл в тот самый день, когда мы правим его текст, — и доводка перестала бы доезжать.
+        theirs = io.existsSync(file) === true && io.existsSync(mark) !== true
+      } catch {
+        theirs = false
+      }
+      if (theirs) {
+        // ПРАВИЛА ПОЛЬЗОВАТЕЛЯ ВЫШЕ НАШИХ. Одноимённый навык проекта выигрывает, и уступка
+        // говорится вслух: молчаливая уступка неотличима от молчаливой перезаписи.
+        writeLog(deps, {
+          type: 'task.worker_skill_kept',
+          taskId: task.id,
+          detail: `навык ${skill.slug} есть у самого проекта — наш встроенный не кладётся поверх`,
+        })
+        continue
+      }
+      io.mkdirSync(dir, { recursive: true })
+      // СВОЙ ЭКЗЕМПЛЯР ПЕРЕЗАПИСЫВАЕТСЯ БЕЗУСЛОВНО: доводка текста навыка обязана доезжать до
+      // работника, иначе исправленный текст живёт у нас, а читают старый.
+      io.writeFileSync(file, skill.body, 'utf8')
+      io.writeFileSync(mark, `${skill.slug}\n`, 'utf8')
+    } catch (err) {
+      // ГРОМКО, НО НЕ СМЕРТЕЛЬНО. Отсутствие нашего текста не делает указание человека
+      // неверным, а попытку — бессмысленной; молчания здесь нет, есть строка с причиной.
+      writeLog(deps, {
+        type: 'task.worker_skill_failed',
+        taskId: task.id,
+        detail: `${skill.slug}: ${String((err && err.message) || err)}`,
+      })
+    }
+  }
+}
+
 /** How many skills and agents the copy actually held; null when it has no `.claude` at all. */
 function skillsInCopyOf(io, workDir) {
   if (typeof workDir !== 'string' || workDir.trim() === '') return null
@@ -1717,7 +1871,25 @@ function skillsInCopyOf(io, workDir) {
         return 0
       }
     }
-    return { skills: count('skills'), agents: count('agents') }
+    // НАШИ ВСТРОЕННЫЕ НАВЫКИ ИЗ ЭТОГО СЧЁТА ВЫЧТЕНЫ, и это не косметика. Квитанция паритета
+    // спрашивает «видна ли в копии поверхность САМОГО ПРОЕКТА»; с тех пор как копию обставляем
+    // мы, в ней всегда лежат минимум три наших навыка — и, посчитай мы их, квитанция стала бы
+    // вечно зелёной, то есть мёртвой: она отвечала бы «да» и проекту без единого навыка.
+    // Свои узнаём по пометке, которую сами и поставили при записи, а не по имени каталога.
+    const ourSkills = (() => {
+      try {
+        return (io.readdirSync(join(workDir, '.claude', 'skills')) || []).filter((slug) => {
+          try {
+            return io.existsSync(join(workDir, '.claude', 'skills', String(slug), BUILTIN_SKILL_MARK)) === true
+          } catch {
+            return false
+          }
+        }).length
+      } catch {
+        return 0
+      }
+    })()
+    return { skills: Math.max(0, count('skills') - ourSkills), agents: count('agents') }
   } catch {
     return null
   }
@@ -1835,6 +2007,17 @@ function writeAttemptRunDir(deps, task, {
     },
   })
   if (!dir) return null
+  // ШЕСТОЙ ФАЙЛ — СВИДЕТЕЛЬ СНИМКА, рядом с записью начала попытки и по ТОМУ ЖЕ пути: `dir`
+  // сюда приходит от писателя, а не собирается здесь второй раз. Снимка на строке нет — не
+  // зовём вовсе: отсутствие файла говорит «человек ничего не сказал», а пустой файл сказал бы,
+  // что сказал и промолчал. Секреты — те же иголки, что у остальных пяти файлов.
+  writeTaskContext({
+    dir,
+    text: taskContextOf(task),
+    secretValues: secretValuesOf(env),
+    fsImpl: deps.fsImpl,
+    log: (entry) => writeLog(deps, entry),
+  })
   pruneRunDirs({
     runsDir,
     keep: Number.isFinite(config.runsKeep) ? config.runsKeep : RUN_DIRS_KEEP,
@@ -2821,6 +3004,17 @@ async function runIntake(deps, now, result) {
 }
 
 /**
+ * СКОЛЬКО ПОПЫТОК ЭТОТ ДЕМОН ВЕДЁТ ОДНОВРЕМЕННО. Умолчание — ОДНА, и это осознанно: до сих пор
+ * потолка не было вовсе, а единственная известная авария этого класса стоила трёх параллельных
+ * процессов на одну подписку. У кого работников несколько и они не мешают друг другу — поднимает
+ * число настройкой; молчание настройки означает безопасный пол, а не «сколько получится».
+ */
+function concurrencyCap(config) {
+  const raw = Number(config && config.maxConcurrentAttempts)
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 1
+}
+
+/**
  * tick(deps) — ONE stateless pass. deps: {adapter, ledger, config, routing, windows,
  * buildArgs, spawnWorker, verbRunner, report, clock, journal, intake?, workerReady?}.
  * Returns a summary {idle, sweep?, claimed?, completed?, failed?, intake?}.
@@ -2830,6 +3024,12 @@ export async function tick(deps = {}) {
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   const now = () => clock()
   const result = { idle: false }
+  /**
+   * МЕСТО В ДОМЕ ИДУЩИХ ПОПЫТОК, взятое этим проходом. Объявлено ЗДЕСЬ, выше общего try, по
+   * единственной причине: отдать его обязан ЛЮБОЙ выход из тика — и ранний возврат, и провал,
+   * и исключение. Забытое место дороже отсутствия потолка: конвейер встал бы навсегда и молча.
+   */
+  let seat = null
 
   // (0) IS THE CONVEYOR SWITCHED ON? Asked FIRST, before the sweep and before the intake,
   // because «off» here means the machine does nothing at all — not «claims nothing». The
@@ -2920,6 +3120,44 @@ export async function tick(deps = {}) {
       result.idle = true
       return result
     }
+    // (3a) ПОТОЛОК — ДО ЗАХВАТА, А НЕ ПОСЛЕ. Спросить очередь и потом отказаться от строки
+    // означало бы выдать задачу и тут же уронить её обратно: в долговременной очереди выборка
+    // И ЕСТЬ захват. Поэтому проход при полном доме — простой, и он назван вслух: пустая доска
+    // при работающих процессах ровно так и выглядела 12.08, и понять это было нечем.
+    const inFlight = deps.inFlight
+    const cap = concurrencyCap(config)
+    if (inFlight && typeof inFlight.reserve === 'function') {
+      // Место берётся ОДНИМ синхронным шагом и ДО захвата. Иначе два проходящих внахлёст тика
+      // оба увидели бы пустой дом (захват — это await), оба прошли бы потолок и оба взяли бы
+      // по задаче — ровно то, ради чего потолок и заводится.
+      seat = inFlight.reserve(cap)
+      if (!seat) {
+        writeLog(deps, {
+          type: 'tick.concurrency_cap',
+          detail: `идущих попыток ${inFlight.size()} при потолке ${cap} — задача в этом проходе не берётся`,
+        })
+        result.idle = true
+        result.concurrencyCap = { inFlight: inFlight.size(), cap }
+        return result
+      }
+    }
+    // …И НИ ОДНОГО СВОБОДНОГО МЕСТА — тоже причина не брать. Проверяется ЗДЕСЬ, до захвата, а
+    // не в маршрутизаторе: в долговременной очереди выборка И ЕСТЬ захват, вернуть строку
+    // назад нечем, а провалить её значило бы сжечь попытку из отпущенной границы за то, что
+    // работа просто идёт. Маршрутизатор своим фильтром занятости остаётся вторым рубежом.
+    if (inFlight && typeof inFlight.workers === 'function') {
+      const busyNow = inFlight.workers()
+      const enabled = (Array.isArray(config.workers) ? config.workers : []).filter((w) => w && w.enabled !== false)
+      if (enabled.length > 0 && enabled.every((w) => busyNow.has(w.id))) {
+        writeLog(deps, {
+          type: 'tick.all_workers_busy',
+          detail: `все работники (${enabled.length}) уже ведут попытку — задача в этом проходе не берётся`,
+        })
+        result.idle = true
+        result.allWorkersBusy = enabled.length
+        return result
+      }
+    }
     const workerId = 'daemon' // the claim is against durable state; identity is the ledger's job
     // THE STOP TRAVELS INTO THE CLAIM ITSELF, not around it. Filtering after the checkout would
     // be too late in the durable queue — there the fetch IS the claim, and a row recognised as
@@ -2931,6 +3169,9 @@ export async function tick(deps = {}) {
       return result
     }
     result.claimed = task.id
+    // Место уже взято до захвата — теперь у него появляется имя задачи. Имя работника впишется
+    // ниже, когда маршрут его назовёт; отдаётся место в `finally` всего тика.
+    if (inFlight && typeof inFlight.name === 'function') inFlight.name(seat, task.id, null)
 
     // (3a0) THE LANE'S CAPABILITY ENVELOPE. Resolved here because it is a
     // property of the LANE the task was claimed into — known before the route is, and
@@ -2967,7 +3208,7 @@ export async function tick(deps = {}) {
     try {
       // The router writes its OWN dispatcher layer at the decision — the tick
       // only hands it the sink; it never narrates the routing reason on the router's behalf.
-      const route = deps.routing.resolveRoute(task, {
+      const routeDeps = {
         // The pool, with this assembly's own worker offered first (poolFor) — for a task with
         // no batch this IS config.workers.
         workers: await poolFor(deps, task),
@@ -2982,7 +3223,23 @@ export async function tick(deps = {}) {
         // The money rule travels with the route decision — the dispatcher is the only place
         // that knows both «no seat anywhere» and «this task asked for the paid channel».
         budget: deps.budget,
-      })
+        // WHO IS ALREADY WORKING — so the router can skip an account that has a live attempt
+        // instead of stacking a second one on it. Computed, until now, by nobody.
+        busyWorkers: inFlight && typeof inFlight.workers === 'function' ? inFlight.workers() : null,
+      }
+      let route = deps.routing.resolveRoute(task, routeDeps)
+      // ГОНКА МЕЖДУ ПРОВЕРКОЙ И МАРШРУТОМ. Место проверялось до захвата; пока задачу забирали,
+      // соседний проход мог занять последнего свободного. Задача УЖЕ захвачена, вернуть её
+      // нечем — и умирать ей за то, что работа идёт, нельзя. Поэтому фильтр занятости здесь
+      // отступает: он предпочтение, а регулятор стоит на захвате.
+      if (route && route.reasonCode === 'worker_busy') {
+        writeLog(deps, {
+          type: 'task.route_busy_race',
+          taskId: task.id,
+          detail: 'место занято между проверкой и маршрутом — фильтр занятости отступает, задача не гибнет',
+        })
+        route = deps.routing.resolveRoute(task, { ...routeDeps, busyWorkers: null })
+      }
       if (!route || (!route.workerId && !route.useApiFallback)) {
         // Claimed but no runnable target after the real route — degrade honestly, AND IN THE
         // ROUTER'S OWN WORD. This line used to write «window_exhausted» over every such
@@ -3009,6 +3266,8 @@ export async function tick(deps = {}) {
       // the board showed an empty queue and an idle worker THROUGHOUT a running attempt.
       // Fail-open and optional by design — an adapter without the seam (or a write that
       // fails) must never cost an attempt that is otherwise ready to run.
+      // Имя работника в занятое место — теперь маршрут его назвал.
+      if (inFlight && typeof inFlight.name === 'function' && route.workerId) inFlight.name(seat, task.id, route.workerId)
       if (route.workerId && typeof deps.adapter.assignWorker === 'function') {
         try {
           await deps.adapter.assignWorker(task.id, route.workerId)
@@ -3160,6 +3419,10 @@ export async function tick(deps = {}) {
           )
         }
         workDir = wt.path
+        // ЧТО РАБОТНИК НАЙДЁТ В КОПИИ — кладётся СРАЗУ, из пути, который ответил верб, и до
+        // спавна: снимок контекста задачи и встроенные навыки. Одна функция на обе двери;
+        // падение записи снимка — падение провизии, а не тихий пропуск.
+        materializeTaskContext(deps, task, workDir)
         // THE POINT TO ROLL BACK TO, written down before a single line is spawned.
         // The isolation itself was always real — a worker only ever writes into its own
         // worktree on its own branch — but «can be rolled back» and «you can SEE what to
@@ -3180,6 +3443,24 @@ export async function tick(deps = {}) {
         // number the gate needs and threw away a commit that was sitting right there. When the
         // verb declines to say, ask the project's own tree where it stands — that is exactly
         // what `expectedBase` means on the first pass, so a retry reads the same point.
+        // ASK WHERE THE BRANCH WAS CUT, NOT WHERE THE PROJECT STANDS NOW. The tip is the right
+        // answer only on a FIRST attempt, when the copy was just cut from it. On a RETRY the
+        // project has usually moved on, and then the tip names a point the task branch never
+        // sat on: the count walks somebody else's history and certifies work this attempt did
+        // not do. Measured 12.08.2026 — an attempt that touched no file at all came back with
+        // a receipt for three commits and one deleted file.
+        //
+        // The merge point answers both cases with one question: on a first attempt it IS the
+        // tip (nothing has diverged yet), and on a retry it is still the place the branch was
+        // cut. The tip stays as the last resort, because a missing base cannot certify at all
+        // and an unanswerable git must never crash the tick.
+        if (!worktreeBase && typeof deps.execGit === 'function' && branch) {
+          try {
+            worktreeBase = String(deps.execGit(['merge-base', 'HEAD', branch], { cwd: provisionDir }) || '').trim() || null
+          } catch {
+            /* the branch may be unknown to this tree — fall through to the tip */
+          }
+        }
         if (!worktreeBase && typeof deps.execGit === 'function') {
           try {
             worktreeBase = String(deps.execGit(['rev-parse', 'HEAD'], { cwd: provisionDir }) || '').trim() || null
@@ -3862,6 +4143,11 @@ export async function tick(deps = {}) {
     if (typeof journal === 'function') journal({ type: 'tick-error', error: String((err && err.message) || err) })
     result.error = true
     return result
+  } finally {
+    // МЕСТО ОТДАЁТСЯ ВСЕГДА — на успехе, на провале, на исключении и на КАЖДОМ раннем возврате
+    // выше. Стоит на самом внешнем уровне именно поэтому: выходов из тика много, и пропущенный
+    // хотя бы один означал бы дом, который никогда не пустеет, и конвейер, вставший молча.
+    if (seat && deps.inFlight && typeof deps.inFlight.release === 'function') deps.inFlight.release(seat)
   }
 }
 
@@ -3972,6 +4258,9 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     return result
   }
   const worktreePath = wt.path
+  // ТА ЖЕ МАТЕРИАЛИЗАЦИЯ, ТОЙ ЖЕ ФУНКЦИЕЙ. Забытая вторая дверь — мина, которую этот файл
+  // уже дважды разминировал задним числом; здесь она закрыта тем же вызовом, что и наверху.
+  materializeTaskContext(deps, task, worktreePath)
   // The same list, checked the same way: it comes from the PROJECT's own CLI, so anything
   // that is not an array becomes an absence rather than a row nobody can read.
   const materialized = Array.isArray(wt.materialized) ? wt.materialized : undefined

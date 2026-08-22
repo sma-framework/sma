@@ -375,6 +375,65 @@ describe('the production composition root is COMPLETE', () => {
   })
 
   /**
+   * THE BACKLOG INTAKE MUST REACH THE TICK.
+   *
+   * `runIntake` asks for `deps.intake` on its FIRST line and returns when it is absent. The
+   * scanner module was written, ported faithfully from the origin parser, covered by tests and
+   * asked for by the tick on every pass — and the root never built it. So `backlogScanMinutes`
+   * was a setting that changed nothing, and a ready backlog line never became a task while the
+   * product described automatic intake.
+   *
+   * The second half matters as much as the first: a scan that does not RECORD itself leaves
+   * `lastScanAt` at zero, the cadence check passes on every pass, and the daemon fetches git
+   * every five seconds. Both halves are asserted here, on the production factory.
+   */
+  it('joins the BACKLOG intake to the tick — a scanner nobody hands over is a setting that lies', async () => {
+    const intake: any = park.tickDeps.intake
+    expect(
+      intake && typeof intake.scan,
+      'tickDeps.intake.scan must be wired or runIntake returns on its first line, every tick, forever',
+    ).toBe('function')
+    expect(
+      typeof intake.lastScanAt,
+      'tickDeps.intake.lastScanAt must be a number or the cadence has no starting point',
+    ).toBe('number')
+    const before = intake.lastScanAt
+    await intake.scan()
+    expect(
+      intake.lastScanAt,
+      'a scan must record itself or the cadence never advances and git is fetched every tick',
+    ).toBeGreaterThan(before)
+  })
+
+  /**
+   * THE REGULATOR MUST REACH THE TICK.
+   *
+   * The tick is timer-driven and is called without waiting for the previous pass, so attempts
+   * overlap by construction. The ceiling can only count what something remembers between
+   * passes — and the tick is stateless on purpose. Unwired, the ceiling would ask an object
+   * that does not exist and find the house empty on every pass: exactly the 12.08.2026 picture,
+   * three processes running while the board showed an idle worker.
+   */
+  it('joins the REGULATOR to the tick — a ceiling with nothing to count is not a ceiling', () => {
+    const inFlight: any = park.tickDeps.inFlight
+    expect(inFlight && typeof inFlight.size, 'tickDeps.inFlight must be wired or the ceiling counts nothing').toBe(
+      'function',
+    )
+    expect(typeof inFlight.workers, 'the router asks it WHO is busy, not merely how many').toBe('function')
+    expect(typeof inFlight.reserve, 'the seat must be takeable BEFORE the claim, or two ticks both pass').toBe(
+      'function',
+    )
+    expect(inFlight.size(), 'a freshly built daemon has no children and its house starts empty').toBe(0)
+    const seat = inFlight.reserve(1)
+    expect(seat, 'the first seat of an empty house must be given').toBeTruthy()
+    expect(inFlight.reserve(1), 'the second seat at a ceiling of one must be refused').toBe(null)
+    inFlight.name(seat, 'T-1', 'max-2')
+    expect([...inFlight.workers()]).toContain('max-2')
+    inFlight.release(seat)
+    expect(inFlight.size(), 'a released seat must free the house again').toBe(0)
+  })
+
+  /**
    * THE MONEY RULE MUST REACH THE DISPATCHER.
    *
    * `shouldApiFallback` decides two things nothing else decides: whether a task that names

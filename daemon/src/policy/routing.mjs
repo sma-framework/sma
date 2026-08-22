@@ -228,6 +228,18 @@ export function resolveRoute(task = {}, deps = {}) {
   // `heldByDayPriority` remembers WHY the pool emptied, so the wait can name its own cause
   // instead of collapsing two different situations into one code.
   let heldByDayPriority = false
+  // WHO IS ALREADY WORKING. The filter asked enabled / provider / window / day-priority and
+  // never «does this worker already have a live attempt» — while the tick is timer-driven and
+  // does not wait for the previous pass, so a second task went to the same account while the
+  // first was still running. This is the floor under 12.08.2026: three parallel processes
+  // burning one subscription while the board showed an empty queue.
+  //
+  // `heldByBusy` is remembered separately for exactly the reason `heldByDayPriority` is: a
+  // pool emptied because everyone is BUSY is not a pool emptied because every window is SPENT,
+  // and only the second of those may ever be turned into money.
+  const busyWorkers =
+    deps.busyWorkers instanceof Set ? deps.busyWorkers : new Set(Array.isArray(deps.busyWorkers) ? deps.busyWorkers : [])
+  let heldByBusy = false
   const candidates = workers.filter((w) => {
     if (!w || w.enabled === false) return false
     if (targetProvider && w.provider !== targetProvider) return false
@@ -237,6 +249,10 @@ export function resolveRoute(task = {}, deps = {}) {
       return false
     }
     if (!isWindowOpen(w)) return false
+    if (busyWorkers.has(w.id)) {
+      heldByBusy = true
+      return false
+    }
     return true
   })
 
@@ -245,8 +261,10 @@ export function resolveRoute(task = {}, deps = {}) {
     // never asked. The protected account is NOT a closed window: holding work for the
     // founder's own subscription must never be turned into spending, so the switch is offered
     // only when the pool emptied because every window is genuinely spent.
+    // Declared OUTSIDE the branch because the refusal is read again below, when the wait is
+    // named: a budget that said no is the answer a person needs, not «window_exhausted».
     let verdict = null
-    if (!heldByDayPriority) {
+    if (!heldByDayPriority && !heldByBusy) {
       verdict = askBudget(deps.budget, task, true)
       if (verdict && verdict.fallback === true) {
         journalDecision(sink, task, 'api_fallback', { lane, provider: 'api' }, unknownSink)
@@ -264,16 +282,24 @@ export function resolveRoute(task = {}, deps = {}) {
     // The task WAITS — routing never fails it. By review: no only-open-window
     // carve-out for the protected account.
     //
-    // WHOSE WORD NAMES THE WAIT. Two facts are true here and only one of them is useful to
-    // the person reading the row: the windows are shut (which is WHY the money rule was
-    // asked at all) and the money rule refused (which is why nothing is running now). This
-    // branch used to publish the first and discard the second, so a task stopped by a
-    // ceiling its owner set himself told him to wait for a window that could never help.
-    // The refusal, when there is one, is the answer. Absent a rule, or when the pool emptied
-    // because the founder's own account is protected, the previous words stand exactly.
+    // WHOSE WORD NAMES THE WAIT. Now FOUR silences, and only one of them is a reason to wait
+    // for a window: the founder's account is protected; every seat is taken by work already
+    // running (that one clears by itself); the money rule refused; or the windows are
+    // genuinely spent. This branch used to publish only the last, so a task stopped by a
+    // ceiling its owner set himself was told to wait for a window that could never help,
+    // and a task merely queued behind live work was told to top up an account with nothing
+    // wrong with it. The refusal, when there is one, is the answer.
+    //
+    // ORDER MATTERS: busy is asked BEFORE the money rule, because when every seat is taken
+    // the money rule was never consulted at all — `verdict` is null on that path by
+    // construction, and reading a refusal out of it would invent one.
     const moneyRefusal =
       verdict && verdict.fallback === false && typeof verdict.reason === 'string' && verdict.reason !== '' ? verdict.reason : null
-    const code = heldByDayPriority ? 'day_priority_protected' : (moneyRefusal ?? 'window_exhausted')
+    const code = heldByDayPriority
+      ? 'day_priority_protected'
+      : heldByBusy
+        ? 'worker_busy'
+        : (moneyRefusal ?? 'window_exhausted')
     journalDecision(sink, task, code, { lane, provider: targetProvider ?? undefined }, unknownSink)
     return {
       workerId: null,
@@ -281,8 +307,16 @@ export function resolveRoute(task = {}, deps = {}) {
       model: null,
       effort: null,
       useApiFallback: false,
-      // Both facts, in words, for the roster — the code above is the machine-readable half.
-      reason: moneyRefusal ? `all windows closed, and ${MONEY_REFUSAL_WORDS[moneyRefusal] ?? `the money rule answered ${moneyRefusal}`}` : 'window_exhausted',
+      // The words a person reads follow the code — it is the machine-readable half of the
+      // same fact. Telling someone the window is spent when every seat is merely taken sends
+      // them to top up an account with nothing wrong with it; telling them to wait for a
+      // window when their own ceiling stopped the work sends them to wait for nothing.
+      reason:
+        code === 'worker_busy'
+          ? 'every worker already has a live attempt'
+          : moneyRefusal
+            ? `all windows closed, and ${MONEY_REFUSAL_WORDS[moneyRefusal] ?? `the money rule answered ${moneyRefusal}`}`
+            : 'window_exhausted',
       reasonCode: code,
     }
   }

@@ -48,6 +48,7 @@ import {
   InvalidTaskError,
   DEFAULT_EXPIRE_MS,
   resolveExpireMs,
+  TASK_CONTEXT_CAP,
 } from '../src/queue/adapter.mjs'
 
 // ── the reusable contract suite, run against the in-memory reference backend ──
@@ -376,6 +377,67 @@ describe('project — an additive task field with an injected default', () => {
     const [row] = await q.list({ project: 'other-shop' })
     expect(row.lane).toBe('forge')
     expect(row.project).toBe('other-shop')
+  })
+})
+
+// ── снимок контекста задачи: место человека на строке очереди ──
+
+describe("taskContext — the human's snapshot of what this task is about, living on the queue row", () => {
+  const withCtx = (over: any = {}) => backlog({ taskContext: 'счёт-фактуры лежат в /invoices', ...over })
+
+  it('validateTask accepts a taskContext snapshot and keeps it on the normalized task', () => {
+    expect(validateTask(withCtx()).taskContext).toBe('счёт-фактуры лежат в /invoices')
+    expect(validateTask(backlog()).taskContext).toBeUndefined()
+  })
+
+  it('a snapshot over the ceiling is REFUSED, never silently trimmed — they are his words', () => {
+    // Trimming a person's own text to fit would hand the worker a sentence that stops
+    // mid-thought and tell nobody. The door says no, exactly as it does for every other
+    // field of the dictionary.
+    expect(TASK_CONTEXT_CAP).toBe(8000)
+    expect(validateTask(withCtx({ taskContext: 'д'.repeat(TASK_CONTEXT_CAP) })).taskContext).toHaveLength(
+      TASK_CONTEXT_CAP,
+    )
+    expect(() => validateTask(withCtx({ taskContext: 'д'.repeat(TASK_CONTEXT_CAP + 1) }))).toThrow(InvalidTaskError)
+    expect(() => validateTask(withCtx({ taskContext: 42 as any }))).toThrow(InvalidTaskError)
+  })
+
+  it('an empty snapshot is an ABSENT snapshot — the row carries no key rather than a blank one', () => {
+    // «Поле есть, а текста нет» и «поля нет» читаются вниз по течению по-разному: пустая
+    // строка материализовала бы в рабочей копии пустой файл, а в промпте — пустой забор,
+    // и оба сказали бы «он ничего не написал» так, будто он писал.
+    expect(validateTask(withCtx({ taskContext: '' }))).not.toHaveProperty('taskContext')
+    expect(validateTask(withCtx({ taskContext: '   \n  ' }))).not.toHaveProperty('taskContext')
+  })
+
+  it('captured task carries taskContext — the wire the rest of the phase hangs on (memory, end to end)', async () => {
+    // THE CONTRACT SUITE RUNS THIS WIRE AGAINST BOTH BACKENDS (see adapter.mjs). This local
+    // case pins it grep-visibly in the test file and adds the half that is per-backend: the
+    // READ SHAPE of the reference queue, checked in the case below.
+    const c = mkClock()
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 1000 })
+    await q.enqueue(withCtx())
+    const claimed: any = await q.claimNext('w1', {})
+    expect(claimed.taskContext).toBe('счёт-фактуры лежат в /invoices')
+  })
+
+  it('the snapshot is NOT paid for on every poll — the read shape of a row does not carry it', async () => {
+    // A row is re-read by the window several times a second; the snapshot is read once per
+    // attempt, by the provisioning step and by the card door. Putting it in the list shape
+    // would make every poll carry a text sized for a prompt.
+    const c = mkClock()
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 1000 })
+    await q.enqueue(withCtx())
+    const [row] = await q.list({})
+    expect(row).not.toHaveProperty('taskContext')
+  })
+
+  it('widening the task dictionary did NOT unlock unknown keys — both locks still hold', () => {
+    // Lock one: the task record is built by explicit pick, so a key nobody allowed never
+    // reaches the row. Lock two: the stage envelope is fail-closed and REFUSES outright.
+    const norm: any = validateTask(withCtx({ smuggled: 'nope' }))
+    expect(norm).not.toHaveProperty('smuggled')
+    expect(() => validateTask(withCtx({ data: { kind: 'code', invented: 1 } }))).toThrow(InvalidTaskError)
   })
 })
 

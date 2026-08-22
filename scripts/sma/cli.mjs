@@ -6179,10 +6179,26 @@ async function cmdReverify({ flags, dirs }) {
   }
 
   // Runner: a nonzero exit is an OBSERVATION, not a crash (receipts contract);
-  // a run that never finished is NOT an observation and says so. Built from
-  // the same factory the scorer uses, so one kill by one budget can never be
-  // read as a fact here and as a non-fact there.
-  const runCommand = predictLib.makeExecRunner({ execSync, cwd })
+  // a run that never finished is NOT an observation and says so.
+  //
+  // ONE FACTORY, ONE CEILING, ONE READING OF A KILL — the two halves of this line arrived
+  // from two directions and neither survives alone. Built from the SAME factory the scorer
+  // uses, so one kill by one budget can never be read as a fact here and as a non-fact
+  // there; carrying the receipt ceiling, because re-verification used to run its own
+  // two-minute kill and map it to `exit:1`, and a receipt bound to a long, honest suite
+  // then came back «divergent» on a tree where nothing had changed.
+  //
+  // The factory reports a kill as `notMeasured` (a FIELD); this caller's verifier speaks
+  // exceptions, and turns a throw into «error», never into a red result. So the field is
+  // translated here — and the sentence a person reads is minted by the one function that
+  // owns that wording, rather than spelled a second time next to it.
+  const timeoutMs = receipts.receiptTimeoutMs(flags)
+  const runOnce = predictLib.makeExecRunner({ execSync, cwd, timeoutMs })
+  const runCommand = (cmd, o = {}) => {
+    const r = runOnce(cmd, o)
+    if (r.notMeasured) throw receipts.ceilingKill({ status: null, killed: true }, timeoutMs)
+    return { stdout: r.stdout, exitCode: r.exitCode }
+  }
 
   const remap = (p) => {
     if (!wantClone) return p
@@ -6291,7 +6307,9 @@ async function cmdReverify({ flags, dirs }) {
 async function cmdReceiptHash({ positionals, flags, dirs }) {
   const command = positionals[0]
   if (!command) {
-    process.stderr.write('usage: node scripts/sma/cli.mjs receipt-hash "<command>" [--exit-only] [--unsafe-ack] [--cwd <path>]\n')
+    process.stderr.write(
+      'usage: node scripts/sma/cli.mjs receipt-hash "<command>" [--exit-only] [--unsafe-ack] [--cwd <path>] [--timeout <секунды>]\n',
+    )
     return 1
   }
   const predict = await import('./lib/predict.mjs')
@@ -6308,10 +6326,16 @@ async function cmdReceiptHash({ positionals, flags, dirs }) {
   const cwd = typeof flags.cwd === 'string' ? flags.cwd : dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
   // stdout is bound by default; --exit-only opts out (--hash-stdout stays accepted as the legacy no-op).
   const hashStdout = flags['exit-only'] !== true
+  // THE CEILING IS SETTABLE, AND A KILL BY IT IS NOT A VERDICT. Two minutes, hard-coded, is
+  // shorter than this product's own suite: the one command a receipt most wants to bind could
+  // not be bound, and the kill came back as `exit:1` — a green run recorded as evidence of red.
+  const timeoutMs = receipts.receiptTimeoutMs(flags)
   const runCommand = (cmd, o = {}) => {
     try {
-      return { stdout: execSync(cmd, { encoding: 'utf8', timeout: 120_000, cwd: o.cwd ?? cwd }), exitCode: 0 }
+      return { stdout: execSync(cmd, { encoding: 'utf8', timeout: timeoutMs, cwd: o.cwd ?? cwd }), exitCode: 0 }
     } catch (err) {
+      const ceiling = receipts.ceilingKill(err, timeoutMs)
+      if (ceiling) throw ceiling // a throwing runner becomes a NAMED error, never a red receipt
       return { stdout: err.stdout ?? '', exitCode: err.status ?? 1 }
     }
   }

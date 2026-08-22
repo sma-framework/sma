@@ -98,13 +98,28 @@ export const CONTINUATION_CAP = 8000
  */
 export const CONTINUATION_TRUNCATED_MARK = '\n\n[конспект обрезан по потолку в 8000 знаков]\n'
 
-/** The five names, in one place: the writer and any reader agree by construction. */
+/**
+ * СНИМОК КОНТЕКСТА ЗАДАЧИ — ИМЯ ОДНО НА ДВА МЕСТА, И ЭТО НАМЕРЕННО.
+ *
+ * Этим же именем документ ложится в корень рабочей копии, где его читает работник. Здесь,
+ * в каталоге попытки, лежит его второй экземпляр — для человека и для двери карточки. Это
+ * ОДИН документ «что попытке дали» в двух экземплярах для двух читателей; разные имена
+ * разорвали бы очевидность тождества, а владелец у имени должен быть один, и он здесь.
+ *
+ * ЗАЧЕМ ЭКЗЕМПЛЯР У ПОПЫТКИ, если он уже есть в копии. Копию убирают, а строку очереди
+ * человек правит: через месяц ни одна из них не ответит, с каким снимком запускали ИМЕННО
+ * ЭТУ попытку. У каждой попытки свой каталог и своя правда о том, что ей дали.
+ */
+export const TASK_CONTEXT_FILE = 'task_context.md'
+
+/** The six names, in one place: the writer and any reader agree by construction. */
 export const RUN_FILES = Object.freeze([
   'run.json',
   'guards.jsonl',
   'transcript.jsonl',
   'receipt.json',
   CONTINUATION_FILE,
+  TASK_CONTEXT_FILE,
 ])
 
 /**
@@ -477,6 +492,69 @@ export function writeContinuation({ dir, text, secretValues, fsImpl, log } = {})
     say(log, { type: 'run_dir.error', dir, error: String((err && err.message) || err) })
     return false
   }
+}
+
+/**
+ * writeTaskContext({dir, text, secretValues, fsImpl, log}) → доехал ли свидетель до диска?
+ *
+ * ЧТО ЭТО. Экземпляр снимка контекста, оставленный У ПОПЫТКИ: рабочую копию однажды уберут,
+ * а строку очереди человек перепишет — и тогда единственным местом, где сохранится ответ
+ * «с каким снимком запускали ИМЕННО ЭТУ попытку», останется её каталог.
+ *
+ * ОДИН ПОЯС, А НЕ ДВА. Секреты режутся первыми, по строкам, тем же обходчиком, что у всех
+ * остальных файлов этого каталога. А вот второго потолка здесь НЕТ — намеренно, и это
+ * отличие от соседней функции: у конспекта передачи писатель и есть единственный вход, а у
+ * снимка вход один и он в другом месте — дверь постановки, где потолок ОТКАЗЫВАЕТ, а не
+ * режет. Подрезать здесь второй раз значило бы завести вторую правду о длине, которая
+ * разъедется с первой молча.
+ *
+ * ПУСТОЙ ТЕКСТ НЕ ПИШЕТСЯ ВОВСЕ: отсутствие файла — это «человек ничего не сказал», а пустой
+ * файл сказал бы, что сказал и промолчал.
+ *
+ * @returns {boolean}
+ */
+export function writeTaskContext({ dir, text, secretValues, fsImpl, log } = {}) {
+  if (typeof dir !== 'string' || dir.trim() === '') return false
+  const raw = String(text ?? '')
+  if (raw.trim() === '') return false
+  const fs = io(fsImpl)
+  try {
+    const safe = sanitizeRun({ lines: raw.split('\n') }, { secretValues }).lines.join('\n')
+    writeAtomic(fs, join(dir, TASK_CONTEXT_FILE), `${safe}\n`)
+    return true
+  } catch (err) {
+    say(log, { type: 'run_dir.error', dir, error: String((err && err.message) || err) })
+    return false
+  }
+}
+
+/**
+ * readTaskContext({dir, fsImpl}) → текст свидетеля снимка, или null, если его нет.
+ *
+ * ЧИТАТЕЛЬ ЖИВЁТ РЯДОМ С ПИСАТЕЛЕМ, а не у двери, которой он понадобился первой: имя файла
+ * принадлежит замороженному списку этого каталога, и второе написание имени в другом модуле —
+ * ровно тот способ прочитать не тот файл, который положили. Читателей у свидетеля будет больше
+ * одного (дверь карточки — только первый), и все они спрашивают отсюда.
+ *
+ * NULL — ЭТО УТВЕРЖДЕНИЕ. Снимка не было вовсе, попытка старше этого файла, файл пуст — всё
+ * это «показывать нечего», и вызывающий превращает его в ОТСУТСТВИЕ поля, а не в пустую
+ * строку: «нечего показать» и «не знаем» — разные предложения.
+ *
+ * НИЧЕГО НЕ РЕЖЕТ И НЕ ПРАВИТ: текст отдаётся ровно тем, чем лежит на диске. Второй потолок у
+ * читателя означал бы, что человек в окне видит не то, что получил работник.
+ *
+ * @returns {string|null}
+ */
+export function readTaskContext({ dir, fsImpl } = {}) {
+  if (typeof dir !== 'string' || dir.trim() === '') return null
+  const fs = io(fsImpl)
+  let raw
+  try {
+    raw = String(fs.readFileSync(join(dir, TASK_CONTEXT_FILE), 'utf8'))
+  } catch {
+    return null
+  }
+  return raw.trim() === '' ? null : raw
 }
 
 /**
