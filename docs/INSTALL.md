@@ -122,7 +122,12 @@ Five of the rows want a word of explanation:
   field out is how a single entry catches all of them, which is what all four want.
 - **`SessionEnd` means the session ended, however it ended** — the window closed,
   `/clear`, a logout. It is not a close-the-window hook, and the claims this window
-  held are handed back in every one of those cases.
+  held are handed back in every one of those cases. The entry does one more thing after
+  that, and only after: the **farewell move**. A session that left material gets a
+  candidate lesson staged as a DRAFT through the write pipeline — never active memory —
+  and a session that left none says so in words rather than inventing one. It runs in its
+  own try/catch, so a corpus it cannot read costs the draft and nothing else; the claims
+  are already back by then.
 - **`PreCompact` runs when your agent version announces that event.** Older versions
   do not announce it; the command then exits without an error and without a capsule.
   The entry is installed either way, so it starts working the moment you upgrade.
