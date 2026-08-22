@@ -1502,9 +1502,36 @@ async function handleApprove({ req, res, config, deps }) {
   if (!claim.won) return send409(res, 'approve race lost (already handled)')
 
   const branch = `wt/${taskId}`
+  // ЕСТЬ ЛИ ВООБЩЕ ЧТО СЛИВАТЬ. Документарная стадия работает БЕЗ копии и без ветки — она
+  // пишет в дерево проекта, — поэтому слияние `wt/<id>` для неё не «не удалось», а
+  // бессмысленно: git отвечает «did not match any», карточка возвращается в «ждут решения», и
+  // нажатие не может сработать НИ ПРИ КАКИХ условиях. Это не редкий случай, а весь класс
+  // документарных стадий целиком.
+  //
+  // Признак берётся ПОЛОЖИТЕЛЬНЫЙ: должна быть хотя бы одна строка попытки, и ни одна из них
+  // не назвала ветки. Пустой журнал ничего не доказывает — на нём поведение остаётся прежним,
+  // иначе работа кодом при потерянном журнале уехала бы в «принято» без единого слияния.
+  const attemptRows = (() => {
+    try {
+      if (deps.ledger && typeof deps.ledger.readAttempts === 'function') return deps.ledger.readAttempts(taskId) || []
+      if (deps.ledgerDir) return readAttempts(deps.ledgerDir, taskId) || []
+    } catch {
+      /* журнал недоступен — доказательств нет, ведём себя как раньше */
+    }
+    return []
+  })()
+  const nothingToMerge =
+    attemptRows.length > 0 && !attemptRows.some((r) => r && typeof r.branch === 'string' && r.branch.trim() !== '')
   let merge
-  try {
-    // IN THE TREE THAT HOLDS THE BRANCH — the connected project, and the served tree only when
+  if (nothingToMerge) {
+    merge = {
+      merged: true,
+      nothingToMerge: true,
+      message: 'документарная стадия: ветки не было ни в одной попытке — сливать нечего',
+    }
+  } else {
+    try {
+      // IN THE TREE THAT HOLDS THE BRANCH — the connected project, and the served tree only when
     // nothing is connected. The same resolution the neighbouring doors of this very card (the
     // commit log, the diff) already use, so the card cannot read one tree and write another.
     //
@@ -1513,9 +1540,10 @@ async function handleApprove({ req, res, config, deps }) {
     // ok:false with no merge at all — the worker's branch simply did not resolve there — while
     // the identical press on a checkout where the two happened to coincide merged fine. A person
     // saw a button that «нажалась и ничего не сделала».
-    merge = await deps.verbRunner({ branch, by: 'roster', cwd: phaseCycleDir(deps) ?? deps.repoDir })
-  } catch (err) {
-    merge = { merged: false, message: String((err && err.message) || 'merge failed') }
+      merge = await deps.verbRunner({ branch, by: 'roster', cwd: phaseCycleDir(deps) ?? deps.repoDir })
+    } catch (err) {
+      merge = { merged: false, message: String((err && err.message) || 'merge failed') }
+    }
   }
   const green = !!(merge && (merge.merged === true || merge.ok === true) && merge.testsPassed !== false)
 
