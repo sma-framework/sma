@@ -405,18 +405,40 @@ export function resolveDeclaredPath({ raw, rewrites, treeDir, plansDir, fsImpl, 
 }
 
 /**
- * compilePattern(pattern) -> {source, regex|null, error|null}. A trace is external data
- * written by a human years ago; an unparseable one is MARKED, never thrown and never
- * dropped. Compiling is not running: bounding the cost of a hostile pattern belongs to
- * whoever executes it, not to the step that only reads the declaration.
+ * A trace is declared inside a QUOTED frontmatter scalar, where a doubled backslash
+ * stands for ONE backslash. The frontmatter reader strips the quotes and nothing else —
+ * by design, since four other consumers count on its numbers and would move if it
+ * started rewriting strings. So the escaping arrives here doubled, and this is the one
+ * place where a declaration becomes a regular expression.
+ *
+ * Undoubling is DELIBERATELY the only thing undone: `\\.` becomes `\.` (an escaped dot),
+ * while a lone `\.` is left exactly as written, because in a regular expression it
+ * already means what the author meant. Stripping backslashes wholesale would turn an
+ * escaped dot into "any character" and quietly widen every trace in the house.
+ */
+function undoubleScalarEscapes(text) {
+  return text.replace(/\\\\/g, '\\')
+}
+
+/**
+ * compilePattern(pattern) -> {source, regexSource, regex|null, error|null}. A trace is
+ * external data written by a human years ago; an unparseable one is MARKED, never thrown
+ * and never dropped. Compiling is not running: bounding the cost of a hostile pattern
+ * belongs to whoever executes it, not to the step that only reads the declaration.
+ *
+ * `source` stays the declaration AS WRITTEN — the report echoes the plan, and callers
+ * that keep it and compile it again get the same regex rather than a second undoubling.
+ * `regexSource` is what the regular expression was actually built from, so the two can
+ * be told apart without reading this file.
  */
 export function compilePattern(pattern) {
   const source = String(pattern ?? '')
-  if (!source) return { source, regex: null, error: 'empty pattern' }
+  if (!source) return { source, regexSource: source, regex: null, error: 'empty pattern' }
+  const regexSource = undoubleScalarEscapes(source)
   try {
-    return { source, regex: new RegExp(source), error: null }
+    return { source, regexSource, regex: new RegExp(regexSource), error: null }
   } catch (err) {
-    return { source, regex: null, error: `unparseable pattern: ${err && err.message}` }
+    return { source, regexSource, regex: null, error: `unparseable pattern: ${err && err.message}` }
   }
 }
 
