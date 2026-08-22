@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| Status | **1.4 — landed.** Every invariant below names the module function that enforces it and the test case that proves it. An invariant with no named test is not in §3 — it is in §5, as an intention. |
-| Document version | 1.4 (see §6 for what each revision changed) |
-| Date | 2026-08-04, last revised 2026-08-20 |
+| Status | **1.5 — landed.** Every invariant below names the module function that enforces it and the test case that proves it. An invariant with no named test is not in §3 — it is in §5, as an intention. |
+| Document version | 1.5 (see §6 for what each revision changed) |
+| Date | 2026-08-04, last revised 2026-08-22 |
 | Applies to | the durable task queue of one installation: the fleet state machine, the capability envelope, the attempt ledger and the queue backend beneath them |
 | Companion documents | [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) — the same treatment for the memory corpus · [`SPEC.md`](SPEC.md) — what the product is |
 
@@ -531,6 +531,65 @@ took — for the retry/dead-letter split that means reading the outcome back fro
 pg-boss, and for acceptance it means the front's approve path minting the
 transition it already performs.
 
+### 5.9 Governance for unattended overnight roles is deliberately not built
+
+The daemon does run unattended: a supervisor job starts the loop and it keeps
+working while nobody watches, which is the whole point of the always-on wiring.
+What it does not have is a role that ORIGINATES work on a clock. Every attempt
+this daemon has made traces back to a task a person enqueued; the only timers in
+`daemon/src` are the project watcher's debounce, its repeating reconcile pass,
+the liveness heartbeat and the `tick` wrapper that re-enters the loop. Nothing
+in there decides, at three in the morning, that something ought to be done.
+
+So the governance such a role would need — stop gates that hold it before it
+acts, a runbook for the morning after, deduplication so one missed night does
+not replay as ten, a ceiling on the noise it may put in front of a person — is
+**deliberately not built**. It would be a rule with nothing to govern: a surface
+with no consumer, written against an imagined role instead of a shipped one, and
+every clause of it would be a guess the first real role would then have to be
+argued out of.
+
+**What would close it, stated as a check anyone can run.** The governance is
+designed in the same change that gives this daemon its first role able to start
+work without a person asking for it. Until then the check is a grep:
+`grep -rniE "cron|schedule|night" daemon/src --include="*.mjs"` returns the
+debounce and reconcile schedulers of the project watcher, the liveness pass, the
+tick wrapper and prose in comments — no task scheduler, no role, nobody to
+govern. Sandbox runbooks sit behind the same door for the same reason:
+`grep -rniE "sandbox|container|runbook" daemon/src --include="*.mjs"` is empty,
+because a worker runs in a worktree under the account the harness spawns it
+with, and there is no second execution environment to write a runbook for.
+
+### 5.10 Fan-out measurement and post-hoc scoring of the choice are deliberately not built
+
+Routing picks exactly one worker. `resolveRoute` filters the pool down to the
+candidates a task may run on and then takes `candidates[0]`; no branch in it
+returns two. The decision is explained — a code from the closed dispatcher
+vocabulary lands on the task's journal at the moment it is made — but what is
+explained is always a choice of one.
+
+Two things that would sit on top of that are **deliberately not built**:
+
+- **Measuring the fan-out — swarm against solo.** Whether a queued task should
+  ever be handed to more than one worker at once is a product decision about
+  what this fleet is for, not a measurement waiting to be taken. (The planning
+  side of the toolkit does ship a fan-out ladder for its own subagent waves.
+  That is a different surface: it splits one plan across parallel agents inside
+  one session, and says nothing about the daemon handing one queued task to two
+  accounts.) Measuring a fan-out the router cannot produce would be measuring
+  the constant one.
+- **Scoring the choice after the fact.** The raw material is already written:
+  the reason code on the decision, the spend book's ledger, and the attempt's
+  own outcome. What is missing is a question. Scoring compares routes; with one
+  route per task there is nothing to compare against, and a score over a single
+  sample is a number with no argument in it.
+
+**What would close each, stated exactly.** Fan-out measurement is built in the
+same change that gives routing its first decision able to select more than one
+worker. Post-hoc scoring is built together with the first question that compares
+two routes of the SAME task — until such a question exists, a scorer would be
+answering nobody.
+
 ## 6. Change log
 
 | Version | Date | Change |
@@ -539,4 +598,5 @@ transition it already performs.
 | 1.1 | 2026-08-05 | §5.8 added after review: the state machine and the attempt stamp are tested formal references with no production consumer yet — §3.1/§3.7's «Enforced by `applyTransition`» now reads through that lens, stated instead of implied. |
 | 1.3 | 2026-08-17 | §5.1 updated: the envelope's `allowedTools` is now delivered to the launched process as its permission grant, not merely consulted before the spawn — the gap that had made every worker unable to edit a file. The non-goal shrinks to the dimensions still not projected onto a running session (`writePaths`, `networkDestinations`, `secretScopes`), and a shell in the granted list is still a shell. No invariant text changed. |
 | 1.4 | 2026-08-20 | §3.8 added: an eighth invariant — one attempt carries one number and one outcome. Its cause is a class of its own and not a wider invariant six: two writers disagreed about the attempt NUMBER (one took it at the claim and carried it, the other recomputed it from a retry counter that moved in between), so one try was recorded as two and one number carried both `failed` and `completed` on a live installation. The number now has one source, and a row that contradicts an already recorded outcome is written MARKED rather than refused — an audit log that refuses a line loses the evidence of the failure it exists to remember. The pinned count in §3 and in the property suite is re-pinned deliberately, which is what that pin is for. |
+| 1.5 | 2026-08-22 | §5.9 and §5.10 added, and one dispatcher word that could not be signed was fixed on the way in. §5.9: governance for unattended overnight roles is deliberately not built, because this daemon has no role that originates work on a clock — the check is the grep the entry names, and sandbox runbooks sit behind the same door. §5.10: fan-out measurement and post-hoc scoring of the routing choice are deliberately not built, because routing returns exactly one worker and both would be measuring a constant. Both entries name what would close them, and `dispatch-reason-wire.test.ts` reads this file so neither can quietly disappear. Alongside them: the vocabulary learned `worker_busy`. The router had been emitting that code to the journal since the busy filter landed, the closed vocabulary did not carry it, and the sink drops what it cannot sign — so the one decision that says «every seat is taken» was the decision the journal never recorded. No invariant text changed. |
 | 1.2 | 2026-08-05 | The wiring landed and three non-goals shrank to their true size. §5.8 rewritten: the queue adapter and the tick now route status changes through `applyTransition` and live rows carry the key, the machine version and the envelope digest — with three transitions exempt by name and three stamp fields absent because nothing in the product can compute them. §5.1: the envelope is consulted before a spawn and before a forge draft is accepted, fail-closed; the worker's own session surface remains unbounded and that is now the whole of the non-goal. §5.4: the reconciliation pass closed the missing-row gap, and a reconstructed row is documented as weaker than a live one. §3.1/§3.4/§3.7 re-pointed accordingly. |
