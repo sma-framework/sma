@@ -36,7 +36,7 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -265,6 +265,21 @@ describe('поток → каталог прогона → настоящая к
     expect(out[4]).toContain('запретов')
     expect(out[5]).toBe('5')
     expect(code).toBe(0)
+  })
+
+  it('НАШИ встроенные навыки не считаются навыками ПРОЕКТА — иначе квитанция вечно зелёная', async () => {
+    // С тех пор как копию обставляем мы, в ней ВСЕГДА лежат наши встроенные навыки. Посчитай
+    // мы их вместе с навыками проекта — четвёртая квитанция отвечала бы «да» даже проекту, у
+    // которого нет ни одного своего навыка, то есть перестала бы отвечать вовсе. Здесь
+    // проверяется ровно это расхождение: файлы в копии ЕСТЬ, а квитанция про проект честно n/a.
+    const { projectDir, workDir, configPath } = await runTick()
+
+    const ours = join(workDir, '.claude', 'skills')
+    expect(existsSync(ours), 'встроенные навыки до копии не доехали — дело ниже ничего не значит').toBe(true)
+    expect(readdirSync(ours).length, 'в копии нет ни одного нашего навыка').toBeGreaterThan(0)
+
+    const { out } = check(['--project', projectDir, '--config', configPath])
+    expect(out[3], 'наши навыки посчитались навыками проекта — квитанция стала мёртвой').toMatch(/^n\/a — навыки/)
   })
 
   it('правила прочитаны как materialized — копию обставил верб провизии, и это видно', async () => {
