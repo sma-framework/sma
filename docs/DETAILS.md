@@ -75,12 +75,15 @@ Each note carries a `use-when` trigger — that single line is what lets SMA del
 
 ## Governance: classes, lifecycle, erasure and refusals
 
-This section is the map. The law lives in four documents and is not reprinted here:
+This section is the map. The law lives in five documents and is not reprinted here:
 [MEMORY-MODEL.md](MEMORY-MODEL.md) (what one record may claim and must carry),
 [MEMORY-LIFECYCLE.md](MEMORY-LIFECYCLE.md) (how it is written, approved and retired),
 [MEMORY-THREAT-MODEL.md](MEMORY-THREAT-MODEL.md) (who may see what, and what fails closed),
-[FLEET-INVARIANTS.md](FLEET-INVARIANTS.md) (the worker fleet's eight invariants). A map that
-reprints the territory goes stale first.
+[FLEET-INVARIANTS.md](FLEET-INVARIANTS.md) (the worker fleet's eight invariants),
+[observation-substrate.md](observation-substrate.md) (in Russian — what the system records about
+its own work: the ledgers that exist today, the one record shape they already share, why a single
+store for all of them is deliberately not built, and the one testable sentence that would start
+building it). A map that reprints the territory goes stale first.
 
 ### The three storage classes, and the field they are derived from
 
