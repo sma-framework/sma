@@ -494,3 +494,87 @@ describe('slot reconciliation — expired unconsumed claims are re-issued (B17)'
     }
   })
 })
+
+/**
+ * ONE COUNTER, ANY HOUSE'S NUMBERING.
+ *
+ * The shared counter exists so a number is never chosen by reading the last one — the
+ * standing rule for migrations, written because two terminals picked the same number and
+ * the loser's work had to be redone. The backlog counter enforced the same discipline for
+ * exactly ONE id shape: the one this repository happens to use.
+ *
+ * Every other project has its own. A house whose backlog reads `TK-100` or `TASK-42`
+ * could not reach the counter at all — the scan found nothing, the counter offered
+ * number 1, and the house went back to picking numbers by hand. A rule that only the
+ * author's own project can follow is not a rule the product ships.
+ *
+ * So the prefix comes from configuration, and the shipped default is unchanged: a project
+ * that configures nothing keeps exactly the behaviour it had. The prefix is matched as a
+ * LITERAL — a value out of a config file reaches a regular expression here, and a house
+ * whose ids contain a dot or a plus must not have it read as a wildcard, nor be able to
+ * write a pattern that makes the scan mean something else.
+ */
+describe('the backlog counter reads the id shape the project actually uses', () => {
+  let dir: string
+  let claimsDir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'sma-prefix-'))
+    claimsDir = join(dir, 'claims')
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('an unconfigured project keeps the shipped shape, exactly as before', () => {
+    const backlogPath = join(dir, 'BACKLOG.md')
+    writeFileSync(backlogPath, '- **BL-7** something\n- **BL-9** another\n')
+    const res = nextCounterSlot('bl', { backlogPath, by: 'alice', claimsDir })
+    expect(res.won).toBe(true)
+    expect(res.id).toBe('BL-10')
+  })
+
+  it('a configured prefix is what the scan looks for AND what the number is minted as', () => {
+    const backlogPath = join(dir, 'BACKLOG.md')
+    writeFileSync(backlogPath, '- **TK-100** the last one taken by hand\n')
+    const res = nextCounterSlot('bl', { backlogPath, by: 'alice', claimsDir, idPrefix: 'TK' })
+    expect(res.won, 'the counter refused a project that numbers its own way').toBe(true)
+    expect(res.id).toBe('TK-101')
+  })
+
+  it('the shipped shape is INVISIBLE to a project that configured another one', () => {
+    // the two must not bleed into each other: a house on TK- has no opinion about BL-,
+    // and counting someone else's ids would hand out a number that is not next at all
+    const backlogPath = join(dir, 'BACKLOG.md')
+    writeFileSync(backlogPath, '- **BL-900** foreign shape\n- **TK-4** ours\n')
+    const res = nextCounterSlot('bl', { backlogPath, by: 'alice', claimsDir, idPrefix: 'TK' })
+    expect(res.id).toBe('TK-5')
+  })
+
+  /**
+   * The prefix arrives from a config file, so it is untrusted text reaching a regular
+   * expression. TWO locks, and this case pins the outer one: a shape carrying regex
+   * punctuation never reaches the scan at all, because the accepted alphabet is letters,
+   * digits, underscore and hyphen — every one of them inert in a pattern.
+   *
+   * The inner lock (escaping the prefix before it is interpolated) stays in the code as
+   * the second of the two. It is unreachable while the alphabet holds, and that is the
+   * point: it is what keeps the scan literal on the day somebody widens the alphabet for
+   * a house whose ids carry a dot. A guard that only works because of a rule enforced
+   * somewhere else is one edit away from not working.
+   */
+  it('never lets regex punctuation reach the scan — the shape is refused outright', () => {
+    const backlogPath = join(dir, 'BACKLOG.md')
+    writeFileSync(backlogPath, '- **AXB-5** would match if the dot were a wildcard\n')
+    const res = nextCounterSlot('bl', { backlogPath, by: 'alice', claimsDir, idPrefix: 'A.B' })
+    expect(res.won, 'a prefix carrying a pattern character was accepted').toBe(false)
+    expect(String(res.warn ?? '')).toContain('prefix')
+  })
+
+  it('refuses a prefix that is not a plain id word rather than scanning with nonsense', () => {
+    const backlogPath = join(dir, 'BACKLOG.md')
+    writeFileSync(backlogPath, '- **BL-1** x\n')
+    for (const bad of ['', '   ', 'has space', 'a'.repeat(65)]) {
+      const res = nextCounterSlot('bl', { backlogPath, by: 'alice', claimsDir, idPrefix: bad })
+      expect(res.won, `prefix ${JSON.stringify(bad)} was accepted`).toBe(false)
+      expect(String(res.warn ?? res.error ?? '')).not.toBe('')
+    }
+  })
+})

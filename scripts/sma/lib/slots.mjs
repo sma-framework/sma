@@ -440,21 +440,52 @@ function findContextPath(planningRoot, phase) {
   }
 }
 
+/** The backlog id shape this product has always minted; unchanged for anyone silent. */
+export const DEFAULT_BACKLOG_PREFIX = 'BL'
+
+/**
+ * A usable backlog prefix: letters, digits, underscore and hyphen, 1..64 characters.
+ *
+ * Deliberately narrow. The value arrives from a project's config file and becomes both a
+ * regular expression and the visible id of every future backlog line, so the two failure
+ * modes worth refusing are a prefix that cannot be read back out of the document (spaces,
+ * punctuation the scan would not find again) and one long enough to make ids unreadable.
+ * A refusal names itself; scanning with nonsense would hand out «number 1» forever and
+ * look like an empty backlog.
+ */
+export function isUsableIdPrefix(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value)
+}
+
+const BAD_PREFIX_MESSAGE =
+  'backlog id prefix must be 1..64 characters of letters, digits, underscore or hyphen — ' +
+  'refusing to scan with a shape that cannot be read back out of the document'
+
+/** Escape a literal for use inside a RegExp — the prefix is data, never a pattern. */
+function escapeForRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 /**
  * counterSpec(kind, o) -> {sourceText, re, format, slotPrefix, max} for the kind, or
- * null when the kind is unknown / required input (decision --phase) is missing. Paths
- * come via DI (o.backlogPath / o.actionsPath / o.roadmapPath / o.contextPath) with
- * `.planning`-relative defaults derived from o.planningRoot.
+ * null when the kind is unknown / required input (decision --phase) is missing, or
+ * {error} when an input is present but unusable. Paths come via DI (o.backlogPath /
+ * o.actionsPath / o.roadmapPath / o.contextPath) with `.planning`-relative defaults
+ * derived from o.planningRoot; `o.idPrefix` overrides the backlog id shape.
  */
 function counterSpec(kind, o = {}) {
   const planningRoot = o.planningRoot ?? '.planning'
 
   if (kind === 'bl') {
     const path = o.backlogPath ?? join(planningRoot, 'BACKLOG.md')
+    const prefix = o.idPrefix === undefined ? DEFAULT_BACKLOG_PREFIX : o.idPrefix
+    if (!isUsableIdPrefix(prefix)) return { error: BAD_PREFIX_MESSAGE }
     return {
       sourceText: safeReadText(path),
-      re: /\*\*BL-(\d+)\*\*/g,
-      format: (n) => `BL-${n}`,
+      // built from the CONFIGURED prefix, escaped: this value comes out of a project's
+      // config file, and a dot in somebody's id must be a dot rather than «any character»
+      re: new RegExp(`\\*\\*${escapeForRegex(prefix)}-(\\d+)\\*\\*`, 'g'),
+      format: (n) => `${prefix}-${n}`,
       slotPrefix: 'bl',
     }
   }
@@ -518,6 +549,10 @@ export function nextCounterSlot(kind, o = {}) {
       warn: kind === 'decision' ? 'kind=decision требует --phase' : `неизвестный счётчик: ${kind}`,
     }
   }
+  // an input that IS present but unusable is refused by name — scanning with a shape that
+  // cannot be read back out of the document would offer «number 1» forever and read as an
+  // empty backlog, which is the one failure a counter must never produce silently
+  if (spec.error) return { kind, won: false, warn: spec.error, error: spec.error }
 
   const max = extractMaxByRegex(spec.sourceText, spec.re)
   let candidate = max + 1

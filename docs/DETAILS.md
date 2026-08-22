@@ -205,7 +205,7 @@ The coordination + accountability CLI runs underneath — 95 verbs, and the sect
 |---|---|
 | `status` · `heartbeat` · `session-start` | Register/renew this terminal's session; the live who-is-doing-what picture (`status` now also reports fingerprint-backed liveness for each claim holder) |
 | `claim` · `release` · `force-clear` | Declare "I am taking these files"; warnings fire for other terminals before they edit; force-clear carries provenance |
-| `next-slot` · `consume` · `tia` | Race-free shared counters (migrations, releases) and regex test-impact analysis |
+| `next-slot` · `consume` · `tia` | Race-free shared counters — migrations, releases, and your backlog in whatever id shape it already uses (`backlogIdPrefix` in `.sma/config.json`, or `--prefix` for one allocation) — and regex test-impact analysis |
 | `pre` · `pre-bench` | The one-spawn PreToolUse multiplexer (collision → reflex → gates → airbag → spend) and its SLO instrument; `collision-check` / `reflex-check` / `gates-check` remain as deprecated single-stream aliases |
 | `stall-check` | PostToolUse stall/loop detector; drops a flight mark |
 | `gates` · `gates-report` · `gates-ack` | Checkable project rules: advisory warns, evidence-gated soft-deny, acknowledgements |
