@@ -1341,7 +1341,23 @@ async function handleEnqueue({ req, res, config, deps }) {
     rejectUnknownKeys(
       res,
       b,
-      new Set(['title', 'lane', 'provider', 'model', 'effort', 'priority', 'description', 'acceptance', 'machine']),
+      // `taskContext` — СНИМОК КОНТЕКСТА, который человек пишет о задаче: где лежат данные,
+      // к кому идти за доступом, чего трогать нельзя. Список разрешённых полей РАСШИРЕН, а не
+      // снят: всё, чего в нём нет, по-прежнему получает 400 ДО того, как что-либо выполнится.
+      // Текст поедет к работнику ДАННЫМИ за забором, как и прочие его слова, — командой он не
+      // становится ни здесь, ни ниже по течению. Потолок — очереди, своего дверь не пишет.
+      new Set([
+        'title',
+        'lane',
+        'provider',
+        'model',
+        'effort',
+        'priority',
+        'description',
+        'acceptance',
+        'taskContext',
+        'machine',
+      ]),
     )
   ) {
     return undefined
@@ -1361,6 +1377,10 @@ async function handleEnqueue({ req, res, config, deps }) {
     ...(b.priority !== undefined ? { priority: b.priority } : {}),
     ...(b.description !== undefined ? { description: b.description } : {}),
     ...(b.acceptance !== undefined ? { acceptance: b.acceptance } : {}),
+    // ОДНО ИМЯ НА ВСЕХ ШВАХ — здесь поле не переименовывается и не расфасовывается по
+    // соседним: разъехавшиеся имена — самый дешёвый способ потерять провод, а этот провод
+    // единственный, по которому знание человека вообще доходит до работника.
+    ...(b.taskContext !== undefined ? { taskContext: b.taskContext } : {}),
   }
   let norm
   try {
@@ -4592,11 +4612,15 @@ async function handleTaskWords({ req, res, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
   const b = body.value || {}
-  if (rejectUnknownKeys(res, b, new Set(['taskId', 'description', 'acceptance']))) return undefined
+  // `taskContext` — снимок контекста, тем же именем, что у двери постановки. Замок не снят:
+  // список расширен, а всё, чего в нём нет, по-прежнему 400 ДО всего.
+  if (rejectUnknownKeys(res, b, new Set(['taskId', 'description', 'acceptance', 'taskContext']))) return undefined
 
   const taskId = b.taskId
   if (typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
-  if (b.description === undefined && b.acceptance === undefined) return send400(res, 'nothing to change')
+  if (b.description === undefined && b.acceptance === undefined && b.taskContext === undefined) {
+    return send400(res, 'nothing to change')
+  }
 
   const patch = {}
   if (b.description !== undefined) {
@@ -4609,6 +4633,15 @@ async function handleTaskWords({ req, res, deps }) {
       return send400(res, 'acceptance must be a string or a list of strings')
     }
     patch.acceptance = b.acceptance
+  }
+  if (b.taskContext !== undefined) {
+    // ПОЧЕМУ СНИМОК ПРАВИТСЯ ЭТОЙ ЖЕ ДВЕРЬЮ. Попытка сорвалась потому, что работник чего-то не
+    // знал, — человек дописывает недостающее, и следующая выдача уходит с исправленным
+    // снимком. Пустая строка здесь — законное СТИРАНИЕ, а не «нечего менять»: человек вправе
+    // забрать свои слова назад, и стёртый снимок читается ровно как никогда не написанный
+    // (одна тропа чтения — taskContextOf). Потолок применяет очередь, второго здесь не пишем.
+    if (typeof b.taskContext !== 'string') return send400(res, 'taskContext must be a string')
+    patch.taskContext = b.taskContext
   }
 
   let changed

@@ -503,11 +503,45 @@ export function validateWords(patch = {}) {
   const probe = { id: 'words', source: 'roster', title: 'words', lane: 'prod' }
   if (patch.description !== undefined) probe.description = patch.description
   if (patch.acceptance !== undefined) probe.acceptance = patch.acceptance
+  // СНИМОК КОНТЕКСТА ПРАВИТСЯ ТОЙ ЖЕ ДВЕРЬЮ, ЧТО И ОСТАЛЬНЫЕ СЛОВА ЗАДАЧИ, и через тот же
+  // единственный гейт: попытка сорвалась — человек дописывает то, чего работнику не хватило,
+  // и СЛЕДУЮЩАЯ выдача уходит с исправленным снимком, а не с тем, с которым сорвалось.
+  if (patch.taskContext !== undefined) probe.taskContext = patch.taskContext
   validateTask(probe)
   const out = {}
   if (patch.description !== undefined) out.description = patch.description
   if (patch.acceptance !== undefined) out.acceptance = patch.acceptance
+  // СТЁРТЫЙ СНИМОК ОСТАЁТСЯ НА СТРОКЕ ПУСТОЙ СТРОКОЙ, а не исчезает ключом, и это не
+  // небрежность: правка слов у долговечной очереди — это слияние объектов в payload'е джоба,
+  // которое умеет ЗАПИСАТЬ поле и не умеет его удалить. Удаление ключа памятным бэкендом
+  // сделало бы два хранилища РАЗНЫМИ на одном и том же действии человека — а это ровно тот
+  // класс, ради которого контракт и общий. Пустое и отсутствующее сводит воедино одна
+  // читающая тропа (taskContextOf), а не догадка каждого следующего читателя.
+  if (patch.taskContext !== undefined) out.taskContext = patch.taskContext
   return out
+}
+
+/**
+ * taskContextOf(taskOrRow) → снимок контекста ТЕКСТОМ, или пустая строка.
+ *
+ * ЕДИНСТВЕННАЯ ЧИТАЮЩАЯ ТРОПА к этому полю на весь продукт — по образцу acceptanceItems.
+ * Читателей у снимка будет много и все разные: провизия рабочей копии, строитель промпта,
+ * дверь карточки, окно. Каждый из них, спрашивая поле напрямую, завёл бы свою догадку о том,
+ * что считать «снимка нет»: у одного пусто — это `undefined`, у другого — пустая строка после
+ * стирания дверью слов, у третьего — пробелы, оставшиеся от вставки из буфера. Три догадки
+ * разъедутся, и человек увидит снимок в окне, которого работник не получил.
+ *
+ * Отсутствие, пустая строка и текст из одних пробелов отвечают ОДНО И ТО ЖЕ — пустую строку.
+ * Текст, в котором есть хоть что-то, отдаётся КАК ЕСТЬ: его отступы и переносы тоже его.
+ * Чистая функция; ничего не бросает.
+ *
+ * @param {object|null|undefined} taskOrRow
+ * @returns {string}
+ */
+export function taskContextOf(taskOrRow) {
+  const raw = taskOrRow && typeof taskOrRow === 'object' ? taskOrRow.taskContext : undefined
+  if (typeof raw !== 'string' || raw.trim() === '') return ''
+  return raw
 }
 
 export function acceptanceItems(acceptance) {
