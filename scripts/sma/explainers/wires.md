@@ -11,7 +11,7 @@ Evidence has tiers. When a declaration names a file, the trace is looked for IN 
 
 Only closed work is judged. A plan with no summary beside it is silence, not green: reading a hole in your own evidence as a pass is leniency in tidy clothing.
 
-The run looks ONLY inside the tree you gave it. A declared path that leads outside is neither green nor red: it gets its own named answer, counted and listed, because an existence check against whatever directories happen to sit beside your checkout would make the verdict a fact about your machine. Use `--rewrite <prefix>=<target>` to bring foreign roots home; the flag repeats, and every rule is printed in the header.
+The run looks ONLY inside the tree you gave it. A declared path that leads outside is neither green nor red: it gets its own named answer, counted and listed, because an existence check against whatever directories happen to sit beside your checkout would make the verdict a fact about your machine. Use `--rewrite <prefix>=<target>` to bring foreign roots home; the flag repeats, and every rule is printed in the header. The same rules can live in a file (`--rewrite-file <file>`, one `prefix=target` per line, `#` comments) so the set is written down instead of retyped — the header names which source it read, `--rewrite` on the line overrides the file, an absent file is stated rather than treated as a fault, and a malformed one stops the run at the offending line.
 
 Red goes out one way only: a written verdict in a journal you pass with `--verdicts`, carrying an author and a reason. A verdict without them stops the run rather than quietly excusing anything.
 

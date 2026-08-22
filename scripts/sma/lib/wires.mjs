@@ -288,6 +288,54 @@ export function applyRewrites(raw, rewrites) {
 }
 
 /**
+ * parseRewriteRules(text) -> {rules, errors}. One `prefix=target` per line; blank lines
+ * and `#` comments are skipped, order is preserved because the first match wins.
+ *
+ * WHY A FILE AT ALL. Until this existed the rules were typed by hand into the command
+ * line on every run, and that quietly made the headline number a fact about the typing
+ * rather than about the product: the same tree scored one way with four rules and quite
+ * another with none, and nothing anywhere recorded which set was the intended one. «Zero
+ * red» without a written-down set of rules is a number about nothing — so the set gets a
+ * file, the file gets a parser, and the parser refuses to guess.
+ *
+ * MALFORMED INPUT STOPS THE RUN, it is never skipped. A dropped rule does not announce
+ * itself: it turns into a pile of paths «outside the tree», which reads exactly like an
+ * honest measurement of a tree that has moved. The line number travels with every
+ * complaint for the same reason it does in the verdict journal — «your file is malformed»
+ * without a line is a dead end.
+ *
+ * An empty target is LEGAL and means «strip the prefix» (`applyRewrites` implements it):
+ * that is how a declaration written against a sibling checkout is read against this one.
+ *
+ * Parsing only. Reading the file off disk belongs to the caller — this module has no
+ * business knowing where a workshop keeps its rules, and by house law that file lives in
+ * the workshop and is never shipped with the product.
+ */
+export function parseRewriteRules(text) {
+  const rules = []
+  const errors = []
+  const lines = String(text ?? '').split(/\r?\n/)
+  for (let i = 0; i < lines.length; i++) {
+    const line = i + 1
+    const t = lines[i].trim()
+    if (!t || t.startsWith('#')) continue
+    const eq = t.indexOf('=') // split on the FIRST equals: a target path may contain more
+    if (eq < 0) {
+      errors.push({ line, error: `the rule names no target: expected «prefix=target», got ${JSON.stringify(t)}` })
+      continue
+    }
+    const prefix = t.slice(0, eq).trim()
+    const target = t.slice(eq + 1).trim()
+    if (!prefix) {
+      errors.push({ line, error: 'the rule names no prefix — a rule that matches everything is not a rule' })
+      continue
+    }
+    rules.push({ prefix, target })
+  }
+  return { rules, errors }
+}
+
+/**
  * resolveDeclaredPath({raw, rewrites, treeDir, plansDir, fsImpl}) -> resolution record.
  *
  * Rewrite first, then try the declared candidate roots in order. A path that resolves
@@ -1292,7 +1340,17 @@ export function toJson(evaluation) {
  * The commit is passed IN. This module does not shell out to a version-control tool, and
  * an unstated commit is printed as unstated rather than skipped.
  */
-export function renderReport({ treeDir, commit, plansDir, evaluation, inventory, roots, broadLimit, rewrites } = {}) {
+export function renderReport({
+  treeDir,
+  commit,
+  plansDir,
+  evaluation,
+  inventory,
+  roots,
+  broadLimit,
+  rewrites,
+  rewriteSource,
+} = {}) {
   const ev = evaluation ?? {}
   const inv = inventory ?? {}
   const tree = treeDir ?? ev.treeDir ?? inv.treeDir ?? null
@@ -1325,11 +1383,22 @@ export function renderReport({ treeDir, commit, plansDir, evaluation, inventory,
   // The rewriting rules belong in the header for the same reason the roots do: they
   // decide which declarations are inside the tree at all, so «zero failures» read without
   // them is a number about an unknown mapping.
+  //
+  // AND SO DOES THEIR SOURCE. A rule set typed into the command line and a rule set read
+  // from a file are two different claims about reproducibility: the first is a fact about
+  // one person's shell history, the second is a fact anybody can re-run. Printing the
+  // count without saying WHERE it came from leaves the reader unable to tell them apart,
+  // which is the same failure as printing a verdict without its author.
+  const srcSuffix = rewriteSource ? ` — source: ${rewriteSource}` : ''
   out.push(
     rewriteRules.length
-      ? `root rewrites applied (${rewriteRules.length}): ` +
+      ? `root rewrites applied (${rewriteRules.length})${srcSuffix}: ` +
         rewriteRules.map((r) => `${r.prefix} → ${r.target || '(stripped)'}`).join(', ')
-      : 'root rewrites applied: none — every declared path is read exactly as written',
+      : // No rules is a legitimate configuration, not a fault — but it is never silent: the
+        // price of having none is stated in the same breath, as the number of declarations
+        // this run is therefore not allowed to look at.
+        `root rewrites applied: none${srcSuffix} — every declared path is read exactly as written; ` +
+        `${counts.outsideTree ?? 0} declared paths lead outside the tree and are NOT looked at`,
   )
   out.push(
     `containment: only paths inside the tree above are examined; anything outside is NOT looked at${

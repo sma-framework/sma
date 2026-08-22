@@ -19,6 +19,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -36,6 +37,7 @@ import {
   toJson,
   countRedWithoutVerdict,
   parseVerdicts,
+  parseRewriteRules,
   isTestFile,
   PLAN_STATUS,
   DEFAULT_SCAN_ROOTS,
@@ -955,5 +957,138 @@ describe('каталог планов не доказательство — за
     })
     expect(mutated.counts.red).toBe(0)
     expect(mutated.counts.green).toBe(2)
+  })
+})
+
+/**
+ * НАБОР ПРАВИЛ ПЕРЕПИСЫВАНИЯ КОРНЯ ЖИВЁТ В ФАЙЛЕ, А НЕ В ЧУЖОЙ ПАМЯТИ.
+ *
+ * Разбор предыдущей волны назвал это прямо: пути наружу посчитаны, но набор правил
+ * набирается руками в командной строке, и файла для него нет. Значит и «ноль красных», и
+ * любое другое число — факт о том, что человек НАБРАЛ, а не о продукте: то же дерево с
+ * четырьмя правилами и без правил даёт разные числа, и нигде не записано, какой набор
+ * считался правильным.
+ *
+ * Здесь закрыты обе половины, и вторая важнее первой:
+ *   (а) разбор файла — порядок сохраняется (побеждает первое совпадение), комментарии и
+ *       пустые строки пропускаются, пустая цель законна («срезать префикс»), малформат
+ *       возвращает НОМЕР СТРОКИ;
+ *   (б) ПРОВОД — файл действительно доезжает до прогона. Утверждается не вычисление, а
+ *       получатель: НАСТОЯЩИЙ глагол настоящим процессом на поставляемой фикстуре, где
+ *       без правил оба пути уходят наружу дерева, а с файлом оба заходят внутрь. Проверять
+ *       это чтением кода значило бы повторить на самом приборе ту болезнь, ради которой он
+ *       заведён.
+ *
+ * Файл правил в тестах пишется во ВРЕМЕННЫЙ каталог и в продукт не попадает никогда:
+ * настоящий набор правил — принадлежность мастерской, а не поставки.
+ */
+describe('правила переписывания корня — из файла, а не из командной строки', () => {
+  const CLI = fileURLToPath(new URL('../cli.mjs', import.meta.url))
+  let tmp: string
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'wires-rules-'))
+  })
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  /** Настоящий глагол настоящим процессом. spawnSync — чтобы код выхода был данным, а не исключением. */
+  function runWires(extra: string[]) {
+    const { root, plansDir } = caseDirs('two-roots')
+    const res = spawnSync(
+      process.execPath,
+      [CLI, 'wires', '--plans', plansDir, '--tree', root, '--roots', '.', ...extra],
+      { encoding: 'utf8' },
+    )
+    return { code: res.status, out: String(res.stdout ?? ''), err: String(res.stderr ?? '') }
+  }
+
+  /** Сколько объявленных путей ушло наружу дерева — читается из тела отчёта. */
+  function outsideCount(report: string): number {
+    const m = report.match(/\((\d+) declared paths in \d+ plans\)/)
+    return m ? Number(m[1]) : -1
+  }
+
+  it('(а) разбор: порядок сохранён, комментарии и пустые строки пропущены, пустая цель законна', () => {
+    const { rules, errors } = parseRewriteRules(
+      ['# набор правил мастерской', '', '../first=/target/one', '   ../second=/target/two   ', '../third='].join('\n'),
+    )
+    expect(errors).toEqual([])
+    expect(rules).toEqual([
+      { prefix: '../first', target: '/target/one' },
+      { prefix: '../second', target: '/target/two' },
+      { prefix: '../third', target: '' }, // пустая цель = «срезать префикс», applyRewrites это умеет
+    ])
+    // Порядок важен: побеждает ПЕРВОЕ совпадение, поэтому файл читается сверху вниз как есть.
+    expect(applyRewrites('../first/x.txt', rules).value.replace(/\\/g, '/')).toContain('/target/one/x.txt')
+  })
+
+  it('(а) малформат НЕ игнорируется молча: и строка без цели, и правило без префикса названы с номером строки', () => {
+    const { rules, errors } = parseRewriteRules(
+      ['../ok=/target', 'это просто фраза без равенства', '=/target/two'].join('\n'),
+    )
+    // Правила, которые разобрались, возвращаются — но вызывающий обязан остановиться на ошибках.
+    expect(rules).toEqual([{ prefix: '../ok', target: '/target' }])
+    expect(errors.map((e) => e.line)).toEqual([2, 3])
+    expect(errors[0].error).toContain('no target')
+    expect(errors[1].error).toContain('no prefix')
+  })
+
+  it('(б) ПРОВОД: БЕЗ файла оба объявленных пути уходят НАРУЖУ дерева, и шапка называет цену', () => {
+    const { code, out } = runWires([])
+    expect(code).toBe(0)
+    expect(outsideCount(out)).toBe(2)
+    // Честная строка: правил нет — это не ошибка, но и не молчание.
+    expect(out).toContain('root rewrites applied: none')
+    expect(out).toContain('none given — no --rewrite on the line, no --rewrite-file')
+    expect(out).toContain('2 declared paths lead outside the tree')
+  })
+
+  it('(б) ПРОВОД: С файлом оба пути заходят ВНУТРЬ дерева, и шапка называет ИСТОЧНИК — файл', () => {
+    const { root } = caseDirs('two-roots')
+    const rulesFile = join(tmp, 'rules.txt')
+    writeFileSync(rulesFile, ['# два чужих корня', `../elsewhere-one=${root}`, `../elsewhere-two=${root}`].join('\n'))
+
+    const { code, out } = runWires(['--rewrite-file', rulesFile])
+    expect(code).toBe(0)
+    expect(outsideCount(out)).toBe(0) // ← то самое: с файлом путь ЗАХОДИТ ВНУТРЬ
+    expect(out).toContain('root rewrites applied (2)')
+    expect(out).toContain('rules file')
+    expect(out).toContain('(2 rule(s))')
+  })
+
+  it('(б) флаг ПРИОРИТЕТНЕЕ файла: набор из командной строки применён целиком, файл не подмешан', () => {
+    const { root } = caseDirs('two-roots')
+    const rulesFile = join(tmp, 'rules.txt')
+    // В файле — правило на ВТОРОЙ корень. В командной строке — только на ПЕРВЫЙ.
+    writeFileSync(rulesFile, `../elsewhere-two=${root}\n`)
+
+    const { code, out } = runWires(['--rewrite-file', rulesFile, '--rewrite', `../elsewhere-one=${root}`])
+    expect(code).toBe(0)
+    // Один путь ушёл наружу — значит правило ФАЙЛА не применялось. Слияние двух наборов
+    // дало бы 0 и породило третий набор, которого никто не записывал.
+    expect(outsideCount(out)).toBe(1)
+    expect(out).toContain('root rewrites applied (1)')
+    expect(out).toContain('OVERRIDES the rules file')
+  })
+
+  it('отсутствующий файл — НЕ ошибка, но и не тишина: прогон идёт, шапка называет файл и цену', () => {
+    const missing = join(tmp, 'no-such-rules.txt')
+    const { code, out } = runWires(['--rewrite-file', missing])
+    expect(code).toBe(0) // прогон состоялся
+    expect(out).toContain('ABSENT, no rules read')
+    expect(out).toContain('2 declared paths lead outside the tree')
+  })
+
+  it('МАЛФОРМАТ ОСТАНАВЛИВАЕТ прогон с названной ошибкой, а не молча теряет правило', () => {
+    const rulesFile = join(tmp, 'rules.txt')
+    writeFileSync(rulesFile, ['../elsewhere-one=/somewhere', 'а эта строка написана прозой'].join('\n'))
+
+    const { code, out, err } = runWires(['--rewrite-file', rulesFile])
+    expect(code).toBe(2) // СТОП: потерянное правило превращается в кучу «путей наружу»,
+    expect(err).toContain('malformed') //   и это читается как честный замер уехавшего дерева
+    expect(err).toContain('line 2')
+    expect(out).not.toContain('root rewrites applied')
   })
 })

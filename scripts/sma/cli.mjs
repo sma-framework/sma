@@ -10110,7 +10110,8 @@ function collectRewriteRules(argv) {
  * merely happens to sit beside this checkout would make the verdict a fact about the
  * machine instead of about the product.
  *
- *   wires [--plans <dir>] [--tree <dir>] [--rewrite <prefix>=<target>]… [--verdicts <file>]
+ *   wires [--plans <dir>] [--tree <dir>] [--rewrite <prefix>=<target>]… [--rewrite-file <file>]
+ *         [--verdicts <file>]
  *         [--roots a,b,c] [--broad-limit N] [--json] [--count]
  *   wires --selftest    → run every bundled fixture TWICE and print 1 iff every verdict is
  *                         correct AND both runs agree byte for byte
@@ -10135,7 +10136,7 @@ async function cmdWires({ positionals, flags }) {
   }
   if (!plansDir) {
     process.stderr.write(
-      'usage: node scripts/sma/cli.mjs wires [--plans <dir>] [--tree <dir>] [--rewrite <prefix>=<target>]… [--verdicts <file>] [--roots a,b,c] [--broad-limit N] [--json] [--count] | wires --selftest\n' +
+      'usage: node scripts/sma/cli.mjs wires [--plans <dir>] [--tree <dir>] [--rewrite <prefix>=<target>]… [--rewrite-file <file>] [--verdicts <file>] [--roots a,b,c] [--broad-limit N] [--json] [--count] | wires --selftest\n' +
         'no plans directory: pass --plans <dir> (nothing named .planning/phases here)\n',
     )
     return 2
@@ -10152,7 +10153,57 @@ async function cmdWires({ positionals, flags }) {
   // directory exactly as --tree and --plans do. Left relative it would be joined onto each
   // candidate root in turn and land nowhere, which reads as «the path is missing» when the
   // truth is «the rule was written in a different frame of reference».
-  const rewrites = collectRewriteRules(process.argv.slice(2)).map((r) => ({
+  const flagRules = collectRewriteRules(process.argv.slice(2))
+
+  // WHERE THE RULES COME FROM, and why the file exists at all. Typed into the shell on
+  // every run, the rule set makes the headline number a fact about somebody's typing: the
+  // same tree scores one way with four rules and quite another with none, and nothing
+  // anywhere records which set was meant. So the set gets a file — kept by the workshop,
+  // never shipped with the product — and the report says which of the two it read.
+  //
+  // THE FLAG WINS. A one-off run must stay possible without editing a file, and a caller
+  // who typed rules on the line meant those rules; silently merging the two sets would
+  // produce a third set nobody wrote down.
+  let rewriteSource = null
+  let fileRules = []
+  const rulesPath =
+    flags['rewrite-file'] && flags['rewrite-file'] !== true ? resolve(String(flags['rewrite-file'])) : null
+  if (rulesPath && !flagRules.length) {
+    let text = null
+    try {
+      text = readFileSync(rulesPath, 'utf8')
+    } catch {
+      text = null // absent is a configuration, not a fault — see below
+    }
+    if (text == null) {
+      // ABSENT IS NOT AN ERROR, but it is never silent either: the header names the file
+      // and states the price of having no rules, so a typo in the path cannot masquerade
+      // as an honest measurement of a tree that has moved.
+      rewriteSource = `rules file ${rulesPath} — ABSENT, no rules read`
+    } else {
+      const { rules, errors } = wires.parseRewriteRules(text)
+      if (errors.length) {
+        // MALFORMED STOPS THE RUN. A dropped rule does not announce itself: it turns into
+        // a pile of paths «outside the tree», which reads exactly like a real measurement
+        // of a tree that has moved — so the instrument refuses rather than guesses.
+        process.stderr.write(
+          `wires: the root-rewrite rules file is malformed — the run stops (${errors.length} problem(s) in ${rulesPath}):\n`,
+        )
+        for (const e of errors) process.stderr.write(`  line ${e.line}: ${e.error}\n`)
+        return 2
+      }
+      fileRules = rules
+      rewriteSource = `rules file ${rulesPath} (${rules.length} rule(s))`
+    }
+  } else if (flagRules.length) {
+    rewriteSource = rulesPath
+      ? 'command line (--rewrite), which OVERRIDES the rules file given by --rewrite-file'
+      : 'command line (--rewrite)'
+  } else {
+    rewriteSource = 'none given — no --rewrite on the line, no --rewrite-file'
+  }
+
+  const rewrites = (flagRules.length ? flagRules : fileRules).map((r) => ({
     prefix: r.prefix,
     target: r.target ? resolve(String(r.target)) : '',
   }))
@@ -10194,7 +10245,7 @@ async function cmdWires({ positionals, flags }) {
   }
 
   process.stdout.write(
-    wires.renderReport({ treeDir, commit, plansDir, evaluation, inventory, roots, broadLimit, rewrites }),
+    wires.renderReport({ treeDir, commit, plansDir, evaluation, inventory, roots, broadLimit, rewrites, rewriteSource }),
   )
   return evaluation.exitCode
 }
@@ -11930,7 +11981,7 @@ const HANDLERS = {
   tune: cmdTune, // the tuner (propose|apply|benefit|fix|incident) — never commits, never pushes
   curriculum: cmdCurriculum, // weekly miss-curriculum: clusters -> templates -> weak-spots brief
   preflight: cmdPreflight, // already-built pre-dispatch gate (built/partial/absent; --count|--selftest|--run-verify)
-  wires: cmdWires, // check that the wires your plans DECLARE still exist in the code (--plans|--tree|--rewrite…|--verdicts|--roots|--broad-limit|--json|--count|--selftest); looks ONLY inside the tree it was given
+  wires: cmdWires, // check that the wires your plans DECLARE still exist in the code (--plans|--tree|--rewrite…|--rewrite-file|--verdicts|--roots|--broad-limit|--json|--count|--selftest); looks ONLY inside the tree it was given
   arena: cmdArena, // benchmark arena scorer + static graphs page (report|--selftest|--selftest-negative)
   batch: cmdBatch, // /sma-batch middle lane: risk filter + grill-lite + mandatory receipts (--assemble|--selftest-riskfilter|--selftest-checkoff)
   deleteme: cmdDeleteme, // 9.4 (v3.6) — one-click off-ramp: dry-run plan | --yes apply | --selftest; memory corpus PRESERVED
