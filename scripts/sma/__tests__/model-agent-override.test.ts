@@ -39,6 +39,7 @@ import { fileURLToPath } from 'node:url'
 const require_ = createRequire(import.meta.url)
 const modelResolver = require_('../../../sma-core/bin/lib/model-resolver.cjs')
 const configSchema = require_('../../../sma-core/bin/lib/config-schema.cjs')
+const { MODEL_PROFILES } = require_('../../../sma-core/bin/lib/model-profiles.cjs')
 
 const SMA_TOOLS = fileURLToPath(new URL('../../../sma-core/bin/sma-tools.cjs', import.meta.url))
 
@@ -72,19 +73,22 @@ afterEach(() => {
 
 describe('model_profile_overrides.agents.<agent-name>', () => {
   it('Test 1: an agent pin beats the tier profile for that agent only', () => {
+    // The pin is DOWN from the profile answer on purpose: the executor's balanced
+    // tier is itself the strong model, so a pin that named the same model would
+    // assert nothing — it would pass whether or not the pin was read at all.
     writeConfig({
       model_profile: 'balanced',
-      model_profile_overrides: { agents: { 'sma-executor': 'opus' } },
+      model_profile_overrides: { agents: { 'sma-executor': 'haiku' } },
     })
 
-    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('haiku')
     // The verifier shares the balanced profile and is NOT pinned — it must not move.
     expect(resolveModelInternal(cwd, 'sma-verifier')).toBe('sonnet')
   })
 
   it('Test 2: without a pin the profile answer is unchanged', () => {
     writeConfig({ model_profile: 'balanced' })
-    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
 
     writeConfig({ model_profile: 'budget' })
     expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
@@ -94,15 +98,18 @@ describe('model_profile_overrides.agents.<agent-name>', () => {
   })
 
   it('Test 3: an unknown agent name is a no-op — resolution falls through to the profile', () => {
+    // Same reason as Test 1 for the pin being the weak model: falling through to
+    // the profile has to produce a DIFFERENT answer than applying the pin would,
+    // or the no-op is indistinguishable from the pin being honoured.
     writeConfig({
       model_profile: 'balanced',
-      model_profile_overrides: { agents: { 'sma-exicutor': 'opus', 'not-an-agent': 'haiku' } },
+      model_profile_overrides: { agents: { 'sma-exicutor': 'haiku', 'not-an-agent': 'haiku' } },
     })
 
-    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
     expect(resolveModelInternal(cwd, 'sma-verifier')).toBe('sonnet')
     // The pure reader agrees: no entry for this agent -> null, never a throw.
-    expect(resolveAgentModelOverride({ agents: { 'sma-exicutor': 'opus' } }, 'sma-executor')).toBeNull()
+    expect(resolveAgentModelOverride({ agents: { 'sma-exicutor': 'haiku' } }, 'sma-executor')).toBeNull()
   })
 
   it('Test 4: model_overrides.<agent> still outranks the pin', () => {
@@ -126,7 +133,7 @@ describe('model_profile_overrides.agents.<agent-name>', () => {
   })
 
   it('Test 6: `agents` is never read as a runtime tier map and raises no warning', () => {
-    const overrides = { agents: { 'sma-executor': 'opus' } }
+    const overrides = { agents: { 'sma-executor': 'haiku' } }
     expect(resolveTierEntry({ runtime: 'agents', tier: 'opus', overrides })).toBeNull()
 
     const warnings: string[] = []
@@ -138,7 +145,7 @@ describe('model_profile_overrides.agents.<agent-name>', () => {
     }
     try {
       writeConfig({ model_profile: 'balanced', model_profile_overrides: overrides })
-      expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
+      expect(resolveModelInternal(cwd, 'sma-executor')).toBe('haiku')
     } finally {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(process.stderr as any).write = realWrite
@@ -162,8 +169,10 @@ describe('model_profile_overrides.agents.<agent-name>', () => {
   it('Test 8: `null` clears a pin — the key is removed, not set to the string "null"', () => {
     writeConfig({ model_profile: 'balanced' })
 
-    configSet('model_profile_overrides.agents.sma-executor', 'opus')
-    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
+    // Pinned DOWN from the profile answer so that "the pin was lifted" and "the
+    // pin is still in force" cannot produce the same model.
+    configSet('model_profile_overrides.agents.sma-executor', 'haiku')
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('haiku')
 
     // The documented way to lift a pin (scripts/sma/README.md, settings-advanced.md).
     configSet('model_profile_overrides.agents.sma-executor', 'null')
@@ -171,7 +180,7 @@ describe('model_profile_overrides.agents.<agent-name>', () => {
     // The key is gone — not present with a bogus string value.
     expect(readConfig().model_profile_overrides?.agents ?? {}).not.toHaveProperty('sma-executor')
     // ...so the agent is back on the profile, not pinned to a model named "null".
-    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
   })
 
   it('Test 9: clearing is a no-op on an absent key and works for the runtime tier namespace', () => {
@@ -196,14 +205,14 @@ describe('model_profile_overrides.agents.<agent-name>', () => {
       model_profile: 'balanced',
       model_profile_overrides: { agents: { 'sma-executor': 'null' } },
     })
-    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
 
     // The object spelling of the same rot.
     writeConfig({
       model_profile: 'balanced',
       model_profile_overrides: { agents: { 'sma-executor': { model: 'null' } } },
     })
-    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
 
     // The pure reader agrees, including a padded variant.
     expect(resolveAgentModelOverride({ agents: { 'sma-executor': 'null' } }, 'sma-executor')).toBeNull()
@@ -214,15 +223,17 @@ describe('model_profile_overrides.agents.<agent-name>', () => {
 
   it('Test 11: legacy "null" in the higher-priority model_overrides also falls through', () => {
     // model_overrides outranks the pin, so a rotted entry here shadowed everything.
+    // The surviving pin names the weak model so that "the pin answered" is
+    // distinguishable from "the profile answered".
     writeConfig({
       model_profile: 'balanced',
       model_overrides: { 'sma-executor': 'null' },
-      model_profile_overrides: { agents: { 'sma-executor': 'opus' } },
+      model_profile_overrides: { agents: { 'sma-executor': 'haiku' } },
     })
-    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('haiku')
 
     writeConfig({ model_profile: 'balanced', model_overrides: { 'sma-executor': 'null' } })
-    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('sonnet')
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
   })
 
   it('Test 12: legacy "null" in the runtime tier map falls back to the built-in', () => {
@@ -260,5 +271,44 @@ describe('model_profile_overrides.agents.<agent-name>', () => {
       tier: 'opus',
       overrides: { gemini: { opus: { model: 'null', note: 'keep' } } },
     })).toEqual({ model: 'gemini-3.1-pro-preview', note: 'keep' })
+  })
+})
+
+/**
+ * The default the spawn path actually travels.
+ *
+ * `model_profile` is optional, so most projects never set one: the resolver
+ * falls through to the `balanced` tier and reads the agent's row out of the
+ * SHIPPED catalog. That row — not anybody's config file — is where the model an
+ * orchestrator spawns an agent with is born. It is also where a stale tier can
+ * hide indefinitely: the executor was handed the weakest model at every single
+ * spawn across two milestones of work here, and each time a human noticed and
+ * patched the model by hand at the call site. Nothing in the suite objected,
+ * because nothing in the suite asked the catalog what it hands out by default.
+ *
+ * So this lock stands on the REAL catalog through the REAL resolver: no
+ * `SMA_MODEL_CATALOG`, no substituted catalog file, no mocked loader. Feeding
+ * this test a catalog of its own would make it pass forever while the shipped
+ * default rotted — a stand-in cannot testify about the thing it stands in for.
+ * (The temp configs the tests above write are a different matter: the project
+ * config IS the variable half, and substituting it is the point of those tests.)
+ *
+ * The directory handed to the resolver below is deliberately EMPTY — no
+ * `.planning/config.json` at all. That is the state the defect lived in.
+ */
+describe('shipped catalog defaults', () => {
+  it('default balanced tier hands the strong model to the executor and the plan checker', () => {
+    // No config written in this test: `model_profile` is absent, the resolver
+    // takes its `balanced` branch, and the answer comes straight off the row in
+    // sma-core/bin/shared/model-catalog.json — the spawn-time path, end to end.
+    expect(resolveModelInternal(cwd, 'sma-executor')).toBe('opus')
+    expect(resolveModelInternal(cwd, 'sma-plan-checker')).toBe('opus')
+
+    // And the quality profile may never hand a role a WEAKER model than balanced
+    // does. The plan checker sat on the weakest tier under both profiles at once;
+    // that inversion — "pay for quality, get less than average" — is the second
+    // half of the same defect and is locked here rather than left to the eye.
+    expect(MODEL_PROFILES['sma-plan-checker'].quality).toBe('opus')
+    expect(MODEL_PROFILES['sma-plan-checker'].balanced).toBe('opus')
   })
 })

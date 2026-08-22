@@ -23,6 +23,7 @@
 import { appendEvent } from './journal.mjs'
 import { classifyStaleness, isSessionLive, sessionActivityTier } from './registry.mjs'
 import { HEARTBEAT_INTERVAL_MS, ATTENTION_AFTER_MISSES } from './constants.mjs'
+import { slugHash, translitToLatin } from './translit.mjs'
 
 /**
  * normalizePath(p) — lowercase + backslash→forward-slash + collapse duplicate slashes.
@@ -198,12 +199,30 @@ export function checkScopeCollision(paths, opts = {}) {
  * claim, and the exact string the force-clear remediation suggests. cmdClaim creates
  * a claims-dir entry under THIS name so `force-clear <slug>` from a collision WARN
  * actually resolves — a remediation we print must name an entry that exists. Exported so the CLI and the WARN builder share one derivation.
+ *
+ * DISTINCTNESS HERE IS A SAFETY PROPERTY, not cosmetics. This name is what the clearing
+ * command takes, so two different pieces of work sharing one name means one terminal is
+ * able to remove ANOTHER terminal’s protection — silently, while that terminal is
+ * still editing. Cleaning the description character by character did exactly that to
+ * every description written in a script the name cannot carry: they all collapsed to the
+ * bare generic word, and a live registry carried a reservation named literally that word
+ * as the standing proof. So the description is TRANSLITERATED first — the name stays
+ * readable — and when the cleanup still leaves nothing that tells two descriptions
+ * apart, a digest of the original description does it.
  * @param {string} src   the scope description (preferred) or holder identity
  * @returns {string}
  */
 export function scopeClaimSlug(src) {
   const s = src || 'claim'
-  return normalizePath(s).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'claim'
+  const cleaned = translitToLatin(normalizePath(s))
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  // No description at all keeps the historical bare name (one caller passes nothing).
+  if (!src) return cleaned || 'claim'
+  // A real description that survives as nothing — or as exactly the generic word — must
+  // NOT be filed under the shared generic entry: that collapse is what this guards.
+  if (!cleaned || cleaned === 'claim') return `claim-${slugHash(String(src))}`
+  return cleaned
 }
 
 /** A stable claim-name suggestion for the force-clear command (operation-or-holder). */

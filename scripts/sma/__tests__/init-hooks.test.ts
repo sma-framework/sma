@@ -26,6 +26,9 @@
  *            exactly one multiplexer entry
  *   Test 4 — a foreign (non-SMA) hook entry survives byte-identically, both
  *            beside the multiplexer and inside a matcher-less group we join
+ *   Test 4b — update over the PRE-ANCHOR spelling (every command written
+ *            relative to the project root): every entry is healed to the
+ *            anchored one, none is doubled, foreign siblings survive
  *   Test 5 — end-to-end: the REAL installer (fresh + update run) writes the
  *            healed settings.json in an install-shaped temp project
  *   Test 6 — the statusline segment: the REAL installer writes the canonical
@@ -50,7 +53,7 @@ import { canonicalStatuslineEntry, SMA_STATUSLINE_CMD } from '../lib/statusline-
 
 const repoRoot = join(__dirname, '..', '..', '..')
 const initPath = join(repoRoot, 'bin', 'init.mjs')
-const { mergeHooks, removeStaleSmaHooks, SMA_HOOKS } = await import(/* @vite-ignore */ pathToFileURL(initPath).href)
+const { mergeHooks, removeStaleSmaHooks, SMA_HOOKS, STALE_SMA_HOOK_COMMANDS } = await import(/* @vite-ignore */ pathToFileURL(initPath).href)
 
 type HookDef = { event: string; matcher: string | null; command: string; timeout: number }
 
@@ -202,7 +205,11 @@ describe('init hooks — chains AND multiplexer dedup to one (Test 3)', () => {
 describe('init hooks — foreign hooks survive byte-identically (Test 4)', () => {
   it('a non-SMA entry sharing a group with stale entries is untouched; other events too', () => {
     const guard = { type: 'command', command: 'node my-guard.mjs --strict', timeout: 30 }
-    const stop = { hooks: [{ type: 'command', command: 'node security-scan.mjs' }] }
+    // A project's own turn-boundary guard. The engine now ships into this event too, so the
+    // claim under test is the one that was always meant: the foreign ENTRY survives byte for
+    // byte and keeps its place, while the engine entry JOINS the group beside it.
+    const scan = { type: 'command', command: 'node security-scan.mjs' }
+    const stop = { hooks: [scan] }
     const settings: any = {
       model: 'opus',
       hooks: {
@@ -219,7 +226,7 @@ describe('init hooks — foreign hooks survive byte-identically (Test 4)', () =>
       },
     }
     const guardBytes = JSON.stringify(guard)
-    const stopBytes = JSON.stringify(stop)
+    const scanBytes = JSON.stringify(scan)
     const { removedStale } = mergeHooks(settings)
     expect(removedStale).toBe(1)
     // the foreign sibling stays in its original group, byte-identical
@@ -229,8 +236,10 @@ describe('init hooks — foreign hooks survive byte-identically (Test 4)', () =>
     // the multiplexer arrives as its own group alongside it
     const mux = settings.hooks.PreToolUse.find((g: any) => g.matcher === 'Edit|Write|Bash')
     expect(mux.hooks).toEqual([{ type: 'command', command: PRE_CMD, timeout: 5 }])
-    // foreign event untouched, other settings untouched
-    expect(JSON.stringify(settings.hooks.Stop[0])).toBe(stopBytes)
+    // the foreign turn-boundary guard keeps its bytes and its place at the head of the group
+    expect(JSON.stringify(settings.hooks.Stop[0].hooks[0])).toBe(scanBytes)
+    expect(smaEntriesIn(settings.hooks.Stop[0])).toEqual([entryOf(defFor('Stop', null))])
+    // other settings untouched
     expect(settings.model).toBe('opus')
   })
 
@@ -349,6 +358,98 @@ describe('init hooks — a matcher that moved leaves no second live copy', () =>
     expect(kept.hooks).toEqual([foreign])
   })
 })
+/**
+ * The spelling every hook command carried before it was anchored to the project root:
+ * `node scripts/sma/cli.mjs <verb>`, resolved against whatever directory the session
+ * happened to be standing in. A session that had changed directory made node fail to
+ * find the module BEFORE any engine code ran, so the fail-open wrappers inside the CLI
+ * could not help — and the whole table went down at once, not one entry of it.
+ *
+ * DERIVED from the shipped list rather than retyped: seven literals here would be a
+ * second copy of the template that starts lying to it the next time a verb moves.
+ */
+function legacyRelativeCommand(def: HookDef) {
+  const verb = def.command.trim().split(/\s+/).pop()
+  return `node scripts/sma/cli.mjs ${verb}`
+}
+
+/**
+ * The shipped rows that really did once carry the project-relative spelling — read off the
+ * installer's own stale list, never manufactured for every row. A row born anchored never
+ * had a legacy form, and a fixture that invents one would be asking the sweep to remove a
+ * string that never existed anywhere.
+ */
+function rowsWithALegacySpelling(): HookDef[] {
+  return (SMA_HOOKS as HookDef[]).filter((d) => (STALE_SMA_HOOK_COMMANDS as Set<string>).has(legacyRelativeCommand(d)))
+}
+
+/** A settings object shaped like an install made before the anchor existed. */
+function legacyRelativeSettings() {
+  const hooks: any = {}
+  for (const def of rowsWithALegacySpelling()) {
+    const groups = (hooks[def.event] ??= [])
+    const entry = { type: 'command', command: legacyRelativeCommand(def), timeout: def.timeout }
+    const group = groups.find((g: any) => (def.matcher === null ? !g.matcher : g.matcher === def.matcher))
+    if (group) group.hooks.push(entry)
+    else groups.push(def.matcher === null ? { hooks: [entry] } : { matcher: def.matcher, hooks: [entry] })
+  }
+  return { hooks }
+}
+
+describe('init hooks — relative-command entries are healed, not doubled (Test 4b)', () => {
+  // The trap this case exists for: the installer recognises ITS OWN entries by the command
+  // STRING. Change the strings without teaching it the ones it used to write, and every
+  // existing install gets the new entry ADDED BESIDE the old one on the next update — two
+  // processes on every event, on every machine that ever ran this installer.
+  it('an install carrying the pre-anchor spelling ends with exactly one anchored entry per matcher', () => {
+    const settings: any = legacyRelativeSettings()
+    const foreign = { type: 'command', command: 'node my-guard.mjs --strict', timeout: 30 }
+    settings.hooks.SessionStart[0].hooks.push(foreign)
+    const foreignBytes = JSON.stringify(foreign)
+
+    const { added, removedStale } = mergeHooks(settings)
+
+    // every pre-anchor entry is ours BY CONSTRUCTION — those exact strings only ever came
+    // from this template — so dropping them touches nobody else's file
+    expect(rowsWithALegacySpelling().length, 'the fixture must carry a real legacy install').toBeGreaterThan(0)
+    expect(removedStale).toBe(rowsWithALegacySpelling().length)
+    // every shipped row lands, including the ones that had nothing to heal away
+    expect(added).toBe(SMA_HOOKS.length)
+    for (const def of SMA_HOOKS as HookDef[]) {
+      expect(smaEntriesIn(groupFor(settings, def.event, def.matcher))).toEqual([entryOf(def)])
+    }
+    expect(smaEntries(settings), 'one entry per shipped definition, not two').toHaveLength(SMA_HOOKS.length)
+    // not one relative spelling survives anywhere in the file
+    expect(JSON.stringify(settings)).not.toMatch(/node scripts\/sma\/cli\.mjs/)
+    // the foreign sibling of a dropped entry is untouched
+    const sessionStart = groupFor(settings, 'SessionStart', null)
+    expect(JSON.stringify(sessionStart.hooks.find((h: any) => h.command === foreign.command))).toBe(foreignBytes)
+  })
+
+  it('every shipped command is anchored, with a fallback that keeps the old behaviour where the variable is absent', () => {
+    for (const def of SMA_HOOKS as HookDef[]) {
+      // the wire: the anchor has to reach the COMMAND STRING, which is the only part of a
+      // hook that exists before node is asked to load anything
+      expect(def.command, `${def.event}/${def.matcher ?? '(no matcher)'} is not anchored`).toContain(
+        '${CLAUDE_PROJECT_DIR:-.}',
+      )
+      // and the fallback keeps the command from ever being WORSE than the relative form:
+      // with no variable set it resolves to `.`, which is exactly what it used to be
+      expect(def.command).toContain('/scripts/sma/cli.mjs')
+    }
+  })
+
+  it('a merge over already-anchored entries adds nothing and removes nothing', () => {
+    const settings: any = {}
+    mergeHooks(settings)
+    const before = JSON.stringify(settings)
+    const again = mergeHooks(settings)
+    expect(again.added).toBe(0)
+    expect(again.removedStale).toBe(0)
+    expect(JSON.stringify(settings)).toBe(before)
+  })
+})
+
 describe('init hooks — the REAL installer heals settings.json (Test 5)', () => {
   it('fresh install writes ONE PreToolUse chain; a re-run over stale chains + a foreign hook heals it', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-init-hooks-'))
@@ -510,4 +611,63 @@ describe('init — the REAL installer wires the statusline segment, always into 
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
     }
   }, 120000)
+})
+
+/**
+ * The turn-boundary entry — the one that carries the diff verdict back into the window.
+ *
+ * WHY IT GETS ITS OWN CASES rather than riding the derived counts above. The counts prove
+ * that whatever the template ships lands exactly once; they cannot prove WHAT it ships.
+ * This entry has two properties that a count would never notice and that both matter to a
+ * person: it fires on EVERY turn, so its budget has to stay in the seconds a person does
+ * not feel, and it is born ANCHORED — it never had a project-relative spelling, so it must
+ * never appear in the stale list, which is reserved for strings this installer really did
+ * write once and would otherwise leave behind beside the new one.
+ */
+describe('init hooks — the turn-boundary entry ships once, cheap, and anchored', () => {
+  const turnDef = () => (SMA_HOOKS as HookDef[]).find((d) => String(d.command).endsWith('turn-diff'))
+
+  it('the installer ships exactly one matcher-less entry for the turn boundary', () => {
+    const def = turnDef()
+    expect(def, 'no turn-boundary entry in the shipped table').toBeDefined()
+    expect(def!.event).toBe('Stop')
+    expect(def!.matcher, 'a matcher-less entry covers every end reason the event has').toBe(null)
+    expect(defFor('Stop', null)).toEqual(def)
+  })
+
+  it('its budget is the editing-path budget, not the tree-walking one', () => {
+    // It runs on every turn. The two entries that walk git and the working tree get 15
+    // seconds because they are rare; this one may not, and «дёшево» has to be a number
+    // somebody can point at rather than an intention in a comment.
+    expect(turnDef()!.timeout).toBeLessThanOrEqual(5)
+  })
+
+  it('it is born anchored, so it never belongs in the healed-away list', () => {
+    const def = turnDef()!
+    expect(def.command).toContain('${CLAUDE_PROJECT_DIR:-.}')
+    const settings: any = {}
+    mergeHooks(settings)
+    // the stale sweep must not recognise a string this installer never shipped
+    const removed = removeStaleSmaHooks(settings)
+    expect(removed, 'a freshly written table has nothing stale in it').toBe(0)
+    expect(smaEntriesIn(groupFor(settings, 'Stop', null))).toEqual([entryOf(def)])
+  })
+
+  it('an install that already runs it is healed, not doubled', () => {
+    const settings: any = {}
+    mergeHooks(settings)
+    const again = mergeHooks(settings)
+    expect(again.added).toBe(0)
+    expect(smaEntriesIn(groupFor(settings, 'Stop', null))).toHaveLength(1)
+  })
+
+  it('a project running its own hook on the same event keeps it byte-identically', () => {
+    const foreign = { type: 'command', command: 'node my-turn-guard.mjs', timeout: 30 }
+    const foreignBytes = JSON.stringify(foreign)
+    const settings: any = { hooks: { Stop: [{ hooks: [foreign] }] } }
+    mergeHooks(settings)
+    const group = groupFor(settings, 'Stop', null)
+    expect(JSON.stringify(group.hooks.find((h: any) => h.command === foreign.command))).toBe(foreignBytes)
+    expect(smaEntriesIn(group)).toEqual([entryOf(turnDef()!)])
+  })
 })

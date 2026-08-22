@@ -104,6 +104,7 @@ function dirsFrom(root) {
     manifestDir: join(root, 'manifest'), // PR evidence passport pack (<headSha>.json + .md)
     baselineDir: join(root, 'baseline'), // v5.1 — recorded baseline receipts (receipts.json) for replay
     indexDir: join(root, 'index'), // v5.2 — derived lexical index (memory-lexical.sqlite + .meta.json), rebuildable
+    attemptsDir: join(root, 'attempts'), // this window's attempt rows — the worker's format, its OWN drawer
   }
 }
 
@@ -475,6 +476,31 @@ async function cmdSessionStart({ dirs }) {
   try {
     const registry = await import('./lib/registry.mjs')
     identity = registry.resolveTerminalIdentity({ sessionToken })
+    // Hand a still-anonymous window a readable name ONCE — here, at the start — and then
+    // RE-RESOLVE, so everything below already speaks under that name: the registering beat,
+    // the label, and the session's own first journal event. Allocating later would file the
+    // very first line of the session under the machine token this exists to stop showing.
+    // Fail-open on purpose: a session start must never break over a name, so any failure
+    // leaves the previous `T-<hash>` identity exactly as it was.
+    // The token is taken from the RESOLVED IDENTITY, not from the local stdin one: the
+    // resolver is the only place that knows all the spellings a window token arrives under
+    // (the hook's stdin session_id, SMA_WINDOW_TOKEN, and the agent's own two session-id
+    // variables), and it has already picked the one in force. Reading the local variable
+    // instead looks identical and silently does nothing whenever the token came from the
+    // environment rather than stdin — a name computed and never delivered. Caught by
+    // actually running a session start rather than by reading this code.
+    const windowToken = identity && identity.sessionToken
+    if (windowToken && identity.nameSource === 'fallback') {
+      try {
+        const allocated = registry.allocateDefaultWindowName({
+          tokenHash: registry.tokenHash(windowToken),
+          env: process.env,
+        })
+        if (allocated) identity = registry.resolveTerminalIdentity({ sessionToken })
+      } catch {
+        /* fail-open — an unnamed window is a nuisance; a wedged session start is not */
+      }
+    }
     try {
       const { sessions } = registry.readSessions(dirs)
       const own = sessions.find((s) => s._file === `${identity.terminalId}.json`)
@@ -608,11 +634,19 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open — the curriculum refresh never wedges session-start */
   }
 
-  // prompt ONCE for a human window name when this window is still anonymous, so
-  // the journal + digest stop showing t-<hash> and become «P<phase> <Name>».
+  // The window-name offer. WHEN it is shown, in words: for as long as the name is still one
+  // the SYSTEM chose — either the machine token (there was no window token to key a name on,
+  // or the allocation failed) or the auto «Окно-N» just handed out. It goes quiet the moment
+  // a person names the window themselves, by the variable or by editing the record: an auto
+  // name is readable, but a chosen one is better, and asking after the answer has been given
+  // is nagging.
   let namePrompt = ''
-  if (identity && typeof identity.holderIdentity === 'string' && /^T-/i.test(identity.holderIdentity)) {
-    namePrompt = 'Задайте имя окна: переменная SMA_TERMINAL_NAME (например «Tom»), чтобы журналы были читаемы.'
+  if (identity && identity.nameAuto) {
+    namePrompt =
+      identity.nameSource === 'persist'
+        ? `Это окно записано как «${identity.holderIdentity}». Задайте своё имя: переменная SMA_TERMINAL_NAME ` +
+          '(например «Tom»), чтобы журналы читались ещё лучше.'
+        : 'Задайте имя окна: переменная SMA_TERMINAL_NAME (например «Tom»), чтобы журналы были читаемы.'
   }
 
   // the post-compact RESTORE REFLEX. Claude Code re-fires
@@ -872,12 +906,46 @@ async function cmdClaim({ positionals, flags, dirs }) {
     { terminalId: identity.terminalId, journalDir: dirs.journalDir },
   )
 
+  // Open the ATTEMPT ROW for this scope — the point of return, captured now. The journal
+  // event above says a scope was taken; it does not say what commit the window stood on
+  // when it took it, and after the first commit that answer is gone. Fail-open by
+  // construction: a claim is protection somebody is waiting for, and it may never be lost
+  // because a ledger could not be written.
+  try {
+    const trail = await import('./lib/terminal-attempt.mjs')
+    trail.startTerminalAttempt({ slug, description: desc, identity, ledgerDir: dirs.attemptsDir })
+  } catch {
+    /* fail-open — the trail never blocks the claim */
+  }
+
   if (wantsJson(flags)) {
     printJson({ claimed: name, slug, globs, by: identity.holderIdentity })
     return 0
   }
   process.stdout.write(`SMA: claim «${name}» зафиксирован (${globs.join(', ') || 'без globs'}); снять: node scripts/sma/cli.mjs force-clear ${slug}\n`)
   return 0
+}
+
+/**
+ * ownClaimScope(registry, dirs, identity) → `{description, globs}` of the scope THIS window
+ * is holding, read off its own lease. `null` when it holds none.
+ *
+ * ONE reader, two callers — the release verb and the turn-boundary hook. A second walk over
+ * the lease files would be a second answer to «что я сейчас держу», and the day the two
+ * disagree is the day the gate judges work against an area nobody claimed.
+ * Fail-open: an unreadable registry answers «nothing held», never an exception.
+ */
+function ownClaimScope(registry, dirs, identity) {
+  try {
+    const { sessions } = registry.readSessions(dirs)
+    const own = sessions.find((s) => s._file === `${identity.terminalId}.json`)
+    const scope = own && own.scope
+    const description = scope && typeof scope.description === 'string' ? scope.description : ''
+    if (!description) return null
+    return { description, globs: Array.isArray(scope.globs) ? scope.globs : [] }
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -899,15 +967,24 @@ async function cmdRelease({ positionals, flags, dirs }) {
   // derive the same slug used at claim time (prefer the lease's current scope
   // description, fall back to <name>) so the matching claims-dir entry is removed. The
   // owner removes its OWN entry directly (no cooldown — cooldown is for contended slots).
+  const held = ownClaimScope(registry, dirs, identity)
   let desc = name
-  try {
-    const { sessions } = registry.readSessions(dirs)
-    const own = sessions.find((s) => s._file === `${identity.terminalId}.json`)
-    if (own && own.scope && typeof own.scope.description === 'string' && own.scope.description) desc = own.scope.description
-  } catch {
-    /* fail-open — fall back to <name> */
-  }
+  if (held) desc = held.description
   const slug = collision.scopeClaimSlug(desc)
+
+  // CLOSE THE ATTEMPT ROW — take the diff BEFORE the lease is emptied, because the claimed
+  // globs are the only thing the verdict can be measured against and the next line erases
+  // them. The line a person is shown and the line written to the ledger are the SAME
+  // measurement, passed along rather than computed twice. Fail-open throughout.
+  let trailLine = ''
+  try {
+    const trail = await import('./lib/terminal-attempt.mjs')
+    const verdict = await trail.turnDiffVerdict({ slug, globs: held ? held.globs : [], ledgerDir: dirs.attemptsDir })
+    trail.completeTerminalAttempt({ slug, verdict, identity, ledgerDir: dirs.attemptsDir })
+    trailLine = trail.turnDiffLine(verdict)
+  } catch {
+    /* fail-open — a release is never lost because a trail could not be closed */
+  }
 
   registry.heartbeat({ scope: { globs: [], description: '' }, status: 'working' }, { ...dirs, identity })
 
@@ -925,10 +1002,11 @@ async function cmdRelease({ positionals, flags, dirs }) {
   )
 
   if (wantsJson(flags)) {
-    printJson({ released: name, slug, by: identity.holderIdentity })
+    printJson({ released: name, slug, by: identity.holderIdentity, ...(trailLine ? { trail: trailLine } : {}) })
     return 0
   }
   process.stdout.write(`SMA: claim «${name}» снят\n`)
+  if (trailLine) process.stdout.write(`${trailLine}\n`)
   return 0
 }
 
@@ -5483,7 +5561,19 @@ async function cmdForceClear({ positionals, flags, dirs }) {
 
   const list = claims.readClaims(dirs)
   const entry = list.find((c) => c.name === name)
-  if (!entry) return refuse(`SMA: claim «${name}» не найден — очищать нечего\n`, { toStderr: true })
+  if (!entry) {
+    // Name the reservations that DO exist. Entries created before descriptions were
+    // transliterated sit on disk under their old stub names, and the remediation a
+    // collision warning prints is recomputed by the CURRENT rule — so it can never name
+    // them. Nothing here renames or removes anything to paper over that: rewriting what
+    // somebody else created, leaving no trace, is not this command’s to do. The operator
+    // is simply shown the real names instead of being left to guess at them.
+    const existing = list.map((c) => c.name).slice(0, 10)
+    const tail = existing.length
+      ? `существуют: ${existing.join(', ')}${list.length > existing.length ? ` … (всего ${list.length})` : ''}\n`
+      : 'претензий нет вовсе\n'
+    return refuse(`SMA: claim «${name}» не найден — очищать нечего\n${tail}`, { toStderr: true })
+  }
   const prov = entry.provenance || {}
   const who = prov.by || 'неизвестный терминал'
   const operation = prov.reason || '—'
@@ -10602,6 +10692,58 @@ async function cmdSessionEnd({ dirs }) {
 }
 
 /**
+ * turn-diff (HOOK_FACING) — the Stop hook: the diff verdict, delivered to the window at the
+ * boundary of every turn.
+ *
+ * WHAT IT DOES. Reads this window's own claim, takes the base commit off the attempt row the
+ * claim opened, asks git to compare that commit with HEAD, and prints one line naming the
+ * files and whether any of them fell outside the claimed area. That is the whole of it.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO, and this is the load-bearing half. It never re-runs a
+ * command that arrived as data. The full re-check re-executes the check commands written into
+ * summary files, and those files may come from anywhere; the guard around them admits test
+ * runs and scripts, which is exactly the class of thing that must be started by a person's
+ * decision rather than by a schedule. Hooks live on a budget of seconds and a full suite costs
+ * minutes, so the honest choices were «a verdict nobody waits for» or «no verdict at all» —
+ * and this is the third: a read of two git trees, priced in milliseconds.
+ *
+ * IT ALSO RELEASES NOTHING. Stop fires on EVERY turn, not at the end of the work — dropping a
+ * claim here would take away a live protection mid-session. The release of claims stays where
+ * the session actually ends, and that boundary is not blurred from this side either.
+ *
+ * Silent and exit-0 when this window holds no claim, when the claim has no base, or when
+ * anything at all goes wrong: a hook that speaks up on every turn about nothing is a hook a
+ * person turns off.
+ */
+async function cmdTurnDiff({ dirs }) {
+  try {
+    const evt = readStdinJson()
+    const sessionToken = windowTokenFrom(evt)
+    const registry = await import('./lib/registry.mjs')
+    const collision = await import('./lib/collision.mjs')
+    const identity = registry.resolveTerminalIdentity({ sessionToken })
+
+    const held = ownClaimScope(registry, dirs, identity)
+    if (!held) return 0 // nothing claimed — nothing to measure, nothing to say
+
+    const trail = await import('./lib/terminal-attempt.mjs')
+    const slug = collision.scopeClaimSlug(held.description)
+    const verdict = await trail.turnDiffVerdict({ slug, globs: held.globs, ledgerDir: dirs.attemptsDir })
+    if (!verdict || !verdict.base) return 0 // no point of return recorded — silence, not a guess
+
+    printJson({
+      hookSpecificOutput: {
+        hookEventName: 'Stop',
+        additionalContext: trail.turnDiffLine(verdict),
+      },
+    })
+  } catch {
+    /* fail-open — the turn boundary is never blocked by its own verdict */
+  }
+  return 0
+}
+
+/**
  * ask (direct-CLI, NOT hook-facing) — the DEMAND STUB. `ask <terminal>
  * "<question>"` prints the target's FULL fingerprint + journals the unmet question so demand
  * is MEASURED, not assumed (>=10 unmet cases = the V3.1 ask-bus trigger). `ask --unmet-count`
@@ -11561,7 +11703,7 @@ async function cmdVendor({ flags, dirs }) {
   return ok && errors.length === 0 ? 0 : 1
 }
 
-const HOOK_FACING = new Set(['session-start', 'session-end', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'spend-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify', 'precompact-capsule', 'statusline', 'pulse'])
+const HOOK_FACING = new Set(['session-start', 'session-end', 'turn-diff', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'spend-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify', 'precompact-capsule', 'statusline', 'pulse'])
 
 /** subcommand → handler. Each handler lazy-imports its lib module. */
 const HANDLERS = {
@@ -11569,6 +11711,7 @@ const HANDLERS = {
   heartbeat: cmdHeartbeat,
   'session-start': cmdSessionStart,
   'session-end': cmdSessionEnd, // SessionEnd hook: release own claims
+  'turn-diff': cmdTurnDiff, // Stop hook: the cheap diff verdict, per turn — releases nothing
   ask: cmdAsk, // fingerprint demand stub (+ --unmet-count)
   pre: cmdPre,
   'pre-bench': cmdPreBench,
@@ -11663,7 +11806,7 @@ const HANDLERS = {
 /**
  * Verbs that print their OWN `--help`. The global intercept below hands `--help`
  * to these handlers instead of printing the verb list, so a subcommand can
- * document its own flags. Deliberately an opt-in allow-list: 91 other verbs keep
+ * document its own flags. Deliberately an opt-in allow-list: 92 other verbs keep
  * the existing behaviour untouched. (That count is the dispatch table minus this
  * allow-list, and the numbers audit now holds it to exactly that — so when two
  * lines of work add verbs at once the count is their SUM, not either side's figure.)
@@ -11680,7 +11823,7 @@ async function main() {
   // teach exactly that call. A door the docs name has to open.
   if (!cmd || cmd === '--help' || cmd === '-h' || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|deleteme|memory-preview|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|approvals|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|turn-diff|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|arena|batch|deleteme|memory-preview|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|approvals|exam|update>\n',
     )
     return 0
   }
