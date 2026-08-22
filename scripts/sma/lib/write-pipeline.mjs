@@ -86,8 +86,13 @@ import {
 import { localStorePath } from './local-store.mjs'
 
 /**
- * The canon write sequence. Twelve names, one order, frozen. Positions 1-8 are
- * implemented here; 9-12 are registered boundaries that throw until built.
+ * The canon write sequence. Twelve names, one order, frozen. All twelve are
+ * implemented in this module and every one of them runs: there is no registered
+ * boundary left that stands in for a step nobody built. This sentence used to say
+ * the opposite about the last four long after they shipped, which is the reason a
+ * contract suite now walks the whole sequence on a real record and reads this
+ * docblock — a comment that describes code it no longer matches is a lie the
+ * compiler cannot catch.
  */
 export const PIPELINE_STEPS = Object.freeze([
   'observe',
