@@ -99,6 +99,24 @@ fi
 
 **If HANDOFF.json exists:**
 
+**Check its age BEFORE trusting it.** This file is a one-shot artifact that is supposed to
+be deleted the moment it has been used, so a HANDOFF.json that survived is either this
+session's or a corpse from a run that never finished the cycle. A stale one is worse than
+none: it is declared the *primary* source below, so an abandoned file quietly presents
+weeks-old state as the current position.
+
+```bash
+handoff=.planning/HANDOFF.json
+if [ -f "$handoff" ]; then
+  # committed? then its age is knowable; untracked ones fall back to the filesystem
+  handoff_date=$(git log -1 --format=%cs -- "$handoff" 2>/dev/null)
+  echo "HANDOFF.json last written: ${handoff_date:-$(date -r "$handoff" +%F 2>/dev/null || echo unknown)}"
+fi
+```
+
+If that date is not from the session you are resuming, SAY SO and ask before using it —
+do not silently resume onto it.
+
 - This is the primary resumption source — structured data from `/sma-pause-work`
 - Parse `status`, `phase`, `plan`, `task`, `total_tasks`, `next_action`
 - Check `blockers` and `human_actions_pending` — surface these immediately
@@ -106,7 +124,17 @@ fi
 - Validate `uncommitted_files` against `git status` — flag divergence
 - Use `context_notes` to restore mental model
 - Flag: "Found structured handoff — resuming from task {task}/{total_tasks}"
-- **After successful resumption, delete HANDOFF.json** (it's a one-shot artifact)
+- **After successful resumption, delete HANDOFF.json — with the command, not the intention.**
+  It is a one-shot artifact, and prose alone has not been enough: an instruction to delete
+  it has stood here since v3, and abandoned copies still outlive the sessions that wrote
+  them by weeks. Run it as the last step of the resumption, before reporting position:
+
+  ```bash
+  rm -f .planning/HANDOFF.json && echo "handoff consumed and removed"
+  ```
+
+  If the resumption did NOT succeed, leave the file alone and say why — a handoff deleted
+  after a failed resume destroys the only record of where the work stood.
 
 **If .continue-here file exists (phase/non-phase/legacy fallback):**
 

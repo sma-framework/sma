@@ -14,11 +14,21 @@
  *     appends the score to a durable ledger keyed by policy_version, and prints the
  *     rate as the numeric LAST stdout line (machine-readable for calibration).
  *
+ * THE EXAMINEE IS NOT SHIPPED, AND THIS VERB IS. `sma exam` builds and scores the exam
+ * for ANY installation, but the agent it was written for — the synthetic orchestrator —
+ * belongs to the authoring workspace and is not part of this package, and neither are the
+ * orchestrator policy it answers with or the distiller that rewrites that policy. Naming a
+ * grader you do not have would be a promise the package cannot keep, so it is said here
+ * instead: the verb is USABLE without it. `buildExam` and `scoreExam` are the two halves,
+ * and scoring reads externally-graded rows — whatever produced them. Grade with your own
+ * agent, with a person, or with any process that returns {id, verdict}; the blind-exam
+ * invariant below holds the same way whoever the examinee is.
+ *
  * BLIND-EXAM INVARIANT: the answer key is written to a SEPARATE file
- * whose name carries the `-key` suffix (`exam-<date>-key.jsonl`). The examinee
- * (sma-synthetic-orchestrator) is handed ONLY the `exam-<date>.jsonl` items — the
- * key file is NEVER passed to it. The path convention IS the enforcement: a
- * consumer that reads `exam-<date>.jsonl` can never see the stripped answers.
+ * whose name carries the `-key` suffix (`exam-<date>-key.jsonl`). The examinee is handed
+ * ONLY the `exam-<date>.jsonl` items — the key file is NEVER passed to it. The path
+ * convention IS the enforcement: a consumer that reads `exam-<date>.jsonl` can never see
+ * the stripped answers.
  *
  * CONTAINMENT (copied from decision-corpus.mjs / excavate.mjs): all
  * artifacts land under `<memoryDir>/exam/` — a LOCAL repo tree, never public/, never
