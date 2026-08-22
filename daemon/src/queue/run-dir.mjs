@@ -98,13 +98,28 @@ export const CONTINUATION_CAP = 8000
  */
 export const CONTINUATION_TRUNCATED_MARK = '\n\n[конспект обрезан по потолку в 8000 знаков]\n'
 
-/** The five names, in one place: the writer and any reader agree by construction. */
+/**
+ * СНИМОК КОНТЕКСТА ЗАДАЧИ — ИМЯ ОДНО НА ДВА МЕСТА, И ЭТО НАМЕРЕННО.
+ *
+ * Этим же именем документ ложится в корень рабочей копии, где его читает работник. Здесь,
+ * в каталоге попытки, лежит его второй экземпляр — для человека и для двери карточки. Это
+ * ОДИН документ «что попытке дали» в двух экземплярах для двух читателей; разные имена
+ * разорвали бы очевидность тождества, а владелец у имени должен быть один, и он здесь.
+ *
+ * ЗАЧЕМ ЭКЗЕМПЛЯР У ПОПЫТКИ, если он уже есть в копии. Копию убирают, а строку очереди
+ * человек правит: через месяц ни одна из них не ответит, с каким снимком запускали ИМЕННО
+ * ЭТУ попытку. У каждой попытки свой каталог и своя правда о том, что ей дали.
+ */
+export const TASK_CONTEXT_FILE = 'task_context.md'
+
+/** The six names, in one place: the writer and any reader agree by construction. */
 export const RUN_FILES = Object.freeze([
   'run.json',
   'guards.jsonl',
   'transcript.jsonl',
   'receipt.json',
   CONTINUATION_FILE,
+  TASK_CONTEXT_FILE,
 ])
 
 /**
@@ -472,6 +487,40 @@ export function writeContinuation({ dir, text, secretValues, fsImpl, log } = {})
         ? `${safe.slice(0, CONTINUATION_CAP - CONTINUATION_TRUNCATED_MARK.length)}${CONTINUATION_TRUNCATED_MARK}`
         : safe
     writeAtomic(fs, join(dir, CONTINUATION_FILE), capped)
+    return true
+  } catch (err) {
+    say(log, { type: 'run_dir.error', dir, error: String((err && err.message) || err) })
+    return false
+  }
+}
+
+/**
+ * writeTaskContext({dir, text, secretValues, fsImpl, log}) → доехал ли свидетель до диска?
+ *
+ * ЧТО ЭТО. Экземпляр снимка контекста, оставленный У ПОПЫТКИ: рабочую копию однажды уберут,
+ * а строку очереди человек перепишет — и тогда единственным местом, где сохранится ответ
+ * «с каким снимком запускали ИМЕННО ЭТУ попытку», останется её каталог.
+ *
+ * ОДИН ПОЯС, А НЕ ДВА. Секреты режутся первыми, по строкам, тем же обходчиком, что у всех
+ * остальных файлов этого каталога. А вот второго потолка здесь НЕТ — намеренно, и это
+ * отличие от соседней функции: у конспекта передачи писатель и есть единственный вход, а у
+ * снимка вход один и он в другом месте — дверь постановки, где потолок ОТКАЗЫВАЕТ, а не
+ * режет. Подрезать здесь второй раз значило бы завести вторую правду о длине, которая
+ * разъедется с первой молча.
+ *
+ * ПУСТОЙ ТЕКСТ НЕ ПИШЕТСЯ ВОВСЕ: отсутствие файла — это «человек ничего не сказал», а пустой
+ * файл сказал бы, что сказал и промолчал.
+ *
+ * @returns {boolean}
+ */
+export function writeTaskContext({ dir, text, secretValues, fsImpl, log } = {}) {
+  if (typeof dir !== 'string' || dir.trim() === '') return false
+  const raw = String(text ?? '')
+  if (raw.trim() === '') return false
+  const fs = io(fsImpl)
+  try {
+    const safe = sanitizeRun({ lines: raw.split('\n') }, { secretValues }).lines.join('\n')
+    writeAtomic(fs, join(dir, TASK_CONTEXT_FILE), `${safe}\n`)
     return true
   } catch (err) {
     say(log, { type: 'run_dir.error', dir, error: String((err && err.message) || err) })

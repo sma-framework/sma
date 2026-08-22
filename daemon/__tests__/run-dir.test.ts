@@ -97,6 +97,10 @@ const backlogTask = (over: any = {}) => ({
   priority: 0,
   storyPoints: 3,
   acceptance: 'green targeted tests + a reverify receipt',
+  // СНИМОК КОНТЕКСТА НЕСЁТ ИГОЛКУ НАМЕРЕННО. Шестой файл каталога — единственный, куда
+  // попадает текст, который печатал ЧЕЛОВЕК, а человек вставляет в такие поля что угодно.
+  // Пояс проверяется на нём тем же делом, что и на остальных пяти.
+  taskContext: `снимок для работника\nслучайно вставлен ${TOKEN_VALUE}\nхвост снимка`,
   ...over,
 })
 
@@ -136,7 +140,7 @@ async function runTick(over: any = {}) {
   const lines: string[] = over.lines ?? [...framesOf('claude-stream-parity-green.ndjson', workDir), NOTE, LESSON]
   const c = mkClock()
   const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
-  await adapter.enqueue(backlogTask())
+  await adapter.enqueue(over.task ?? backlogTask())
   const logged: any[] = []
 
   const deps: any = {
@@ -176,7 +180,8 @@ async function runTick(over: any = {}) {
   }
 
   const res = await tick(deps)
-  return { res, projectDir, ledgerDir, workDir, logged, runDir: join(projectDir, '.sma', 'runs', 'BL-1_1') }
+  const attempt = Number((over.task && over.task.attempt) || 1)
+  return { res, projectDir, ledgerDir, workDir, logged, runDir: join(projectDir, '.sma', 'runs', `BL-1_${attempt}`) }
 }
 
 const readJson = (path: string) => JSON.parse(readFileSync(path, 'utf8'))
@@ -381,10 +386,8 @@ describe('каталог есть у КАЖДОГО исхода, а не тол
  * потолок не упирается — и это ожидаемо: путь обрезки иначе не был бы пройден ни разу.
  */
 describe('пятый файл каталога прогона — конспект передачи', () => {
-  it('замороженный список имён стал пятым по счёту, и новое имя названо в нём ровно один раз', () => {
-    expect(RUN_FILES).toHaveLength(5)
+  it('конспект назван в замороженном списке ровно один раз', () => {
     expect(RUN_FILES.filter((n: string) => n === 'continuation.md')).toHaveLength(1)
-    expect([...RUN_FILES]).toEqual(['run.json', 'guards.jsonl', 'transcript.jsonl', 'receipt.json', 'continuation.md'])
   })
 
   it('конспект лежит в каталоге ЭТОЙ попытки и собран из того, что попытка уже записала', async () => {
@@ -532,5 +535,64 @@ describe('the rules receipt says which of two different things happened', () => 
     ]
     // materialized — but because the directory was copied, not because an 'absent' line matched.
     expect(rulesInCopy(io(true), '/copy', { materialized: list }).claudeMd).toBe('materialized')
+  })
+})
+
+/**
+ * ═══ ШЕСТОЙ ФАЙЛ КАТАЛОГА ПРОГОНА — СВИДЕТЕЛЬ СНИМКА КОНТЕКСТА ══════════════════
+ *
+ * ЗАЧЕМ ВТОРОЙ ЭКЗЕМПЛЯР ОДНОГО ДОКУМЕНТА. Снимок уже лежит в рабочей копии — там его
+ * читает работник. Но копию убирают, а строку очереди человек правит: через месяц ни одна
+ * из них не ответит на вопрос «а что этой попытке вообще дали». Отвечает на него каталог
+ * прогона, и отвечает по каждой попытке отдельно — у второй попытки своя правда о том, с
+ * каким снимком её запускали, и правда эта не обязана совпадать с сегодняшней строкой.
+ *
+ * ИМЯ ОДНО НА ОБА МЕСТА — НАМЕРЕННО. Это ОДИН документ в двух экземплярах для двух
+ * читателей: работник открывает копию, человек и дверь карточки открывают каталог попытки.
+ * Разные имена разорвали бы очевидность тождества.
+ *
+ * ВТОРОГО ПОТОЛКА ЗДЕСЬ НЕТ. Потолок применён у единственного входа — двери постановки, — и
+ * там он ОТКАЗЫВАЕТ, а не режет. Вторая правда о длине разъехалась бы с первой молча.
+ */
+describe('шестой файл каталога прогона — свидетель снимка контекста', () => {
+  it('замороженный список имён стал ШЕСТЫМ по счёту, и новое имя названо в нём ровно один раз', () => {
+    expect(RUN_FILES).toHaveLength(6)
+    expect(RUN_FILES.filter((n: string) => n === 'task_context.md')).toHaveLength(1)
+    expect([...RUN_FILES]).toEqual([
+      'run.json',
+      'guards.jsonl',
+      'transcript.jsonl',
+      'receipt.json',
+      'continuation.md',
+      'task_context.md',
+    ])
+  })
+
+  it('свидетель лежит в каталоге ЭТОЙ попытки и несёт снимок со строки — с вырезанными секретами', async () => {
+    const { runDir } = await runTick()
+    const text = readFileSync(join(runDir, 'task_context.md'), 'utf8')
+
+    expect(text).toContain('хвост снимка')
+    expect(text, 'секрет уехал в файл, который человек откроет через месяц').not.toContain(TOKEN_VALUE)
+  })
+
+  it('задача БЕЗ снимка — файла-свидетеля нет вовсе (отсутствие = отсутствие)', async () => {
+    const { runDir } = await runTick({ task: backlogTask({ taskContext: undefined }) })
+
+    expect(existsSync(join(runDir, 'run.json')), 'каталог попытки не написан — дело ничего не значит').toBe(true)
+    expect(existsSync(join(runDir, 'task_context.md')), 'пустой файл соврал бы, что человеку было что сказать').toBe(false)
+  })
+
+  it('у КАЖДОЙ попытки свой свидетель: вторая несёт снимок, каким он был К НЕЙ', async () => {
+    const projectDir = mkDir('sma-run-two-')
+    await runTick({ projectDir, task: backlogTask({ attempt: 1, taskContext: 'снимок первой попытки' }) })
+    await runTick({ projectDir, task: backlogTask({ attempt: 2, taskContext: 'снимок ВТОРОЙ попытки' }) })
+
+    const first = readFileSync(join(projectDir, '.sma', 'runs', 'BL-1_1', 'task_context.md'), 'utf8')
+    const second = readFileSync(join(projectDir, '.sma', 'runs', 'BL-1_2', 'task_context.md'), 'utf8')
+
+    expect(first).toContain('снимок первой попытки')
+    expect(second).toContain('снимок ВТОРОЙ попытки')
+    expect(second, 'вторая попытка судится по снимку, которого ей не давали').not.toContain('первой попытки')
   })
 })
