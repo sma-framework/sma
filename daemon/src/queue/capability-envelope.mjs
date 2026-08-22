@@ -36,15 +36,22 @@
  * "push" is the correct direction of error for a gate of this kind, and a caller who hits
  * it narrows or renames the entry rather than widening the gate.
  *
- * WHAT THIS MODULE DOES NOT DO, SAID OUT LOUD: nothing enforces these envelopes yet. The
- * runner spawns a worker in a per-task worktree, and the worker's real permission surface
- * is the CHECKOUT's `.claude/settings.json` (args.mjs guards that surface against being
- * swapped out, and TERMINAL_PARITY_PATHS names what the session inherits by standing
- * there). So today the REAL reach of a prod worker is wider than the envelope below says.
- * The envelope is the declaration a receipt can be checked against and the shape a future
- * enforcement point consumes; it is not, on its own, an enforcement point. Reading it as
- * one would be the exact "promise the layer below cannot keep" the fleet already refuses
- * to make elsewhere.
+ * WHAT ENFORCES THIS, SAID OUT LOUD — AND WHAT DOES NOT. This header used to say that
+ * nothing enforced these envelopes yet. That stopped being true, and a header that
+ * understates a security boundary is worse than one that overstates it: it invites a
+ * reader to widen an entry believing the widening is inert.
+ *
+ * The envelope DOES reach the spawn. `envelopeSpawnOptions` turns a granted set into the
+ * `allowedTools` / `disallowedTools` options, and the arg builder delivers them to the
+ * worker CLI as `--allowedTools` / `--disallowedTools`. A tool the envelope did not grant
+ * is refused by the worker's own runtime, not merely absent from a declaration.
+ *
+ * What it is still NOT: the whole of the worker's permission surface. That surface is the
+ * CHECKOUT's `.claude/settings.json` — hooks and permission rules the CLI reads by standing
+ * in the worktree (the arg builder guards it against being swapped out, and
+ * TERMINAL_PARITY_PATHS names what the session inherits by being there). The envelope
+ * narrows the tool list; the checkout decides what the remaining tools may touch. Both hold
+ * at once, and a receipt is checked against the envelope, not against the checkout.
  */
 
 import { createHash } from 'node:crypto'
