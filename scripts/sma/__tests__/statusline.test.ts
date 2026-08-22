@@ -38,6 +38,8 @@ import {
   PREDS_TTL_MS,
   WRAPPED_TIMEOUT_MS,
 } from '../lib/statusline.mjs'
+// The warn fraction the memory axis buys its place at — imported, never retyped.
+import { BUDGET_WARN_FRACTION } from '../lib/constants.mjs'
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'cli.mjs')
 
@@ -716,5 +718,71 @@ describe('statusline identity — the vendor session token reaches the lease loo
     expect(parseStatusStdin(JSON.stringify({ session_id: 42 })).sessionId).toBeUndefined()
     expect(parseStatusStdin('{}').sessionId).toBeUndefined()
     expect(parseStatusStdin('not json').sessionId).toBeUndefined()
+  })
+})
+
+// ── the memory axis: shown when it is a signal, absent when it is noise ───────
+//
+// The statusline is a shared shop window with a fixed number of places in it, so this
+// axis buys its place only when it has something to say: at or above the warn fraction
+// of the always-load budget. Below that the line does not grow at all — not even by a
+// dash, which is what the other axes do. A dash means «this axis exists and has no
+// reading»; a corpus at 30% has a perfectly good reading, and printing it every render
+// would be steady noise on the one surface built to be glanced at.
+describe('statusline memory axis', () => {
+  it('M1: at the warn line and above, mem sits between the window and the gates', () => {
+    const out = renderSegment({ pulse: 'working', claim: '—', collisions: 0, windowPct: 42, memPct: 85, gates: 1, unscored: 3 })
+    expect(out).toContain('mem 85%')
+    // POSITION is the pin, not just presence: after win, before gates.
+    expect(out.indexOf('win 42%')).toBeLessThan(out.indexOf('mem 85%'))
+    expect(out.indexOf('mem 85%')).toBeLessThan(out.indexOf('gates 1'))
+    expect(out).toBe('sma ▸working · claim — · coll 0 · win 42% · mem 85% · gates 1 · preds 3')
+  })
+
+  it('M2: below the warn line the segment does not grow — no sub-segment, not even a dash', () => {
+    const quiet = renderSegment({ pulse: 'working', claim: '—', collisions: 0, windowPct: 42, memPct: 50, gates: 1, unscored: 3 })
+    expect(quiet).not.toContain('mem')
+    expect(quiet).toBe('sma ▸working · claim — · coll 0 · win 42% · gates 1 · preds 3')
+    // the threshold is the SHIPPED warn fraction, not a number retyped here
+    const atThreshold = renderSegment({ memPct: Math.ceil(BUDGET_WARN_FRACTION * 100) })
+    expect(atThreshold).toContain(`mem ${Math.ceil(BUDGET_WARN_FRACTION * 100)}%`)
+    expect(renderSegment({ memPct: Math.ceil(BUDGET_WARN_FRACTION * 100) - 1 })).not.toContain('mem')
+  })
+
+  it('M3: an absent or nonsense reading leaves the rest of the line exactly as it was', () => {
+    const base = 'sma ▸working · claim — · coll 0 · win 42% · gates 1 · preds 3'
+    const state = { pulse: 'working', claim: '—', collisions: 0, windowPct: 42, gates: 1, unscored: 3 }
+    expect(renderSegment(state)).toBe(base)
+    expect(renderSegment({ ...state, memPct: null })).toBe(base)
+    expect(renderSegment({ ...state, memPct: NaN })).toBe(base)
+    expect(renderSegment({ ...state, memPct: 'lots' })).toBe(base)
+    expect(() => renderSegment({ memPct: {} })).not.toThrow()
+  })
+
+  it('M4: the state carries the percentage ONLY when the corpus tiered — below the warn line it is null', async () => {
+    const statuslineDir = join(dir, 'statusline')
+    const loaders = { loadSpend: () => 42, loadGates: () => 1, loadUnscored: () => 3 }
+    const dirs = { statuslineDir }
+
+    const loud = await readStatuslineState({ dirs, summary: { collisions: 0 }, loaders: { ...loaders, loadMem: () => 91 }, force: true })
+    expect(loud.memPct).toBe(91)
+
+    const quiet = await readStatuslineState({ dirs, summary: { collisions: 0 }, loaders: { ...loaders, loadMem: () => null }, force: true })
+    expect(quiet.memPct).toBeNull()
+
+    // a throwing loader is a null axis, never a wedged render (fail-open like its neighbours)
+    const broken = await readStatuslineState({
+      dirs,
+      summary: { collisions: 0 },
+      loaders: {
+        ...loaders,
+        loadMem: () => {
+          throw new Error('corpus on fire')
+        },
+      },
+      force: true,
+    })
+    expect(broken.memPct).toBeNull()
+    expect(broken.windowPct).toBe(42) // the neighbours are untouched by its failure
   })
 })
