@@ -594,3 +594,62 @@ describe('init — the REAL installer wires the statusline segment, always into 
     }
   }, 120000)
 })
+
+/**
+ * The turn-boundary entry — the one that carries the diff verdict back into the window.
+ *
+ * WHY IT GETS ITS OWN CASES rather than riding the derived counts above. The counts prove
+ * that whatever the template ships lands exactly once; they cannot prove WHAT it ships.
+ * This entry has two properties that a count would never notice and that both matter to a
+ * person: it fires on EVERY turn, so its budget has to stay in the seconds a person does
+ * not feel, and it is born ANCHORED — it never had a project-relative spelling, so it must
+ * never appear in the stale list, which is reserved for strings this installer really did
+ * write once and would otherwise leave behind beside the new one.
+ */
+describe('init hooks — the turn-boundary entry ships once, cheap, and anchored', () => {
+  const turnDef = () => (SMA_HOOKS as HookDef[]).find((d) => String(d.command).endsWith('turn-diff'))
+
+  it('the installer ships exactly one matcher-less entry for the turn boundary', () => {
+    const def = turnDef()
+    expect(def, 'no turn-boundary entry in the shipped table').toBeDefined()
+    expect(def!.event).toBe('Stop')
+    expect(def!.matcher, 'a matcher-less entry covers every end reason the event has').toBe(null)
+    expect(defFor('Stop', null)).toEqual(def)
+  })
+
+  it('its budget is the editing-path budget, not the tree-walking one', () => {
+    // It runs on every turn. The two entries that walk git and the working tree get 15
+    // seconds because they are rare; this one may not, and «дёшево» has to be a number
+    // somebody can point at rather than an intention in a comment.
+    expect(turnDef()!.timeout).toBeLessThanOrEqual(5)
+  })
+
+  it('it is born anchored, so it never belongs in the healed-away list', () => {
+    const def = turnDef()!
+    expect(def.command).toContain('${CLAUDE_PROJECT_DIR:-.}')
+    const settings: any = {}
+    mergeHooks(settings)
+    // the stale sweep must not recognise a string this installer never shipped
+    const removed = removeStaleSmaHooks(settings)
+    expect(removed, 'a freshly written table has nothing stale in it').toBe(0)
+    expect(smaEntriesIn(groupFor(settings, 'Stop', null))).toEqual([entryOf(def)])
+  })
+
+  it('an install that already runs it is healed, not doubled', () => {
+    const settings: any = {}
+    mergeHooks(settings)
+    const again = mergeHooks(settings)
+    expect(again.added).toBe(0)
+    expect(smaEntriesIn(groupFor(settings, 'Stop', null))).toHaveLength(1)
+  })
+
+  it('a project running its own hook on the same event keeps it byte-identically', () => {
+    const foreign = { type: 'command', command: 'node my-turn-guard.mjs', timeout: 30 }
+    const foreignBytes = JSON.stringify(foreign)
+    const settings: any = { hooks: { Stop: [{ hooks: [foreign] }] } }
+    mergeHooks(settings)
+    const group = groupFor(settings, 'Stop', null)
+    expect(JSON.stringify(group.hooks.find((h: any) => h.command === foreign.command))).toBe(foreignBytes)
+    expect(smaEntriesIn(group)).toEqual([entryOf(turnDef()!)])
+  })
+})
