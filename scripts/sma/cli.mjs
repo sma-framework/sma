@@ -11098,17 +11098,220 @@ async function cmdMemoryPreview({ flags, dirs }) {
  * Tolerant hook-stdin read; fully fail-open.
  */
 async function cmdSessionEnd({ dirs }) {
+  // Declared out here so the farewell move below can speak about the SAME session the
+  // release path resolved. The hook's stdin can be read exactly once, so re-deriving the
+  // identity in the second block would read an empty frame and address the wrong window.
+  let identity = null
   try {
     const evt = readStdinJson()
     const sessionToken = windowTokenFrom(evt)
     const registry = await import('./lib/registry.mjs')
     const claims = await import('./lib/claims.mjs')
-    const identity = registry.resolveTerminalIdentity({ sessionToken })
+    identity = registry.resolveTerminalIdentity({ sessionToken })
     claims.sessionEnd({ identity, claimsDir: dirs.claimsDir, journalDir: dirs.journalDir })
   } catch {
     /* fail-open — a session-end failure must never surface */
   }
+
+  // The farewell move, in its OWN try/catch and strictly after the claims are back:
+  // fail-open — the farewell move must never surface; the hook has a 10-second timeout,
+  // so cheap reads only. A session may end with nothing worth remembering, and that is a
+  // legal outcome said in words, never a lesson invented to fill the silence.
+  try {
+    await farewellMove({ dirs, identity })
+  } catch {
+    /* fail-open — a farewell that fails costs the draft, never the released claims */
+  }
   return 0
+}
+
+/** The journal event type the farewell move leaves behind, whatever its outcome. */
+const FAREWELL_EVENT_TYPE = 'farewell'
+
+/**
+ * The journal types that are the session's OWN bookkeeping rather than something the
+ * session did. Read off the product, not off a wish list: `release` is what
+ * `claims.sessionEnd` writes moments earlier, `farewell` is this block's own trace. The
+ * canon's «session-start» and «heartbeat» are NOT journal types in this engine — nothing
+ * appends them — so naming them here would have been a set that filters nothing.
+ */
+const FAREWELL_SERVICE_TYPES = new Set(['release', FAREWELL_EVENT_TYPE])
+
+/**
+ * The journal types that name something that WENT WRONG. Taken from the vocabulary
+ * journal.mjs documents on `appendEvent` plus the incident kinds the engine appends
+ * elsewhere; a type outside this set still counts as material, it just does not earn a
+ * verbatim excerpt in the candidate's body.
+ */
+const FAREWELL_INCIDENT_TYPES = new Set([
+  'warn',
+  'collision',
+  'steal',
+  'snapshot-fail',
+  'incident',
+  'reap-fail',
+  'stall',
+  'airbag',
+])
+
+/** How many of this terminal's journal lines the farewell reads. A tail, never the tree. */
+const FAREWELL_TAIL = 200
+
+/** How many incident lines reach the candidate's body — the hook's budget, in lines. */
+const FAREWELL_EXCERPTS = 10
+
+/** Make a value safe to be half of a filename: the draft id is joined onto a path. */
+function farewellSafe(value) {
+  return String(value ?? '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+}
+
+/**
+ * farewellMove({dirs, identity}) — the last thing a session does.
+ *
+ * WHAT IT DOES. Reads the tail of THIS terminal's coordination journal, asks one question
+ * of it — did this session do anything, or was it only bookkeeping — and answers in one of
+ * two ways. With material it assembles a candidate lesson DETERMINISTICALLY from the facts
+ * on those lines (counts by type, verbatim incident lines) and hands it to the EXISTING
+ * write pipeline. Without material it says so, in words, and invents nothing.
+ *
+ * WHY IT CANNOT WRITE ACTIVE MEMORY, and this is the load-bearing half. The classification
+ * it declares — `episodic` + `inferred` — resolves on the approval ladder to `auto-draft`,
+ * and `auto-draft` is automatic about DRAFTING, not about believing: the pipeline's risk
+ * step stages every path but `auto-ttl`. So the outcome is `staged-draft` by the ladder's
+ * own arithmetic rather than by a promise made here, and the file lands in `drafts/`, which
+ * no corpus reader indexes. There is deliberately no branch in this function that could
+ * produce a persisted record, and no LLM anywhere in it: a machine that may author a belief
+ * about its own session is a machine that can talk itself into anything.
+ *
+ * COST. One `journalTail` read of one file, one pipeline walk that stops at step 7. No git,
+ * no network, no timers, no scan of the notes corpus beyond the single flat listing the
+ * pipeline does for itself. Everything that can throw is caught by the caller.
+ */
+async function farewellMove({ dirs, identity }) {
+  // Without an identity there is no session to speak about: the release path above is the
+  // one that resolves it, and if that failed the honest move is silence, not a guess.
+  if (!identity || !identity.terminalId) return
+
+  const journal = await import('./lib/journal.mjs')
+  const events = journal.journalTail(identity.terminalId, FAREWELL_TAIL, { journalDir: dirs.journalDir })
+  const material = events.filter((e) => e && typeof e.type === 'string' && !FAREWELL_SERVICE_TYPES.has(e.type))
+
+  /** One journal line per farewell, whatever the outcome — the machine-readable trace. */
+  const note = (detail) => {
+    try {
+      journal.appendEvent(
+        {
+          type: FAREWELL_EVENT_TYPE,
+          actors: [identity.holderIdentity ?? identity.terminalId],
+          scope: 'session',
+          detail,
+        },
+        { terminalId: identity.terminalId, journalDir: dirs.journalDir },
+      )
+    } catch {
+      /* best-effort — a journal that cannot be written does not undo the draft */
+    }
+  }
+
+  if (!material.length) {
+    note({ outcome: 'no-material' })
+    process.stdout.write('SMA: прощальный ход — материала сессии нет, урок не собран\n')
+    return
+  }
+
+  const counts = new Map()
+  for (const e of material) counts.set(e.type, (counts.get(e.type) ?? 0) + 1)
+  const byType = [...counts.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([type, n]) => `${type} ${n}`)
+    .join(', ')
+
+  // The id is deterministic from the session and the day, so a second SessionEnd on the
+  // same window resolves to the SAME file — and the pipeline's staging door never clobbers
+  // a draft a person may already have edited. The day is part of it so that tomorrow's
+  // session in the same window is not silently denied its own candidate.
+  const day = new Date().toISOString().slice(0, 10)
+  const id = `session-lesson-${farewellSafe(identity.terminalId)}-${day}`
+
+  const excerpts = material.filter((e) => FAREWELL_INCIDENT_TYPES.has(e.type)).slice(0, FAREWELL_EXCERPTS)
+  const claim =
+    `сессия ${identity.terminalId} закрылась, оставив в журнале координации ` +
+    `${material.length} событ. (${byType}) — кандидат-урок собран из фактов журнала, не из рассуждения`
+
+  const body = [
+    '',
+    '<!--',
+    '  ЧЕРНОВИК — НЕ часть корпуса памяти. Собран прощальным ходом session-end',
+    '  ДЕТЕРМИНИРОВАННО, из фактов журнала координации: ни одна строка ниже не является',
+    '  суждением машины. В активную память он не попадает никак — только руками:',
+    '  `node scripts/sma/cli.mjs memory write --apply <файл> --confirm <файл> --yes`.',
+    '-->',
+    '',
+    '## Чем была сессия (факты журнала)',
+    '',
+    `- дата: ${day}`,
+    `- терминал: ${identity.terminalId}`,
+    `- событий: ${material.length} (${byType})`,
+    '',
+    '## Что пошло не так (дословно из журнала)',
+    '',
+    ...(excerpts.length
+      ? excerpts.map((e) => `- ${e.ts ?? '—'} · ${e.type} · ${e.scope ?? '—'}`)
+      : ['_Событий-инцидентов в журнале этой сессии нет._']),
+    '',
+    '## Урок',
+    '',
+    '_Заполняется человеком при приёмке: механизм, а не происшествие._',
+    '',
+  ].join('\n')
+
+  const record = {
+    id,
+    schema_version: '2',
+    status: 'draft',
+    memory_type: 'episodic',
+    truth_mode: 'inferred',
+    claim,
+    language: 'ru',
+    sensitivity: 'internal',
+    risk: 'low',
+    source: { authority: 'self-observed' },
+    retrieval: { areas: ['workflow'] },
+  }
+
+  // The corpus is resolved the way the sibling hook resolves it — from the state root's
+  // parent. NOT through the corpus default of `memory write`: that one asks git for the
+  // repository top level, and a hook on a ten-second budget does not spawn a process.
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const pipeline = await import('./lib/write-pipeline.mjs')
+  const result = pipeline.runPipeline(
+    { record, body },
+    {
+      corpusDir: join(repoRoot, '.claude', 'memory'),
+      journalDir: dirs?.journalDir,
+      repoRoot,
+      terminalId: identity.terminalId,
+    },
+  )
+
+  if (result.outcome !== 'staged-draft') {
+    // The pipeline refused the candidate — a legal answer (a secret in the material, a
+    // grammar it will not write). Recorded as what it is; nothing is written anywhere.
+    note({ outcome: 'refused', id, reason: result.trace[result.trace.length - 1]?.detail?.reason ?? null })
+    process.stdout.write('SMA: прощальный ход — конвейер записи отказал, черновик не положен\n')
+    return
+  }
+
+  const staged = result.trace.find((t) => t.outcome === 'staged')
+  const outcome = staged?.detail?.draft === 'draft-exists' ? 'draft-exists' : 'drafted'
+  note({ outcome, id, path: result.path })
+  process.stdout.write(
+    `SMA: прощальный ход — кандидат-урок положен черновиком: ${result.path} ` +
+      '(в корпус НЕ попал; применение — руками: `memory write --apply`)\n',
+  )
 }
 
 /**
