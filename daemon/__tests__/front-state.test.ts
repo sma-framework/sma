@@ -3468,3 +3468,74 @@ describe('POST /api/wave/hold — слово владельца об эшело�
     expect(payload.waves).toEqual([])
   })
 })
+
+/**
+ * ДОКУМЕНТАРНАЯ СТАДИЯ ПРИНИМАЕТСЯ, А НЕ ОТКАЗЫВАЕТ ВЕЧНО.
+ *
+ * Приёмка всегда звала слияние ветки `wt/<id>`. Для документарной стадии ветка не создаётся
+ * ВООБЩЕ — работа идёт в дереве проекта, а не в копии, — поэтому «Принять» получало от git
+ * «did not match any», карточка возвращалась в «ждут решения», и так навсегда: нажатие,
+ * которое не может сработать ни при каких условиях.
+ *
+ * Признак берётся ПОЛОЖИТЕЛЬНЫЙ, а не «ветки нет»: должна быть хотя бы одна строка попытки,
+ * и НИ ОДНА из них не назвала ветки. Пустой журнал ничего не доказывает — там приёмка обязана
+ * вести себя как раньше, иначе работа кодом уехала бы в «принято» без единого слияния.
+ */
+describe('POST /api/approve — документарная стадия принимается без слияния', () => {
+  const okCas = async () => ({ rows: [{ id: 'T-doc' }] })
+
+  it('ни одна попытка не назвала ветки — сливать нечего, и приёмка НЕ отказывает', async () => {
+    const merges: any[] = []
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        casExec: okCas,
+        verbRunner: (args: any) => {
+          merges.push(args)
+          return { merged: false, message: 'did not match any' }
+        },
+        ledger: {
+          readAttempts: () => [{ taskId: 'T-doc', attempt: 1, outcome: 'completed', receiptRef: 'doc:PLAN.md@abc' }],
+        },
+      },
+    })
+    const res = await callApprove(front, { taskId: 'T-doc' })
+    expect(merges.length, 'на документарной стадии слияние звать нечего — ветки не было').toBe(0)
+    expect(res.statusCode, 'приёмка документарной стадии обязана проходить').toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true })
+  })
+
+  it('журнал попытки ПУСТ — ведём себя как раньше: слияние зовётся, ничего не выдумывается', async () => {
+    const merges: any[] = []
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        casExec: okCas,
+        verbRunner: (args: any) => {
+          merges.push(args)
+          return { merged: true }
+        },
+        ledger: { readAttempts: () => [] },
+      },
+    })
+    await callApprove(front, { taskId: 'T-doc' })
+    expect(merges.length, 'пустой журнал — не доказательство документарности; слияние обязано случиться').toBe(1)
+  })
+
+  it('попытка назвала ветку — слияние зовётся, как и раньше', async () => {
+    const merges: any[] = []
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        casExec: okCas,
+        verbRunner: (args: any) => {
+          merges.push(args)
+          return { merged: true }
+        },
+        ledger: { readAttempts: () => [{ taskId: 'T-doc', attempt: 1, branch: 'wt/T-doc', outcome: 'completed' }] },
+      },
+    })
+    await callApprove(front, { taskId: 'T-doc' })
+    expect(merges.length, 'работа кодом обязана сливаться').toBe(1)
+  })
+})
