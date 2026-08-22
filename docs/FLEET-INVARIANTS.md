@@ -537,9 +537,11 @@ The daemon does run unattended: a supervisor job starts the loop and it keeps
 working while nobody watches, which is the whole point of the always-on wiring.
 What it does not have is a role that ORIGINATES work on a clock. Every attempt
 this daemon has made traces back to a task a person enqueued; the only timers in
-`daemon/src` are the project watcher's debounce, its repeating reconcile pass,
-the liveness heartbeat and the `tick` wrapper that re-enters the loop. Nothing
-in there decides, at three in the morning, that something ought to be done.
+`daemon/src` are the project watcher's debounce and its repeating reconcile
+pass, the event stream's keep-alive pulse, and the `tick` wrapper that re-enters
+the loop — three `setInterval` call sites and one `setTimeout`, all of them
+injectable seams. Nothing in there decides, at three in the morning, that
+something ought to be done.
 
 So the governance such a role would need — stop gates that hold it before it
 acts, a runbook for the morning after, deduplication so one missed night does
