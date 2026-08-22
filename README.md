@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="version 5.6.1">
-  <img src="https://img.shields.io/badge/tests-4361%2F4361-3CC0A0" alt="tests 4361/4361">
+  <img src="https://img.shields.io/badge/tests-4494%2F4494-3CC0A0" alt="tests 4494/4494">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -587,7 +587,7 @@ The `/sma-*` workflow family (run inside a Claude Code session):
 | `/sma-deleteme` | Remove SMA in one action; your memory corpus stays |
 | `/sma-update` | Check installed vs available versions and update via the standard installer; everything local stays |
 
-Underneath runs the coordination + accountability CLI — 94 verbs, each with an in-product explainer. Call it from your project root, the way the hooks do:
+Underneath runs the coordination + accountability CLI — 95 verbs, each with an in-product explainer. Call it from your project root, the way the hooks do:
 
 ```bash
 node scripts/sma/cli.mjs status            # who is working on what, right now
