@@ -1554,6 +1554,26 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       expect(await q.claimNext('w2', {})).toBeNull()
     })
 
+    /**
+     * ═══════ ЧТО ЧЕЛОВЕК НАПИСАЛ О ЗАДАЧЕ, ТО РАБОТНИК И ПОЛУЧАЕТ ═══════
+     *
+     * ПОЧЕМУ ЭТО ДЕЛО ЖИВЁТ ЗДЕСЬ, А НЕ В ФАЙЛЕ ОДНОГО БЭКЕНДА. Снимок контекста едет в
+     * рабочую копию и в промпт КАЖДОЙ попытки, и единственный его источник — строка очереди.
+     * «Захваченная задача несёт снимок» — утверждение о ХРАНИЛИЩЕ, а хранилищ у контракта два:
+     * памятное отдаёт нормализованную задачу как есть, долговечное везёт её в payload'е джоба
+     * и собирает обратно после выборки. Проверенное на одном и не проверенное на другом —
+     * ровно тот класс, который стоил дня: каждый кусок написан, покрыт делами и зелёный, и ни
+     * один не присоединён к соседнему. Это дело утверждает ПРОВОД, а не вычисление.
+     */
+    it('captured task carries taskContext — the human\'s snapshot survives the hand-out', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      const snapshot = 'счета лежат в /invoices, доступ у Ольги'
+      await q.enqueue(backlog({ taskContext: snapshot }))
+      const claimed = await q.claimNext('w1', {})
+      expect(claimed.taskContext).toBe(snapshot)
+    })
+
     it('a repeated enqueue while pending coalesces to one entry with a counter', async () => {
       const c = clockOf()
       const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
