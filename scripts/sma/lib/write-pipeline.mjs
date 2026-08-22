@@ -245,8 +245,25 @@ export function createPipelineState(event = {}, opts = {}) {
       // means the deterministic epoch anchor: this module never shells out on
       // its own, so a memory write cannot become a process spawn by surprise.
       execGit: typeof opts.execGit === 'function' ? opts.execGit : null,
+      // A caller's REASON to stage this record whatever its class entitles it to.
+      // It exists because some facts are true of the DESTINATION, not of the
+      // record: only the caller knows whose corpus this is. Normalised to
+      // {reason} or null right here, so the risk step reads one shape and a key
+      // with no reason in it cannot become a silent forced stage — the door is
+      // opened by a reason a person can read, never by the presence of an option.
+      forceStage: forcedStageReason(opts.forceStage),
     },
   }
+}
+
+/**
+ * The reason inside a forceStage option, or null when there is none. A non-string,
+ * an empty string or whitespace is NOT a reason: a forced stage that could not say
+ * why would be indistinguishable from a bug in the caller.
+ */
+function forcedStageReason(raw) {
+  const reason = raw && typeof raw === 'object' && typeof raw.reason === 'string' ? raw.reason.trim() : ''
+  return reason === '' ? null : { reason }
 }
 
 /** Record one executed step. The trace is append-only — a step never edits history. */
@@ -597,6 +614,13 @@ export function attachEvidence(state) {
  * directly, plus an expiry: a memory written with no human in the loop must be
  * able to fall out of the corpus on its own, or an unreviewed belief becomes
  * permanent by default.
+ *
+ * A CALLER MAY CLOSE THE AUTOMATIC DOOR AND MAY NEVER OPEN IT. The forceStage
+ * option is checked FIRST, before the door is even asked about — because what it
+ * carries is true of the DESTINATION, not of the record, and the ladder only ever
+ * looks at the record. There is no option with the opposite sign anywhere in this
+ * module: the one class that may be written without a human is decided here and
+ * nowhere else.
  */
 export function assignRisk(state) {
   const r = state.record
@@ -607,6 +631,18 @@ export function assignRisk(state) {
     risk: r.risk,
   })
   state.flags.approvalPath = approvalPath
+
+  // The approval path is resolved and recorded even here, on purpose: the trail
+  // then says "this record was ENTITLED to the automatic door and did not get it",
+  // which is a different fact from "this record was never entitled" — and the
+  // difference is the whole reason a person would read the trace at all.
+  if (state.opts.forceStage) {
+    return stage(state, 'risk', {
+      approval_path: approvalPath,
+      reason: state.opts.forceStage.reason,
+      forced: true,
+    })
+  }
 
   // The ladder already refuses anything but a low-risk working observation here;
   // the one door that writes without a human does not rely on a single lock.
@@ -764,7 +800,19 @@ function stage(state, step, detail) {
   state.record = record
   state.path = target
   state.outcome = 'staged-draft'
-  journal(state, { stage: step, outcome: 'staged-draft', id: record.id, path: target, draft })
+  journal(state, {
+    stage: step,
+    outcome: 'staged-draft',
+    id: record.id,
+    path: target,
+    draft,
+    // A FORCED stage carries its reason into the journal too. The trace answers
+    // the person holding the terminal; the journal answers everybody after them,
+    // and "why did this one not go the ordinary way" must not require re-running
+    // anything. Only the forced case adds it — the ordinary reasons are a
+    // function of the class and are readable from the record itself.
+    ...(detail?.forced === true ? { forced: true, reason: detail.reason } : {}),
+  })
   return trace(state, step, 'staged', { ...detail, path: target, draft })
 }
 
@@ -1254,7 +1302,7 @@ export const STEPS = Object.freeze({
  * @param {{record:object, body?:string}} event
  * @param {{corpusDir?:string, draftsDir?:string, journalDir?:string, localDir?:string,
  *          repoRoot?:string, terminalId?:string, now?:string, corpus?:Array,
- *          registry?:object}} [opts]
+ *          registry?:object, forceStage?:{reason:string}}} [opts]
  */
 export function runPipeline(event, opts = {}) {
   const state = createPipelineState(event, opts)
