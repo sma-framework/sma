@@ -9,6 +9,8 @@ Three forms are read at once, and they are NOT of equal strength. A structured `
 
 Evidence has tiers. When a declaration names a file, the trace is looked for IN that file, and being alive somewhere else does not save the record: the declaration named a place, and the work is not in it. A trace found in more files than the width limit is not evidence either, no matter where else it turned up — the limit is a declared constant, overridable with `--broad-limit`, and printed in every report.
 
+A trace is a regular expression, and it is declared inside a quoted scalar, where a doubled backslash stands for one. Both layers come off before the trace is run, so `"verdict\\.reason"` looks for the literal text `verdict.reason` — exactly what the plan wrote. ONLY that doubling comes off: a lone `\(` stays an escaped bracket. Stripping backslashes wholesale would turn an escaped dot into "any character" and quietly widen every trace in the house.
+
 Only closed work is judged. A plan with no summary beside it is silence, not green: reading a hole in your own evidence as a pass is leniency in tidy clothing.
 
 The run looks ONLY inside the tree you gave it. A declared path that leads outside is neither green nor red: it gets its own named answer, counted and listed, because an existence check against whatever directories happen to sit beside your checkout would make the verdict a fact about your machine. Use `--rewrite <prefix>=<target>` to bring foreign roots home; the flag repeats, and every rule is printed in the header. The same rules can live in a file (`--rewrite-file <file>`, one `prefix=target` per line, `#` comments) so the set is written down instead of retyped — the header names which source it read, `--rewrite` on the line overrides the file, an absent file is stated rather than treated as a fault, and a malformed one stops the run at the offending line.
@@ -25,6 +27,8 @@ WHAT THIS DOES NOT PROVE, and please do not let anyone read it otherwise: a trac
 Читаются три формы сразу, и они НЕ равны по силе. Структурная запись `key_links` (from / to / via / pattern) слабая: след доказывает лишь то, что где то в дереве есть такая строка. Запись `artifacts` (path + contains) сильнее: след привязан к названному файлу. Строка, написанная прозой, силы не имеет вовсе: её считают и называют, но не судят, потому что предложение машиной не проверяется.
 
 У доказательства есть ярусы. Если объявление называет файл, след ищут ИМЕННО в нём, и то, что он жив где то ещё, запись не спасает: место названо, а работы в нём нет. След, встречающийся в большем числе файлов, чем порог широты, доказательством тоже не является, где бы он ещё ни нашёлся. Порог это объявленная константа, он переопределяется флагом `--broad-limit` и печатается в каждом отчёте.
+
+След это регулярное выражение, и объявлен он внутри скаляра в кавычках, где удвоенный обратный слэш означает один. Оба слоя снимаются до того, как след пойдёт искать: `"verdict\\.reason"` ищет буквальный текст `verdict.reason`, ровно то, что написал план. Снимается ТОЛЬКО удвоение: одиночный `\(` остаётся экранированной скобкой. Снять слэши подряд значило бы превратить экранированную точку в «любой символ» и тихо расширить каждый след в доме.
 
 Судится только закрытая работа. План, рядом с которым нет сводки, это молчание, а не зелень: считать дыру в собственных свидетельствах успехом значит проявлять мягкость под видом аккуратности.
 

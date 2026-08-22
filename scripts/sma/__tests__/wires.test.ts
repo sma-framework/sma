@@ -573,6 +573,52 @@ describe('вычислитель — мёртвое краснеет поимё�
   })
 })
 
+describe('след с экранированием — скаляр в кавычках доезжает до регулярки', () => {
+  it('связь, объявленная как в YAML, находится в дереве и зеленеет', () => {
+    const { evaluation: ev, inventory: inv } = evaluate('escaped-trace')
+
+    // Замок от пустоты: обе записи разобраны и обе компилируются. Прибор, чей разбор
+    // перестал что-либо находить, зеленеет молча.
+    expect(inv.counts.links).toBe(2)
+    expect(inv.counts.linksWithBadPattern).toBe(0)
+
+    // КОНТРОЛЬ, без которого тест доказывал бы, что прибор не нашёл того, чего нет:
+    // след лежит в дереве буква в букву.
+    const alive = inv.scanFiles.filter((f: string) => readFileSync(f, 'utf8').includes('WIRE_MARKER.DOT'))
+    expect(alive.length).toBeGreaterThan(0)
+
+    const namedReds = ev.red
+      .map(
+        (r: { pattern?: string; declaredPath?: string; reason: string }) =>
+          `${r.pattern ?? r.declaredPath}: ${r.reason}`,
+      )
+      .join(' | ')
+    expect(ev.counts.red, namedReds).toBe(0)
+    expect(ev.counts.green, 'обе объявленные связи живы').toBe(2)
+    expect(ev.exitCode).toBe(EXIT_CODES.clean)
+  })
+
+  it('снимается экранирование скаляра, а НЕ все обратные слэши подряд', () => {
+    const dot = compilePattern(String.raw`WIRE_MARKER\\.DOT`)
+    expect(dot.error).toBeNull()
+    expect(dot.regex!.test('WIRE_MARKER.DOT')).toBe(true)
+    // Перестарались бы — сняли бы слэш вместе с экранированием точки, и след начал бы
+    // находить чужое слово.
+    expect(dot.regex!.test('WIRE_MARKERqDOT')).toBe(false)
+
+    const parens = compilePattern(String.raw`stats\\(\\)|list\\(`)
+    expect(parens.error).toBeNull()
+    expect(parens.regex!.test('stats()')).toBe(true)
+    expect(parens.regex!.test('list(')).toBe(true)
+    // Скобки обязаны остаться литералами: пустая группа совпала бы где угодно.
+    expect(parens.regex!.test('statsXY')).toBe(false)
+
+    // Одиночный слэш не трогается — он уже означает экранирование в самой регулярке.
+    expect(compilePattern(String.raw`WIRE\.X`).regex!.test('WIRE.X')).toBe(true)
+    expect(compilePattern(String.raw`WIRE\.X`).regex!.test('WIREqX')).toBe(false)
+  })
+})
+
 describe('вычислитель — живое зеленеет (3), не построенное молчит (4)', () => {
   it('(3) живая фикстура: код 0, красных нет, зелень стоит на названных файлах', () => {
     const { root } = caseDirs('live')
