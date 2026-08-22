@@ -73,7 +73,7 @@ import { readWaveHolds } from '../src/queue/wave-holds.mjs'
 // Выражение пути каталога прогона — то самое, которым его собирают писатель и спавн.
 // Дело, знающее второе написание этого пути, доказывало бы согласие с самим собой.
 import { attemptRunDir, runsDirOf } from '../src/queue/run-dir.mjs'
-import { REASON_LABELS, createMemoryQueue } from '../src/queue/adapter.mjs'
+import { REASON_LABELS, createMemoryQueue, taskContextOf, TASK_CONTEXT_CAP } from '../src/queue/adapter.mjs'
 
 const HOUR = 3600000
 const NOW = 1_000_000_000_000
@@ -3314,6 +3314,104 @@ describe('POST /api/task/words — the owner corrects what a task says about its
   it('an unwired queue answers 501 — never a fabricated ok', async () => {
     const front = createFrontServer({ config: { token: MIGRATION_TOKEN, workers: [] }, deps: {} })
     expect((await words(front, { taskId: 'R-1', description: 'x' })).statusCode).toBe(501)
+  })
+})
+
+/**
+ * ═══════ ДВЕ ДВЕРИ ЧЕЛОВЕКА, ЧЕРЕЗ КОТОРЫЕ СНИМОК ПОПАДАЕТ НА СТРОКУ ═══════
+ *
+ * Снимок контекста — то, что человек знает о задаче, а работник нет. Он кладётся при
+ * постановке и правится дверью слов; всё остальное фазы — материализации ЭТОЙ строки.
+ *
+ * ПОЧЕМУ ОБЕ ДВЕРИ ПРОВЕРЯЮТСЯ ЗДЕСЬ, РЯДОМ. Класть и править — половины одного обещания
+ * («следующая попытка уйдёт с исправленным снимком»), и разнесённые по двум файлам они
+ * разъезжаются молча: одну дверь расширили, вторую забыли, и человек правит текст, который
+ * никуда не едет. Замки отказа неизвестных ключей проверяются у обеих в том же деле, потому
+ * что расширение списка разрешённых полей — самый частый способ снять замок, не заметив.
+ */
+describe('снимок контекста задачи — двери постановки и слов', () => {
+  const NOW = 1_700_000_000_000
+  const SNAPSHOT = 'счета лежат в /invoices, доступ у Ольги, трогать биллинг нельзя'
+
+  function mkFront(over: any = {}) {
+    return createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: { clock: () => NOW, ...over },
+    })
+  }
+
+  async function post(front: any, url: string, body: any) {
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ url, body }), res)
+    return res
+  }
+
+  it('постановка со снимком: текст человека доезжает до захваченной задачи', async () => {
+    const adapter = createMemoryQueue({ clock: () => NOW })
+    const front = mkFront({ adapter })
+
+    const res = await post(front, '/api/enqueue', { title: 'разобрать счета', lane: 'prod', taskContext: SNAPSHOT })
+    expect(res.statusCode).toBe(200)
+
+    const claimed: any = await adapter.claimNext('w1', {})
+    expect(claimed.taskContext).toBe(SNAPSHOT)
+  })
+
+  it('дверь слов освежает снимок — СЛЕДУЮЩАЯ выдача берёт со строки новое, а не то, с чем сорвалось', async () => {
+    const adapter = createMemoryQueue({ clock: () => NOW })
+    const front = mkFront({ adapter })
+    await post(front, '/api/enqueue', { title: 'разобрать счета', lane: 'prod', taskContext: 'первый снимок' })
+    const [row] = await adapter.list({})
+
+    const res = await post(front, '/api/task/words', { taskId: row.id, taskContext: SNAPSHOT })
+    expect(res.statusCode).toBe(200)
+
+    const claimed: any = await adapter.claimNext('w1', {})
+    expect(claimed.taskContext).toBe(SNAPSHOT)
+  })
+
+  it('снимок можно СТЕРЕТЬ, и стёртый читается ровно как никогда не написанный', async () => {
+    // Одна читающая тропа на всех (taskContextOf): «ключа нет» и «ключ есть, а текста в нём
+    // нет» обязаны отвечать одно и то же, иначе каждый следующий читатель снимка заведёт свою
+    // догадку о пустоте — и они разойдутся.
+    const adapter = createMemoryQueue({ clock: () => NOW })
+    const front = mkFront({ adapter })
+    await post(front, '/api/enqueue', { title: 'разобрать счета', lane: 'prod', taskContext: SNAPSHOT })
+    const [row] = await adapter.list({})
+
+    expect((await post(front, '/api/task/words', { taskId: row.id, taskContext: '' })).statusCode).toBe(200)
+
+    const claimed: any = await adapter.claimNext('w1', {})
+    expect(taskContextOf(claimed)).toBe('')
+    expect(taskContextOf({ id: 'R-никогда' })).toBe('')
+  })
+
+  it('замок неизвестных ключей стоит как стоял — у обеих дверей 400 ДО всего', async () => {
+    const adapter = createMemoryQueue({ clock: () => NOW })
+    const front = mkFront({ adapter })
+    await post(front, '/api/enqueue', { title: 'разобрать счета', lane: 'prod' })
+    const [row] = await adapter.list({})
+
+    expect((await post(front, '/api/enqueue', { title: 'x', lane: 'prod', smuggled: 'нет' })).statusCode).toBe(400)
+    expect((await post(front, '/api/task/words', { taskId: row.id, smuggled: 'нет' })).statusCode).toBe(400)
+    expect(await adapter.list({})).toHaveLength(1) // отказ ничего не положил
+  })
+
+  it('снимок сверх потолка — честный отказ обеих дверей, а не молчаливое урезание', async () => {
+    const adapter = createMemoryQueue({ clock: () => NOW })
+    const front = mkFront({ adapter })
+    await post(front, '/api/enqueue', { title: 'разобрать счета', lane: 'prod', taskContext: SNAPSHOT })
+    const [row] = await adapter.list({})
+    const tooBig = 'д'.repeat(TASK_CONTEXT_CAP + 1)
+
+    expect((await post(front, '/api/enqueue', { title: 'x', lane: 'prod', taskContext: tooBig })).statusCode).toBe(400)
+    expect((await post(front, '/api/task/words', { taskId: row.id, taskContext: tooBig })).statusCode).toBe(400)
+    expect((await post(front, '/api/task/words', { taskId: row.id, taskContext: 42 })).statusCode).toBe(400)
+
+    // отказ не тронул того, что человек написал раньше
+    const claimed: any = await adapter.claimNext('w1', {})
+    expect(claimed.taskContext).toBe(SNAPSHOT)
+    expect(await adapter.list({})).toHaveLength(1)
   })
 })
 
