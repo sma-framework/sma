@@ -109,7 +109,7 @@ import { reconcileAttempts } from './queue/reconcile.mjs'
 // would be a second ceiling waiting to drift away from the first.
 import { memorySnapshotHash, safeName, ATTEMPT_FILES_CAP } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
-import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, sanitizeRun, createToolPairing, buildContinuationSummary, writeContinuation, readContinuation, fileWord, RUN_DIRS_KEEP } from './queue/run-dir.mjs'
+import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, sanitizeRun, createToolPairing, buildContinuationSummary, writeContinuation, readContinuation, writeTaskContext, fileWord, RUN_DIRS_KEEP, TASK_CONTEXT_FILE } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
 // THE FIVE RECEIPTS, FROM THE ONE MODULE THAT DEFINES THEM. The daemon does not keep a second
 // opinion about whether the hooks fired or the memory came back: it imports the same evaluation
@@ -1675,17 +1675,11 @@ export function rulesInCopy(io, workDir, worktree) {
   }
 }
 
-/**
- * Имя файла со снимком контекста задачи В КОРНЕ РАБОЧЕЙ КОПИИ — `task_context.md`, рядом с
- * правилами проекта, куда работник и придёт его читать.
- *
- * ЗАЧЕМ ОНО ЗДЕСЬ НАПИСАНО СЛОВОМ. Тот же документ ложится вторым экземпляром в каталог
- * прогона попытки: один и тот же ответ на вопрос «что попытке дали», в двух местах и для
- * двух читателей — работник открывает копию, человек и дверь карточки открывают каталог
- * попытки. Разные имена разорвали бы очевидность тождества, поэтому имя одно, и владелец
- * у него один — замороженный список файлов каталога прогона.
- */
-const TASK_CONTEXT_FILE = 'task_context.md'
+// Имя файла со снимком контекста В КОРНЕ РАБОЧЕЙ КОПИИ — `task_context.md`, рядом с правилами
+// проекта, куда работник и придёт его читать. Имя НЕ пишется здесь второй раз: оно приходит
+// от владельца — замороженного списка файлов каталога прогона, — потому что это ОДИН документ
+// «что попытке дали» в двух экземплярах для двух читателей, и два написания одного имени
+// разъехались бы в тот день, когда правят одно из них.
 
 /** Пометка «этот навык положили МЫ» — сосед файла навыка внутри его же каталога. */
 const BUILTIN_SKILL_MARK = '.sma-builtin-skill'
@@ -1976,6 +1970,17 @@ function writeAttemptRunDir(deps, task, {
     },
   })
   if (!dir) return null
+  // ШЕСТОЙ ФАЙЛ — СВИДЕТЕЛЬ СНИМКА, рядом с записью начала попытки и по ТОМУ ЖЕ пути: `dir`
+  // сюда приходит от писателя, а не собирается здесь второй раз. Снимка на строке нет — не
+  // зовём вовсе: отсутствие файла говорит «человек ничего не сказал», а пустой файл сказал бы,
+  // что сказал и промолчал. Секреты — те же иголки, что у остальных пяти файлов.
+  writeTaskContext({
+    dir,
+    text: taskContextOf(task),
+    secretValues: secretValuesOf(env),
+    fsImpl: deps.fsImpl,
+    log: (entry) => writeLog(deps, entry),
+  })
   pruneRunDirs({
     runsDir,
     keep: Number.isFinite(config.runsKeep) ? config.runsKeep : RUN_DIRS_KEEP,
