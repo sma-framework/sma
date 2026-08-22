@@ -92,7 +92,7 @@ import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS, attemptIdFor } from './journal.mjs'
-import { runsDirOf, attemptRunDir, readContinuation } from '../queue/run-dir.mjs'
+import { runsDirOf, attemptRunDir, readContinuation, readTaskContext } from '../queue/run-dir.mjs'
 import { approvalWall, defaultEnvelope } from '../queue/capability-envelope.mjs'
 import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
@@ -820,10 +820,34 @@ async function handleTask({ res, params, config, deps }) {
     return readContinuation({ dir, fsImpl: deps.fsImpl })
   }
 
+  /**
+   * СНИМОК КОНТЕКСТА, С КОТОРЫМ УШЛА ИМЕННО ЭТА ПОПЫТКА — прочитанный из файла-свидетеля,
+   * который положила она сама, ТЕМ ЖЕ ВЫРАЖЕНИЕМ ПУТИ, что и конспект выше.
+   *
+   * ЧИТАЕТСЯ ФАЙЛ, А НЕ СТРОКА ОЧЕРЕДИ, и это не лишний крюк. Человек правит слова задачи
+   * после сорванного подхода — строка становится другой, а попытка уже ушла с тем снимком,
+   * который ей ДАЛИ. Карточка показывает историю подходов, значит и снимок ей нужен
+   * исторический; прочитанный со строки выглядел бы точно так же и врал бы ровно в тот
+   * момент, когда человек разбирается, почему подход сорвался.
+   *
+   * АДРЕСУЕТСЯ ТОЛЬКО ЗАПРОШЕННАЯ ЗАДАЧА И ЕЁ СОБСТВЕННЫЙ ПОДХОД — теми же двумя
+   * составляющими, что у конспекта; другого способа назвать каталог здесь нет.
+   */
+  const snapshotOf = (attempt) => {
+    const n = Number.isFinite(Number(attempt)) ? Number(attempt) : null
+    if (n === null || n < 1) return null
+    const dir = attemptRunDir({
+      runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+      attemptId: attemptIdFor(id, n),
+    })
+    return readTaskContext({ dir, fsImpl: deps.fsImpl })
+  }
+
   const attempts = rawAttempts.map((a) => {
     // Спрошено ОДИН раз на попытку и названо здесь, а не внутри тела: тело ниже — перечисление
     // явных выборов, и чтение диска посреди него читалось бы как ещё одно поле.
     const handover = handoverOf(a.attempt)
+    const snapshot = snapshotOf(a.attempt)
     return {
     attempt: a.attempt ?? null,
     workerId: a.workerId ?? null,
@@ -942,6 +966,20 @@ async function handleTask({ res, params, config, deps }) {
     // старше этого файла — тоже. Пустая строка на этом месте была бы утверждением, что
     // передавать было нечего, а это совсем другой факт, и он пишется в сам конспект словами.
     ...(handover ? { continuationSummary: handover } : {}),
+    // ═══ С КАКИМ КОНТЕКСТОМ ЭТА ПОПЫТКА УШЛА В РАБОТУ ═══════════════════════════
+    //
+    // Тот же файл, слово в слово, который получил работник этой попытки. Слова человека
+    // едут работнику блоком данных в промпте и лежат файлом в его копии — а человеку до
+    // этой строки не был виден НИ ОДИН из трёх экземпляров: строку он и так помнит, а вот
+    // ответа «с чем ушёл ЭТОТ подход» у него не было.
+    //
+    // ЭТО ИСТОРИЧЕСКАЯ ПРАВДА ПОПЫТКИ, и она честно расходится со строкой очереди после
+    // того, как человек допишет слова. Расхождение — не рассинхрон, а весь смысл поля:
+    // подход сорвался с тем контекстом, который у него был, а не с сегодняшним.
+    //
+    // Ключа нет вовсе, когда файла нет: снимка не было, или попытка старше этого файла.
+    // Пустая строка здесь утверждала бы, что человеку было что сказать и он промолчал.
+    ...(snapshot ? { taskContext: snapshot } : {}),
     }
   })
 
