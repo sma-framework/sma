@@ -64,11 +64,23 @@ let corpusDir: string
 let draftsDir: string
 let journalDir: string
 
-/** Spawn the real CLI against the per-test temp .sma root. Never throws. */
+/**
+ * Spawn the real CLI against the per-test temp .sma root. Never throws.
+ *
+ * IT RUNS FROM `root`, AND THAT IS PART OF THE FIXTURE. `memory write` now asks a
+ * second question about `--corpus`: is this corpus the one belonging to the tree I
+ * am standing in? A corpus of ANOTHER project is staged, never written. Spawning
+ * from the product repo while pointing `--corpus` at a throwaway directory would
+ * make every CLI case here the foreign case, and the cases below are about the
+ * ordinary one. From `root` the fixture corpus IS the default (there is no
+ * repository in the temp directory, so the resolver falls back to the coordination
+ * root's parent) and the calls mean what they have always meant.
+ */
 function runCli(args: string[]): { stdout: string; stderr: string; status: number } {
   try {
     const stdout = execFileSync(process.execPath, [CLI, ...args], {
       encoding: 'utf8',
+      cwd: root,
       env: { ...process.env, SMA_ROOT_OVERRIDE: join(root, '.sma') },
     })
     return { stdout, stderr: '', status: 0 }
@@ -174,7 +186,10 @@ const NEIGHBOUR = {
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'sma-write-pipeline-'))
-  corpusDir = join(root, 'memory')
+  // `.claude/memory` under the root, not `memory`: this is the path the resolver
+  // answers with for a caller standing in `root`, so a CLI case that names it with
+  // `--corpus` is naming its OWN corpus — see runCli above.
+  corpusDir = join(root, '.claude', 'memory')
   draftsDir = join(corpusDir, 'drafts')
   journalDir = join(root, 'journal')
   mkdirSync(corpusDir, { recursive: true })
@@ -616,6 +631,63 @@ describe('step 7 risk — only one class of record may be written without a huma
       outcome: 'ok',
       detail: { approval_path: 'auto-ttl' },
     })
+  })
+
+  // ── the forced-staging door ────────────────────────────────────────────────
+  //
+  // A caller may know something about the DESTINATION that the record itself
+  // cannot say: that this corpus is not the corpus of the tree we are standing
+  // in. The record is unchanged and its class is unchanged, so the ladder would
+  // still open the automatic door — which is exactly why the option is checked
+  // BEFORE it. The fixture is the one class that WOULD have been written without
+  // a human (working + observed + low risk + a retention window); anything else
+  // stages anyway and would prove nothing.
+
+  it('Test 33a: a forced stage beats the automatic door — the reason travels into the trace and the journal', () => {
+    const result = runPipeline(makeEvent(), {
+      ...opts(),
+      forceStage: { reason: 'foreign-project corpus — approval required before this record becomes active' },
+    })
+
+    expect(result.outcome).toBe('staged-draft')
+
+    const step = traceStep(result.trace, 'risk')
+    expect(step.outcome).toBe('staged')
+    expect(step.detail.forced).toBe(true)
+    expect(step.detail.reason).toContain('foreign-project corpus')
+    // The path the record WOULD have taken is still resolved and still recorded:
+    // the trail says "this one was entitled to the automatic door and did not get it",
+    // which is a different (and more useful) fact than "this one was never entitled".
+    expect(step.detail.approval_path).toBe('auto-ttl')
+
+    // The proof is the filesystem, not the verdict string: nothing in the corpus,
+    // the draft in drafts/.
+    expect(filesIn(corpusDir)).toEqual([])
+    expect(filesIn(draftsDir)).toEqual(['working-queue-adapter-drain-window.md'])
+
+    // …and the machine trail answers WHY without anyone re-reading the trace.
+    const staged = journalEvents().find((e) => e.detail?.outcome === 'staged-draft')
+    expect(staged?.detail?.forced).toBe(true)
+    expect(String(staged?.detail?.reason)).toContain('foreign-project corpus')
+  })
+
+  it('Test 33b: the SAME record without the option is unchanged — the automatic door still opens', () => {
+    const result = runPipeline(makeEvent(), opts())
+
+    expect(result.outcome).toBe('persisted-active')
+    expect(traceStep(result.trace, 'risk').outcome).toBe('ok')
+    expect(filesIn(draftsDir)).toEqual([])
+  })
+
+  it('Test 33c: an option with no reason in it is not a forced stage — the door is opened by a REASON, not by a key', () => {
+    for (const junk of [{}, { reason: '' }, { reason: '   ' }, true, 'yes'] as unknown[]) {
+      rmSync(corpusDir, { recursive: true, force: true })
+      rmSync(draftsDir, { recursive: true, force: true })
+      mkdirSync(draftsDir, { recursive: true })
+
+      const result = runPipeline(makeEvent(), { ...opts(), forceStage: junk })
+      expect(result.outcome).toBe('persisted-active')
+    }
   })
 })
 

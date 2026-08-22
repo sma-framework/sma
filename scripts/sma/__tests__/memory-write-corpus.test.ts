@@ -30,7 +30,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,6 +42,7 @@ let sandbox: string
 let mainTree: string
 let copyTree: string
 let plainDir: string
+let foreignTree: string
 
 function git(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
@@ -145,6 +146,13 @@ beforeAll(() => {
   seedCorpus(copyTree)
 
   mkdirSync(plainDir, { recursive: true })
+
+  // Somebody ELSE's project: a second corpus that is not the corpus of any tree
+  // the verb below is called from. Nothing about the RECORD differs — only the
+  // destination — which is the whole point of the cases at the end of this file.
+  foreignTree = join(sandbox, 'foreign')
+  mkdirSync(foreignTree, { recursive: true })
+  seedCorpus(foreignTree)
 })
 
 afterAll(() => {
@@ -208,5 +216,103 @@ describe('memory write — the default corpus belongs to the tree the verb was c
     expect(status).toBe(0)
     expect(json?.outcome).toBe('staged-draft')
     expect(existsSync(draftPath(plainDir, id))).toBe(true)
+  })
+})
+
+/**
+ * A record of the ONE class this pipeline may write with no human in the loop:
+ * a low-risk working observation with an expiry and a fingerprint. Written on
+ * purpose — a lesson-shaped note stages anyway, so it could not tell a forced
+ * stage apart from the ordinary one.
+ *
+ * No `--json`: the case below is about what a PERSON is told, and in machine
+ * mode the verb prints machine output only.
+ */
+function writeAutomatic(cwd: string, id: string, extra: string[] = []) {
+  return runCli(
+    [
+      'memory', 'write',
+      '--type', 'working',
+      '--truth', 'observed',
+      '--risk', 'low',
+      '--retention', 'P30D',
+      '--product-version', 'v5.0.4',
+      '--id', id,
+      '--claim', `the drain window measured for ${id}`,
+      '--body', 'measured during the drill',
+      '--areas', 'queue',
+      ...extra,
+    ],
+    cwd,
+  )
+}
+
+const corpusOf = (root: string) => join(root, '.claude', 'memory')
+const notePath = (root: string, id: string) => join(corpusOf(root), `${id}.md`)
+
+/** Every regular file directly inside a corpus (drafts/ is a directory and never appears). */
+function corpusFiles(root: string): string[] {
+  const dir = corpusOf(root)
+  if (!existsSync(dir)) return []
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile())
+    .map((e) => e.name)
+    .sort()
+}
+
+describe('memory write — a corpus that belongs to another project is never written to directly', () => {
+  it('Case E: an explicit --corpus of ANOTHER tree forces the record into that tree\'s drafts, with the reason in words', () => {
+    const id = 'working-foreign-corpus-epsilon'
+    const before = corpusFiles(foreignTree)
+
+    const { status, stdout, stderr } = writeAutomatic(copyTree, id, ['--corpus', corpusOf(foreignTree)])
+
+    expect({ status, stderr }).toEqual({ status: 0, stderr: '' })
+
+    // 1. The outcome: this record was entitled to the automatic door and did not get it.
+    expect(stdout).toContain('staged-draft')
+
+    // 2. The proof is the FILE, in the FOREIGN corpus' drafts/ — not a verdict string.
+    expect(existsSync(draftPath(foreignTree, id))).toBe(true)
+
+    // 3. Nothing became active memory over there: the foreign corpus outside drafts/
+    //    is byte-for-byte the same list it was before the call.
+    expect(corpusFiles(foreignTree)).toEqual(before)
+    expect(existsSync(notePath(foreignTree, id))).toBe(false)
+
+    // 4. The caller's own tree is untouched — the record went where it was addressed.
+    expect(existsSync(notePath(copyTree, id))).toBe(false)
+    expect(existsSync(draftPath(copyTree, id))).toBe(false)
+
+    // 5. The person is told WHY, and what to type if they meant it: the reason names
+    //    the foreign corpus and the hand-applied door out of drafts/.
+    expect(stdout).toContain('чужой проект')
+    expect(stdout).toContain('--apply')
+    expect(stdout).toContain('--confirm')
+    expect(stdout).toContain('--yes')
+  })
+
+  it('Case F: the control — the same record with NO --corpus behaves exactly as before', () => {
+    const id = 'working-own-corpus-zeta'
+    const { status, stdout } = writeAutomatic(copyTree, id)
+
+    expect(status).toBe(0)
+    expect(stdout).toContain('persisted-active')
+    expect(stdout).not.toContain('чужой проект')
+    expect(existsSync(notePath(copyTree, id))).toBe(true)
+    expect(existsSync(draftPath(copyTree, id))).toBe(false)
+  })
+
+  it('Case G: a --corpus that NAMES the current tree\'s own corpus is not foreign — a copy is its own project', () => {
+    // This is the law resolveCorpusDefault is written to protect: a worker's linked
+    // copy answers with ITS OWN corpus, so a lesson written there is a legitimate
+    // local case. Saying the same directory out loud must not change the answer.
+    const id = 'working-own-corpus-named-eta'
+    const { status, stdout } = writeAutomatic(copyTree, id, ['--corpus', corpusOf(copyTree)])
+
+    expect(status).toBe(0)
+    expect(stdout).toContain('persisted-active')
+    expect(stdout).not.toContain('чужой проект')
+    expect(existsSync(notePath(copyTree, id))).toBe(true)
   })
 })
