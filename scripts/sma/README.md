@@ -30,14 +30,14 @@ npm dependencies, resting on two pillars:
 
 Every subcommand accepts `--json` for a single-line JSON object (the
 statusline / hook contract). Hook-facing subcommands (`session-start`,
-`session-end`, `pre`, `heartbeat`, `pretask-pack`, `subagent-verify`,
+`session-end`, `turn-diff`, `pre`, `heartbeat`, `pretask-pack`, `subagent-verify`,
 `precompact-capsule`, `airbag-check`, `spend-check`, `stall-check`, `pulse`,
 `statusline`) ALWAYS exit 0 — fail-open, see the contract at the end of this
 page; direct-CLI subcommands return meaningful exit codes.
 
 ## Every verb at a glance
 
-All 93, grouped by what they are for. The sections after this table go deeper
+All 94, grouped by what they are for. The sections after this table go deeper
 on the ones with real surface area; `sma explain <verb>` answers for any of
 them in plain language, in English or Russian.
 
@@ -49,6 +49,7 @@ them in plain language, in English or Russian.
 | `heartbeat` | Renew this session's lease (cadence: every 3 minutes) |
 | `session-start` | Register this terminal's session lease — the SessionStart hook |
 | `session-end` | Release every claim this window still holds, so a closed terminal never haunts a teammate |
+| `turn-diff` | The Stop hook: at every turn boundary, which files moved since the claim was taken and whether any fell outside it — two git trees compared, nothing re-run |
 | `claim` | Take a work scope: `claim <name> --globs "<glob>" --desc "<text>"` |
 | `release` | Release your OWN claim |
 | `force-clear` | Clear a stale or foreign claim, with confirmation and recorded provenance |
@@ -235,6 +236,7 @@ section: **[V3 trust-spine subcommands](#v3-trust-spine-subcommands)**.
 | `status` | statusline/hook JSON: active sessions (live only) + stale sessions, collisions, next slots | `--json` |
 | `heartbeat` | renew this session's lease (cadence: every 3 min) | — |
 | `session-start` | register this terminal's session lease | — |
+| `turn-diff` | **the Stop hook** — the diff verdict against the base commit the claim recorded; silent without a claim, releases nothing | — (hook-facing) |
 | `pre` | **the PreToolUse multiplexer — ONE spawn per Edit/Write/Bash** dispatching collision → reflex → gates | — |
 | `pre-bench` | SLO instrument for `pre`: full-spawn p95, spawn-count, dispatch parity | `--runs N` \| `--metric spawn-count\|parity` |
 | `collision-check` | DEPRECATED single-stream alias (delegates to `pre`'s collision stream; kept for back-compat) | `--json` |

@@ -134,6 +134,19 @@ export const SMA_HOOKS = [
   //   subagent-verify matches what a finishing subagent claimed to have written
   //   against the tree — the same git-and-disk walk, the same reasoning.
   { event: 'SubagentStop', matcher: null, command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" subagent-verify', timeout: 15 },
+  //   turn-diff brings the diff verdict back into the window at the boundary of
+  //   every turn: which files moved since the claim was taken, and whether any of
+  //   them fell outside the area that claim declared. It gets the EDITING-PATH
+  //   budget, not the fifteen seconds the two entries above have, and the reason
+  //   is the event itself — Stop fires every turn, so its price is paid every turn.
+  //
+  //   NOTHING HEAVY IS EVER HUNG HERE. Re-running the check commands recorded in
+  //   summary files would mean executing strings that arrived as data on a
+  //   schedule instead of by a person's decision, and paying a test suite's price
+  //   to do it; that re-check belongs to the verb a person types and to the
+  //   acceptance ritual. This table already refused to hang even the CHEAP release
+  //   of claims on this event, for the same reason — a turn is not an ending.
+  { event: 'Stop', matcher: null, command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" turn-diff', timeout: 5 },
 ];
 
 // Command strings this installer USED to ship and no longer does. They are SMA-managed BY
@@ -152,7 +165,16 @@ export const SMA_HOOKS = [
 //   2. the PROJECT-RELATIVE spelling of the whole table, replaced by the anchored form
 //      above after it turned out to bring the entire table down whenever a session was
 //      standing in some other directory.
-const STALE_SMA_HOOK_COMMANDS = new Set([
+//
+// AN ENTRY BORN ANCHORED NEVER BELONGS HERE. A string this installer never wrote cannot be
+// left behind by it, and listing one would hand the sweep permission to delete a command
+// that, for all it knows, somebody else put there on purpose. The list is a record of what
+// WAS shipped, not a wish about what should disappear.
+//
+// EXPORTED so the suite builds its «install made before the anchor» fixture from this list
+// instead of manufacturing a legacy spelling for every shipped row — a fixture that invents
+// history proves the sweep removes strings that never existed.
+export const STALE_SMA_HOOK_COMMANDS = new Set([
   'node scripts/sma/cli.mjs collision-check',
   'node scripts/sma/cli.mjs reflex-check',
   'node scripts/sma/cli.mjs gates-check',

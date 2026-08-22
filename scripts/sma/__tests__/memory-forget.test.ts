@@ -301,7 +301,7 @@ describe('memory forget — one command, and it says which state it applied', ()
     // The claim this case actually makes is the line below it: the deletion surface stayed a
     // SUBCOMMAND of the corpus namespace and never grew a top-level key, which is what a count
     // alone could never say.
-    expect(keys).toBe(93)
+    expect(keys).toBe(94)
     // and the handler that WOULD have been added is absent by name
     expect(block).not.toContain('forget')
   })
