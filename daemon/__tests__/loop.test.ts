@@ -5788,16 +5788,21 @@ describe('база сравнения у переиспользованной к
 /**
  * ПОТОЛОК ОДНОВРЕМЕННЫХ ПОПЫТОК.
  *
- * Тик заводится таймером и вызывается БЕЗ ожидания предыдущего прохода, а каждый проход
- * берёт задачу и ведёт её до конца — значит попытки идут внахлёст по устройству. Регулятора
- * не было ни одного: поиск по исходникам не давал ни счётчика идущих, ни признака занятости.
- * Пол под происшествием 12.08.2026, когда три параллельных процесса жгли подписку.
+ * Тик заводится таймером и вызывается БЕЗ ожидания предыдущего прохода, а каждый проход берёт
+ * задачу и ведёт её до конца — значит попытки идут внахлёст по устройству. Регулятора не было
+ * ни одного: поиск по исходникам не давал ни счётчика идущих, ни признака занятости. Пол под
+ * происшествием 12.08.2026, когда три параллельных процесса жгли подписку при пустой доске.
  *
- * Утверждение о ПРОВОДЕ, а не о расчёте: при достигнутом потолке очередь не спрашивается
- * вовсе. Тик, который «посчитал потолок» и всё равно захватил задачу, — ровно тот класс,
- * который стоил дня.
+ * Третье дело здесь — главное, и оно родилось из ошибки в первой редакции этой самой правки:
+ * место бралось ПОСЛЕ захвата, а захват — это await. Два тика внахлёст оба видели пустой дом
+ * и оба брали по задаче. Дело гоняет ровно этот случай на НАСТОЯЩЕМ доме.
  */
+import { createInFlight } from '../src/queue/in-flight.mjs'
+
 describe('потолок одновременных попыток — тик не берёт задачу сверх него', () => {
+  const fullHouse = { reserve: () => null, size: () => 1, workers: () => new Set<string>(), name() {}, release() {} }
+  const freeHouse = { reserve: () => 'seat-1', size: () => 0, workers: () => new Set<string>(), name() {}, release() {} }
+
   it('при достигнутом потолке очередь вообще не спрашивается', async () => {
     const base = oneTaskAdapter(backlogTask({ id: 'BL-1' }))
     let claims = 0
@@ -5808,13 +5813,7 @@ describe('потолок одновременных попыток — тик н
         return (base as any).claimNext(...args)
       },
     }
-    const busy = {
-      size: () => 1,
-      workers: () => new Set<string>(),
-      add() {},
-      release() {},
-    }
-    const { deps } = makeDeps({ adapter: counting, deps: { inFlight: busy } })
+    const { deps } = makeDeps({ adapter: counting, deps: { inFlight: fullHouse } })
     const r = await tick(deps)
     expect(claims, 'при достигнутом потолке очередь спрашивать нельзя — иначе попытка уже выдана').toBe(0)
     expect(r.idle, 'проход при достигнутом потолке — это простой, а не работа').toBe(true)
@@ -5830,9 +5829,37 @@ describe('потолок одновременных попыток — тик н
         return (base as any).claimNext(...args)
       },
     }
-    const free = { size: () => 0, workers: () => new Set<string>(), add() {}, release() {} }
-    const { deps } = makeDeps({ adapter: counting, deps: { inFlight: free } })
+    const { deps } = makeDeps({ adapter: counting, deps: { inFlight: freeHouse } })
     await tick(deps)
     expect(claims, 'свободное место обязано пропускать работу').toBe(1)
+  })
+
+  it('ДВА ПРОХОДА ВНАХЛЁСТ на настоящем доме берут ОДНУ задачу, а не две', async () => {
+    // Очередь отдаёт разные задачи и считает выдачи: если потолок держится, вторая выдача
+    // не случится вовсе. Захват намеренно асинхронный — ровно как настоящий.
+    let handed = 0
+    const adapter: any = {
+      async list() {
+        return []
+      },
+      async claimNext() {
+        await new Promise((r) => setTimeout(r, 5))
+        handed += 1
+        return handed <= 2 ? backlogTask({ id: `BL-${handed}` }) : null
+      },
+      async complete() {},
+      async fail() {},
+      async touch() {},
+      async stats() {
+        return {}
+      },
+    }
+    const house = createInFlight()
+    const { deps } = makeDeps({ adapter, deps: { inFlight: house } })
+    const [a, b] = await Promise.all([tick(deps), tick(deps)])
+    expect(handed, 'очередь спрошена дважды — потолок не удержал два прохода внахлёст').toBe(1)
+    const idle = [a, b].filter((r: any) => r && r.idle === true)
+    expect(idle.length, 'один из двух проходов обязан стать простоем по потолку').toBe(1)
+    expect(house.size(), 'после обоих проходов дом обязан опустеть — иначе конвейер встанет молча').toBe(0)
   })
 })

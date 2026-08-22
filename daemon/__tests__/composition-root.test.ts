@@ -406,6 +406,34 @@ describe('the production composition root is COMPLETE', () => {
   })
 
   /**
+   * THE REGULATOR MUST REACH THE TICK.
+   *
+   * The tick is timer-driven and is called without waiting for the previous pass, so attempts
+   * overlap by construction. The ceiling can only count what something remembers between
+   * passes — and the tick is stateless on purpose. Unwired, the ceiling would ask an object
+   * that does not exist and find the house empty on every pass: exactly the 12.08.2026 picture,
+   * three processes running while the board showed an idle worker.
+   */
+  it('joins the REGULATOR to the tick — a ceiling with nothing to count is not a ceiling', () => {
+    const inFlight: any = park.tickDeps.inFlight
+    expect(inFlight && typeof inFlight.size, 'tickDeps.inFlight must be wired or the ceiling counts nothing').toBe(
+      'function',
+    )
+    expect(typeof inFlight.workers, 'the router asks it WHO is busy, not merely how many').toBe('function')
+    expect(typeof inFlight.reserve, 'the seat must be takeable BEFORE the claim, or two ticks both pass').toBe(
+      'function',
+    )
+    expect(inFlight.size(), 'a freshly built daemon has no children and its house starts empty').toBe(0)
+    const seat = inFlight.reserve(1)
+    expect(seat, 'the first seat of an empty house must be given').toBeTruthy()
+    expect(inFlight.reserve(1), 'the second seat at a ceiling of one must be refused').toBe(null)
+    inFlight.name(seat, 'T-1', 'max-2')
+    expect([...inFlight.workers()]).toContain('max-2')
+    inFlight.release(seat)
+    expect(inFlight.size(), 'a released seat must free the house again').toBe(0)
+  })
+
+  /**
    * THE MONEY RULE MUST REACH THE DISPATCHER.
    *
    * `shouldApiFallback` decides two things nothing else decides: whether a task that names

@@ -70,6 +70,7 @@ import {
 } from './queue/attempt-ledger.mjs'
 import { cleanupTaskWorktree, createWorktreeSweeper } from './queue/worktree-cleanup.mjs'
 import { scanBacklog } from './intake/backlog-scan.mjs'
+import { createInFlight } from './queue/in-flight.mjs'
 import { harvestTaskMemory } from './queue/memory-harvest.mjs'
 import { attemptIdFor } from './front/journal.mjs'
 import { collectDiagnostics } from './front/diagnostics.mjs'
@@ -1281,6 +1282,12 @@ export function createDaemon(o = {}) {
     // enqueued only when it carries an estimate within the ceiling, and everything else is
     // surfaced as not-ready rather than pulled into the queue.
     intake: o.intake ?? createBacklogIntake(),
+    // КТО СЕЙЧАС РАБОТАЕТ — построено ЗДЕСЬ, один раз, рядом с deps, как память дедупа: тик
+    // обязан оставаться без состояния, а счёт идущих попыток обязан пережить проход. Без этой
+    // строки потолок был бы «вычислен, но не подключён»: тик спрашивал бы о занятости объект,
+    // которого нет, и считал бы место свободным на каждом проходе — то есть ровно то, что и
+    // было 12.08.2026, когда три процесса шли одновременно при пустой доске.
+    inFlight: o.inFlight ?? createInFlight(),
   }
   const daemon = runDaemon({ tickMs: config.tickMs ?? 5000, onTick: () => tick(tickDeps) })
 

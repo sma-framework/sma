@@ -181,6 +181,18 @@ export function resolveRoute(task = {}, deps = {}) {
   // `heldByDayPriority` remembers WHY the pool emptied, so the wait can name its own cause
   // instead of collapsing two different situations into one code.
   let heldByDayPriority = false
+  // WHO IS ALREADY WORKING. The filter asked enabled / provider / window / day-priority and
+  // never «does this worker already have a live attempt» — while the tick is timer-driven and
+  // does not wait for the previous pass, so a second task went to the same account while the
+  // first was still running. This is the floor under 12.08.2026: three parallel processes
+  // burning one subscription while the board showed an empty queue.
+  //
+  // `heldByBusy` is remembered separately for exactly the reason `heldByDayPriority` is: a
+  // pool emptied because everyone is BUSY is not a pool emptied because every window is SPENT,
+  // and only the second of those may ever be turned into money.
+  const busyWorkers =
+    deps.busyWorkers instanceof Set ? deps.busyWorkers : new Set(Array.isArray(deps.busyWorkers) ? deps.busyWorkers : [])
+  let heldByBusy = false
   const candidates = workers.filter((w) => {
     if (!w || w.enabled === false) return false
     if (targetProvider && w.provider !== targetProvider) return false
@@ -190,6 +202,10 @@ export function resolveRoute(task = {}, deps = {}) {
       return false
     }
     if (!isWindowOpen(w)) return false
+    if (busyWorkers.has(w.id)) {
+      heldByBusy = true
+      return false
+    }
     return true
   })
 
@@ -198,7 +214,7 @@ export function resolveRoute(task = {}, deps = {}) {
     // never asked. The protected account is NOT a closed window: holding work for the
     // founder's own subscription must never be turned into spending, so the switch is offered
     // only when the pool emptied because every window is genuinely spent.
-    if (!heldByDayPriority) {
+    if (!heldByDayPriority && !heldByBusy) {
       const verdict = askBudget(deps.budget, task, true)
       if (verdict && verdict.fallback === true) {
         journalDecision(sink, task, 'api_fallback', { lane, provider: 'api' })
@@ -215,7 +231,10 @@ export function resolveRoute(task = {}, deps = {}) {
     }
     // The task WAITS — routing never fails it. By review: no only-open-window
     // carve-out for the protected account.
-    const code = heldByDayPriority ? 'day_priority_protected' : 'window_exhausted'
+    // Three different silences, three different names: the founder's account is protected,
+    // every seat is taken by work already running, or the windows are genuinely spent. Only
+    // the last one is a reason to wait for a window; the middle one clears by itself.
+    const code = heldByDayPriority ? 'day_priority_protected' : heldByBusy ? 'worker_busy' : 'window_exhausted'
     journalDecision(sink, task, code, { lane, provider: targetProvider ?? undefined })
     return {
       workerId: null,
@@ -223,7 +242,10 @@ export function resolveRoute(task = {}, deps = {}) {
       model: null,
       effort: null,
       useApiFallback: false,
-      reason: 'window_exhausted',
+      // The words a person reads follow the code. Telling someone the window is spent while
+      // the real answer is «every seat is taken, wait a few minutes» sends them to top up an
+      // account that has nothing wrong with it.
+      reason: code === 'worker_busy' ? 'every worker already has a live attempt' : 'window_exhausted',
       reasonCode: code,
     }
   }
