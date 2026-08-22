@@ -643,3 +643,151 @@ describe('hook contract: budget-signal on session start', () => {
     expect(context).not.toContain('консолидируй сейчас')
   }, 60000)
 })
+
+// ── the farewell move: what a session leaves behind when it ends ──────────────
+//
+// A session used to end by handing its claims back and saying nothing about what it had
+// just been. These cases drive the REAL session-end verb with a REAL frame on stdin and
+// assert the FILE, never the exit code — this verb returns 0 whatever happens, so a case
+// that read the code would pass over a block that did nothing at all.
+//
+// The one thing every case here is really guarding: the draft is a DRAFT. An automatic
+// lesson that could reach active memory would let a machine author a belief about its own
+// session, so the corpus listing OUTSIDE drafts/ is compared before and after.
+describe('hook contract: the farewell move at session end', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'sma-hooks-farewell-'))
+
+  afterAll(() => {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+  })
+
+  /** A neighbour the corpus already holds — the thing "nothing moved" is measured against. */
+  const NEIGHBOUR = [
+    '---',
+    'id: neighbour',
+    'schema_version: 2',
+    'status: active',
+    'memory_type: procedural',
+    'truth_mode: observed',
+    'claim: a neighbour record that the farewell move must never touch',
+    'language: en',
+    'sensitivity: internal',
+    '---',
+    '',
+    'body',
+    '',
+  ].join('\n')
+
+  /** A fresh project with a one-note corpus. `brokenCorpus` puts a FILE where the dir goes. */
+  function projWithCorpus(name: string, { brokenCorpus = false } = {}): string {
+    const proj = join(tmp, name)
+    mkdirSync(proj, { recursive: true })
+    const corpus = join(proj, '.claude', 'memory')
+    if (brokenCorpus) {
+      mkdirSync(join(proj, '.claude'), { recursive: true })
+      writeFileSync(corpus, 'this is a file where the corpus directory should be')
+    } else {
+      mkdirSync(corpus, { recursive: true })
+      writeFileSync(join(corpus, 'neighbour.md'), NEIGHBOUR)
+    }
+    return proj
+  }
+
+  /** Give the session something to have DONE: a real claim, taken by the real verb. */
+  function takeAClaim(proj: string) {
+    const res = spawnSync(
+      process.execPath,
+      [cliPath, 'claim', 'farewell-probe', '--globs', 'src/**', '--desc', 'farewell wire check'],
+      { cwd: proj, encoding: 'utf8', env: hookEnv(proj) },
+    )
+    expect({ status: res.status, stderr: (res.stderr ?? '').slice(0, 300) }).toMatchObject({ status: 0 })
+  }
+
+  const endSession = (proj: string) =>
+    runHook('session-end', { session_id: WINDOW_TOKEN, hook_event_name: 'SessionEnd', reason: 'other' }, proj)
+
+  const corpusDirOf = (proj: string) => join(proj, '.claude', 'memory')
+  /** Everything the corpus holds EXCEPT the drafts directory — the never-touched surface. */
+  const corpusOutsideDrafts = (proj: string) => listDir(corpusDirOf(proj)).filter((f) => f !== 'drafts').sort()
+  const draftsOf = (proj: string) => listDir(join(corpusDirOf(proj), 'drafts'))
+  const sessionLessons = (proj: string) => draftsOf(proj).filter((f) => f.startsWith('session-lesson-'))
+  const farewellEvents = (proj: string) => journalEvents(proj).filter((e) => e.type === 'farewell')
+
+  it('a session that did something leaves a candidate lesson in drafts, and nothing in the corpus', () => {
+    const proj = projWithCorpus('material')
+    takeAClaim(proj)
+    const corpusBefore = corpusOutsideDrafts(proj)
+
+    const res = endSession(proj)
+    expect(res.status).toBe(0)
+
+    const lessons = sessionLessons(proj)
+    expect(lessons, 'the farewell must leave a candidate on disk, not just exit 0').toHaveLength(1)
+
+    // it is a DRAFT, by the pipeline's own markers — asserted on the file, because a
+    // record that reached the corpus would look perfectly plausible from the outside
+    const text = readFileSync(join(corpusDirOf(proj), 'drafts', lessons[0]), 'utf8')
+    expect(text).toContain('status: draft')
+    expect(text).toContain('draft_kind: pipeline-write')
+    expect(text).not.toContain('status: active')
+
+    // and the corpus itself did not move: this is the whole guarantee, stated as a diff
+    expect(corpusOutsideDrafts(proj)).toEqual(corpusBefore)
+
+    const events = farewellEvents(proj)
+    expect(events).toHaveLength(1)
+    expect(events[0].detail?.outcome).toBe('drafted')
+    expect(events[0].detail?.path).toContain('drafts')
+  }, 60000)
+
+  it('a session with nothing but bookkeeping says so in words and invents no lesson', () => {
+    const proj = projWithCorpus('no-material')
+
+    const res = endSession(proj)
+    expect(res.status).toBe(0)
+
+    expect(sessionLessons(proj), 'a lesson without material would be a lesson made up').toEqual([])
+    const events = farewellEvents(proj)
+    expect(events).toHaveLength(1)
+    expect(events[0].detail?.outcome).toBe('no-material')
+  }, 60000)
+
+  it('a corpus that is broken costs the draft and nothing else — the claims still come back', () => {
+    const proj = projWithCorpus('broken', { brokenCorpus: true })
+    takeAClaim(proj)
+    const claimsDir = join(proj, '.sma', 'claims')
+    const before = claimSlots(claimsDir)
+    expect(before, 'the claim should be on disk before the hook runs').toHaveLength(1)
+    const slot = before[0]
+
+    const res = endSession(proj)
+    expect(res.status).toBe(0)
+
+    // the release half of the verb is untouched by the farewell half failing — that is
+    // what "additive, in its own try/catch" has to MEAN on disk
+    expect(claimSlots(claimsDir), 'a broken corpus must not cost the session its claims').toEqual([])
+    expect(listDir(claimsDir)).toContain(`.cooldown-${slot}`)
+    expect(res.stderr ?? '', 'nothing may be thrown at the harness').not.toContain('Error')
+    expect(sessionLessons(proj)).toEqual([])
+  }, 60000)
+
+  it('a second session end never clobbers the candidate the first one staged', () => {
+    const proj = projWithCorpus('twice')
+    takeAClaim(proj)
+
+    expect(endSession(proj).status).toBe(0)
+    const first = sessionLessons(proj)
+    expect(first).toHaveLength(1)
+    const stagedText = readFileSync(join(corpusDirOf(proj), 'drafts', first[0]), 'utf8')
+
+    expect(endSession(proj).status).toBe(0)
+
+    // one file, byte-identical: a draft a person may already have edited outweighs the
+    // one this run would have written
+    expect(sessionLessons(proj)).toEqual(first)
+    expect(readFileSync(join(corpusDirOf(proj), 'drafts', first[0]), 'utf8')).toBe(stagedText)
+
+    const outcomes = farewellEvents(proj).map((e) => e.detail?.outcome)
+    expect(outcomes).toEqual(['drafted', 'draft-exists'])
+  }, 60000)
+})
