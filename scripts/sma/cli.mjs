@@ -634,6 +634,31 @@ async function cmdSessionStart({ dirs }) {
     /* fail-open — the curriculum refresh never wedges session-start */
   }
 
+  // How full is the always-loaded memory, said at the one moment the session is about to
+  // start paying for it. The byte budget has existed in the constants and in the size lint
+  // all along; what was missing was a place where a live session could SEE it without
+  // knowing to ask. The line only READS and prints — consolidation stays an act a person
+  // (or an agent) performs deliberately, never something a hook does behind their back.
+  // Its OWN try/catch: fail-open — the memory budget line never wedges session-start.
+  let memLine = ''
+  try {
+    const { alwaysLoadReport } = await import('./lib/economy.mjs')
+    const mem = await alwaysLoadReport({ corpusDir: join(repoRoot, '.claude', 'memory'), smaRoot: dirs.smaRoot })
+    // No corpus, no reading — a project without memory hears nothing about memory.
+    if (mem.bytes > 0) {
+      memLine = `SMA: память MEMORY.md — ${mem.pct}% бюджета всегда-загружаемого (${mem.bytes}/${mem.budget} байт)`
+      if (mem.tier === 'warn') memLine += ' — приближается к пределу (порог 80%)'
+      if (mem.tier === 'critical') {
+        memLine +=
+          '\nSMA: память переполнена — консолидируй сейчас: `node scripts/sma/cli.mjs consolidate` ' +
+          '(предложит слияния и промоушены, ничего не применяет) или `node scripts/sma/cli.mjs trim` ' +
+          '(понизит слои — авто-починка)'
+      }
+    }
+  } catch {
+    /* fail-open — the memory budget line never wedges session-start */
+  }
+
   // The window-name offer. WHEN it is shown, in words: for as long as the name is still one
   // the SYSTEM chose — either the machine token (there was no window token to key a name on,
   // or the allocation failed) or the auto «Окно-N» just handed out. It goes quiet the moment
@@ -693,13 +718,15 @@ async function cmdSessionStart({ dirs }) {
     digest ||
     namePrompt ||
     disarmLine ||
-    curriculumLine
+    curriculumLine ||
+    memLine
   ) {
     const parts = [lines.join(' ')]
     if (preAct) parts.push(preAct)
     if (digest) parts.push(digest)
     if (disarmLine) parts.push(disarmLine)
     if (curriculumLine) parts.push(curriculumLine)
+    if (memLine) parts.push(memLine)
     if (namePrompt) parts.push(namePrompt)
     if (restore) parts.unshift(restore) // the capsule body is the FIRST part after compaction
     printJson({
