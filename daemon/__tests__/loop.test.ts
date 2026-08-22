@@ -2276,6 +2276,25 @@ describe('a task that needed no code completes on its answer — and nothing els
         // where the tree being asked stands right now — how a copy learns its own base when
         // the provisioning verb declined to name one
         if (verb === 'rev-parse') return base
+        // WHERE THE BRANCH WAS CUT. The receiptless gate asks this FIRST when the provisioning
+        // verb named no base, and only falls back to the tip if it goes unanswered — real git
+        // answers the merge point, and for a fixture whose copy has not diverged that is the
+        // same commit `rev-parse` reports. Modelled here rather than left to the refusal below
+        // because it is a question production legitimately asks: an unmodelled question turns
+        // every case using this fake into a verdict about the fixture instead of about the
+        // code. The question arrived with the work that made a RETRY count from the point its
+        // branch was cut from, rather than from wherever the project has since moved to.
+        //
+        // AND A TREE THAT CANNOT SAY WHERE IT STANDS CANNOT SAY WHERE IT WAS CUT FROM. Both
+        // are questions to the SAME copy, so one switch covers both: back when `rev-parse` was
+        // the only fallback, `throwOn: 'rev-parse'` was how a case said «nobody can name this
+        // base», and the cases that say it still spell it that way. Answering merge-base while
+        // rev-parse is silenced would hand those cases a base out of a tree the fixture just
+        // declared mute — and the door that must stay shut would open.
+        if (verb === 'merge-base') {
+          if (throwOn === 'rev-parse') throw new Error('git merge-base unavailable')
+          return base
+        }
         if (verb === 'status') return dirty
         // what the FAILED path asks to list the files an attempt touched — both shapes of it
         if (verb === 'show') return ''

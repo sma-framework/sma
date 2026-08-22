@@ -298,13 +298,18 @@ describe('memory forget — one command, and it says which state it applied', ()
     // It is 93 for the third time in the same shape — the standing acceptance rules arrived as a
     // verb of their own from a line of work whose own count read 91, counting only its own
     // arrival. The pin is the SUM of what actually landed, never one side's figure.
-    // It is 94: the declared-wire inventory arrived as a verb of its own, and re-pinning it
-    // here is part of that arrival. Note that this is the SECOND lock on the same number —
-    // the docs audit holds the other six places — so the two move together or not at all.
+    // It is 95 for the FOURTH time in the same shape, and this time the shape arrived whole:
+    // two lines of work landed a verb each — the per-turn diff verdict and the declared-wire
+    // inventory — and each pinned 94, counting only its own arrival. Neither figure described
+    // the tree that holds both. The pin is the SUM of what actually landed, never one side's
+    // number; the comment on the allow-list beside the dispatch table says the same thing,
+    // and it said it before this merge rather than after.
+    // Note that this is the SECOND lock on the same number — the docs audit holds the other
+    // six places — so the two move together or not at all.
     // The claim this case actually makes is the line below it: the deletion surface stayed a
     // SUBCOMMAND of the corpus namespace and never grew a top-level key, which is what a count
     // alone could never say.
-    expect(keys).toBe(94)
+    expect(keys).toBe(95)
     // and the handler that WOULD have been added is absent by name
     expect(block).not.toContain('forget')
   })
