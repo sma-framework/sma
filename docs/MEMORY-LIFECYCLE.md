@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | **1.0 — landed.** Every step below is executable code with test coverage; where a behavior is deliberately absent, this document says so and says why. |
-| Document version | 1.4 |
+| Document version | 1.5 |
 | Date | 2026-08-22 |
 | Applies to | `schema_version: 2` records; v1 notes are read unchanged and are never written by this path |
 | Companion documents | [`MEMORY-MODEL.md`](MEMORY-MODEL.md) — what a record may say and must carry · [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) — what the storage classes defend against |
@@ -233,6 +233,40 @@ trace is a repudiable write. The record carries a **shape, never content** — t
 stays where it belongs, in the record.
 
 **Stops the walk:** never (fail-open, like step 1).
+
+### 1.10.1 Outcome attribution is deliberately NOT built
+
+The trail this step leaves invites one question more than it answers: did the memory that
+was loaded change how the work went? Nothing in this product answers that, and the silence
+is a decision rather than an oversight — so it is written down here, with the condition
+that reopens it.
+
+**What exists today.** Three trails, each of them real and each of them separate. A **write
+trail** — the record described above, one per persisted write, carrying the shape of the
+walk that let it through. A **use trail** — every note delivered into a session is recorded
+as loaded and, where it is actually cited, as fired; the selection behind any single
+delivery can be explained afterwards, and an attempt's own journal keeps the notes that
+reached it. And a **measurement of retrieval quality** — the delivered set scored against a
+set of reference questions with recorded expected answers, in recall, precision, mean
+reciprocal rank and gain, held to floors that turn a regression red.
+
+**What is missing, on purpose.** No mechanism claims that a piece of memory changed the
+outcome of a piece of work. The raw material for that join sits close at hand — the memory a
+run read and the way that run ended are written into neighbouring files of one directory —
+so the gap is not a technical one. It is that the join would be a calculation with no
+reader. An honest attribution needs the outcome of the same work **without** that memory,
+and comparing outcomes across a run that happened and one that never did belongs to a pilot
+with real users, not to a hook inside a write pipeline. Built ahead of that, it would
+produce a figure that reads as a measurement and is an opinion — the one failure mode this
+document exists to refuse.
+
+**Revisit when** a first question arrives that genuinely needs the comparison rather than
+the trail:
+
+> A reference question of the form "how this work ended with this memory, and how it ended
+> without it", carrying its expected answer, written down before the run.
+
+The connector is built together with that question, never ahead of it.
 
 ### 1.11 Step 11 — consolidate
 
@@ -720,6 +754,7 @@ fall out of sync. See
 
 | Version | Date | Change |
 |---|---|---|
+| 1.5 | 2026-08-22 | New §1.10.1 states that **outcome attribution is deliberately not built**, and states it beside the step that would have been its hook. Three trails exist and are named — the per-write trace of step 10, the load/fire record of every delivered note with the selection explainable after the fact, and the scored quality of retrieval against reference questions with floors. What none of them does is claim that a piece of memory changed the outcome of a piece of work: the raw material for that join lies in neighbouring files of one directory, so the gap is a decision and not a technical limit — an honest attribution needs the outcome of the same work without that memory, and a comparison across a run that never happened belongs to a pilot with users rather than to a pipeline hook. The condition that reopens it is a reference question asking how the work ended with the memory and how it ended without it, carrying its expected answer. Stated here because a reader could otherwise take the words "measure" and "measured memory" for a promise about outcomes, and find out only by reading the module and finding nothing. The contract suite for the pipeline steps reads this section and fails if the statement disappears. |
 | 1.4 | 2026-08-22 | New §3.1 states the two doors the approval ladder deliberately does not have, each with the condition that reopens it: a **deterministic-proof** alternative to the human door for reflex-grade rules (absent because `APPROVAL_PATHS` is frozen and no candidate carries a machine-weighable check — revisited when one does), and a **wire from a decision-policy record to the replay exam** (absent because the exam scores an orchestrator policy over past decisions rather than a single record, and no caller asks for the join — revisited when a decision-policy record's approval actually needs a replay run). Both were previously true of the code and stated nowhere, which is the failure mode this document exists to prevent: a reader could only learn them by reading `resolveApprovalPath` and finding nothing. A contract test now reads this section and fails if either statement disappears, so the record cannot rot back into silence. |
 | 1.3 | 2026-08-05 | Two promises this document was making without code behind them got their code, and both are now stated as what they actually are. §1.5 says what the contradiction detector **looks at** — the rule-stating kinds, not every kind — and, more usefully, what it **cannot see**: verb antonymy, and a clean result that is weaker than it looks. Until this date the detector's kind gate admitted only `decision` and `status`, and a corpus holding neither got an empty result that read as «no contradictions» and meant «nothing was examined»; the polarity vocabulary was likewise English-only on a Russian corpus. §5.5 and §5.6 record that an erase **can decline**: the episode archive is not one of the six surfaces, so an episode sharing the record's id stops the operation before anything is removed, names the file, and leaves the decision about history with the operator. Erasing the episode along with the record was considered and rejected — it is a strictly larger promise than the one that was approved. |
 | 1.2 | 2026-08-04 | The lifecycle got a user-facing surface, and this document got the two sections that describe it. §5.6 (**what a person actually types**) states the one-command view and the default-state rule — a forget naming a replacement supersedes, a forget naming none revokes, expiry and archiving stay reachable by flag, and erase is reachable only behind two of them — plus the rule that the applied state is always shown and always written into the record. §5.7 (**the manual route**) carries the git-history limit in full: five numbered steps a person would take by hand, including the rotate-the-secret step everyone skips, the warning that each of them breaks every existing clone, and the reason the product refuses to do it behind a friendly verb; the tooling itself stays named in exactly one place, `MEMORY-THREAT-MODEL.md` §6.4. §5's shared rules now record that **all four** retirements are honoured by the read path as of this date — `expired` and `archived` were retired by the write path and delivered by the read path until then, so §5.4's promise was made here and kept by no code — a gap this document had recorded against itself. §5.5 names `ERASE_SURFACES` as the one list walked twice. |
