@@ -660,6 +660,7 @@ sma wires --plans <dir> --tree <dir>          # the report; exit code IS the ver
 sma wires … --count                           # the red count as the LAST stdout line
 sma wires … --json                            # every category, machine-readable
 sma wires … --rewrite ../old-root=.           # repeatable: one rule per foreign root
+sma wires … --rewrite-file rules.txt          # the same rules from a file; --rewrite overrides it
 sma wires … --roots scripts,docs              # override the declared walk-root set
 sma wires … --broad-limit 20                  # how wide a trace may be and still count
 sma wires … --verdicts journal.jsonl          # human verdicts; the only thing that puts red out
@@ -676,6 +677,17 @@ would make the verdict depend on which directories happen to sit beside your che
 the same answer would change on a clean clone. `--rewrite` brings foreign roots home, and
 every rule applied is printed in the report header along with the walk roots, the width
 limit and the tree's commit.
+
+**Where the rules come from is part of the number.** Typed into the shell on every run, a
+rule set makes the headline count a fact about somebody's typing rather than about the
+product — the same tree scores one way with four rules and quite another with none. So the
+set can live in a file (`--rewrite-file`, one `prefix=target` per line, `#` comments), and
+the header names the source it read. `--rewrite` on the command line **overrides** the file,
+so a one-off run needs no edit. A named file that is **absent** is not an error: the header
+says so and states the price — how many declared paths therefore lead outside the tree. A
+**malformed** file stops the run with the offending line number, because a rule that is
+silently dropped turns into a pile of «outside the tree» paths that reads exactly like an
+honest measurement of a tree that has moved.
 
 **What it does not prove.** A trace found in a file proves a *string* is there — not a
 call, not a delivery, and not a receiver that reads what was delivered. Only a test
