@@ -837,7 +837,7 @@ flowchart LR
     SEG --> OUT
 ```
 
-Those six sub-segments render in exactly that fixed order, and a value that cannot be resolved prints as `—` rather than as a zero. The window axis is the one worth spelling out: the subscription-window reading the vendor pipes in on stdin at every render comes first; the percentage of your own spend against a money cap you set is the fallback underneath it; with neither available the axis is an honest dash — which says "no reading", not "nothing used".
+Those six sub-segments render in exactly that fixed order, and a value that cannot be resolved prints as `—` rather than as a zero. The window axis is the one worth spelling out: the subscription-window reading the vendor pipes in on stdin at every render comes first; the percentage of your own spend against a money cap you set is the fallback underneath it; with neither available the axis is an honest dash — which says "no reading", not "nothing used". And a reading on that axis is a **share of the subscription window**, never a price: the terminal session runs on a subscription, whose tokens can be counted but which has **no price in money** by design, so no dollar figure is ever put beside it, and the dash stays a missing reading rather than a missing price.
 
 The attention pulse marks each window *working* or *waiting-for-human* (idle is derived, never guessed). The optional webhook is **outbound-only** — SMA sends a nudge out; there is no inbound path and nothing listens.
 
