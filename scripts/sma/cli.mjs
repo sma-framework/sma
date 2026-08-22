@@ -31,7 +31,7 @@
  * Node built-ins only; zero npm deps.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, realpathSync } from 'node:fs'
 import { join, dirname, basename, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -3905,6 +3905,80 @@ async function resolveCorpusDefault({ cwd = process.cwd(), dirs } = {}) {
 }
 
 /**
+ * isForeignCorpus({requested, resolvedDefault}) — is this corpus somebody ELSE's?
+ *
+ * A WORKING COPY IS ITS OWN PROJECT, and that is the law the answer above is
+ * written to protect: `resolveCorpusDefault` answers with the corpus of the
+ * CURRENT tree, so a lesson a worker writes inside its copy is a legitimate local
+ * case, not a write into a stranger's memory. This function must never break that
+ * case, and it cannot: the default IS the current tree, so no flag means not
+ * foreign, and a `--corpus` that NAMES the current tree's own corpus is not
+ * foreign either. Foreign is one thing only — the corpus of ANOTHER tree, named
+ * out loud.
+ *
+ * The comparison is between paths canonicalised by the FILESYSTEM, not merely by
+ * string surgery — see `canonicalPath`. Two spellings of one directory that
+ * compared unequal would stage a record over a difference in punctuation, and the
+ * law above would be broken by exactly the case it exists to protect.
+ *
+ * FAILS CLOSED. A default that cannot be read is not evidence that the requested
+ * corpus is ours; the safe answer is "foreign", which costs a draft and a sentence
+ * and never costs an unreviewed write into somebody else's memory.
+ */
+function isForeignCorpus({ requested, resolvedDefault } = {}) {
+  if (typeof requested !== 'string' || requested.trim() === '') return false
+  if (typeof resolvedDefault !== 'string' || resolvedDefault.trim() === '') return true
+  return canonicalPath(requested) !== canonicalPath(resolvedDefault)
+}
+
+/**
+ * One directory, one spelling. A path is made absolute, then handed to the
+ * filesystem for its REAL name, then levelled to forward slashes with no trailing
+ * separator and lower-cased on Windows.
+ *
+ * WHY THE FILESYSTEM IS ASKED AT ALL. On Windows the same directory has more than
+ * one legal name: the 8.3 short form (`C:\Users\LONGNA~1\...`) and the long form
+ * are the same place, git answers in the long one, and a path inherited from the
+ * environment — the temp directory above all — is very often the short one. String
+ * normalisation cannot reconcile those; `realpath` can, and it also collapses
+ * symlinks and junctions — the shape a linked working copy is usually reached by.
+ *
+ * A path that does not exist yet is still answerable: the deepest ancestor that
+ * DOES exist is canonicalised and the remaining names are put back on. Nothing is
+ * created, and the fallback for a path with no readable ancestor at all is the
+ * plain absolute form.
+ */
+function canonicalPath(input) {
+  const level = (p) => {
+    const flat = String(p).replace(/[\\/]+/g, '/').replace(/\/+$/, '')
+    return process.platform === 'win32' ? flat.toLowerCase() : flat
+  }
+  const absolute = resolve(String(input ?? '').trim())
+  let current = absolute
+  const tail = []
+  for (;;) {
+    try {
+      const real = realpathSync.native(current)
+      return level([real, ...tail].join('/'))
+    } catch {
+      const parent = dirname(current)
+      if (parent === current) return level(absolute)
+      tail.unshift(basename(current))
+      current = parent
+    }
+  }
+}
+
+/**
+ * Why a record addressed at another project's corpus is staged instead of
+ * written. English, like every other reason in the pipeline trace, because the
+ * trace is the machine trail. What the PERSON is told is printed separately, in
+ * their own language, together with the command that applies the draft by hand.
+ */
+const FOREIGN_CORPUS_STAGE_REASON =
+  'foreign-project corpus — approval required before this record becomes active'
+
+/**
  * memory write — the memory-write surface of the canon pipeline.
  *
  * One event in, one traced verdict out. The verb itself decides NOTHING about
@@ -3923,8 +3997,11 @@ async function cmdMemoryWrite({ flags, dirs }) {
     return 0
   }
 
-  const corpusDir =
-    typeof flags.corpus === 'string' ? flags.corpus : await resolveCorpusDefault({ cwd: process.cwd(), dirs })
+  // The default is resolved even when `--corpus` wins, because it is the only way
+  // to answer the second question this verb has to answer: whose corpus is this.
+  const requestedCorpus = typeof flags.corpus === 'string' ? flags.corpus : ''
+  const defaultCorpus = await resolveCorpusDefault({ cwd: process.cwd(), dirs })
+  const corpusDir = requestedCorpus !== '' ? requestedCorpus : defaultCorpus
 
   // ── apply: one staged draft, one named confirmation, one explicit yes ──────
   // The door OUT of drafts/. It is the same shape `memory migrate --apply`
@@ -4054,9 +4131,22 @@ async function cmdMemoryWrite({ flags, dirs }) {
 
   const body = typeof flags.body === 'string' ? `\n${flags.body.trim()}\n` : '\n'
 
+  // A RECORD ADDRESSED AT ANOTHER PROJECT NEVER BECOMES ITS ACTIVE MEMORY DIRECTLY.
+  // The fact is computed here because only this layer knows which corpus WOULD have
+  // been the default; the outcome is decided by the pipeline, because that is where
+  // the door lives. So the fact travels as an option and closes the automatic door
+  // before the record's own class is ever asked about — a record staged this way is
+  // applied by the hand of whoever owns that corpus, through --apply --confirm --yes.
+  const foreignCorpus = isForeignCorpus({ requested: requestedCorpus, resolvedDefault: defaultCorpus })
+
   const result = pipeline.runPipeline(
     { record, body },
-    { corpusDir, journalDir: dirs?.journalDir, ...(await pipelineRuntime()) },
+    {
+      corpusDir,
+      journalDir: dirs?.journalDir,
+      ...(foreignCorpus ? { forceStage: { reason: FOREIGN_CORPUS_STAGE_REASON } } : {}),
+      ...(await pipelineRuntime()),
+    },
   )
 
   if (wantsJson(flags)) {
@@ -4073,6 +4163,15 @@ async function cmdMemoryWrite({ flags, dirs }) {
     process.stdout.write(`  → отложено черновиком (в корпус НЕ попало): ${result.path}\n`)
   } else {
     process.stdout.write(`  → ОТКАЗ: ${last?.detail?.reason ?? 'см. трассировку выше'}\n`)
+  }
+  // Чужой корпус — не отказ и не ошибка: запись сделана, но принята она будет рукой
+  // того, чья это память. Поэтому строка не пугает, а называет причину и сразу даёт
+  // команду применения — иначе черновик в чужом дереве останется лежать молча.
+  if (foreignCorpus && result.outcome === 'staged-draft') {
+    process.stdout.write(
+      `SMA: корпус ${corpusDir} — чужой проект: запись принудительно в staged-draft, ` +
+        `применение — руками: sma memory write --apply ${result.path} --confirm ${id}.md --yes --corpus ${corpusDir}\n`,
+    )
   }
   return result.outcome === 'rejected' ? 1 : 0
 }
