@@ -239,6 +239,19 @@ describe('buildArgs — the spec the tick spawns', () => {
     expect(spec.args.join(' ')).not.toContain('импорт проходит')
   })
 
+  /**
+   * ТОТ ЖЕ ПРОВОД, ЧТО ВЫШЕ, — ДЛЯ СНИМКА КОНТЕКСТА. Строитель промпта уже держит задачу
+   * ЦЕЛИКОМ, и снимок берётся из неё; но «строитель умеет нарисовать блок» и «снимок ЭТОЙ
+   * задачи оказался в спеке, с которым тик сейчас спавнит» — разные утверждения, и продукт
+   * за их смешение уже платил. Утверждается второе, и утверждается ЗДЕСЬ, на шве спавна.
+   */
+  it('снимок контекста задачи ДОЕЗЖАЕТ до спека спавна — данными на stdin, а не аргументом', () => {
+    const spec = build()(task({ taskContext: 'СНИМОК-СПАВНА: ключи лежат в менеджере паролей' }), route())
+    expect(spec.prompt).toContain('СНИМОК-СПАВНА: ключи лежат в менеджере паролей')
+    expect(spec.prompt).toMatch(/`{3,}task-context\n/)
+    expect(spec.args.join(' ')).not.toContain('СНИМОК-СПАВНА')
+  })
+
   it('a task with no words spawns the brief it always spawned', () => {
     const spec = build()(task(), route())
     expect(spec.prompt).not.toContain('признаки успеха')
