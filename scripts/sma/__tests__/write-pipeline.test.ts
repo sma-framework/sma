@@ -5,9 +5,15 @@
  * system now believes this". These tests pin the order and the two refusals
  * that make the boundary real:
  *
- *   - STEP ORDER IS LAW. PIPELINE_STEPS is a frozen 12-name list; every name
- *     has a registered implementation, and the four that this plan does not
- *     build yet throw loudly instead of silently doing nothing.
+ *   - STEP ORDER IS LAW. PIPELINE_STEPS is a frozen 12-name list, and ALL
+ *     TWELVE have a registered implementation — including the last four, which
+ *     this header once described as unbuilt boundaries that throw. They have not
+ *     thrown for a long time: the case further down walks a persisted record
+ *     through index, measure, consolidate and lifecycle, so the claim was
+ *     contradicted by this very file. An unregistered name still throws loudly
+ *     instead of silently doing nothing; that is the refusal being pinned here.
+ *     The list itself, its count and the docstring that describes it are held by
+ *     the pipeline-steps suite next door, which reads them out of the source.
  *   - REDACTION PRECEDES ALL PERSISTENCE. A record carrying a secret-shaped
  *     token is refused at step 3 — not scrubbed and stored, refused — and the
  *     assertion is filesystem-level: zero files under the corpus AND zero under

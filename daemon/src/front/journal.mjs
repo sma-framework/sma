@@ -52,6 +52,13 @@ export const JOURNAL_LAYERS = Object.freeze(['dispatcher', 'approach', 'memory']
  *     into neither — it is its own word;
  *   window_exhausted / day_priority_protected — nobody was selected and the task WAITS
  *     (routing never fails a task);
+ *   worker_busy — nobody was selected because every eligible seat already has a LIVE
+ *     attempt on it. The router has been naming this outcome since the busy filter landed;
+ *     the vocabulary did not carry the word, so the sink dropped it and the card said «the
+ *     route was never decided» about a route that had been. Kept apart from
+ *     window_exhausted for the same reason the two money words are kept apart: a pool
+ *     emptied by work in flight clears by itself, and telling its owner to wait for a
+ *     window sends him to an account with nothing wrong with it;
  *   wait_for_window — the money rule refused to spend while a subscription seat may still
  *     free up shortly: the task waits and the paid channel was never touched;
  *   budget_stop — the month's paid-channel ceiling is spent. Kept apart from
@@ -70,6 +77,7 @@ export const DISPATCH_REASONS = Object.freeze({
   api_fallback: 'окон нет — передано в платное окно API (в пределах лимита)',
   window_exhausted: 'отложено: нет открытого окна',
   day_priority_protected: 'отложено: активные часы основателя, его счёт защищён',
+  worker_busy: 'отложено: все подходящие работники заняты живыми попытками',
   wait_for_window: 'отложено: ждёт окна подписки — платный канал не задействован',
   budget_stop: 'остановлено: месячный лимит платного канала выбран',
   api_cap_unset: 'отложено: платный канал не настроен — ждёт окна подписки',
