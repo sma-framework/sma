@@ -39,6 +39,7 @@ import {
   missingDriverMessage,
   parseSteps,
   readiness,
+  redactUrl,
   renderCoverage,
   renderReceipt,
   resolveDriveViewport,
@@ -596,5 +597,67 @@ describe('isStreamClose — a stream ending with its page is a close, not a fail
     const md = renderCoverage({ ran: true, touched: 3, total: 3, streamsClosed: 24 })
     expect(md).toContain('24')
     expect(md).toContain('CLOSE')
+  })
+})
+
+/**
+ * A RECEIPT IS EVIDENCE, AND EVIDENCE TRAVELS. These files are committed by design — the
+ * law that a UI change is proved by running it rests on them, so they go into git, into
+ * the planning repository, and from there to a remote. That is exactly why the address a
+ * run was pointed at must not carry the key that opens it: for months every run wrote the
+ * daemon's front token in the clear, and by the time it was counted there were 338 such
+ * files carrying 22 distinct token values, published in one push.
+ *
+ * The token is not a per-run nonce that dies with the process — it is a CONFIGURED secret
+ * (`config.token` on the daemon's front server), so a receipt from August still opens the
+ * door in December.
+ *
+ * The redaction keeps everything a reader needs to reproduce the run — scheme, host, port,
+ * path and every ordinary parameter — and destroys only the value that is a credential.
+ * A receipt nobody can follow would trade one defect for another.
+ */
+describe('redactUrl — a receipt names where the run went, never the key that opened it', () => {
+  it('destroys the credential and keeps the address', () => {
+    const out = redactUrl('http://127.0.0.1:7777/app?token=28be9f01c7d24e6ab1&view=queue')
+    expect(out, 'the secret survived into the receipt').not.toContain('28be9f01c7d24e6ab1')
+    // everything a person needs to walk the same path again is still there
+    expect(out).toContain('127.0.0.1:7777')
+    expect(out).toContain('/app')
+    expect(out).toContain('view=queue')
+    // and the reader is told a value was removed rather than left to wonder
+    expect(out).toMatch(/token=/)
+  })
+
+  it('covers the other spellings a credential arrives under', () => {
+    for (const key of ['token', 'access_token', 'apiKey', 'api_key', 'secret', 'password', 'sig']) {
+      const out = redactUrl(`http://h/p?${key}=SUPERSECRETVALUE`)
+      expect(out, `${key} was left in the clear`).not.toContain('SUPERSECRETVALUE')
+    }
+  })
+
+  it('is not fooled by case, and leaves an address with nothing to hide untouched', () => {
+    expect(redactUrl('http://h/p?TOKEN=SUPERSECRETVALUE')).not.toContain('SUPERSECRETVALUE')
+    expect(redactUrl('http://h/p?view=queue&at=mobile')).toBe('http://h/p?view=queue&at=mobile')
+  })
+
+  /**
+   * The runner hands this whatever the operator typed and whatever the browser reported.
+   * A redactor that throws would take down the receipt-writing step at the very end of a
+   * run that already happened — losing the evidence to protect it.
+   */
+  it('never throws on something that is not a URL', () => {
+    for (const junk of ['', 'not a url', '://', null, undefined, 42]) {
+      expect(() => redactUrl(junk as any), `threw on ${String(junk)}`).not.toThrow()
+    }
+    expect(redactUrl('not a url')).toBe('not a url')
+  })
+
+  it('the rendered receipt carries the redacted address, not the raw one', () => {
+    const md = renderReceipt({
+      url: 'http://127.0.0.1:7777/app?token=28be9f01c7d24e6ab1',
+      verdict: { status: 'PASS', blockers: 0, warnings: 0 },
+    })
+    expect(md, 'the receipt published the token').not.toContain('28be9f01c7d24e6ab1')
+    expect(md).toContain('127.0.0.1:7777')
   })
 })

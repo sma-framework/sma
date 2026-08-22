@@ -48,6 +48,7 @@ import {
   missingDriverMessage,
   parseSteps,
   readiness,
+  redactUrl,
   renderReceipt,
   resolveDriveViewport,
   sweepSparseNote,
@@ -413,7 +414,10 @@ async function main() {
       const began = startedAt.get(r)
       requestFailures.push({
         method: r.method(),
-        url: r.url(),
+        // redacted at the point of RECORDING, not at the point of printing: this object is
+        // written to the run journal as well as rendered, and a credential removed in only
+        // one of the two places is a credential still published
+        url: redactUrl(r.url()),
         error: r.failure()?.errorText,
         resourceType: typeof r.resourceType === 'function' ? r.resourceType() : undefined,
         ageMs: typeof began === 'number' ? Date.now() - began : undefined,
@@ -421,7 +425,7 @@ async function main() {
       })
     })
     page.on('response', (r) => {
-      if (r.status() >= 400) httpErrors.push({ status: r.status(), method: r.request().method(), url: r.url() })
+      if (r.status() >= 400) httpErrors.push({ status: r.status(), method: r.request().method(), url: redactUrl(r.url()) })
     })
   }
 
@@ -451,7 +455,9 @@ async function main() {
       try {
         noteReadiness(`${vp.name} (${vp.width}px)`, await open(page, url))
       } catch (err) {
-        stepFailures.push({ step: `open ${url} at ${vp.name}`, error: err.message.split('\n')[0] })
+        // the address rides INSIDE a finding's prose here, which is the shape a redaction
+        // at the printing edge would have missed entirely
+        stepFailures.push({ step: `open ${redactUrl(url)} at ${vp.name}`, error: err.message.split('\n')[0] })
       }
       // Measured, not judged: a box holding more content than it can show means part of the
       // screen lies past the edge. The document is only the FIRST box measured — a window may
@@ -559,7 +565,13 @@ async function main() {
   const v = verdict(findings, { ran: true })
   const receipt = renderReceipt({ url, steps: parsed.steps, shots, findings, verdict: v, startedAt, coverage })
   writeFileSync(join(outDir, 'RUN.md'), receipt)
-  writeFileSync(join(outDir, 'run.json'), `${JSON.stringify({ url, startedAt, verdict: v, coverage, findings, shots }, null, 2)}\n`)
+  // BOTH HALVES OF THE RECEIPT, OR NEITHER. The prose and the machine-readable journal are
+  // one artifact in two files, and they are committed together; redacting only the prose
+  // would leave the credential sitting in the JSON right beside it.
+  writeFileSync(
+    join(outDir, 'run.json'),
+    `${JSON.stringify({ url: redactUrl(url), startedAt, verdict: v, coverage, findings, shots }, null, 2)}\n`,
+  )
 
   process.stdout.write(`${receipt}\nReceipt: ${join(outDir, 'RUN.md')}\n`)
   process.exit(v.exitCode)
