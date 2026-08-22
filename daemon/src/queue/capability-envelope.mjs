@@ -352,8 +352,18 @@ const REQUEST_ACTIONS = Object.freeze(['read', 'write', 'tool', 'network', 'spen
  * `.claude/settings.json`, and every lane commits its own work, so every lane really does
  * hold the same tools. Differentiating them here would be a decoration, not a boundary —
  * the lanes differ in WRITE SCOPE, and that is where this table differentiates them.
+ *
+ * WHY `Skill` IS HERE. The worker's built-in skills — what a receipt is, how to leave a
+ * lesson, what to do with a question — are materialised into the copy every attempt runs in.
+ * Without this one word the spawned process CANNOT CALL A SINGLE ONE of them: a headless
+ * session has nobody to approve a call, so a tool absent from the grant is refused on sight,
+ * inside the child process, where no screen can name the cause. Beautifully written skills
+ * delivered into a copy the worker may not read from are computed and not connected — the
+ * exact shape of failure that once left this fleet unable to change a single file while
+ * every part of it was green. It widens nothing else: the human-only refusals travel in the
+ * same envelope, and the permissions-skip flag stays structurally unreachable.
  */
-const LANE_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'])
+const LANE_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'Skill'])
 
 /**
  * The fleet's RUNNING→PRODUCED timeout, the one runtime number this codebase has actually

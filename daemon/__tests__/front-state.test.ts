@@ -73,7 +73,7 @@ import { readWaveHolds } from '../src/queue/wave-holds.mjs'
 // Выражение пути каталога прогона — то самое, которым его собирают писатель и спавн.
 // Дело, знающее второе написание этого пути, доказывало бы согласие с самим собой.
 import { attemptRunDir, runsDirOf } from '../src/queue/run-dir.mjs'
-import { REASON_LABELS, createMemoryQueue } from '../src/queue/adapter.mjs'
+import { REASON_LABELS, createMemoryQueue, taskContextOf, TASK_CONTEXT_CAP } from '../src/queue/adapter.mjs'
 
 const HOUR = 3600000
 const NOW = 1_000_000_000_000
@@ -704,6 +704,75 @@ describe('deriveState — the one-poll payload', () => {
     const out = JSON.parse(res.body)
     expect(out.attempts[0].continuationSummary.truncated).toBe(true)
     expect(out.attempts[0].continuationSummary.text).toContain('конспект обрезан по потолку')
+  })
+
+  /**
+   * ═══ СНИМОК КОНТЕКСТА: ОКНО ЧИТАЕТ СВИДЕТЕЛЯ ПОПЫТКИ, А НЕ СТРОКУ ОЧЕРЕДИ ═══
+   *
+   * ЭТО РАЗНЫЕ ПРАВДЫ, И РАСХОДЯТСЯ ОНИ ЗАКОНОМЕРНО. Человек правит слова задачи после
+   * сорванной попытки — строка становится другой, а попытка уже ушла с тем снимком, который
+   * ей ДАЛИ. Карточка показывает историю подходов, значит и снимок берёт исторический: файл
+   * у попытки, а не поле строки. Прочитанное со строки выглядело бы точно так же и врало бы
+   * ровно в тот момент, когда человек разбирается, почему подход сорвался.
+   *
+   * ПУТЬ — ТЕМ ЖЕ ЕДИНСТВЕННЫМ ВЫРАЖЕНИЕМ, что у писателя и у спавна: дело кладёт ответ
+   * файловой системы на КОНКРЕТНЫЙ путь и требует, чтобы дверь спросила именно его. Дверь,
+   * собравшая путь вторым способом, не нашла бы ничего и молчала бы честно на вид.
+   */
+  const ctxPath = (attempt: number) =>
+    join(attemptRunDir({ runsDir: runsDirOf('/projects/app') as string, attemptId: `BL-cont#${attempt}` }) as string, 'task_context.md')
+
+  it('у попытки есть свидетель снимка → дверь отдаёт его текст, и путь спрошен ТОТ ЖЕ', async () => {
+    const text = 'СНИМОК-ОКНА: ключи в менеджере паролей, стенд поднимать на своём порту\n'
+    const asked: string[] = []
+    const front = contFront(CONT_ROWS, { [ctxPath(1)]: text }, asked)
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    expect(res.statusCode).toBe(200)
+    const out = JSON.parse(res.body)
+    expect(out.attempts[0].taskContext).toBe(text)
+    // дверь спросила ИМЕННО тот файл, который положил писатель свидетеля
+    expect(asked).toContain(ctxPath(1))
+  })
+
+  it('свидетеля нет → поля нет ВОВСЕ: «нечего показать» и «не знаем» — разные предложения', async () => {
+    const front = contFront(CONT_ROWS, {})
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    const out = JSON.parse(res.body)
+    expect(Object.prototype.hasOwnProperty.call(out.attempts[0], 'taskContext')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(out.attempts[1], 'taskContext')).toBe(false)
+  })
+
+  it('снимок принадлежит СВОЕЙ попытке: второй подход не показывает снимок первого', async () => {
+    const front = contFront(CONT_ROWS, { [ctxPath(1)]: 'СНИМОК ПЕРВОГО ПОДХОДА\n' })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    const out = JSON.parse(res.body)
+    expect(out.attempts[0].taskContext).toBe('СНИМОК ПЕРВОГО ПОДХОДА\n')
+    expect(out.attempts[1].taskContext).toBeUndefined()
+  })
+
+  it('пустой файл свидетеля читается как отсутствие, а не как пустая панель', async () => {
+    const front = contFront(CONT_ROWS, { [ctxPath(1)]: '   \n' })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    const out = JSON.parse(res.body)
+    expect(Object.prototype.hasOwnProperty.call(out.attempts[0], 'taskContext')).toBe(false)
+  })
+
+  it('свидетель снимка и конспект передачи — два РАЗНЫХ файла и два разных поля', async () => {
+    const front = contFront(CONT_ROWS, { [ctxPath(1)]: 'ЭТО СНИМОК\n', [contPath(1)]: 'ЭТО КОНСПЕКТ\n' })
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ method: 'GET', url: '/api/task/BL-cont' }), res)
+
+    const out = JSON.parse(res.body)
+    expect(out.attempts[0].taskContext).toBe('ЭТО СНИМОК\n')
+    expect(out.attempts[0].continuationSummary).toEqual({ text: 'ЭТО КОНСПЕКТ\n', truncated: false })
   })
 
   it('идущая прямо сейчас попытка несёт те же шесть полей пустыми — карточке нечего показывать', async () => {
@@ -3318,6 +3387,104 @@ describe('POST /api/task/words — the owner corrects what a task says about its
 })
 
 /**
+ * ═══════ ДВЕ ДВЕРИ ЧЕЛОВЕКА, ЧЕРЕЗ КОТОРЫЕ СНИМОК ПОПАДАЕТ НА СТРОКУ ═══════
+ *
+ * Снимок контекста — то, что человек знает о задаче, а работник нет. Он кладётся при
+ * постановке и правится дверью слов; всё остальное фазы — материализации ЭТОЙ строки.
+ *
+ * ПОЧЕМУ ОБЕ ДВЕРИ ПРОВЕРЯЮТСЯ ЗДЕСЬ, РЯДОМ. Класть и править — половины одного обещания
+ * («следующая попытка уйдёт с исправленным снимком»), и разнесённые по двум файлам они
+ * разъезжаются молча: одну дверь расширили, вторую забыли, и человек правит текст, который
+ * никуда не едет. Замки отказа неизвестных ключей проверяются у обеих в том же деле, потому
+ * что расширение списка разрешённых полей — самый частый способ снять замок, не заметив.
+ */
+describe('снимок контекста задачи — двери постановки и слов', () => {
+  const NOW = 1_700_000_000_000
+  const SNAPSHOT = 'счета лежат в /invoices, доступ у Ольги, трогать биллинг нельзя'
+
+  function mkFront(over: any = {}) {
+    return createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: { clock: () => NOW, ...over },
+    })
+  }
+
+  async function post(front: any, url: string, body: any) {
+    const res = mkMigrationRes()
+    await front.handle(mkMigrationReq({ url, body }), res)
+    return res
+  }
+
+  it('постановка со снимком: текст человека доезжает до захваченной задачи', async () => {
+    const adapter = createMemoryQueue({ clock: () => NOW })
+    const front = mkFront({ adapter })
+
+    const res = await post(front, '/api/enqueue', { title: 'разобрать счета', lane: 'prod', taskContext: SNAPSHOT })
+    expect(res.statusCode).toBe(200)
+
+    const claimed: any = await adapter.claimNext('w1', {})
+    expect(claimed.taskContext).toBe(SNAPSHOT)
+  })
+
+  it('дверь слов освежает снимок — СЛЕДУЮЩАЯ выдача берёт со строки новое, а не то, с чем сорвалось', async () => {
+    const adapter = createMemoryQueue({ clock: () => NOW })
+    const front = mkFront({ adapter })
+    await post(front, '/api/enqueue', { title: 'разобрать счета', lane: 'prod', taskContext: 'первый снимок' })
+    const [row] = await adapter.list({})
+
+    const res = await post(front, '/api/task/words', { taskId: row.id, taskContext: SNAPSHOT })
+    expect(res.statusCode).toBe(200)
+
+    const claimed: any = await adapter.claimNext('w1', {})
+    expect(claimed.taskContext).toBe(SNAPSHOT)
+  })
+
+  it('снимок можно СТЕРЕТЬ, и стёртый читается ровно как никогда не написанный', async () => {
+    // Одна читающая тропа на всех (taskContextOf): «ключа нет» и «ключ есть, а текста в нём
+    // нет» обязаны отвечать одно и то же, иначе каждый следующий читатель снимка заведёт свою
+    // догадку о пустоте — и они разойдутся.
+    const adapter = createMemoryQueue({ clock: () => NOW })
+    const front = mkFront({ adapter })
+    await post(front, '/api/enqueue', { title: 'разобрать счета', lane: 'prod', taskContext: SNAPSHOT })
+    const [row] = await adapter.list({})
+
+    expect((await post(front, '/api/task/words', { taskId: row.id, taskContext: '' })).statusCode).toBe(200)
+
+    const claimed: any = await adapter.claimNext('w1', {})
+    expect(taskContextOf(claimed)).toBe('')
+    expect(taskContextOf({ id: 'R-никогда' })).toBe('')
+  })
+
+  it('замок неизвестных ключей стоит как стоял — у обеих дверей 400 ДО всего', async () => {
+    const adapter = createMemoryQueue({ clock: () => NOW })
+    const front = mkFront({ adapter })
+    await post(front, '/api/enqueue', { title: 'разобрать счета', lane: 'prod' })
+    const [row] = await adapter.list({})
+
+    expect((await post(front, '/api/enqueue', { title: 'x', lane: 'prod', smuggled: 'нет' })).statusCode).toBe(400)
+    expect((await post(front, '/api/task/words', { taskId: row.id, smuggled: 'нет' })).statusCode).toBe(400)
+    expect(await adapter.list({})).toHaveLength(1) // отказ ничего не положил
+  })
+
+  it('снимок сверх потолка — честный отказ обеих дверей, а не молчаливое урезание', async () => {
+    const adapter = createMemoryQueue({ clock: () => NOW })
+    const front = mkFront({ adapter })
+    await post(front, '/api/enqueue', { title: 'разобрать счета', lane: 'prod', taskContext: SNAPSHOT })
+    const [row] = await adapter.list({})
+    const tooBig = 'д'.repeat(TASK_CONTEXT_CAP + 1)
+
+    expect((await post(front, '/api/enqueue', { title: 'x', lane: 'prod', taskContext: tooBig })).statusCode).toBe(400)
+    expect((await post(front, '/api/task/words', { taskId: row.id, taskContext: tooBig })).statusCode).toBe(400)
+    expect((await post(front, '/api/task/words', { taskId: row.id, taskContext: 42 })).statusCode).toBe(400)
+
+    // отказ не тронул того, что человек написал раньше
+    const claimed: any = await adapter.claimNext('w1', {})
+    expect(claimed.taskContext).toBe(SNAPSHOT)
+    expect(await adapter.list({})).toHaveLength(1)
+  })
+})
+
+/**
  * ═══════════ POST /api/wave/hold — «ОСТАНОВИ ВОЛНУ 2» ЧЕРЕЗ ДВЕРЬ ═════════════════════
  *
  * The door writes ONE thing: the owner's word, into a register on disk. Everything else — which
@@ -3466,5 +3633,76 @@ describe('POST /api/wave/hold — слово владельца об эшело�
     await adapter.enqueue({ id: 'R-1', source: 'roster', title: 'обычная', lane: 'prod' })
     const payload: any = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
     expect(payload.waves).toEqual([])
+  })
+})
+
+/**
+ * ДОКУМЕНТАРНАЯ СТАДИЯ ПРИНИМАЕТСЯ, А НЕ ОТКАЗЫВАЕТ ВЕЧНО.
+ *
+ * Приёмка всегда звала слияние ветки `wt/<id>`. Для документарной стадии ветка не создаётся
+ * ВООБЩЕ — работа идёт в дереве проекта, а не в копии, — поэтому «Принять» получало от git
+ * «did not match any», карточка возвращалась в «ждут решения», и так навсегда: нажатие,
+ * которое не может сработать ни при каких условиях.
+ *
+ * Признак берётся ПОЛОЖИТЕЛЬНЫЙ, а не «ветки нет»: должна быть хотя бы одна строка попытки,
+ * и НИ ОДНА из них не назвала ветки. Пустой журнал ничего не доказывает — там приёмка обязана
+ * вести себя как раньше, иначе работа кодом уехала бы в «принято» без единого слияния.
+ */
+describe('POST /api/approve — документарная стадия принимается без слияния', () => {
+  const okCas = async () => ({ rows: [{ id: 'T-doc' }] })
+
+  it('ни одна попытка не назвала ветки — сливать нечего, и приёмка НЕ отказывает', async () => {
+    const merges: any[] = []
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        casExec: okCas,
+        verbRunner: (args: any) => {
+          merges.push(args)
+          return { merged: false, message: 'did not match any' }
+        },
+        ledger: {
+          readAttempts: () => [{ taskId: 'T-doc', attempt: 1, outcome: 'completed', receiptRef: 'doc:PLAN.md@abc' }],
+        },
+      },
+    })
+    const res = await callApprove(front, { taskId: 'T-doc' })
+    expect(merges.length, 'на документарной стадии слияние звать нечего — ветки не было').toBe(0)
+    expect(res.statusCode, 'приёмка документарной стадии обязана проходить').toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true })
+  })
+
+  it('журнал попытки ПУСТ — ведём себя как раньше: слияние зовётся, ничего не выдумывается', async () => {
+    const merges: any[] = []
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        casExec: okCas,
+        verbRunner: (args: any) => {
+          merges.push(args)
+          return { merged: true }
+        },
+        ledger: { readAttempts: () => [] },
+      },
+    })
+    await callApprove(front, { taskId: 'T-doc' })
+    expect(merges.length, 'пустой журнал — не доказательство документарности; слияние обязано случиться').toBe(1)
+  })
+
+  it('попытка назвала ветку — слияние зовётся, как и раньше', async () => {
+    const merges: any[] = []
+    const front = createFrontServer({
+      config: { token: MIGRATION_TOKEN, workers: [] },
+      deps: {
+        casExec: okCas,
+        verbRunner: (args: any) => {
+          merges.push(args)
+          return { merged: true }
+        },
+        ledger: { readAttempts: () => [{ taskId: 'T-doc', attempt: 1, branch: 'wt/T-doc', outcome: 'completed' }] },
+      },
+    })
+    await callApprove(front, { taskId: 'T-doc' })
+    expect(merges.length, 'работа кодом обязана сливаться').toBe(1)
   })
 })

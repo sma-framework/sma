@@ -384,6 +384,51 @@ export function verifyReceipts({ summaryPath, receipts, runCommand, cwd, now, re
  * @param {{entry:object, runCommand:Function, cwd?:string, unsafeAck?:boolean}} args
  * @returns {{receipt?:object, error?:string}}
  */
+/**
+ * HOW LONG ONE CHECK COMMAND MAY RUN before the runner takes it off the table.
+ *
+ * The old ceiling was two minutes, hard-coded at every call site, and the product's own
+ * suite runs longer than that — so the one command a receipt most wants to bind could
+ * never be bound. Worse, the kill was mapped to `exit:1`, which is indistinguishable from
+ * a genuinely red run: a GREEN suite came back as evidence that it had failed.
+ *
+ * Ten minutes is the new default because it is longer than every suite this product ships
+ * and still short enough that a hung command does not hold a session. It is a DEFAULT, not
+ * a law: `--timeout <секунды>` moves it per call.
+ */
+export const RECEIPT_COMMAND_TIMEOUT_MS = 600_000
+
+/** The ceiling for this invocation: `--timeout <секунды>` when sane, the default otherwise. */
+export function receiptTimeoutMs(flags = {}) {
+  const raw = Number(flags && flags.timeout)
+  return Number.isFinite(raw) && raw > 0 ? Math.round(raw * 1000) : RECEIPT_COMMAND_TIMEOUT_MS
+}
+
+/**
+ * A KILL BY THE CEILING IS NOT AN OBSERVATION — and this is the whole point of the helper.
+ *
+ * `execSync` reports a timeout kill with no exit status and a signal, which the old catch
+ * turned into `exitCode: 1`. A receipt built from that says «this command fails», when what
+ * actually happened is «nobody waited for the answer». The same law the drills obey applies
+ * here: a run that did not finish is never a verdict — in either direction.
+ *
+ * Returns an Error to THROW (both the receipt emitter and the re-verifier treat a throwing
+ * runner as «error», never as a red result), or null when the failure was a real exit code.
+ *
+ * @param {any} err the error execSync threw
+ * @param {number} timeoutMs the ceiling in force
+ * @returns {Error|null}
+ */
+export function ceilingKill(err, timeoutMs) {
+  if (!err || err.status != null) return null
+  if (err.killed !== true && !err.signal) return null
+  const seconds = Math.round((Number(timeoutMs) || RECEIPT_COMMAND_TIMEOUT_MS) / 1000)
+  return new Error(
+    `команда снята по потолку времени (предел ${seconds} с) — это НЕ красный прогон, и квитанции он не даёт; ` +
+      'поднимите предел ключом --timeout <секунды> и повторите',
+  )
+}
+
 export function recordReceipt({ entry, runCommand, cwd, unsafeAck } = {}) {
   const e = entry ?? {}
   const acked = unsafeAck === true

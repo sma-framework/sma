@@ -92,7 +92,7 @@ import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS, attemptIdFor } from './journal.mjs'
-import { runsDirOf, attemptRunDir, readContinuation } from '../queue/run-dir.mjs'
+import { runsDirOf, attemptRunDir, readContinuation, readTaskContext } from '../queue/run-dir.mjs'
 import { approvalWall, defaultEnvelope } from '../queue/capability-envelope.mjs'
 import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
@@ -820,10 +820,34 @@ async function handleTask({ res, params, config, deps }) {
     return readContinuation({ dir, fsImpl: deps.fsImpl })
   }
 
+  /**
+   * СНИМОК КОНТЕКСТА, С КОТОРЫМ УШЛА ИМЕННО ЭТА ПОПЫТКА — прочитанный из файла-свидетеля,
+   * который положила она сама, ТЕМ ЖЕ ВЫРАЖЕНИЕМ ПУТИ, что и конспект выше.
+   *
+   * ЧИТАЕТСЯ ФАЙЛ, А НЕ СТРОКА ОЧЕРЕДИ, и это не лишний крюк. Человек правит слова задачи
+   * после сорванного подхода — строка становится другой, а попытка уже ушла с тем снимком,
+   * который ей ДАЛИ. Карточка показывает историю подходов, значит и снимок ей нужен
+   * исторический; прочитанный со строки выглядел бы точно так же и врал бы ровно в тот
+   * момент, когда человек разбирается, почему подход сорвался.
+   *
+   * АДРЕСУЕТСЯ ТОЛЬКО ЗАПРОШЕННАЯ ЗАДАЧА И ЕЁ СОБСТВЕННЫЙ ПОДХОД — теми же двумя
+   * составляющими, что у конспекта; другого способа назвать каталог здесь нет.
+   */
+  const snapshotOf = (attempt) => {
+    const n = Number.isFinite(Number(attempt)) ? Number(attempt) : null
+    if (n === null || n < 1) return null
+    const dir = attemptRunDir({
+      runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+      attemptId: attemptIdFor(id, n),
+    })
+    return readTaskContext({ dir, fsImpl: deps.fsImpl })
+  }
+
   const attempts = rawAttempts.map((a) => {
     // Спрошено ОДИН раз на попытку и названо здесь, а не внутри тела: тело ниже — перечисление
     // явных выборов, и чтение диска посреди него читалось бы как ещё одно поле.
     const handover = handoverOf(a.attempt)
+    const snapshot = snapshotOf(a.attempt)
     return {
     attempt: a.attempt ?? null,
     workerId: a.workerId ?? null,
@@ -942,6 +966,20 @@ async function handleTask({ res, params, config, deps }) {
     // старше этого файла — тоже. Пустая строка на этом месте была бы утверждением, что
     // передавать было нечего, а это совсем другой факт, и он пишется в сам конспект словами.
     ...(handover ? { continuationSummary: handover } : {}),
+    // ═══ С КАКИМ КОНТЕКСТОМ ЭТА ПОПЫТКА УШЛА В РАБОТУ ═══════════════════════════
+    //
+    // Тот же файл, слово в слово, который получил работник этой попытки. Слова человека
+    // едут работнику блоком данных в промпте и лежат файлом в его копии — а человеку до
+    // этой строки не был виден НИ ОДИН из трёх экземпляров: строку он и так помнит, а вот
+    // ответа «с чем ушёл ЭТОТ подход» у него не было.
+    //
+    // ЭТО ИСТОРИЧЕСКАЯ ПРАВДА ПОПЫТКИ, и она честно расходится со строкой очереди после
+    // того, как человек допишет слова. Расхождение — не рассинхрон, а весь смысл поля:
+    // подход сорвался с тем контекстом, который у него был, а не с сегодняшним.
+    //
+    // Ключа нет вовсе, когда файла нет: снимка не было, или попытка старше этого файла.
+    // Пустая строка здесь утверждала бы, что человеку было что сказать и он промолчал.
+    ...(snapshot ? { taskContext: snapshot } : {}),
     }
   })
 
@@ -1341,7 +1379,23 @@ async function handleEnqueue({ req, res, config, deps }) {
     rejectUnknownKeys(
       res,
       b,
-      new Set(['title', 'lane', 'provider', 'model', 'effort', 'priority', 'description', 'acceptance', 'machine']),
+      // `taskContext` — СНИМОК КОНТЕКСТА, который человек пишет о задаче: где лежат данные,
+      // к кому идти за доступом, чего трогать нельзя. Список разрешённых полей РАСШИРЕН, а не
+      // снят: всё, чего в нём нет, по-прежнему получает 400 ДО того, как что-либо выполнится.
+      // Текст поедет к работнику ДАННЫМИ за забором, как и прочие его слова, — командой он не
+      // становится ни здесь, ни ниже по течению. Потолок — очереди, своего дверь не пишет.
+      new Set([
+        'title',
+        'lane',
+        'provider',
+        'model',
+        'effort',
+        'priority',
+        'description',
+        'acceptance',
+        'taskContext',
+        'machine',
+      ]),
     )
   ) {
     return undefined
@@ -1361,6 +1415,10 @@ async function handleEnqueue({ req, res, config, deps }) {
     ...(b.priority !== undefined ? { priority: b.priority } : {}),
     ...(b.description !== undefined ? { description: b.description } : {}),
     ...(b.acceptance !== undefined ? { acceptance: b.acceptance } : {}),
+    // ОДНО ИМЯ НА ВСЕХ ШВАХ — здесь поле не переименовывается и не расфасовывается по
+    // соседним: разъехавшиеся имена — самый дешёвый способ потерять провод, а этот провод
+    // единственный, по которому знание человека вообще доходит до работника.
+    ...(b.taskContext !== undefined ? { taskContext: b.taskContext } : {}),
   }
   let norm
   try {
@@ -1509,9 +1567,36 @@ async function handleApprove({ req, res, config, deps }) {
   if (!claim.won) return send409(res, 'approve race lost (already handled)')
 
   const branch = `wt/${taskId}`
+  // ЕСТЬ ЛИ ВООБЩЕ ЧТО СЛИВАТЬ. Документарная стадия работает БЕЗ копии и без ветки — она
+  // пишет в дерево проекта, — поэтому слияние `wt/<id>` для неё не «не удалось», а
+  // бессмысленно: git отвечает «did not match any», карточка возвращается в «ждут решения», и
+  // нажатие не может сработать НИ ПРИ КАКИХ условиях. Это не редкий случай, а весь класс
+  // документарных стадий целиком.
+  //
+  // Признак берётся ПОЛОЖИТЕЛЬНЫЙ: должна быть хотя бы одна строка попытки, и ни одна из них
+  // не назвала ветки. Пустой журнал ничего не доказывает — на нём поведение остаётся прежним,
+  // иначе работа кодом при потерянном журнале уехала бы в «принято» без единого слияния.
+  const attemptRows = (() => {
+    try {
+      if (deps.ledger && typeof deps.ledger.readAttempts === 'function') return deps.ledger.readAttempts(taskId) || []
+      if (deps.ledgerDir) return readAttempts(deps.ledgerDir, taskId) || []
+    } catch {
+      /* журнал недоступен — доказательств нет, ведём себя как раньше */
+    }
+    return []
+  })()
+  const nothingToMerge =
+    attemptRows.length > 0 && !attemptRows.some((r) => r && typeof r.branch === 'string' && r.branch.trim() !== '')
   let merge
-  try {
-    // IN THE TREE THAT HOLDS THE BRANCH — the connected project, and the served tree only when
+  if (nothingToMerge) {
+    merge = {
+      merged: true,
+      nothingToMerge: true,
+      message: 'документарная стадия: ветки не было ни в одной попытке — сливать нечего',
+    }
+  } else {
+    try {
+      // IN THE TREE THAT HOLDS THE BRANCH — the connected project, and the served tree only when
     // nothing is connected. The same resolution the neighbouring doors of this very card (the
     // commit log, the diff) already use, so the card cannot read one tree and write another.
     //
@@ -1520,9 +1605,10 @@ async function handleApprove({ req, res, config, deps }) {
     // ok:false with no merge at all — the worker's branch simply did not resolve there — while
     // the identical press on a checkout where the two happened to coincide merged fine. A person
     // saw a button that «нажалась и ничего не сделала».
-    merge = await deps.verbRunner({ branch, by: 'roster', cwd: phaseCycleDir(deps) ?? deps.repoDir })
-  } catch (err) {
-    merge = { merged: false, message: String((err && err.message) || 'merge failed') }
+      merge = await deps.verbRunner({ branch, by: 'roster', cwd: phaseCycleDir(deps) ?? deps.repoDir })
+    } catch (err) {
+      merge = { merged: false, message: String((err && err.message) || 'merge failed') }
+    }
   }
   const green = !!(merge && (merge.merged === true || merge.ok === true) && merge.testsPassed !== false)
 
@@ -4626,11 +4712,15 @@ async function handleTaskWords({ req, res, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
   const b = body.value || {}
-  if (rejectUnknownKeys(res, b, new Set(['taskId', 'description', 'acceptance']))) return undefined
+  // `taskContext` — снимок контекста, тем же именем, что у двери постановки. Замок не снят:
+  // список расширен, а всё, чего в нём нет, по-прежнему 400 ДО всего.
+  if (rejectUnknownKeys(res, b, new Set(['taskId', 'description', 'acceptance', 'taskContext']))) return undefined
 
   const taskId = b.taskId
   if (typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
-  if (b.description === undefined && b.acceptance === undefined) return send400(res, 'nothing to change')
+  if (b.description === undefined && b.acceptance === undefined && b.taskContext === undefined) {
+    return send400(res, 'nothing to change')
+  }
 
   const patch = {}
   if (b.description !== undefined) {
@@ -4643,6 +4733,15 @@ async function handleTaskWords({ req, res, deps }) {
       return send400(res, 'acceptance must be a string or a list of strings')
     }
     patch.acceptance = b.acceptance
+  }
+  if (b.taskContext !== undefined) {
+    // ПОЧЕМУ СНИМОК ПРАВИТСЯ ЭТОЙ ЖЕ ДВЕРЬЮ. Попытка сорвалась потому, что работник чего-то не
+    // знал, — человек дописывает недостающее, и следующая выдача уходит с исправленным
+    // снимком. Пустая строка здесь — законное СТИРАНИЕ, а не «нечего менять»: человек вправе
+    // забрать свои слова назад, и стёртый снимок читается ровно как никогда не написанный
+    // (одна тропа чтения — taskContextOf). Потолок применяет очередь, второго здесь не пишем.
+    if (typeof b.taskContext !== 'string') return send400(res, 'taskContext must be a string')
+    patch.taskContext = b.taskContext
   }
 
   let changed

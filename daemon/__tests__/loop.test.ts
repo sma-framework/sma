@@ -6192,3 +6192,355 @@ describe('копия попытки провизионируется в ката
     expect(rec.removals[0][3], 'уборка целилась не в тот каталог, который положила провизия').toBe(provisioned)
   })
 })
+
+/**
+ * БАЗА СРАВНЕНИЯ У ПЕРЕИСПОЛЬЗОВАННОЙ КОПИИ.
+ *
+ * Когда верб не называет основания (замерено 12.08.2026: переиспользованная копия отвечает
+ * `base=нет reused=true expected=нет actual=нет`), цикл спрашивал у git вершину ПРОЕКТА.
+ * На первой попытке это верно — копию только что отвели оттуда. На ПОВТОРЕ проект успевает
+ * уехать вперёд, и тогда «база» указывает не туда, где ветку отвели: счёт коммитов ловит
+ * чужую историю, и в квитанцию приёмки едут работы, которых попытка не делала. Замерено
+ * тем же днём: попытка, не тронувшая ни одного файла, получила квитанцию на три коммита
+ * и одно исчезновение файла.
+ *
+ * Спрашивать надо ТОЧКУ ОТВОДА — там, где ветка задачи разошлась с проектом. На первой
+ * попытке это ровно вершина проекта, на повторе — по-прежнему место отвода.
+ */
+describe('база сравнения у переиспользованной копии — точка отвода, а не уехавшая вершина', () => {
+  const CUT = 'a'.repeat(40) // где стоял проект, когда копию отводили
+  const MOVED = 'f'.repeat(40) // куда проект уехал с тех пор
+
+  /** Верб отвечает БЕЗ основания — так отвечает переиспользованная копия. */
+  const noBaseRunner = async (_bin: string, argsArray: string[]) => {
+    const verb = argsArray[1]
+    const sub = argsArray[2]
+    if (verb === 'worktree' && sub === 'provision') {
+      const b = argsArray.indexOf('--branch')
+      const p = argsArray.indexOf('--path')
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          ok: true,
+          reused: true,
+          path: p >= 0 ? argsArray[p + 1] : '/wt/BL-1',
+          branch: b >= 0 ? argsArray[b + 1] : 'wt/BL-1',
+        }),
+      }
+    }
+    if (verb === 'worktree') return { code: 0, stdout: JSON.stringify({ worktrees: [] }) }
+    if (verb === 'reverify') return GREEN_REVERIFY
+    if (verb === 'preflight') return { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) }
+    return { code: 0, stdout: '{}' }
+  }
+
+  /** Проект уехал: его вершина и точка отвода — РАЗНЫЕ ответы, и их видно по вопросу. */
+  const movedProjectGit = (args: string[]) => {
+    if (args[0] === 'rev-parse' && args[1] === '--git-common-dir') return '/repo/.git'
+    if (args[0] === 'merge-base') return CUT
+    if (args[0] === 'rev-parse') return MOVED
+    return ''
+  }
+
+  it('база берётся из точки отвода — вершина уехавшего проекта даёт чужие коммиты в квитанции', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 2 }))
+    const { deps, journalled } = makeDeps({ adapter, verbRunner: noBaseRunner, deps: { execGit: movedProjectGit } })
+    await tick(deps)
+    const line = journalled.find((e: any) => e.type === 'task.worktree_base')
+    expect(line, 'строка об основании копии обязана быть записана').toBeTruthy()
+    expect(line.base, 'база обязана быть ТОЧКОЙ ОТВОДА, а не вершиной уехавшего проекта').toBe(CUT)
+  })
+})
+
+/**
+ * ПОТОЛОК ОДНОВРЕМЕННЫХ ПОПЫТОК.
+ *
+ * Тик заводится таймером и вызывается БЕЗ ожидания предыдущего прохода, а каждый проход берёт
+ * задачу и ведёт её до конца — значит попытки идут внахлёст по устройству. Регулятора не было
+ * ни одного: поиск по исходникам не давал ни счётчика идущих, ни признака занятости. Пол под
+ * происшествием 12.08.2026, когда три параллельных процесса жгли подписку при пустой доске.
+ *
+ * Третье дело здесь — главное, и оно родилось из ошибки в первой редакции этой самой правки:
+ * место бралось ПОСЛЕ захвата, а захват — это await. Два тика внахлёст оба видели пустой дом
+ * и оба брали по задаче. Дело гоняет ровно этот случай на НАСТОЯЩЕМ доме.
+ */
+import { createInFlight } from '../src/queue/in-flight.mjs'
+
+describe('потолок одновременных попыток — тик не берёт задачу сверх него', () => {
+  const fullHouse = { reserve: () => null, size: () => 1, workers: () => new Set<string>(), name() {}, release() {} }
+  const freeHouse = { reserve: () => 'seat-1', size: () => 0, workers: () => new Set<string>(), name() {}, release() {} }
+
+  it('при достигнутом потолке очередь вообще не спрашивается', async () => {
+    const base = oneTaskAdapter(backlogTask({ id: 'BL-1' }))
+    let claims = 0
+    const counting: any = {
+      ...base,
+      async claimNext(...args: any[]) {
+        claims += 1
+        return (base as any).claimNext(...args)
+      },
+    }
+    const { deps } = makeDeps({ adapter: counting, deps: { inFlight: fullHouse } })
+    const r = await tick(deps)
+    expect(claims, 'при достигнутом потолке очередь спрашивать нельзя — иначе попытка уже выдана').toBe(0)
+    expect(r.idle, 'проход при достигнутом потолке — это простой, а не работа').toBe(true)
+  })
+
+  it('при свободном месте потолок не мешает — задача берётся как обычно', async () => {
+    const base = oneTaskAdapter(backlogTask({ id: 'BL-2' }))
+    let claims = 0
+    const counting: any = {
+      ...base,
+      async claimNext(...args: any[]) {
+        claims += 1
+        return (base as any).claimNext(...args)
+      },
+    }
+    const { deps } = makeDeps({ adapter: counting, deps: { inFlight: freeHouse } })
+    await tick(deps)
+    expect(claims, 'свободное место обязано пропускать работу').toBe(1)
+  })
+
+  it('ДВА ПРОХОДА ВНАХЛЁСТ на настоящем доме берут ОДНУ задачу, а не две', async () => {
+    // Очередь отдаёт разные задачи и считает выдачи: если потолок держится, вторая выдача
+    // не случится вовсе. Захват намеренно асинхронный — ровно как настоящий.
+    let handed = 0
+    const adapter: any = {
+      async list() {
+        return []
+      },
+      async claimNext() {
+        await new Promise((r) => setTimeout(r, 5))
+        handed += 1
+        return handed <= 2 ? backlogTask({ id: `BL-${handed}` }) : null
+      },
+      async complete() {},
+      async fail() {},
+      async touch() {},
+      async stats() {
+        return {}
+      },
+    }
+    const house = createInFlight()
+    const { deps } = makeDeps({ adapter, deps: { inFlight: house } })
+    const [a, b] = await Promise.all([tick(deps), tick(deps)])
+    expect(handed, 'очередь спрошена дважды — потолок не удержал два прохода внахлёст').toBe(1)
+    const idle = [a, b].filter((r: any) => r && r.idle === true)
+    expect(idle.length, 'один из двух проходов обязан стать простоем по потолку').toBe(1)
+    expect(house.size(), 'после обоих проходов дом обязан опустеть — иначе конвейер встанет молча').toBe(0)
+  })
+})
+
+/**
+ * ═══ СНИМОК КОНТЕКСТА И ВСТРОЕННЫЕ НАВЫКИ ЛОЖАТСЯ В РАБОЧУЮ КОПИЮ ═══════════════
+ *
+ * ЧТО ЗДЕСЬ ДОКАЗЫВАЕТСЯ — ПРОВОД, А НЕ ВЫЧИСЛЕНИЕ. Снимок уже живёт на строке очереди и
+ * доезжает до захваченной задачи; тексты трёх навыков уже лежат замороженным списком; право
+ * их вызвать уже стоит в аргументах спавна. Ни одно из трёх не превращается в файл, который
+ * работник может открыть, — и пока не превратится, все три зелены и не подключены ни к чему.
+ *
+ * ДВЕРЕЙ ПРОВИЗИИ ДВЕ, и забытая вторая — мина, уже стоившая этому файлу отдельного разбора:
+ * основной путь кода-работы и путь Творца. Правка одной оставляет вторую немой, и грепу
+ * имени модуля это незаметно. Поэтому дело есть на КАЖДУЮ дверь.
+ *
+ * КОПИЯ ЗДЕСЬ — НАСТОЯЩИЙ КАТАЛОГ ВО ВРЕМЕННОМ МЕСТЕ, и верб отвечает именно им. Подделка,
+ * отвечающая выдуманным путём, удостоверяла бы, что мы умеем позвать функцию, а не что файл
+ * оказался там, куда работник придёт его читать.
+ */
+
+import { WORKER_SKILLS } from '../src/queue/worker-skills.mjs'
+
+describe('снимок контекста и навыки материализуются в копию — обе двери провизии', () => {
+  const matDirs: string[] = []
+  const mkCopy = () => {
+    const d = mkdtempSync(join(tmpdir(), 'sma-mat-'))
+    matDirs.push(d)
+    return d
+  }
+  afterAll(() => {
+    for (const d of matDirs) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {
+        /* best-effort */
+      }
+    }
+  })
+
+  const SNAPSHOT = 'Что происходит вокруг задачи.\nВторая строка снимка — с переносом.'
+  const CONTEXT_FILE = 'task_context.md'
+
+  /** Верб, отвечающий НАСТОЯЩИМ каталогом на диске — ровно так отвечает живой. */
+  const runnerAnswering = (copyDir: string) => async (_bin: string, argsArray: string[]) => {
+    const verb = argsArray[1]
+    const sub = argsArray[2]
+    if (verb === 'worktree' && sub === 'provision') {
+      const b = argsArray.indexOf('--branch')
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          ok: true,
+          path: copyDir,
+          branch: b >= 0 ? argsArray[b + 1] : 'wt/BL-1',
+          expectedBase: 'a'.repeat(40),
+        }),
+      }
+    }
+    if (verb === 'worktree') return { code: 0, stdout: JSON.stringify({ worktrees: [] }) }
+    if (verb === 'reverify') return GREEN_REVERIFY
+    if (verb === 'preflight') return { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) }
+    return { code: 0, stdout: '{}' }
+  }
+
+  const forgeTask = (over: any = {}) => ({
+    id: 'F-1',
+    source: 'roster',
+    title: 'сделай агента, который парсит ленту',
+    lane: 'forge',
+    forge: { kind: 'agent', description: 'парсит ленту по метке и пишет сводку' },
+    ...over,
+  })
+
+  const forgeConfig = {
+    workers: [{ id: 'creator', lane: 'forge', provider: 'claude', account: { configDir: '/creator' }, enabled: true }],
+  }
+
+  it('ОСНОВНАЯ дверь: снимок со строки лежит файлом в корне копии', async () => {
+    const copy = mkCopy()
+    const adapter = oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 1, taskContext: SNAPSHOT }))
+    const { deps } = makeDeps({ adapter, verbRunner: runnerAnswering(copy) })
+
+    await tick(deps)
+
+    expect(existsSync(join(copy, CONTEXT_FILE)), 'работник открыл копию, а снимка там нет').toBe(true)
+    expect(readFileSync(join(copy, CONTEXT_FILE), 'utf8')).toContain(SNAPSHOT)
+  })
+
+  it('дверь ТВОРЦА: та же материализация — забытая вторая дверь и есть мина', async () => {
+    const copy = mkCopy()
+    const adapter = oneTaskAdapter(forgeTask({ taskContext: SNAPSHOT }))
+    const { deps } = makeDeps({ adapter, verbRunner: runnerAnswering(copy), config: forgeConfig })
+
+    await tick(deps)
+
+    expect(existsSync(join(copy, CONTEXT_FILE)), 'вторая дверь осталась немой').toBe(true)
+    expect(readFileSync(join(copy, CONTEXT_FILE), 'utf8')).toContain(SNAPSHOT)
+  })
+
+  it('ОСВЕЖЕНИЕ: ретрай переиспользовал копию — файл несёт ТЕКУЩИЙ снимок, не прошлый', async () => {
+    const copy = mkCopy()
+    writeFileSync(join(copy, CONTEXT_FILE), 'СТАРЫЙ СНИМОК ПРОШЛОЙ ПОПЫТКИ', 'utf8')
+    const adapter = oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 2, taskContext: SNAPSHOT }))
+    const { deps } = makeDeps({ adapter, verbRunner: runnerAnswering(copy) })
+
+    await tick(deps)
+
+    const text = readFileSync(join(copy, CONTEXT_FILE), 'utf8')
+    expect(text, 'протухший снимок остался и врёт попытке о том, чего человек уже не просит').not.toContain('СТАРЫЙ СНИМОК')
+    expect(text).toContain(SNAPSHOT)
+  })
+
+  it('снимок СНЯТ со строки — протухший файл удалён, и удаление названо в журнале', async () => {
+    const copy = mkCopy()
+    writeFileSync(join(copy, CONTEXT_FILE), 'СТАРЫЙ СНИМОК ПРОШЛОЙ ПОПЫТКИ', 'utf8')
+    const adapter = oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 2 }))
+    const { deps, journalled } = makeDeps({ adapter, verbRunner: runnerAnswering(copy) })
+
+    await tick(deps)
+
+    expect(existsSync(join(copy, CONTEXT_FILE)), 'снятый снимок остался файлом в копии').toBe(false)
+    expect(
+      journalled.find((e: any) => e.type === 'task.task_context_removed'),
+      'удаление существующего файла обязано оставить след',
+    ).toBeTruthy()
+  })
+
+  it('снимка нет и файла не было — файл НЕ появляется (пустышка соврала бы)', async () => {
+    const copy = mkCopy()
+    const adapter = oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 1 }))
+    const { deps } = makeDeps({ adapter, verbRunner: runnerAnswering(copy) })
+
+    await tick(deps)
+
+    expect(existsSync(join(copy, CONTEXT_FILE))).toBe(false)
+  })
+
+  it('три встроенных навыка лежат в копии по пути навыков — каждый своим каталогом', async () => {
+    const copy = mkCopy()
+    const adapter = oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 1 }))
+    const { deps } = makeDeps({ adapter, verbRunner: runnerAnswering(copy) })
+
+    await tick(deps)
+
+    expect(WORKER_SKILLS.length, 'список навыков пуст — дело ниже ничего не утверждает').toBeGreaterThan(0)
+    for (const skill of WORKER_SKILLS as any[]) {
+      const path = join(copy, '.claude', 'skills', skill.slug, 'SKILL.md')
+      expect(existsSync(path), 'навык до копии не доехал: ' + skill.slug).toBe(true)
+      expect(readFileSync(path, 'utf8')).toBe(skill.body)
+    }
+  })
+
+  it('ПРАВИЛА ПОЛЬЗОВАТЕЛЯ ВЫШЕ НАШИХ: одноимённый навык проекта не перезаписан, и это в журнале', async () => {
+    const copy = mkCopy()
+    const mine = (WORKER_SKILLS as any[])[0].slug
+    const theirs = '# навык самого проекта, писал пользователь'
+    mkdirSync(join(copy, '.claude', 'skills', mine), { recursive: true })
+    writeFileSync(join(copy, '.claude', 'skills', mine, 'SKILL.md'), theirs, 'utf8')
+    const adapter = oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 1 }))
+    const { deps, journalled } = makeDeps({ adapter, verbRunner: runnerAnswering(copy) })
+
+    await tick(deps)
+
+    expect(readFileSync(join(copy, '.claude', 'skills', mine, 'SKILL.md'), 'utf8'), 'мы затёрли файл пользователя').toBe(theirs)
+    expect(
+      journalled.find((e: any) => e.type === 'task.worker_skill_kept'),
+      'мы уступили файлу пользователя молча — узнать об этом неоткуда',
+    ).toBeTruthy()
+  })
+
+  it('ЧЕСТНЫЙ ПРОВАЛ: запись снимка упала — попытка не запускается, а падает по имени', async () => {
+    const copy = mkCopy()
+    const adapter = oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 1, taskContext: SNAPSHOT }))
+    const { deps, order } = makeDeps({
+      adapter,
+      verbRunner: runnerAnswering(copy),
+      deps: {
+        fsImpl: {
+          existsSync: () => true,
+          mkdirSync: () => {},
+          writeFileSync: () => {
+            throw new Error('disk on fire')
+          },
+        },
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed?.taskId, 'попытка ушла в спавн с копией, о которой критерий фазы соврал бы').toBe('BL-1')
+    expect(order, 'работник запущен, хотя снимок до копии не доехал').not.toContain('spawn')
+  })
+
+  it('СЕКРЕТ ИЗ СРЕДЫ ДЕМОНА вырезан из файла в копии — тем же поясом, что у каталога прогона', async () => {
+    const copy = mkCopy()
+    const token = 'sk-ant-oat01-THIS-IS-THE-TOKEN-VALUE-0123456789'
+    const adapter = oneTaskAdapter(
+      backlogTask({
+        id: 'BL-1',
+        attempt: 1,
+        taskContext: 'первая строка\nвставил токен ' + token + ' по ошибке\nтретья строка',
+      }),
+    )
+    const { deps } = makeDeps({
+      adapter,
+      verbRunner: runnerAnswering(copy),
+      deps: { env: { SMA_LOCAL_1_TOKEN: token, PATH: '/usr/bin' } },
+    })
+
+    await tick(deps)
+
+    const text = readFileSync(join(copy, CONTEXT_FILE), 'utf8')
+    expect(text, 'секрет уехал файлом в дерево, где работает чужой процесс').not.toContain(token)
+    expect(text, 'вырезали больше, чем нужно: остальные строки человека обязаны выжить').toContain('третья строка')
+  })
+})
