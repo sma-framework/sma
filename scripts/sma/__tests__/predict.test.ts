@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
+  parseFrontmatterEntries,
   parsePredictions,
   validatePrediction,
   scorePlan,
@@ -1020,5 +1021,118 @@ describe('перепроверка квитанций: черновик рожд
   it('структурный обход перепроверки зовёт именно этот шаг, а не повторяет условие у себя', () => {
     const src = readFileSync(new URL('../cli.mjs', import.meta.url), 'utf8')
     expect(src).toContain('recordReceiptRun(')
+  })
+})
+
+/**
+ * parseFrontmatterEntries — ПЕРВЫЕ собственные тесты этого читателя.
+ *
+ * У него четыре потребителя (receipts, consequences, footprint, predictions) и до сих пор
+ * НИ ОДНОГО своего теста: он проверялся только через них. Опись связей делает его пятым
+ * потребителем и первым, кому нужен ВЛОЖЕННЫЙ ключ (`must_haves.key_links`), поэтому
+ * контракт закрепляется здесь — иначе следующая правка отступов тихо сдвинет всех пятерых.
+ */
+describe('parseFrontmatterEntries — общий читатель списков frontmatter', () => {
+  const NESTED_PLAN = [
+    '---',
+    'phase: parser-fixture',
+    'plan: nested',
+    'must_haves:',
+    '  truths:',
+    '    - "истина словами — читается человеком, не машиной"',
+    '  artifacts:',
+    '    - path: "tree/alpha.txt"',
+    '      contains: "NEEDLE_ONE"',
+    '    - path: "tree/beta.txt"',
+    '      contains: "NEEDLE_TWO"',
+    '  key_links:',
+    '    - from: "tree/alpha.txt"',
+    '      to: "tree/beta.txt"',
+    '      via: "объяснение словами"',
+    '      pattern: "NEEDLE_ONE"',
+    '    - "связь, написанная прозой — машиной не проверяема"',
+    'artifacts:',
+    '  - path: "подделка-верхнего-уровня.txt"',
+    'predictions:',
+    '  - id: P1',
+    '    claim: "верхний уровень читается ровно как раньше"',
+    '    threshold: 3',
+    '---',
+    '',
+    '# тело плана',
+    '',
+  ].join('\n')
+
+  function writePlan(text: string, name = 'nested-PLAN.md'): string {
+    const p = join(dir, name)
+    writeFileSync(p, text, 'utf8')
+    return p
+  }
+
+  it('односегментный ключ читает записи ровно как раньше — числа коэрцятся, ключ верхнего уровня', () => {
+    const p = writePlan(NESTED_PLAN)
+    const { entries, error } = parseFrontmatterEntries(p, 'predictions')
+    expect(error).toBeUndefined()
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({ id: 'P1', threshold: 3 })
+    expect(typeof (entries[0] as Record<string, unknown>).threshold).toBe('number')
+  })
+
+  it('вложенный ключ достаёт записи из-под родителя, а не одноимённого соседа сверху', () => {
+    const p = writePlan(NESTED_PLAN)
+    const nested = parseFrontmatterEntries(p, 'must_haves.artifacts').entries
+    expect(nested).toHaveLength(2)
+    expect(nested[0]).toMatchObject({ path: 'tree/alpha.txt', contains: 'NEEDLE_ONE' })
+    expect(nested[1]).toMatchObject({ path: 'tree/beta.txt', contains: 'NEEDLE_TWO' })
+
+    // Одноимённый ключ ВЕРХНЕГО уровня — отдельный блок; спутать их значит выдать
+    // подделку за опись. Строгое «глубже родителя» на спуске держит именно это.
+    const top = parseFrontmatterEntries(p, 'artifacts').entries
+    expect(top).toHaveLength(1)
+    expect(top[0]).toMatchObject({ path: 'подделка-верхнего-уровня.txt' })
+    expect(JSON.stringify(nested)).not.toContain('подделка-верхнего-уровня')
+  })
+
+  it('отсутствующий ключ — пустой список без ошибки, на любом сегменте пути', () => {
+    const p = writePlan(NESTED_PLAN)
+    expect(parseFrontmatterEntries(p, 'must_haves.такого_нет')).toEqual({ entries: [] })
+    expect(parseFrontmatterEntries(p, 'такого_нет.artifacts')).toEqual({ entries: [] })
+    expect(parseFrontmatterEntries(p, 'вовсе_нет')).toEqual({ entries: [] })
+  })
+
+  it('битый вход отдаёт error или честную пустоту — и НИКОГДА не бросает', () => {
+    const missing = parseFrontmatterEntries(join(dir, 'нет-такого-файла-PLAN.md'), 'predictions')
+    expect(missing.entries).toEqual([])
+    expect(missing.error).toMatch(/cannot read/)
+
+    // Нет открывающей ограды / ограда не закрыта — не ошибка чтения, а «блока нет».
+    const noFence = writePlan('# просто заголовок, никакого frontmatter\n', 'no-fence-PLAN.md')
+    expect(() => parseFrontmatterEntries(noFence, 'must_haves.key_links')).not.toThrow()
+    expect(parseFrontmatterEntries(noFence, 'must_haves.key_links')).toEqual({ entries: [] })
+
+    const unclosed = writePlan('---\nmust_haves:\n  key_links:\n    - from: "a"\n', 'unclosed-PLAN.md')
+    expect(() => parseFrontmatterEntries(unclosed, 'must_haves.key_links')).not.toThrow()
+    expect(parseFrontmatterEntries(unclosed, 'must_haves.key_links').entries).toEqual([])
+  })
+
+  it('запись-строка и запись-объект различимы, и строки — ОПЦИЯ, а не новое умолчание', () => {
+    const p = writePlan(NESTED_PLAN)
+
+    // Умолчание: дефис со скаляром закрывает блок — ровно то поведение, на которое
+    // опираются четыре старых потребителя. Правка не смеет двигать их числа.
+    const asBefore = parseFrontmatterEntries(p, 'must_haves.key_links').entries
+    expect(asBefore).toHaveLength(1)
+    expect(asBefore.every((e) => typeof e === 'object')).toBe(true)
+
+    // С опцией: проза приходит СТРОКОЙ рядом со структурной записью — на этом различии
+    // стоит счёт непроверяемых машиной связей в описи.
+    const withProse = parseFrontmatterEntries(p, 'must_haves.key_links', { scalars: true }).entries
+    expect(withProse).toHaveLength(2)
+    expect(typeof withProse[0]).toBe('object')
+    expect(typeof withProse[1]).toBe('string')
+    expect(withProse[1]).toBe('связь, написанная прозой — машиной не проверяема')
+
+    const truths = parseFrontmatterEntries(p, 'must_haves.truths', { scalars: true }).entries
+    expect(truths).toEqual(['истина словами — читается человеком, не машиной'])
   })
 })

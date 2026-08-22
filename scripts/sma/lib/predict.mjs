@@ -89,26 +89,54 @@ function scalarValue(raw) {
   return un
 }
 
+/** Escape a literal for embedding in a RegExp source. */
+function escapeRe(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Count of leading spaces on a line (tabs are not house style and count as 1). */
+function leadingIndent(line) {
+  const m = /^(\s*)/.exec(line)
+  return m ? m[1].length : 0
+}
+
 /**
  * parseFrontmatterEntries(planPath, key, opts) -> {entries, error?}.
  *
- * The generalized dash-list-of-maps frontmatter reader: locates the leading
- * `---` fence, finds the top-level `<key>:` line, and parses its entries:
- *   `  - key: value` starts an entry; `    key: value` continues it; the
- * first line outside that indentation closes the block. Missing file, no
- * fence, or no block -> honest empty array, never a throw (fail-open C9 — the
- * consumers are observers, not gates). Parameterizing the top-level key is the
- * ONLY change vs the original parsePredictions inline scan: the
- * `predictions:` and `consequences:` blocks share one narrow extractor rather
- * than two hand-rolled copies.
+ * The generalized dash-list frontmatter reader: locates the leading `---`
+ * fence, walks down to the `<key>:` line, and parses its entries:
+ *   `- key: value` starts an entry, a deeper `key: value` continues it, and the
+ * first line outside that indentation closes the block. Missing file, no fence,
+ * or no block -> honest empty array, never a throw (fail-open C9 — the consumers
+ * are observers, not gates).
+ *
+ * TWO forms of `key` are accepted:
+ *   - a top-level key, e.g. `predictions` — the original behavior, byte for byte;
+ *   - a DOTTED PATH into a nested block, e.g. `must_haves.key_links` or
+ *     `must_haves.artifacts`. The reader descends segment by segment, taking each
+ *     level's indent FROM THE ACTUAL TEXT rather than assuming two spaces, and
+ *     reads the dash-list at the depth it ends up at. This exists so the wire
+ *     inventory (which lives two levels deep, under `must_haves:`) is read by the
+ *     ONE house frontmatter reader instead of a sixth hand-rolled scan — a second
+ *     parser would become a second source of truth and drift from the plans by
+ *     the next morning.
+ *
+ * `opts.scalars` opts INTO plain-string entries (`- some prose`), which are
+ * returned as JS strings so a caller can tell prose from a structured record with
+ * `typeof e === 'string'`. It is OPT-IN and not the default on purpose: today a
+ * dash-scalar line CLOSES the block, and the four existing consumers (receipts,
+ * consequences, footprint, predictions) count on that — prose under `receipts:` is
+ * precisely what the lint's receipt-prose rule is there to notice, so silently
+ * turning it into entries would move numbers those consumers already publish.
  *
  * @param {string} planPath
- * @param {string} key  the top-level frontmatter key whose dash-list to parse
- * @param {{readFn?:Function}} [opts]
- * @returns {{entries: object[], error?: string}}
+ * @param {string} key  a top-level key, or a dotted path into a nested block
+ * @param {{readFn?:Function, scalars?:boolean}} [opts]
+ * @returns {{entries: Array<object|string>, error?: string}}
  */
 export function parseFrontmatterEntries(planPath, key, opts = {}) {
   const readFn = opts.readFn ?? readFileSync
+  const wantScalars = opts.scalars === true
   let text
   try {
     text = readFn(planPath, 'utf8')
@@ -124,28 +152,68 @@ export function parseFrontmatterEntries(planPath, key, opts = {}) {
 
   const lines = text.slice(4, closeIdx + 1).split('\n')
   const entries = []
-  let i = 0
 
-  // Find the top-level `<key>:` line.
-  const keyRe = new RegExp(`^${key}:\\s*$`)
-  while (i < lines.length && !keyRe.test(lines[i])) i++
-  if (i >= lines.length) return { entries: [] }
-  i++
+  // Descend the dotted path. Each segment narrows the [lo, hi) line window to
+  // that key's own block; `keyIndent` is the indent the FINAL segment sits at,
+  // read off the text, so entry/continuation depths follow the file, not a guess.
+  const segments = String(key).split('.')
+  let lo = 0
+  let hi = lines.length
+  let parentIndent = -1
+  let keyIndent = 0
+
+  for (let s = 0; s < segments.length; s++) {
+    const segRe = new RegExp(`^(\\s*)${escapeRe(segments[s])}:\\s*$`)
+    let found = -1
+    let indent = 0
+    for (let j = lo; j < hi; j++) {
+      const m = segRe.exec(lines[j])
+      if (!m) continue
+      const ind = m[1].length
+      // The first segment must be top-level; every later one must sit STRICTLY
+      // deeper than its parent, so a same-named sibling elsewhere cannot capture.
+      if (s === 0 ? ind !== 0 : ind <= parentIndent) continue
+      found = j
+      indent = ind
+      break
+    }
+    if (found === -1) return { entries: [] }
+
+    let end = found + 1
+    while (end < hi) {
+      const l = lines[end]
+      if (l.trim() !== '' && leadingIndent(l) <= indent) break
+      end++
+    }
+    lo = found + 1
+    hi = end
+    parentIndent = indent
+    keyIndent = indent
+  }
+
+  const startRe = new RegExp(`^ {${keyIndent + 2}}- ([A-Za-z_][\\w-]*):\\s?(.*)$`)
+  const contRe = new RegExp(`^ {${keyIndent + 4}}([A-Za-z_][\\w-]*):\\s?(.*)$`)
+  const scalarRe = new RegExp(`^ {${keyIndent + 2}}- (.*)$`)
 
   let current = null
-  while (i < lines.length) {
+  let i = lo
+  while (i < hi) {
     const line = lines[i]
-    const entryStart = /^  - ([A-Za-z_][\w-]*):\s?(.*)$/.exec(line)
-    const entryCont = /^    ([A-Za-z_][\w-]*):\s?(.*)$/.exec(line)
+    const entryStart = startRe.exec(line)
+    const entryCont = contRe.exec(line)
+    const entryScalar = wantScalars ? scalarRe.exec(line) : null
     if (entryStart) {
       current = { [entryStart[1]]: scalarValue(entryStart[2]) }
       entries.push(current)
     } else if (entryCont && current) {
       current[entryCont[1]] = scalarValue(entryCont[2])
+    } else if (entryScalar) {
+      current = null // a scalar entry has no continuation lines to attach to
+      entries.push(String(scalarValue(entryScalar[1])))
     } else if (line.trim() === '') {
       // blank line inside the block — tolerate
     } else {
-      break // dedent / next top-level key closes the block
+      break // dedent / next key closes the block
     }
     i++
   }

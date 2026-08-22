@@ -1,0 +1,2 @@
+получатель читает тот же WIRE_MARKER.DOT
+и тоже зовёт WIRE_MARKER_PARENS()

@@ -298,6 +298,9 @@ describe('memory forget — one command, and it says which state it applied', ()
     // It is 93 for the third time in the same shape — the standing acceptance rules arrived as a
     // verb of their own from a line of work whose own count read 91, counting only its own
     // arrival. The pin is the SUM of what actually landed, never one side's figure.
+    // It is 94: the declared-wire inventory arrived as a verb of its own, and re-pinning it
+    // here is part of that arrival. Note that this is the SECOND lock on the same number —
+    // the docs audit holds the other six places — so the two move together or not at all.
     // The claim this case actually makes is the line below it: the deletion surface stayed a
     // SUBCOMMAND of the corpus namespace and never grew a top-level key, which is what a count
     // alone could never say.
