@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Status | **1.0 — landed.** Every rule below is enforced by shipped code and covered by the test suite. |
-| Document version | 1.3 (see §13 for what each revision changed) |
-| Date | 2026-08-02, last revised 2026-08-17 |
+| Document version | 1.4 (see §13 for what each revision changed) |
+| Date | 2026-08-02, last revised 2026-08-22 |
 | Applies to | `schema_version: 2`; the entire v1 corpus stays readable with zero edits |
 | Companion documents | [`MEMORY-LIFECYCLE.md`](MEMORY-LIFECYCLE.md) — how a record is written, reviewed and retired · [`MEMORY-THREAT-MODEL.md`](MEMORY-THREAT-MODEL.md) — what the storage classes defend against |
 
@@ -498,6 +498,65 @@ Two limits, stated rather than implied:
   traversable graph; an edge the validator refuses is listed in `refused`. Neither is
   rewritten: this codebase does not edit records it did not author.
 
+### 10.2 What reads these edges, and what deliberately does not
+
+The vocabulary is enforced. Enforcement is not consumption, and a validated field with
+no reader looks from the outside exactly like a working feature — so this section states
+the fate of each of the eleven names by name.
+
+**One mechanism reads the `links` array today, and it is type-blind.** The erasure
+verification's dangling-pointer report (`danglingLinks` in `scripts/sma/lib/erase.mjs`)
+walks corpus, drafts and episodes and lists every entry whose `ref` names the erased
+record — for every type equally, because a report that read only the older pointer fields
+would call a corpus clean while a typed edge still named the erased record. It matches on
+`ref`; the `type` never changes what it does.
+
+**No query dispatches on an edge type.** The projection of §10.1 is called by nothing but
+its own tests: no retrieval verb, no temporal resolution, no verification check asks the
+graph a question today.
+
+Three names in this vocabulary also exist **outside** it — as top-level fields, or as a
+separate model — and those have readers. That is not the same as the edge having one, and
+the difference is the point of the table:
+
+| Name | What reads it, and what it reads |
+|---|---|
+| `supersedes` | The top-level pointer field, not the edge: `applyLifecycle` (`write-pipeline.mjs`) writes both ends of the pair atomically; the contradiction detector (`consolidate.mjs`) treats a superseding pair as already resolved; the erasure report reads it as one of the five pointer fields. |
+| `derived_from` | The top-level scalar, not the edge: `linkClaim` (`episodes.mjs`) writes one origin per claim and refuses to re-point it, the v1→v2 transform sets it, and the erasure report reads it as a pointer field. |
+| `contradicts` | Nothing reads the edge. Contradiction has its own model: `findContradictions` (`consolidate.mjs`), rendered by the `MEM-CONTRADICT` corpus check and measured by the evaluation harness, derives conflicting pairs from the claims and the supersession pointers. It never asks for an edge of this type. |
+
+**The remaining eight — `supports`, `caused_by`, `applies_to`, `exception_to`, `requires`,
+`verified_by`, `owned_by`, `part_of` — are validated and deliberately not consumed.**
+
+`applies_to` is in that list on purpose, and it is the name most likely to be miscounted:
+a frontmatter key of the same name is swept by the corpus lint's private-facet check, but
+that sweep reads the top-level key. As an **edge type** nothing reads it, which is exactly
+the state of the other seven.
+
+This is a decision, not a gap, and it follows the rule stated at the top of §10: an edge
+earns its place only if it improves a concrete retrieval, temporal-resolution or
+verification query. Filling the graph first and looking for the question afterwards
+inverts that rule and buys upkeep instead of answers — every consumed type is a field
+authors must get right, a projection that must stay deterministic, and a claim the corpus
+lint must be able to refuse.
+
+Two facts are written down rather than implied, so that neither is mistaken later for a
+defect:
+
+- these eight validate fail-closed exactly like the three above — a record that spells one
+  of them out is legal, and a type outside the eleven is refused with a finding that names
+  both the offending value and the field;
+- the projection that would traverse them is built and covered by tests, and it is
+  **unwired on purpose**. Built is not wired: nothing calls it, and no test here pretends
+  otherwise.
+
+**The condition under which this is revisited:** a type gets a reader together with the
+first query that needs it — a named retrieval, temporal-resolution or verification
+question that cannot be answered without traversing edges of that type. The query comes
+first and the reader is built with it; until one exists, the honest state of these eight
+is "validated, and read by nothing but the type-blind erasure report", and this document
+says so rather than letting a closed enum imply a graph that runs.
+
 ## 11. Corpus integrity lint
 
 Integrity is one deterministic pass over the whole corpus — exit-code contract,
@@ -712,6 +771,7 @@ validator reports it: kept as-is, with nothing validating it.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.4 | 2026-08-22 | §10.2 added: the fate of each of the eleven edge types stated by name, after a reading of the shipped modules showed that the closed enum was implying more than the code does. One mechanism reads the `links` array — the erasure dangling-pointer report — and it is type-blind; no query dispatches on an edge type, and the graph projection has no callers outside its own tests. Three names have readers OUTSIDE this vocabulary (`supersedes` and `derived_from` as top-level pointer fields, `contradicts` as a detector that derives conflicts from claims), and the remaining eight — including `applies_to`, whose same-named frontmatter key is swept by the lint while the edge is read by nothing — are validated and deliberately not consumed, with the revisit condition written down: a type gets a reader together with the first query that needs it. No schema change and no behavior change; what changed is that the document now states the difference between validated and consumed. |
 | 1.3 | 2026-08-17 | §11.3 added: the frontmatter reader accepts both LF and CRLF, written down after a period in which it did not — a note delivered with Windows line endings came back as a structural file with its claim, kind, tags and importance silently absent, and the empty tag registry then made the lint declare every tag unregistered. Two rules stated for any reader added later: a parser names the line endings it accepts, and a record that fails to parse is reported as unparsed rather than returned as an empty-but-valid record. No schema change. |
 | 1.2 | 2026-08-03 | §8 states what `criticality` is worth on the shared weight axis: a record with no `importance` number of its own now weighs its grade (`low` 2 · `medium` 5 · `high` 8 · `critical` 8), with `context_priority: always` keeping the always-load floor above it. Behavior changed with it: migrated records stop weighing zero, so a knowledge item whose grade clears the reflex silence threshold fires pre-act where it used to stay quiet, and a graded record sorts ahead of an ungraded one inside its area index. A stated `importance` still wins, and no grade moves a record into or out of always-load membership. No schema change. |
 | 1.1 | 2026-08-03 | §9.1 now describes an implementation instead of a target: the read-time hard filters are code (`isVisibleNow` — status, valid time, sensitivity by audience, repo/environment scope), executed as a filter chain before ranking on both output points of a pack. One behavior changed with it: a `superseded`/`revoked` record no longer reaches the delivered periphery, only its area index. Still unenforced and named as such: permission — `audience` is a parameter the caller states, not an identity this layer verifies. No schema change. |
