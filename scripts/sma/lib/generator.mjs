@@ -656,9 +656,24 @@ function renderableText(v) {
   return v == null ? '' : String(v).trim()
 }
 
-/** v1 tags plus any v2 retrieval.areas not already among them, order preserved. */
+/**
+ * v1 tags plus `metadata.tags` plus any v2 retrieval.areas not already among
+ * them, order preserved.
+ *
+ * `metadata.tags` — форма, которую пишет авто-память Claude Code (вложенный
+ * блок `metadata:`). Парсер фронтматтера её ЧИТАЕТ давно, а сюда она не
+ * доходила: каждая такая заметка падала в INDEX-misc, и `sma load --tags`
+ * её не находил — заметка лежала в репозитории и была невидима для ищущего
+ * по теме (BL-336, найдено на платформе 22.08.2026).
+ */
 function mergeAreas(fm) {
-  const tags = Array.isArray(fm.tags) ? fm.tags : []
+  const flat = Array.isArray(fm.tags) ? fm.tags : []
+  const metadata = fm.metadata
+  const metaRaw = metadata != null && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata.tags : null
+  const metaTags = (Array.isArray(metaRaw) ? metaRaw : metaRaw == null ? [] : [metaRaw])
+    .map((t) => String(t).trim())
+    .filter((t) => t !== '')
+  const tags = flat.concat(metaTags.filter((t) => !flat.includes(t)))
   const retrieval = fm.retrieval
   if (retrieval == null || typeof retrieval !== 'object' || Array.isArray(retrieval)) return tags
   const raw = retrieval.areas

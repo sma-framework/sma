@@ -499,6 +499,29 @@ describe('generator.mjs — a corpus that speaks both schema versions', () => {
   })
 })
 
+describe('generator.mjs — metadata.tags доходят до области заметки (BL-336)', () => {
+  it('вложенная форма авто-памяти получает свои области, а не падает в misc', () => {
+    const n = projectNoteAxis(
+      { description: 'd', metadata: { type: 'project', tags: ['crm', 'release'] } },
+      { file: 'nested.md' },
+    )
+    expect(n.tags).toEqual(['crm', 'release'])
+  })
+
+  it('плоские tags и metadata.tags сливаются без дублей, плоские первыми', () => {
+    const n = projectNoteAxis(
+      { description: 'd', tags: ['crm'], metadata: { tags: ['crm', 'testing'] } },
+      { file: 'both.md' },
+    )
+    expect(n.tags).toEqual(['crm', 'testing'])
+  })
+
+  it('metadata без tags и «не тот» metadata ничего не ломают', () => {
+    expect(projectNoteAxis({ description: 'd', metadata: { type: 'user' } }, { file: 'a.md' }).tags).toEqual([])
+    expect(projectNoteAxis({ description: 'd', metadata: 'oops' }, { file: 'b.md' }).tags).toEqual([])
+  })
+})
+
 describe('generator.mjs — computeDateMap (injectable git)', () => {
   it('builds path→ISO from ONE git log pass via the injected runner (never shells out)', () => {
     const gitOutput = [
