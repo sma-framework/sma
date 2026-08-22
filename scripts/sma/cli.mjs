@@ -1041,6 +1041,28 @@ async function cmdRelease({ positionals, flags, dirs }) {
  * next-slot <migration|release> — allocate a shared counter via slots.mjs.
  * migration prints the number + the SORTED_INSERT_RULE; release prints V1.N.
  */
+/**
+ * backlogIdPrefix(smaRoot) → the id shape this project numbers its backlog with.
+ *
+ * Reads `backlogIdPrefix` from `<smaRoot>/config.json`, FAIL-SOFT by the same rule the
+ * memory budget uses next door: no file, unreadable JSON or a nonsense value keeps the
+ * shipped default, because a counter that refuses to run over a typo in an unrelated key
+ * sends the caller back to picking numbers by hand — the exact thing it exists to stop.
+ * A value that IS present but unusable is refused later, by name, where the caller can
+ * see it: silence there would hand out «number 1» forever.
+ */
+function backlogIdPrefix(smaRoot) {
+  if (typeof smaRoot !== 'string' || !smaRoot) return undefined
+  try {
+    const parsed = JSON.parse(readFileSync(join(smaRoot, 'config.json'), 'utf8'))
+    const value = parsed && typeof parsed === 'object' ? parsed.backlogIdPrefix : undefined
+    return typeof value === 'string' ? value : undefined
+  } catch {
+    /* fail-soft — the shipped default stands */
+    return undefined
+  }
+}
+
 async function cmdNextSlot({ positionals, flags, dirs }) {
   const kind = positionals[0]
   const slots = await import('./lib/slots.mjs')
@@ -1078,6 +1100,11 @@ async function cmdNextSlot({ positionals, flags, dirs }) {
     const planningRoot = join(dirs.smaRoot ? dirname(dirs.smaRoot) : process.cwd(), '.planning')
     const res = slots.nextCounterSlot(kind, {
       planningRoot,
+      // THE PROJECT'S OWN ID SHAPE, read here and handed down. A counter that only knows
+      // one prefix is a counter only this repository can obey, and the standing rule —
+      // never choose a number by reading the last one — is written for everybody.
+      // `--prefix` beats the config so a one-off allocation needs no file edit.
+      idPrefix: typeof flags.prefix === 'string' ? flags.prefix : backlogIdPrefix(dirs.smaRoot),
       phase: typeof flags.phase === 'string' ? flags.phase : undefined,
       by: identity.holderIdentity,
       terminalId: identity.terminalId,
@@ -1098,7 +1125,7 @@ async function cmdNextSlot({ positionals, flags, dirs }) {
     return res.won ? 0 : 1
   }
 
-  process.stderr.write('usage: node scripts/sma/cli.mjs next-slot <migration|release|bl|action|decision --phase N|phase>\n')
+  process.stderr.write('usage: node scripts/sma/cli.mjs next-slot <migration|release|bl|action|decision --phase N|phase> [--prefix <ID>]\n')
   return 1
 }
 
