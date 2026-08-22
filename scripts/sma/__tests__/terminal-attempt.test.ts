@@ -97,7 +97,7 @@ describe('a claimed scope leaves a point of return on disk', () => {
     expect(rows[0].taskId).toBe(slug)
   })
 
-  it('the terminal attempt row carries the worker\'s keys', () => {
+  it("the terminal attempt row carries the worker's keys", () => {
     const { repo, ledgerDir } = scratchRepo()
     const slug = 'kluchi-stroki'
     startTerminalAttempt({ slug, description: 'ключи строки', identity: IDENTITY, ledgerDir, cwd: repo })
