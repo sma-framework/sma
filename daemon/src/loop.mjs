@@ -515,17 +515,29 @@ function answerReceipt(attemptId) {
  * Both questions fail SAFE: no git surface, no base, a throw, a count that is not a plain
  * zero, or a single dirty line, and the answer is null — the attempt falls through to the code
  * gate and the old outcome stands. The only way through this door is a repository that cannot
- * tell the attempt ever happened. A refusal for want of a base is SAID OUT LOUD in the
- * operator's log, because a door that closes without a word is how the miss below spent hours
- * looking like a worker who left no receipt.
+ * tell the attempt ever happened. EVERY refusal is SAID OUT LOUD in the operator's log —
+ * except commits on the branch, which are not a refusal but ordinary code work — because a
+ * door that closes without a word is how a missing base spent hours looking like a worker who
+ * left no receipt, and how a live question round burned two extra sessions on 24.08.2026.
  *
  * THE NOTE IS REQUIRED, exactly as everywhere else. An answer nobody wrote down is not an
  * answer, and the note IS the artefact here — the receipt names the attempt whose journal
  * holds it, so what the founder acknowledges on the card is the worker's own words.
  */
 function answerOnlyGate(deps, task, branch, workDir, noteWritten, base) {
-  if (!noteWritten) return null
-  if (typeof deps.execGit !== 'function') return null
+  // NEVER SILENT — except for the one null that is not a refusal at all: commits on the branch
+  // mean ordinary code work, and the code gate is its rightful judge. Every other null used to
+  // close this door without a word, and on 24.08.2026 that silence cost a live circle: a worker
+  // ended its round with a question, this door shut wordlessly, the round went out as «нет
+  // квитанции», and the queue burned two more sessions re-asking the same question instead of
+  // parking it for a person. The reason below names WHICH guard closed the door.
+  const closed = (reason, detail) => {
+    writeLog(deps, { type: 'task.answer_gate_closed', taskId: task.id, reason, detail })
+    return null
+  }
+  if (typeof deps.execGit !== 'function') {
+    return closed('no_git', 'нет git-поверхности — пустоту попытки доказать нечем, попытку решает гейт кода')
+  }
 
   // WHERE THE COUNT STARTS, and this line is the whole defect this gate once carried. The
   // question is «did this attempt put anything on the branch», and ONLY the point the copy was
@@ -543,29 +555,54 @@ function answerOnlyGate(deps, task, branch, workDir, noteWritten, base) {
   // safe answered null, and again a codeless task went red. Asking the COPY's own tree ends
   // both stories at once — the branch is checked out there, and the work happened there.
   if (!base) {
-    // NEVER SILENT. This is the refusal that looked like an absent receipt for hours, so it now
-    // says which of the two things happened: nobody could name the point to count from.
-    writeLog(deps, {
-      type: 'task.answer_gate_closed',
-      taskId: task.id,
-      reason: 'unknown_base',
-      detail:
-        `база копии неизвестна — считать не от чего, дверь ответа закрыта, попытку решает гейт кода ` +
+    // This is the refusal that looked like an absent receipt for hours, so it says which of
+    // the two things happened: nobody could name the point to count from.
+    return closed(
+      'unknown_base',
+      `база копии неизвестна — считать не от чего, дверь ответа закрыта, попытку решает гейт кода ` +
         `(ветка=${branch || 'нет'} дерево=${workDir || 'нет'})`,
-    })
-    return null
+    )
   }
   // The counter that already exists in this file, told to answer «I cannot say» rather than
   // «zero» — for THIS door an unknown must never read as «the attempt is provably empty».
-  if (countCommitsOnBranch(deps, base, workDir, { unknownAs: null }) !== 0) return null
+  const commits = countCommitsOnBranch(deps, base, workDir, { unknownAs: null })
+  if (commits === null) {
+    return closed('count_unknown', `git не смог посчитать коммиты от ${String(base).slice(0, 12)} в ${workDir} — пустота попытки не доказана`)
+  }
+  if (commits !== 0) return null // ordinary code work — the code gate judges it, nothing to say
 
   let dirty
   try {
     dirty = String(deps.execGit(['status', '--porcelain'], { cwd: workDir }) || '').trim()
-  } catch {
-    return null
+  } catch (err) {
+    return closed('status_failed', `git status в копии не ответил: ${String((err && err.message) || err)}`)
   }
-  if (dirty) return null
+  if (dirty) {
+    // WHOSE DIRT IS IT. The daemon itself furnishes the copy: the personal layer (.claude/,
+    // CLAUDE.md), its own state (.sma/), linked dependencies (node_modules/) and the task
+    // context snapshot. Untracked entries under those paths are the DAEMON's hand, not the
+    // worker's — and the memory-corpus draft under .claude/memory/ is REQUIRED of an answer
+    // by lessonCheck, so counting it as dirt made «ответ обязан оставить урок» and «ответ
+    // обязан оставить чистое дерево» mutually exclusive: this door could not open for any
+    // lesson-carrying answer at all. Measured live 24.08.2026: «?? .claude/» closed the door
+    // on a question round, the round went out «нет квитанции», and the queue burned two more
+    // sessions re-asking. A MODIFIED tracked file under the same paths is still the worker's
+    // work and still closes the door — only the daemon's own untracked furniture is excused.
+    const FURNISHED = ['.claude/', 'CLAUDE.md', '.sma/', 'node_modules/', TASK_CONTEXT_FILE]
+    const foreign = dirty.split('\n').filter((line) => {
+      if (line.slice(0, 2) !== '??') return true
+      const p = line.slice(3).trim().replace(/^"|"$/g, '')
+      return !FURNISHED.some((f) => p === f || p === f.replace(/\/$/, '') || p.startsWith(f))
+    })
+    if (foreign.length) {
+      // THE NAMES, not the fact: a person deciding whether this is unfinished code work or
+      // some artefact standing in the copy needs to see WHAT git names.
+      return closed('dirty_tree', `дерево копии не чисто (строк: ${foreign.length}): ${foreign.slice(0, 6).join(' | ')}`)
+    }
+  }
+  if (!noteWritten) {
+    return closed('no_note', 'попытка доказуемо пуста, но записки о подходе нет — ответ, которого никто не записал, ответом не является')
+  }
 
   return { receiptRef: answerReceipt(attemptIdFor(task.id, task.attempt)) }
 }

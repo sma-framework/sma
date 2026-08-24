@@ -2343,7 +2343,7 @@ describe('a task that needed no code completes on its answer — and nothing els
 
   it('a commit on the branch → the code law stands: fail("no_receipt")', async () => {
     const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
-    const { deps, order } = makeDeps({
+    const { deps, order, journalled } = makeDeps({
       adapter,
       responses: CODE_RESPONSES,
       // one commit on the branch — and a branch that carries one says so from either anchor
@@ -2354,11 +2354,14 @@ describe('a task that needed no code completes on its answer — and nothing els
 
     expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
     expect(order).toContain('reverify') // it WAS asked — this is code work
+    // and the door says NOTHING: commits are not a refusal but ordinary code work, and a log
+    // line per ordinary attempt would bury the refusals a person must see
+    expect(journalled.some((e: any) => e.type === 'task.answer_gate_closed')).toBe(false)
   })
 
   it('an edit left uncommitted is unfinished work, not an answer → fail("no_receipt")', async () => {
     const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
-    const { deps } = makeDeps({
+    const { deps, journalled } = makeDeps({
       adapter,
       responses: CODE_RESPONSES,
       deps: { execGit: makeAnswerGit({ dirty: ' M daemon/src/loop.mjs' }) },
@@ -2367,11 +2370,91 @@ describe('a task that needed no code completes on its answer — and nothing els
     const res = await tick(deps)
 
     expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+    // the refusal is said out loud AND names what git names: a person deciding whether this is
+    // unfinished code work or the daemon's own artefact standing in the copy needs the file
+    // list, not the bare fact. The silent shape of this refusal cost a live circle 24.08.2026.
+    const said = journalled.find((e: any) => e.type === 'task.answer_gate_closed' && e.taskId === 'BL-1')
+    expect(said, 'the door closed without a word').toBeTruthy()
+    expect(said.reason).toBe('dirty_tree')
+    expect(String(said.detail)).toContain('daemon/src/loop.mjs')
+  })
+
+  /**
+   * ── THE DAEMON'S OWN FURNITURE IS NOT THE WORKER'S DIRT ──
+   *
+   * Measured live 24.08.2026 by the steer drill: the daemon materializes the personal layer
+   * into the copy, `git status` answered «?? .claude/», and this door read the daemon's own
+   * hand as unfinished work. The question round went out «нет квитанции» and the queue burned
+   * two more sessions re-asking the same question. Worse, the collision was structural: the
+   * lesson lessonCheck REQUIRES of an answer lives as an uncommitted draft under
+   * .claude/memory/ — so «ответ обязан оставить урок» and «ответ обязан оставить чистое
+   * дерево» could never both hold. These cases pin each side of the repaired rule.
+   */
+  it('the daemon\'s untracked furniture («?? .claude/») does not close the answer door', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps, journalled } = makeDeps({
+      adapter,
+      responses: CODE_RESPONSES,
+      deps: { execGit: makeAnswerGit({ dirty: '?? .claude/' }) },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+    const [call] = adapter.calls
+    expect(call.result.receiptRef).toBe('answer:BL-1#1')
+    expect(journalled.some((e: any) => e.type === 'task.answer_gate_closed')).toBe(false)
+  })
+
+  it('the lesson draft an answer is REQUIRED to leave does not close the door on that answer', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps } = makeDeps({
+      adapter,
+      responses: CODE_RESPONSES,
+      deps: { execGit: makeAnswerGit({ dirty: '?? .claude/memory/2026-08-24-drill-lesson.md' }) },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('BL-1')
+  })
+
+  it('a MODIFIED tracked file under the furnished paths is still the worker\'s work → refused', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps, journalled } = makeDeps({
+      adapter,
+      responses: CODE_RESPONSES,
+      deps: { execGit: makeAnswerGit({ dirty: ' M .claude/settings.json' }) },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+    const said = journalled.find((e: any) => e.type === 'task.answer_gate_closed' && e.taskId === 'BL-1')
+    expect(said?.reason).toBe('dirty_tree')
+  })
+
+  it('an untracked file OUTSIDE the furniture is unfinished work → refused, named', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps, journalled } = makeDeps({
+      adapter,
+      responses: CODE_RESPONSES,
+      // the furniture stands beside it, and only the foreign file closes the door
+      deps: { execGit: makeAnswerGit({ dirty: '?? .claude/\n?? src/new.mjs' }) },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+    const said = journalled.find((e: any) => e.type === 'task.answer_gate_closed' && e.taskId === 'BL-1')
+    expect(said?.reason).toBe('dirty_tree')
+    expect(String(said?.detail)).toContain('src/new.mjs')
+    expect(String(said?.detail)).not.toContain('.claude')
   })
 
   it('an answer nobody wrote down is not an answer → fail("no_receipt")', async () => {
     const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
-    const { deps } = makeDeps({
+    const { deps, journalled } = makeDeps({
       adapter,
       responses: CODE_RESPONSES,
       spawnWorker: makeSpawnWorker(undefined, { lines: ['stream line'] }), // no APPROACH_NOTE
@@ -2381,12 +2464,20 @@ describe('a task that needed no code completes on its answer — and nothing els
     const res = await tick(deps)
 
     expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+    // said out loud with the one reason left: the tree is provably untouched, so the missing
+    // note is the WHOLE refusal — an answer nobody wrote down
+    const said = journalled.find((e: any) => e.type === 'task.answer_gate_closed' && e.taskId === 'BL-1')
+    expect(said, 'the door closed without a word').toBeTruthy()
+    expect(said.reason).toBe('no_note')
   })
 
-  for (const verb of ['rev-list', 'status']) {
-    it(`git cannot answer "${verb}" → the gate fails SAFE, the old outcome stands`, async () => {
+  for (const [verb, reason] of [
+    ['rev-list', 'count_unknown'],
+    ['status', 'status_failed'],
+  ]) {
+    it(`git cannot answer "${verb}" → the gate fails SAFE and says "${reason}"`, async () => {
       const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
-      const { deps } = makeDeps({
+      const { deps, journalled } = makeDeps({
         adapter,
         responses: CODE_RESPONSES,
         deps: { execGit: makeAnswerGit({ throwOn: verb }) },
@@ -2395,16 +2486,24 @@ describe('a task that needed no code completes on its answer — and nothing els
       const res = await tick(deps)
 
       expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+      // fail-SAFE is kept, fail-SILENT is not: «git could not answer» is a fact about the
+      // machine, and a person hunting a red row must find it in the log, not in the code
+      const said = journalled.find((e: any) => e.type === 'task.answer_gate_closed' && e.taskId === 'BL-1')
+      expect(said, 'the door closed without a word').toBeTruthy()
+      expect(said.reason).toBe(reason)
     })
   }
 
-  it('no git surface at all → the gate cannot open', async () => {
+  it('no git surface at all → the gate cannot open, and says so', async () => {
     const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
-    const { deps } = makeDeps({ adapter, responses: CODE_RESPONSES })
+    const { deps, journalled } = makeDeps({ adapter, responses: CODE_RESPONSES })
 
     const res = await tick(deps)
 
     expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'no_receipt' })
+    const said = journalled.find((e: any) => e.type === 'task.answer_gate_closed' && e.taskId === 'BL-1')
+    expect(said, 'the door closed without a word').toBeTruthy()
+    expect(said.reason).toBe('no_git')
   })
 
   /**
