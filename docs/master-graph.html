@@ -68,6 +68,8 @@
 
   /* ── version bands ────────────────────────────────── */
   .band{display:grid;grid-template-columns:216px 1fr;gap:20px;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,var(--surface),var(--bg1));padding:18px;margin-bottom:12px}
+  .band.b56{border-color:var(--vio2);background:linear-gradient(180deg,var(--surface2),var(--bg1))}
+  .b56 .rail .vchip{border-color:var(--vio2);color:var(--vio2);background:rgba(139,92,246,.38)}
   .band.b5{border-color:var(--vio);background:linear-gradient(180deg,var(--surface2),var(--bg1))}
   .b5 .rail .vchip{border-color:var(--vio);color:var(--vio2);background:rgba(139,92,246,.3)}
   .band.b4{border-color:var(--line2);background:linear-gradient(180deg,var(--surface2),var(--bg1))}
@@ -255,8 +257,25 @@
   <!-- ══ THE MAP ══════════════════════════════════════ -->
   <section class="block" id="map" aria-label="The map">
     <h2>The map</h2>
-    <p class="sub">Seven version layers, newest on top; releases v5.1–v5.6 build on the V5 layer — their story is in the timeline below. Click any node for its plain-language card — commands, files, honest numbers. One panel at a time; <kbd>Esc</kbd> or click-away closes; the URL remembers where you were.
+    <p class="sub">Eight version layers, newest on top. Click any node for its plain-language card — commands, files, honest numbers. One panel at a time; <kbd>Esc</kbd> or click-away closes; the URL remembers where you were.
     <br><span class="legend"><b class="lg-amber">amber</b> = ships disabled, an owner turns it on · <b class="lg-red">red</b> = blocking · everything else observes and warns</span></p>
+
+    <section class="band b56" aria-labelledby="bt56">
+      <div class="rail">
+        <span class="vchip">V5.1–V5.6</span>
+        <h3 id="bt56">The Daily Driver — the window runs the day</h3>
+        <p>7 subsystems<br>Six shipped releases on top of the fleet: the app is the workplace, memory is measured and governed, a live session takes the wheel, and the docs cannot lie about the numbers.</p>
+      </div>
+      <div class="nodes">
+        <button class="node" data-node="window56" aria-haspopup="dialog" aria-expanded="false"><span class="nt">The window</span><span class="ns">taskboard · cards · phone-width lane</span></button>
+        <button class="node" data-node="memory56" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Memory 2.0</span><span class="ns">one claim per record · measured · governed</span></button>
+        <button class="node" data-node="engine56" aria-haspopup="dialog" aria-expanded="false"><span class="nt">The engine</span><span class="ns">steer a live session · resume · interrupt</span></button>
+        <button class="node" data-node="parity56" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Worker-session parity</span><span class="ns">the same session the owner gets</span></button>
+        <button class="node" data-node="qa56" aria-haspopup="dialog" aria-expanded="false"><span class="nt">QA that uses the product</span><span class="ns">ui-drive · a run that did not happen never passes</span></button>
+        <button class="node" data-node="lessons56" aria-haspopup="dialog" aria-expanded="false"><span class="nt">Lessons both ways</span><span class="ns">no attempt ends silent</span></button>
+        <button class="node" data-node="numbers56" aria-haspopup="dialog" aria-expanded="false"><span class="nt">The numbers gate</span><span class="ns">docs derived from code, or the suite goes red</span></button>
+      </div>
+    </section>
 
     <section class="band b5" aria-labelledby="bt5">
       <div class="rail">
@@ -625,6 +644,7 @@
   "use strict";
 
   var BANDS = {
+    "v5.1-5.6": "V5.1–V5.6 · The Daily Driver",
     "v5":   "V5 · Orchestration — the 24/7 Fleet",
     "v4":   "V4 · Grade the Grader",
     "v3.6": "V3.6 · The One-Command Door",
@@ -635,6 +655,41 @@
   };
 
   var NODES = {
+    window56: { v: "v5.1-5.6", title: "The window", tag: "taskboard · cards · phone-width lane",
+      body: "The daemon serves a full React app: a taskboard of work units, a task card that unfolds into the whole story of one task — attempts, transcript thread, diff, receipts, the rollback line with the one command that undoes it — plus spend, memory, roster and settings screens. A declared narrow lane works at phone width: see what is wanted of you, open the work, accept it. Shipped across v5.1 (17 screens), v5.4 (the whole working day), v5.6 (the taskboard).",
+      cmds: [],
+      files: ["spa/src/screens/", "daemon/src/front/server.mjs (62 frozen routes)"],
+      nums: ["route table frozen at 62 — grows only by a recorded revision", "narrow lane: declared width, honest 'built for a wide desk' elsewhere"] },
+    memory56: { v: "v5.1-5.6", title: "Memory 2.0", tag: "one claim per record · measured · governed",
+      body: "The memory layer rebuilt on a reviewed schema: one claim per record, episodes, a twelve-step write pipeline — no fact enters memory by accident. v5.2 made it measurable (benchmark, explain, reproducible proof); v5.3 made it governed (lifecycle, erase that is honest about history); v5.6 made it a budget — the always-loaded core reports its fill, overflow says 'consolidate now', and a session's parting move drafts a lesson.",
+      cmds: ["sma memory stats", "sma consolidate", "sma load --tags <a,b>"],
+      files: ["scripts/sma/lib/ (schema-v2 · write-pipeline · consolidate)", "docs/MEMORY-MODEL.md"],
+      nums: ["one byte-denominated budget threshold — two metrics gave OPPOSITE verdicts on one file, so there is exactly one"] },
+    engine56: { v: "v5.1-5.6", title: "The engine", tag: "steer a live session · resume · interrupt",
+      body: "A running task is steerable, not just watchable: a word from the owner reaches the live session mid-run through the hook gate; an interrupt kills the live child and the continuation resumes THE SAME session from where it stopped, carrying the correction; a question from the worker parks the task as a card, and the answer returns into the same session. Every leg of that circle is proven by a live drill whose law is 'a run that did not happen never counts as a pass'.",
+      cmds: ["node supervisor/live-steer-drill.mjs --word --control --last-call --interrupt --question"],
+      files: ["daemon/src/loop.mjs", "supervisor/live-steer-drill.mjs"],
+      nums: ["the whole circle re-proven live 24.08.2026: exit 0, one session id across every frame"] },
+    parity56: { v: "v5.1-5.6", title: "Worker-session parity", tag: "the same session the owner gets",
+      body: "A worker's session is the owner's session: the personal layer is mirrored (global rules, hooks, deny/ask), every attempt runs in a full copy of the project with dependencies linked, the project's own MCP configuration is read exactly as the owner's terminal reads it — a deliberate design ruling, with every foreign tool the session loads recorded into the attempt. The copy cleans itself up after acceptance and leaves a ledger trace.",
+      cmds: [],
+      files: [".sma/worktree-include", "daemon/src/queue/ (worktree provision)"],
+      nums: ["seconds from claim to first move, not minutes", "cleanup is recorded: by whom, in which attempt"] },
+    qa56: { v: "v5.1-5.6", title: "QA that uses the product", tag: "ui-drive · exit 3 is not a pass",
+      body: "A QA department that presses the product instead of reading it: the ui-drive engine opens the real window, clicks the declared path, expects the declared outcome and writes a receipt with screenshots. Its founding law: exit 0 clean, 1 blockers, 3 NOT RUN — a run that did not happen is never a pass. Born in v5.4.2 together with the five defects its own first run caught.",
+      cmds: ["node scripts/sma/ui-drive.mjs <url> [click:… expect:…]"],
+      files: ["scripts/sma/ui-drive.mjs"],
+      nums: ["a receipt names the address and never the key that opens it"] },
+    lessons56: { v: "v5.1-5.6", title: "Lessons both ways", tag: "no attempt ends silent",
+      body: "Every attempt must leave a lesson draft in the copy's own corpus or say in words why there was nothing to learn — the gate refuses silence, and acceptance applies the lesson to the project's memory with a fingerprint. An answer without code is real work too: it completes on an answer receipt and parks for acknowledgement instead of dying red. The flywheel that once took in zero lessons over 63 attempts now turns on every task.",
+      cmds: [],
+      files: ["daemon/src/loop.mjs (lessonCheck · answerOnlyGate)"],
+      nums: ["the answer door speaks every refusal into the operator's log — its silent shape cost a live circle once"] },
+    numbers56: { v: "v5.1-5.6", title: "The numbers gate", tag: "docs derived from code, or red",
+      body: "Every number the documentation uses about the product — how many routes the front serves, how many verbs the CLI dispatches, how many tests the last measured run counted, which version the package stands at — is derived, not remembered. doc-audit is the gate, --write rewrites the derived places, and the tests badge is written from the JSON report of an actual run. A document that disagrees with the code turns npm test red.",
+      cmds: ["node scripts/sma/cli.mjs doc-audit --target numbers"],
+      files: ["scripts/sma/lib/badge.mjs", "test-receipt.json"],
+      nums: ["0 violations on this tree, 24.08.2026", "the receipt names the commit it was measured on"] },
     queue5: { v: "v5", title: "Durable queue + dispatcher", tag: "atomic claims · attempts · dead-letter",
       body: "Tasks live in a durable local Postgres queue with one lane per work type. A worker claims a task atomically — the same task can never be taken twice; every attempt lands in an append-only attempt ledger; an expired lease returns a silent task to the queue; a task that keeps failing parks in a dead-letter lane instead of looping. The tick loop is stateless: kill the daemon mid-step, restart it — nothing is lost and nothing double-runs.",
       cmds: [],
