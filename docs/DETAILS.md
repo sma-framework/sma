@@ -1154,7 +1154,7 @@ flowchart LR
     S1 & S2 & S3 & S4 & S5 --> OUT["merged warns · one optional deny<br>p95 152–157 ms · SLO 300 · parity 0 mismatches"]
 ```
 
-`sma pre-bench` re-measures the p95, the spawn count (must be 1), and merged-vs-single-stream parity after any change. Every stream has a kill-switch (`SMA_PRE_DISABLE`, `SMA_REFLEX_DISABLE`, …) and a soft time budget — a slow stream is skipped, never allowed to overrun.
+`sma pre-bench` re-measures the p95, the spawn count (must be 1), and merged-vs-single-stream parity after any change. Every stream has a kill-switch (`SMA_PRE_DISABLE`, `SMA_REFLEX_DISABLE`, …) and a soft time budget — a slow stream is skipped, never allowed to overrun. Remeasured 2026-08-25, after the airbag learned to finish its snapshot over an untracked directory: the airbag stream now dominates at 283–405 ms p95 on the cheapest possible scene, and the owner raised the hook budget from 300 to 500 ms in the open — the budget followed the honest number; the dated figure above stays as the history it is.
 
 #### 7 · Subagent write-receipts + PreTask pack
 
