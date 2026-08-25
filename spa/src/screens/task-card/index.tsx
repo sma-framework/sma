@@ -1,6 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { ApiError } from '../../api/client'
+import { watchTask } from '../../api/task-live'
 import { LiveTimer } from '../../shell/LiveTimer'
 import type { TimerState } from '../../shell/live-timer'
 import {
@@ -20,7 +22,6 @@ import type {
   AttemptDigest,
   AttemptLog as AttemptLogPayload,
   AttemptRole,
-  SubApiSwitch,
   TaskAttempt,
   TaskStatus,
   WaitingTicket,
@@ -46,6 +47,8 @@ import { useComposerDraft } from '../../shell/useComposerDraft'
 import { AttemptTimeline } from './AttemptTimeline'
 import { DiffSummary, DiffText } from './DiffView'
 import { JournalSection } from './JournalSection'
+import { LiveFlow } from './LiveFlow'
+import { SpendPanel } from './SpendPanel'
 
 /**
  * Три судьбы, которые может иметь поправка, набранная поверх живой работы. Названы типом, а не
@@ -752,44 +755,21 @@ function BlockedBanner({
 }
 
 /**
- * Потолок платного канала — и ноль, названный тем, что он есть.
- *
- * Ноль это НЕ «без ограничения»: при нулевом потолке правило отказывает в переходе на платный
- * канал навсегда, и работа при закрытых окнах ждёт их открытия. Ноль — поставочное состояние
- * продукта, поэтому эта строка чаще всего и читается.
- */
-function capWords(sw: SubApiSwitch | undefined): { label: string; value: string; note: string | null } {
-  if (!sw) return { label: 'Платный API', value: 'нет данных', note: null }
-  if (!sw.budgeted || sw.capEur <= 0) {
-    return {
-      label: 'Платный API · потолок 0',
-      value: 'выключен',
-      note: 'Ноль — это не «без ограничения»: платный канал не используется вовсе.',
-    }
-  }
-  return {
-    label: `Платный API · потолок ${sw.capEur} €/мес`,
-    value: sw.mode === 'api' ? 'работа идёт за деньги' : 'молчит',
-    note: null,
-  }
-}
-
-/**
- * ПРАВАЯ ПАНЕЛЬ: последнее событие, расход попытки, потолок платного канала и внешние
- * подключения — ЯВНЫМ блоком.
+ * ПРАВАЯ ПАНЕЛЬ: последнее событие и внешние подключения — ЯВНЫМ блоком.
  *
  * Пустой блок подключений здесь не прячется: «ни одного» — это ответ, а отсутствие строки
- * читается как «подключения где-то есть, просто не показаны». Расход попытки говорится теми
- * словами, которыми о нём отчитался поставщик; своих чисел карточка не считает.
+ * читается как «подключения где-то есть, просто не показаны».
+ *
+ * РАСХОД УЕХАЛ В СВОЮ ПАНЕЛЬ (`SpendPanel`), и это не перестановка ради вида: он перестал
+ * быть одной строкой итога сессии и стал шестью строками, из которых четыре — измеренные
+ * поставщиком токены и кэш. Строке в углу чужого блока такое не по размеру.
  */
 function SessionPanel({
   attempt,
   digest,
-  spendSwitch,
 }: {
   attempt: TaskAttempt | null
   digest: AttemptDigest | null | undefined
-  spendSwitch: SubApiSwitch | undefined
 }) {
   const when = attempt?.endedAt ?? attempt?.startedAt ?? null
   const text = !attempt
@@ -797,11 +777,10 @@ function SessionPanel({
     : !attempt.endedAt
       ? `Подход ${attempt.attempt ?? '—'} идёт с ${clockLabel(attempt.startedAt)}.`
       : `Подход ${attempt.attempt ?? '—'} · ${attemptWords(attempt)}.`
-  const cap = capWords(spendSwitch)
   const conns = digest?.connections
 
   return (
-    <section className="w-[320px] flex-none rounded-[12px] border border-bd bg-card px-[15px] py-3.5">
+    <section className="rounded-[12px] border border-bd bg-card px-[15px] py-3.5">
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-[12px] font-semibold text-tx">Последнее событие</span>
         <span className="flex-none font-mono text-[10.5px] text-tx3">{when ? clockLabel(when) : 'нет данных'}</span>
@@ -809,15 +788,6 @@ function SessionPanel({
       <p className="m-0 mt-1.5 text-[11.5px] leading-[1.5] text-tx2">{text}</p>
 
       <div className="mt-3 flex flex-col gap-1.5 border-t border-bd pt-3 text-[11.5px]">
-        <div className="flex justify-between gap-3">
-          <span className="text-tx2">Расход попытки</span>
-          <span className="min-w-0 flex-none text-right text-tx3">{digest?.session ?? 'демон не сообщает'}</span>
-        </div>
-        <div className="flex justify-between gap-3">
-          <span className="min-w-0 text-tx2">{cap.label}</span>
-          <span className="flex-none text-tx3">{cap.value}</span>
-        </div>
-        {cap.note ? <p className="m-0 text-[10.5px] leading-[1.4] text-tx3">{cap.note}</p> : null}
         <div className="flex justify-between gap-3">
           <span className="text-tx2">Внешние подключения</span>
           <span className="min-w-0 flex-none text-right text-tx3">
@@ -862,6 +832,7 @@ export function Screen() {
   const opened = useOpenedWith()
   const taskId = opened?.taskId ?? null
 
+  const queryClient = useQueryClient()
   const detail = useTaskQuery(taskId)
   const diff = useDiffQuery(taskId)
   const state = useStateQuery()
@@ -879,6 +850,17 @@ export function Screen() {
   const [editingWords, setEditingWords] = useState(false)
   const [draftDescription, setDraftDescription] = useState('')
   const [draftCriteria, setDraftCriteria] = useState('')
+
+  /**
+   * КАРТОЧКА СЛУШАЕТ КОЛОКОЛА СВОЕЙ ЗАДАЧИ И ПЕРЕЧИТЫВАЕТ СЕБЯ САМА.
+   *
+   * Дефект живого клика 25.08: после «Одобрить» состояние было видно только после F5. Канал у
+   * окна один и он уже открыт (`subscribeHints`), поэтому здесь не открывается ничего нового —
+   * подписка на уже идущий поток, сужённая до колоколов ЭТОЙ задачи, и отписка при закрытии
+   * карточки. Почему по колоколу здесь ПЕРЕЧИТЫВАЮТ, хотя общей картине это запрещено, —
+   * сказано в `task-live.ts`.
+   */
+  useEffect(() => watchTask(queryClient, taskId), [queryClient, taskId])
 
   // РОЛИ И РАСХОД — из журнала САМОГО СВЕЖЕГО подхода. Тот же ключ запроса, что у ленты
   // подхода ниже, поэтому вторым обращением к двери это не становится.
@@ -1209,11 +1191,17 @@ export function Screen() {
               open={rolesOpen}
               onToggle={() => setRolesOpen((v) => !v)}
             />
-            <SessionPanel
-              attempt={newest}
-              digest={log.data?.digest}
-              spendSwitch={state.data?.rules?.subApiSwitch}
-            />
+            {/* ПРАВЫЙ СТОЛБИК КАРТОЧКИ, в порядке принятого макета: что происходит сейчас,
+                что происходило только что, и во что это обошлось. */}
+            <div className="flex w-[320px] flex-none flex-col gap-3.5">
+              <LiveFlow attempts={attempts} status={status} ticket={newest?.ticket ?? null} />
+              <SessionPanel attempt={newest} digest={log.data?.digest} />
+              <SpendPanel
+                tokens={detail.data?.task?.tokens}
+                session={log.data?.digest?.session}
+                spendSwitch={state.data?.rules?.subApiSwitch}
+              />
+            </div>
           </div>
 
           {/* ЖДУТ ВАС — выше руля, потому что стоящий вызов срочнее любой поправки. */}
