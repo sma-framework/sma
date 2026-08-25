@@ -25,8 +25,16 @@ import type { EventFrame, StatePayload } from './types'
  * never edits in place, so React sees a new object and re-renders exactly once.
  */
 
-/** A bell that tells us about one task. */
-const TASK_EVENTS = new Set([
+/**
+ * A bell that tells us about one task.
+ *
+ * ЭКСПОРТИРОВАН, ПОТОМУ ЧТО СПРАШИВАЮТ ДВОЕ. Кроме заплатки на общую картину, этот же список
+ * читает карточка открытой задачи: ей надо знать, что колокол — ПРО ЗАДАЧУ, чтобы перечитать
+ * своё состояние. Второй список тех же семи имён однажды разошёлся бы с этим, и разошёлся бы
+ * молча — карточка перестала бы обновляться на одном имени, и это выглядело бы как «иногда не
+ * работает».
+ */
+export const TASK_EVENTS = new Set([
   'task.queued',
   'task.claimed',
   'task.running',

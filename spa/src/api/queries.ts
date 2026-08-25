@@ -44,6 +44,13 @@ export const STATE_KEY = ['state'] as const
 export const HARNESS_KEY = ['harness'] as const
 export const CHAT_KEY = ['chat'] as const
 export const ONBOARDING_KEY = ['onboarding'] as const
+/**
+ * ГОЛОВА СЕМЕЙСТВА ЗАДАЧ — по тому же правилу, что и у фаз: обновление, заказанное на голове,
+ * освежает КАЖДУЮ открытую карточку, и никому не приходится помнить, какие это были карточки.
+ * Именно этого не хватало приёмке: «Одобрить» звало перечитать общую картину и не звало
+ * перечитать саму карточку, на которой человек в этот момент смотрел.
+ */
+export const TASK_KEY = ['task'] as const
 export const taskKey = (id: string) => ['task', id] as const
 export const diffKey = (id: string) => ['diff', id] as const
 
@@ -226,17 +233,27 @@ export function useEnqueue() {
   return useAction<EnqueueInput, Awaited<ReturnType<typeof api.enqueue>>>((input) => api.enqueue(input))
 }
 
-/** Accept finished work. Собственное имя машины не посылается — своя машина = отсутствие ключа. */
+/**
+ * Accept finished work. Собственное имя машины не посылается — своя машина = отсутствие ключа.
+ *
+ * КАРТОЧКА ОСВЕЖАЕТСЯ ВМЕСТЕ С КАРТИНОЙ. Приёмка меняет ровно то, на что человек смотрит в
+ * момент нажатия, а перечитывалась только общая картина: состояние «принято/слито» появлялось
+ * на карточке лишь после обновления страницы руками (живой клик владельца 25.08). Голова
+ * семейства зовётся вторым ключом, а не именем одной задачи, потому что действие знает имя
+ * только в момент вызова, а список ключей у этого помощника один на весь хук.
+ */
 export function useApprove() {
-  return useAction<{ taskId: string; machine?: string }, Awaited<ReturnType<typeof api.approve>>>((input) =>
-    api.approve(input.taskId, { machine: input.machine }),
+  return useAction<{ taskId: string; machine?: string }, Awaited<ReturnType<typeof api.approve>>>(
+    (input) => api.approve(input.taskId, { machine: input.machine }),
+    [TASK_KEY],
   )
 }
 
 /** Send work back with a comment. Собственное имя машины не посылается — своя машина = отсутствие ключа. */
 export function useReturnTask() {
-  return useAction<Parameters<typeof api.returnTask>[0], Awaited<ReturnType<typeof api.returnTask>>>((input) =>
-    api.returnTask(input),
+  return useAction<Parameters<typeof api.returnTask>[0], Awaited<ReturnType<typeof api.returnTask>>>(
+    (input) => api.returnTask(input),
+    [TASK_KEY],
   )
 }
 
