@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { ApiError } from '../../api/client'
+import { LiveTimer } from '../../shell/LiveTimer'
+import type { TimerState } from '../../shell/live-timer'
 import {
   useApprove,
   useAttemptQuery,
@@ -930,6 +932,26 @@ export function Screen() {
   const canApprove = status === 'awaiting_approval'
   const canReturn = status === 'awaiting_approval' || status === 'failed' || status === 'completed'
 
+  /**
+   * ЖИВОЕ ВРЕМЯ ЗАДАЧИ — от разных моментов, потому что это разные вопросы.
+   *
+   * Пока задачу держит работник, считается от НАЧАЛА свежего подхода: «идёт столько-то». Как
+   * только подход кончился и задача встала перед человеком (или не получилась), отсчёт идёт от
+   * его КОНЦА — это и есть момент, с которого она ждёт решения, и растущее число здесь и есть
+   * цена простоя. Считать ожидание от начала работы значило бы приписать к нему саму работу.
+   *
+   * Очередь и закрытая задача не тикают: у первой работа не начиналась, у второй — кончилась.
+   */
+  const timerState: TimerState =
+    status === 'claimed'
+      ? 'running'
+      : status === 'awaiting_approval'
+        ? 'waiting'
+        : status === 'failed'
+          ? 'failed'
+          : 'idle'
+  const timerSince = timerState === 'running' ? newest?.startedAt : (newest?.endedAt ?? newest?.startedAt)
+
   // «Чем доказано» читает ПОСЛЕДНИЙ подход, который хоть что-то оставил: разобранную квитанцию
   // или ссылку-доказательство. Раньше искалась только квитанция, и подход, закрывшийся на
   // перепроверенной ветке, читался как «проверять нечего».
@@ -1014,6 +1036,7 @@ export function Screen() {
           ← Задачи
         </button>
         <span className="flex-1" />
+        <LiveTimer state={timerState} since={timerSince} />
         {problem ? <span className="flex-none text-[11.5px] text-err-tx">{problem}</span> : null}
         {canApprove ? (
           <button

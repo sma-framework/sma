@@ -13,6 +13,7 @@ import type {
 import { DecisionCard, EMPTY_DRAFT } from '../../shell/DecisionCard'
 import type { DecisionDraft } from '../../shell/DecisionCard'
 import { EntitySummary } from '../../shell/EntitySummary'
+import { LiveTimer } from '../../shell/LiveTimer'
 import { currentStage, phaseStats } from '../../shell/stats'
 import { ArtifactViewer } from './ArtifactViewer'
 import { PhaseFolderView } from './PhaseFolder'
@@ -583,6 +584,13 @@ export function PhaseCardView({
             </span>
           ))}
         </nav>
+        {/* Живое время фазы — от первого взятия её задачи в работу. Закрытая фаза не тикает:
+            растущее число на закрытой работе утверждает, что она всё ещё идёт. Открытые вопросы
+            владельцу — это ожидание ЧЕЛОВЕКА, и чип говорит об этом цветом. */}
+        <LiveTimer
+          state={closed ? 'idle' : counts.open > 0 ? 'waiting' : 'running'}
+          since={phase?.work?.startedAt ?? null}
+        />
         <span
           className={`flex-none rounded-[8px] px-2.5 py-1 text-[11.5px] font-semibold ${
             closed ? 'bg-ok-s text-ok-tx' : counts.open > 0 ? 'bg-warn-s text-warn-tx' : 'bg-blue-s text-blue-d'
