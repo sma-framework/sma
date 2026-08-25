@@ -129,6 +129,16 @@ export const RECEIPTS_ENFORCED_FROM = '9.2'
 // be argued with. Compared as a plain ISO day string, never parsed into a date.
 export const PREDICTIONS_SCORED_FROM = '2026-08-20'
 
+// A prediction whose check_command invokes a SELFTEST measures the instrument's
+// own self-check, and a self-check passes by construction — every such entry is
+// a guaranteed hit, so the form inflates the hit rate without promising anything
+// about the WORK. The owner ruled the form out. History is not rewritten: an
+// entry in a plan closed before this day is MARKED (warn) and stays visible —
+// pre-registered blocks are immutable, and quietly sweeping the legacy up would
+// teach that gates can be argued with. From this day on the form is a critical
+// finding. Compared as a plain ISO day string, never parsed into a date.
+export const PREDICTIONS_MEASURE_WORK_FROM = '2026-08-25'
+
 // ── the git airbag gate ────────────────────────────────────────────────────
 // Recovery points are pinned under one hierarchical ref namespace so a single
 // `for-each-ref` enumerates snapshot GROUPS by the <id> segment. These live only

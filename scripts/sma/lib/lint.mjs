@@ -108,6 +108,7 @@ import {
   BUDGET_WARN_FRACTION,
   RECEIPTS_ENFORCED_FROM,
   PREDICTIONS_SCORED_FROM,
+  PREDICTIONS_MEASURE_WORK_FROM,
   MEMORY_PIPELINE_REQUIRED_FROM,
 } from './constants.mjs'
 
@@ -1190,6 +1191,65 @@ const PRED_NOMETRIC = {
         if (v.missing.length) parts.push(`missing ${v.missing.join(', ')}`)
         if (v.errors.length) parts.push(v.errors.join('; '))
         out.push(finding('PRED-NOMETRIC', 'critical', basename(plan.path), `prediction "${entry.id ?? '<no id>'}" in ${basename(plan.path)}: ${parts.join('; ')} — a prediction without a machine-checkable metric/check_command/comparator/threshold cannot be scored (HARKing guard)`))
+      }
+    }
+    return out
+  },
+}
+
+// ── PRED-SELFTEST — a prediction measures the WORK, never its own self-check ──
+
+/** The one shape the rule prosecutes: a check_command that INVOKES a selftest
+ * flag. A command that merely mentions the word (a grep over sources, say) is
+ * left alone — the accusation is about what the command RUNS. */
+const SELFTEST_INVOCATION_RE = /--selftest[\w-]*/i
+
+const PRED_SELFTEST = {
+  id: 'PRED-SELFTEST',
+  title: 'A prediction measures the work, never the instrument’s own self-check',
+  tier: 'critical',
+  run(ctx) {
+    // A self-check passes by construction, so an entry scored by one is a
+    // guaranteed hit: it measures the INSTRUMENT and inflates the hit rate while
+    // promising nothing about the work. Measured on the live corpus before the
+    // rule existed: every such entry that ever got a verdict was a hit, all of
+    // them. The owner ruled the form out; history stays visible instead of
+    // rewritten — a plan closed before the boundary day is MARKED (warn), and
+    // everything open or closed after it is debt (critical).
+    const out = []
+    const plans = (ctx.plans ?? []).filter((p) => extractPredictionsBlock(p.text) !== '')
+    if (!plans.length) return out
+
+    const dates = summaryCloseDates(ctx)
+    const summaryByName = new Map()
+    for (const s of ctx.summaries ?? []) summaryByName.set(basename(s.path), s)
+
+    for (const plan of plans) {
+      const { predictions } = parsePredictions(plan.path, { readFn: () => plan.text })
+      const flagged = predictions.filter((e) => SELFTEST_INVOCATION_RE.test(String(e.check_command ?? '')))
+      if (!flagged.length) continue
+
+      // Which side of the boundary this plan closed on. An OPEN plan is current
+      // work by definition; a closed one softens to a mark only when git can
+      // date its summary before the boundary — a gap in evidence softens too,
+      // because an accusation must not stand on the rule’s own blindness.
+      const summary = summaryByName.get(basename(plan.path).replace(/-PLAN\.md$/i, '-SUMMARY.md'))
+      let legacy = false
+      if (summary) {
+        const closedOn = dates ? dates.dates.get(dates.prefix + toPosixPath(relative(ctx.plansDir, summary.path))) : undefined
+        legacy = closedOn === undefined || closedOn < PREDICTIONS_MEASURE_WORK_FROM
+      }
+      for (const entry of flagged) {
+        const cmd = String(entry.check_command ?? '')
+        const shown = cmd.length > 80 ? `${cmd.slice(0, 80)}…` : cmd
+        out.push(
+          finding(
+            'PRED-SELFTEST',
+            legacy ? 'warn' : 'critical',
+            basename(plan.path),
+            `prediction "${entry.id ?? '<no id>'}" in ${basename(plan.path)}: check_command invokes a selftest («${shown}») — a self-check passes by construction, so the entry measures the instrument instead of the work and inflates the hit rate; predict the WORK${legacy ? ` (closed before ${PREDICTIONS_MEASURE_WORK_FROM}: marked, pre-registered history is immutable)` : ''}`,
+          ),
+        )
       }
     }
     return out
@@ -2761,6 +2821,7 @@ export const LINT_CHECKS = [
   MEM_INDEXSIZE,
   STATE_SIZE,
   PRED_NOMETRIC,
+  PRED_SELFTEST,
   PRED_POSTEDIT,
   PRED_SKEPTIC,
   PRED_DUPDOD,

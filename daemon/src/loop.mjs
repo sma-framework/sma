@@ -255,8 +255,32 @@ function resolveIo(fsImpl) {
  * gate that then finds no directory answers ALLOW, which is the same posture it takes in
  * somebody else's session.
  */
+/**
+ * taskTreeDir(deps, config, task) → the project tree THIS task's work happens in.
+ *
+ * THE TASK'S OWN STAMP WINS. A task is stamped with its project at the one moment it is
+ * known — the enqueue door. The screen's selector is a live thing: between enqueue and
+ * claim a person can switch projects, and every expression that read the screen at claim
+ * time carried the attempt into whichever tree happened to be shown. Measured on a live
+ * task: stamped for the workshop beside this repo, provisioned from this repo — the
+ * worker proved the cut with git rev-parse and returned with a question instead of work.
+ * A task with no stamp follows the screen exactly as before; a stamp naming no known
+ * project falls back the same way and SAYS SO in the log rather than running somewhere
+ * silently.
+ */
+function taskTreeDir(deps, config, task) {
+  const fallback = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  const id = task && typeof task.project === 'string' ? task.project.trim() : ''
+  if (!id) return fallback
+  const list = Array.isArray(config && config.projects) ? config.projects : []
+  const hit = list.find((p) => p && p.id === id && typeof p.path === 'string' && p.path.trim() !== '')
+  if (hit) return hit.path
+  writeLog(deps, { type: 'task.project_unresolved', taskId: task && task.id, project: id })
+  return fallback
+}
+
 function gateSpawnOptions(deps, config, task) {
-  const projectDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  const projectDir = taskTreeDir(deps, config, task)
   const runsDir = runsDirOf(projectDir)
   const runDir = attemptRunDir({ runsDir, attemptId: attemptIdFor(task.id, task.attempt) })
   const redirectsFile = redirectFileOf({ dataDir: deps.dataDir || config.dataDir, taskId: task.id })
@@ -341,7 +365,7 @@ function continuationSpawnOptions(deps, config, task, wake) {
   if (!wake || wake.wakeKind !== 'return') return {}
   const prior = Number(task && task.attempt) - 1
   if (!Number.isFinite(prior) || prior < 1) return {}
-  const projectDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  const projectDir = taskTreeDir(deps, config, task)
   const dir = attemptRunDir({ runsDir: runsDirOf(projectDir), attemptId: attemptIdFor(task.id, prior) })
   const handover = readContinuation({ dir, fsImpl: deps.fsImpl })
   if (!handover) return {}
@@ -1967,7 +1991,7 @@ function writeAttemptRunDir(deps, task, {
   const config = deps.config || {}
   // THE SAME TREE THE COPY WAS CUT FROM — one source for both, so a run directory can never
   // end up beside a project the attempt never touched.
-  const projectDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  const projectDir = taskTreeDir(deps, config, task)
   const runsDir = runsDirOf(projectDir)
   if (!runsDir) return null
   const io = resolveIo(deps.fsImpl)
@@ -3347,7 +3371,7 @@ export async function tick(deps = {}) {
       // machine answer, in the connected project's tree — see askAlreadyBuilt for why each of
       // those four words is load-bearing. Work carrying no phase never reaches the verb, and
       // the log says so.
-      const doorDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+      const doorDir = taskTreeDir(deps, config, task)
       const alreadyBuilt = isDocument ? false : await askAlreadyBuilt(deps, verbRunner, task, doorDir)
       if (alreadyBuilt) {
         // The receipt this completion stands on. Its shape is CONSTANT — the verb reports no
@@ -3393,13 +3417,13 @@ export async function tick(deps = {}) {
       // document one merge away from the person who asked for it. The isolation a worktree
       // buys is worth its price for parallel code and is a pure cost for a document.
       let branch = null
-      // A DOCUMENTARY stage stands in the project the window is showing, not in the tree this
-      // daemon serves. The two are the same directory on a single-project install and are NOT
-      // the same when the product is served from beside the workshop the phases live in — and
-      // then a card reading one root while the stage writes into the other shows work as never
-      // started while it is being completed. The front's phaseCycleDir is the same expression,
-      // supplied by the same composition root, so the pair cannot drift.
-      let workDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+      // A DOCUMENTARY stage stands in the project THE TASK IS STAMPED WITH (the window's
+      // selection only when the stamp is absent), not in the tree this daemon serves. The two
+      // are the same directory on a single-project install and are NOT the same when the
+      // product is served from beside the workshop the phases live in — and then a card
+      // reading one root while the stage writes into the other shows work as never started
+      // while it is being completed.
+      let workDir = taskTreeDir(deps, config, task)
       /** The commit the worktree was cut from — the point any of this can be undone to. */
       let worktreeBase = null
       /**
@@ -3415,17 +3439,18 @@ export async function tick(deps = {}) {
         // that is a JSON object, finds nothing at all. Asked properly, the verb answers
         // {ok, path, branch, reused}: `path` is the directory it actually made, and it is not
         // the directory this code used to guess.
-        // WHICH REPOSITORY DOES THE WORK HAPPEN IN? The one the SCREEN says is connected —
-        // not the directory the daemon happened to be launched from. `config.repoDir` is
-        // literally the launch cwd, so provisioning against it meant every task ran in that
-        // one tree no matter which project the founder had selected: on 12.08.2026 tasks
-        // aimed at the product were carried out in the sibling workspace, where the product's
-        // files do not exist and the exit gate is red for unrelated historical reasons. The
-        // worker found nothing to do and the gate failed it — twice, on two different tasks,
-        // for a reason no screen could show. Falls back to the launch dir only when no
-        // project is connected at all. The already-built door above resolved this very
-        // directory to put its question in; reusing the value rather than re-deriving it is
-        // what keeps the pair from ever drifting apart.
+        // WHICH REPOSITORY DOES THE WORK HAPPEN IN? The one the TASK'S OWN STAMP names —
+        // taskTreeDir, with the screen's selection only for an unstamped task, and the
+        // launch cwd only when no project is connected at all. Both older readings cost a
+        // day each: `config.repoDir` is literally the launch cwd, so provisioning against
+        // it meant every task ran in one tree no matter what the founder selected
+        // (12.08.2026 — two tasks died in a sibling workspace where the product's files do
+        // not exist); reading the SCREEN at claim time meant a project switch between
+        // enqueue and claim carried the attempt into whichever tree happened to be shown
+        // (25.08.2026 — a stamped task provisioned from the wrong repo, proved by the
+        // worker itself with git rev-parse). The already-built door above resolved this
+        // very directory to put its question in; reusing the value rather than re-deriving
+        // it is what keeps the pair from ever drifting apart.
         const provisionDir = doorDir
         // HOW LONG THE COPY TOOK TO PREPARE, measured HERE rather than read off the answer:
         // the verb reports its own inside time, and what a person asks about is the wait the
@@ -3871,7 +3896,7 @@ export async function tick(deps = {}) {
       writeMemoryLayer(deps, task, {
         memory: memoryOf(),
         sma: collectSmaTrace({
-          projectDir: (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir,
+          projectDir: taskTreeDir(deps, config, task),
           sessionId: sessionOf(),
           fsImpl: deps.fsImpl,
         }),
@@ -3898,7 +3923,7 @@ export async function tick(deps = {}) {
         runInit: runInitOf(),
         memory: memoryOf(),
         sma: collectSmaTrace({
-          projectDir: (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir,
+          projectDir: taskTreeDir(deps, config, task),
           sessionId: sessionOf(),
           fsImpl: deps.fsImpl,
         }),
@@ -4260,13 +4285,13 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // died `runtime_offline` on a missing directory, and the suite could not see it because its
   // fake spawn ignores cwd.
   //
-  // WHICH REPOSITORY THE DRAFT IS CUT IN — the one the SCREEN says is connected, not the
-  // directory this daemon was launched from. The code path already asks the seam this way and
-  // the forge lane was left reading the launch cwd, so a draft ordered for the connected
-  // project was forged in whatever tree the daemon happened to start in. Falls back to the
-  // launch dir only when no project is connected at all.
+  // WHICH REPOSITORY THE DRAFT IS CUT IN — the one the TASK'S OWN STAMP names (taskTreeDir;
+  // the screen's selection for an unstamped task, the launch dir only when no project is
+  // connected at all). The code path already asks the seam this way and the forge lane was
+  // once left reading the launch cwd, so a draft ordered for the connected project was
+  // forged in whatever tree the daemon happened to start in.
   const branch = `wt/${task.id}`
-  const provisionDir = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
+  const provisionDir = taskTreeDir(deps, config, task)
   // The wait actually paid for the copy — measured around the call, not read off the answer,
   // for the same reason the code path measures it: the verb only knows its own inside time,
   // and an install whose CLI is older answers with no number at all.
@@ -4448,7 +4473,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   writeMemoryLayer(deps, task, {
     memory: memoryOf(),
     sma: collectSmaTrace({
-      projectDir: (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir,
+      projectDir: taskTreeDir(deps, config, task),
       sessionId: sessionOf(),
       fsImpl: deps.fsImpl,
     }),
@@ -4472,7 +4497,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     runInit: runInitOf(),
     memory: memoryOf(),
     sma: collectSmaTrace({
-      projectDir: (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir,
+      projectDir: taskTreeDir(deps, config, task),
       sessionId: sessionOf(),
       fsImpl: deps.fsImpl,
     }),

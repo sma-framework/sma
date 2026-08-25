@@ -4862,6 +4862,9 @@ function spawnCountFromSettings(settingsPath) {
  */
 async function cmdPreBench({ flags }) {
   const pre = await import('./lib/pre.mjs')
+  // The ONE budget number — bench.mjs owns it; a literal here would be a second
+  // place for the same figure, and the third place of a number is where it rots.
+  const { HOOK_BUDGET_MS } = await import('./lib/bench.mjs')
   const fixtures = loadPreFixtures()
 
   // ── --metric spawn-count ──────────────────────────────────────────────────
@@ -5012,8 +5015,8 @@ async function cmdPreBench({ flags }) {
         streams,
         sumP95Ms,
         sumP95Bytes,
-        threshold: 300,
-        pass: sumP95Ms <= 300,
+        threshold: HOOK_BUDGET_MS,
+        pass: sumP95Ms <= HOOK_BUDGET_MS,
       })
       return 0
     }
@@ -5031,7 +5034,7 @@ async function cmdPreBench({ flags }) {
       )
     }
     process.stdout.write(
-      `  сумма p95 по потокам: ${sumP95Ms} ms · ${sumP95Bytes} bytes · SLO p95 <= 300 ms → ${sumP95Ms <= 300 ? 'PASS' : 'FAIL'}\n`,
+      `  сумма p95 по потокам: ${sumP95Ms} ms · ${sumP95Bytes} bytes · SLO p95 <= ${HOOK_BUDGET_MS} ms → ${sumP95Ms <= HOOK_BUDGET_MS ? 'PASS' : 'FAIL'}\n`,
     )
     // the bare numeric LAST line — what the V2 scorer parses.
     process.stdout.write(`${sumP95Ms}\n`)
@@ -5084,12 +5087,12 @@ async function cmdPreBench({ flags }) {
   const p99 = Math.round(pre.computePercentile(durations, 99))
   const max = Math.round(durations.reduce((a, b) => Math.max(a, b), 0))
   if (wantsJson(flags)) {
-    printJson({ metric: 'pre_p95_ms', n: durations.length, p50, p95, p99, max, threshold: 300, pass: p95 <= 300 })
+    printJson({ metric: 'pre_p95_ms', n: durations.length, p50, p95, p99, max, threshold: HOOK_BUDGET_MS, pass: p95 <= HOOK_BUDGET_MS })
     return 0
   }
   process.stdout.write(
     `SMA pre-bench — FULL child-spawn wall-clock (node boot included), n=${durations.length}\n` +
-      `  p50 ${p50} ms · p95 ${p95} ms · p99 ${p99} ms · max ${max} ms · SLO p95 <= 300 ms\n`,
+      `  p50 ${p50} ms · p95 ${p95} ms · p99 ${p99} ms · max ${max} ms · SLO p95 <= ${HOOK_BUDGET_MS} ms\n`,
   )
   // the bare numeric LAST line — what the V2 scorer parses.
   process.stdout.write(`${p95}\n`)

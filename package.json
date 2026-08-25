@@ -53,7 +53,7 @@
     "test": "vitest run && node scripts/sma/lib/badge.mjs --check && node tools/verify-rebrand.mjs",
     "badge": "vitest run --reporter=json --outputFile=.vitest-report.json && node scripts/sma/lib/badge.mjs --from-vitest .vitest-report.json",
     "build:spa": "npm --prefix spa run build",
-    "prepublishOnly": "npm run build:spa && node scripts/sma/lib/package-check.mjs --strict && node tools/verify-rebrand.mjs",
+    "prepublishOnly": "npm run build:spa && node scripts/sma/lib/package-check.mjs --strict && node tools/verify-rebrand.mjs && node scripts/sma/lib/release-lint.mjs",
     "sma": "node scripts/sma/cli.mjs"
   },
   "devDependencies": {

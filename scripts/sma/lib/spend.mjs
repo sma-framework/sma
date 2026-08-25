@@ -19,7 +19,7 @@
  * (same size+mtime) is not re-read; an appended file is parsed ONLY from its cached
  * byte offset; a SHRUNK or replaced file invalidates its entry and reparses from
  * zero (fail-open — never wrong-by-cache). This is what keeps a warm spend-check
- * inside `sma pre`'s 300 ms SLO.
+ * inside `sma pre`'s p95 SLO (HOOK_BUDGET_MS in bench.mjs).
  *
  * ═══════════════════════════ THE WINDOW BUDGET ════════════════════════════════
  *
@@ -516,7 +516,7 @@ export function checkSpend(ctx = {}, opts = {}) {
 /**
  * benchCheckP95(opts) -> number. Warm the incremental cache once, then run checkSpend
  * 20x over the warm book and return the p95 wall-clock ms. This is the SLO
- * instrument (a warm spend-check must ride inside sma pre's 300 ms SLO). Deterministic
+ * instrument (a warm spend-check must ride inside sma pre's p95 SLO). Deterministic
  * inputs; the number is the last stdout line of `spend --stat bench-check-p95-ms`.
  * @param {{spendDir?:string, repoRoot?:string, env?:object}} [opts]
  * @returns {Promise<number>}

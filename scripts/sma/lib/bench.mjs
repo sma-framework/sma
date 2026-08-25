@@ -712,8 +712,11 @@ import { atomicWriteJson, atomicWriteRaw } from './fs-atomics.mjs'
 export const PRE_TOOL_HOOKS = ['collision-check', 'reflex-check', 'gates-check']
 export const POST_TOOL_HOOKS = ['stall-check']
 
-/** SLO budget: a hook whose p95 exceeds this HURTS. */
-export const HOOK_BUDGET_MS = 300
+/** SLO budget: a hook whose p95 exceeds this HURTS. Raised from 300 by the owner's
+ * call when the airbag learned to FINISH its snapshot over untracked directories:
+ * the honest price of a completed recovery point measured above the old budget, and
+ * half a second before a dangerous command buys a pinned point to undo to. */
+export const HOOK_BUDGET_MS = 500
 
 /** A stdout that looks like an advisory WARN on the neutral fixture = a hurt. */
 function looksLikeWarn(stdout) {

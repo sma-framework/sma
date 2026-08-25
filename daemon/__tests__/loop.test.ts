@@ -4703,6 +4703,60 @@ describe('личный слой и наши серверы доезжают до
     expect(run.envNames).toContain('SMA_REDIRECTS_FILE')
   })
 
+  it('провод: задача со штампом проекта отрезается от дерева ШТАМПА, а не от проекта на экране', async () => {
+    // Штамп кладётся дверью постановки в единственный момент, когда проект известен;
+    // экранный селектор — живой, между постановкой и взятием человек переключает проекты.
+    // До починки провижен читал ЭКРАН в момент взятия, и задача мастерской бежала в дереве
+    // продукта — доказано живой задачей: работник сам установил git rev-parse'ом, что его
+    // копия отрезана не от того репозитория, и вернулся с вопросом вместо работы.
+    const sourceDir = founderHome()
+    const accountDir = mkDir('sma-account-')
+    const screenDir = mkDir('sma-screen-')
+    const stampedDir = mkDir('sma-stamped-')
+    const ledgerDir = mkDir('sma-ledger-')
+    const seen: Array<{ env: Record<string, string> }> = []
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue({ ...backlogTask(), project: 'stamped' })
+    const config = {
+      workers: [worker(accountDir)],
+      repoDir: screenDir,
+      pipeline: { enabled: true },
+      projects: [{ id: 'stamped', path: stampedDir }],
+    }
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      config,
+      spawnWorker: (spec: any) => {
+        seen.push({ env: { ...(spec.env || {}) } })
+        spec.onLine?.(JSON.stringify(FOREIGN_INIT_FRAME))
+        spec.onLine?.('APPROACH_NOTE: прямой путь')
+        spec.onLine?.('LESSON_NONE: тестовый работник')
+        spec.onExit?.({ code: 0, signal: null })
+        return { pid: 1, kill: () => {} }
+      },
+      responses: codeResponses(),
+      deps: {
+        ledger: ledgerSeam(ledgerDir),
+        projectDir: () => screenDir, // экран в момент взятия показывает ДРУГОЙ проект
+        buildArgs: createBuildArgs({ config, env: { SMA_MAX_2_TOKEN: 'oauth-value' }, fsImpl: { readFileSync } }),
+        mirrorPersonalLayer: (opts: any) => mirrorPersonalLayer({ ...opts, sourceDir }),
+      },
+    })
+
+    await tick(deps)
+
+    // (1) каталог попытки ВРУЧЁН процессу в дереве штампа — не «вычислен», а доехал.
+    expect(seen).toHaveLength(1)
+    const expectedRunDir = attemptRunDir({ runsDir: runsDirOf(stampedDir), attemptId: 'BL-1_1' })
+    expect(seen[0].env.SMA_RUN_DIR).toBe(expectedRunDir)
+    // (2) запись попытки лежит там же.
+    expect(existsSync(join(expectedRunDir!, 'run.json'))).toBe(true)
+    // (3) в дереве экрана попытка каталога НЕ оставила — работа не бежала в чужом дереве.
+    expect(existsSync(join(screenDir, '.sma', 'runs', 'BL-1_1'))).toBe(false)
+  })
+
   /**
    * ПРОВОД ПРАВА СПРОСИТЬ — ДО РТА РАБОТНИКА, А НЕ ДО СБОРЩИКА.
    *

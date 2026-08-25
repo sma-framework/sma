@@ -60,7 +60,7 @@ const PERF_KEEP_LINES = 500
 
 // ── the maturation-ladder OVERLAY ──────────────────────────────────────────
 // A bounded, fail-open read of the TRACKED sma-ladder.json (repo root) — ONE
-// readJsonSafe per tool call, memoized on ctx, inside the hook p95 <= 300 ms
+// readJsonSafe per tool call, memoized on ctx, inside the hook p95 SLO (HOOK_BUDGET_MS)
 // envelope. The overlay resolves each reflex/gate to its effective tier so a
 // note/retired rule journals silently (quieter output, behavior still observable)
 // and a soft-deny gate arms via checkEvent's INJECTABLE env (gates.mjs untouched).

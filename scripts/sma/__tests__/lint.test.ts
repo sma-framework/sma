@@ -1759,6 +1759,81 @@ describe('lint cost + progress + budget', () => {
   })
 })
 
+// ── PRED-SELFTEST: a prediction measures the work, not its own self-check ────
+// A self-check passes by construction, so a prediction scored by one is a
+// guaranteed hit — the form inflates the hit rate. The owner ruled it out;
+// history is marked, never rewritten.
+
+const SELFTEST_ENTRY =
+  '  - id: P1\n' +
+  '    claim: "the filter guards"\n' +
+  '    metric: exit_code\n' +
+  '    check_command: "node scripts/sma/cli.mjs batch --selftest-riskfilter"\n' +
+  '    comparator: "=="\n' +
+  '    threshold: 1\n' +
+  '    horizon: "plan close"\n' +
+  '    domain: tech.memory\n'
+
+describe('PRED-SELFTEST — самопроверка не предсказание', () => {
+  it('Test 1: ОТКРЫТЫЙ план с иглой --selftest в check_command → CRITICAL', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-selftest-1-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'beta-01-PLAN.md'), planWithPredictions(SELFTEST_ENTRY))
+      gitCommit(tmp, 'an open plan predicting its own self-check')
+      const f = findingsOf(runPredLint(tmp, { execGit }), 'PRED-SELFTEST')
+      expect(f).toHaveLength(1)
+      expect(f[0].tier).toBe('critical')
+      expect(f[0].message).toContain('selftest')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 2: план ЗАКРЫТ ДО рубежа → WARN — история помечена, не переписана', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-selftest-2-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'beta-01-PLAN.md'), planWithPredictions(SELFTEST_ENTRY))
+      writeFileSync(join(tmp, 'beta-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommitAt(tmp, 'closed before the boundary', '2026-08-21T10:00:00')
+      const f = findingsOf(runPredLint(tmp, { execGit }), 'PRED-SELFTEST')
+      expect(f).toHaveLength(1)
+      expect(f[0].tier).toBe('warn')
+      expect(f[0].message).toContain('marked')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 3: план закрыт ПОСЛЕ рубежа → CRITICAL — новая работа так не пишется', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-selftest-3-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'beta-01-PLAN.md'), planWithPredictions(SELFTEST_ENTRY))
+      writeFileSync(join(tmp, 'beta-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommitAt(tmp, 'closed after the boundary', '2026-08-26T10:00:00')
+      const f = findingsOf(runPredLint(tmp, { execGit }), 'PRED-SELFTEST')
+      expect(f).toHaveLength(1)
+      expect(f[0].tier).toBe('critical')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 4: обычное предсказание о работе findings не даёт', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-selftest-4-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'beta-01-PLAN.md'), planWithPredictions(GOOD_ENTRY))
+      gitCommit(tmp, 'a plan predicting the work itself')
+      expect(findingsOf(runPredLint(tmp, { execGit }), 'PRED-SELFTEST')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+})
+
 // ── PRED-UNSCORED: a closed plan owes a verdict ──────────────────────────────
 // The gate stands on the STATE of the tree, not on an agent discipline: it goes
 // red for a plan that was closed with a summary while a prediction of its own —
