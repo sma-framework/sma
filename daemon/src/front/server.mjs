@@ -92,7 +92,14 @@ import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS, attemptIdFor } from './journal.mjs'
-import { runsDirOf, attemptRunDir, readContinuation, readTaskContext } from '../queue/run-dir.mjs'
+import {
+  runsDirOf,
+  attemptRunDir,
+  readContinuation,
+  readTaskContext,
+  readRunTokens,
+  sumRunTokens,
+} from '../queue/run-dir.mjs'
 import { approvalWall, defaultEnvelope } from '../queue/capability-envelope.mjs'
 import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
@@ -843,11 +850,32 @@ async function handleTask({ res, params, config, deps }) {
     return readTaskContext({ dir, fsImpl: deps.fsImpl })
   }
 
+  /**
+   * ЧЕМ ЭТА ПОПЫТКА ОБОШЛАСЬ — четыре числа поставщика из её собственной квитанции.
+   *
+   * ЧИТАЕТСЯ ТЕМ ЖЕ КОДОМ, КАКИМ ПИШЕТСЯ, и по тому же выражению пути, что конспект и снимок
+   * выше: числа лежат в `receipt.json` каталога прогона, и второе написание их имён здесь
+   * молча отдавало бы нули на квитанции, которая всё сказала.
+   *
+   * `null` — «попытка об этом молчит»: финального кадра не было, попытка старше этого поля,
+   * каталог подмели. Нули означали бы «поставщик сказал ноль», а это другое предложение.
+   */
+  const tokensOf = (attempt) => {
+    const n = Number.isFinite(Number(attempt)) ? Number(attempt) : null
+    if (n === null || n < 1) return null
+    const dir = attemptRunDir({
+      runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+      attemptId: attemptIdFor(id, n),
+    })
+    return readRunTokens({ dir, fsImpl: deps.fsImpl })
+  }
+
   const attempts = rawAttempts.map((a) => {
     // Спрошено ОДИН раз на попытку и названо здесь, а не внутри тела: тело ниже — перечисление
     // явных выборов, и чтение диска посреди него читалось бы как ещё одно поле.
     const handover = handoverOf(a.attempt)
     const snapshot = snapshotOf(a.attempt)
+    const tokens = tokensOf(a.attempt)
     return {
     attempt: a.attempt ?? null,
     workerId: a.workerId ?? null,
@@ -924,6 +952,15 @@ async function handleTask({ res, params, config, deps }) {
     // научилась нести вердикт, обязаны молчать, а не показывать пустую пятёрку.
     runDir: a.runDir ?? null,
     parity: a.parity ?? null,
+    // ═══ ЧЕГО ЭТА ПОПЫТКА СТОИЛА ════════════════════════════════════════════════
+    //
+    // Четыре числа поставщика — вход, выход, чтение кэша и запись в кэш — как их записала
+    // квитанция этой попытки. Их считал и клал на диск тик; ни одна дверь их до сих пор не
+    // отдавала, а расход, который виден только тому, кто откроет файл, человек не видит.
+    //
+    // `null` — «эта попытка об этом молчит», и это НЕ ошибка: попытки, сделанные до того, как
+    // квитанция научилась нести числа, обязаны молчать, а не показывать выдуманные нули.
+    tokens,
     // ═══ ЧТО ЭТА ПОПЫТКА ИЗМЕНИЛА — И ЧТО ПОСЛЕ НЕЁ ИСЧЕЗЛО ══════════════════════
     //
     // Список берётся не из наблюдения за инструментами, а из ответа git на диапазон
@@ -1055,6 +1092,9 @@ async function handleTask({ res, params, config, deps }) {
       // опущены, по той же причине, что и шесть полей выше.
       runDir: null,
       parity: null,
+      // Четыре числа поставщика приезжают в квитанцию, когда попытка ЗАКАНЧИВАЕТСЯ: у идущей
+      // финального кадра ещё не было, и назвать её расход можно было бы только выдумав его.
+      tokens: null,
       // Список изменённого спрашивается у git, когда попытка ЗАКАНЧИВАЕТСЯ, — у идущей его
       // ещё нет, и противоречия у неё быть не может: терминальный исход только один и он
       // ещё не наступил. Названы нулями, а не опущены, по той же причине, что и поля выше.
@@ -1124,6 +1164,23 @@ async function handleTask({ res, params, config, deps }) {
       // the prompt builder does, so the person and the worker read the same sentences.
       description: row.description ?? null,
       acceptance: row.acceptance ?? null, // the DoR contract, «обещано»
+      // ═══ ВО ЧТО ОБОШЛАСЬ ЭТА ЗАДАЧА ЦЕЛИКОМ ══════════════════════════════════
+      //
+      // Сумма четырёх чисел по ВСЕМ её попыткам — потому что цену человек платит за задачу, а
+      // не за подход: работа, доведённая с третьего раза, стоила трёх. Складывается по тем же
+      // каталогам прогона, из которых каждая попытка выше берёт свои числа, так что строка
+      // «итого» и строки подходов не могут разойтись — они читают одни файлы.
+      //
+      // ПОПЫТКА, ЧЬЯ КВИТАНЦИЯ МОЛЧИТ, ДАЁТ НОЛЬ И НЕ РОНЯЕТ СУММУ: остальные подходы от этого
+      // не перестают быть измеренными. А `null` здесь — «мерить негде»: каталога прогонов нет
+      // вовсе (проект не подключён, задача чужой машины), и это честное отсутствие, не ноль.
+      tokens: sumRunTokens({
+        runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+        attemptIds: rawAttempts
+          .map((a) => (Number.isFinite(Number(a.attempt)) ? attemptIdFor(id, Number(a.attempt)) : null))
+          .filter(Boolean),
+        fsImpl: deps.fsImpl,
+      }),
       // ═══ ЧЕМ ОТМЕНЯЕТСЯ ПРИНЯТАЯ РАБОТА ══════════════════════════════════════
       //
       // Приёмка сливает ветку работника в основную и кладёт квитанцию слияния в колонку
@@ -3288,7 +3345,7 @@ const SEARCH_Q_CAP = 256
  * cannot tell an attempt that never existed from one that has been silent, and inventing the
  * difference would make the answer an existence oracle over the queue.
  */
-function handleAttempt({ res, params, query, deps }) {
+function handleAttempt({ res, params, query, config, deps }) {
   const ledger = deps.ledger
   if (!ledger || typeof ledger.readAttemptLog !== 'function') return send501(res)
   const attemptId = String((params && params.id) || '')
@@ -3353,6 +3410,17 @@ function handleAttempt({ res, params, query, deps }) {
     // on a transcript whose beginning did not fit. Bounded where it is built; passed on here
     // as the data it is, like every other thing on this payload.
     digest: (log && log.digest) || null,
+    // ЧЕГО СТОИЛА ИМЕННО ЭТА ПОПЫТКА — четыре числа поставщика из её квитанции, прочитанные
+    // ТЕМ ЖЕ кодом и по тому же выражению пути, каким их читает карточка задачи. Экран лога
+    // показывает попытку в подробностях, и расход — такая же её подробность, как инструменты
+    // и роли рядом; без него человек читает, ЧТО было сделано, и не видит, во что это встало.
+    //
+    // `null` — «попытка об этом молчит» (кадра не было, каталог подмели, попытка старше поля);
+    // выдуманные нули на этом месте назвали бы бесплатной работу, которую никто не измерял.
+    tokens: readRunTokens({
+      dir: attemptRunDir({ runsDir: runsDirOf(phaseCycleDir(deps) ?? (config || {}).repoDir), attemptId }),
+      fsImpl: deps.fsImpl,
+    }),
   })
 }
 
@@ -3544,9 +3612,25 @@ async function handlePhaseCard({ res, params, deps }) {
     // one rule for «which directory is phase N». A queue that cannot be read costs the card its
     // task ids and nothing else — the questions still render and the answers still record.
     parkedRows: await parkedRowsOf(deps),
+    // ЧЬЯ РАБОТА ЭТА ФАЗА — все строки очереди, из которых карточка сложит её расход. Читаются
+    // здесь по той же причине, что и припаркованные: очередь есть у двери, а не у проекции.
+    // Очередь, которая не читается, стоит карточке суммы и ничего больше.
+    taskRows: await allRowsOf(deps),
   })
   if (!card) return send404(res)
   return sendJson(res, 200, card)
+}
+
+/** Every row the queue holds, or an empty list when it cannot say. */
+async function allRowsOf(deps) {
+  const adapter = deps.adapter
+  if (!adapter || typeof adapter.list !== 'function') return []
+  try {
+    const rows = await adapter.list({})
+    return Array.isArray(rows) ? rows : []
+  } catch {
+    return []
+  }
 }
 
 /** Every row that has stopped to ask, or an empty list when the queue cannot say. */
@@ -4430,7 +4514,11 @@ async function handleBatchCreate({ req, res, config, deps }) {
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   // ONE identifier, not two: the request's own id IS the batch id, so nothing anywhere has to
   // hold a pair that could disagree. Each item's id reads back to the batch it belongs to.
-  const batchId = `B-${clock()}`
+  // МОМЕНТ СПРОШЕН ОДИН РАЗ и назван: из него минтуется идентификатор сборки, и он же едет на
+  // строку запроса как момент просьбы. Два вызова часов дали бы имя и отметку, расходящиеся на
+  // миллисекунду, — то есть две правды о том, когда человек нажал.
+  const requestedAt = clock()
+  const batchId = `B-${requestedAt}`
   const tasks = lines.map((line, i) => {
     const row = BACKLOG_WIRE_ID_RE.test(line) ? backlogRows.find((r) => r && r.id === line) : null
     // A referenced line rides identifier-first, the way the promote door already writes it, so a
@@ -4453,7 +4541,11 @@ async function handleBatchCreate({ req, res, config, deps }) {
     title,
     lane,
     batchId,
-    data: { batch: BATCH_PARENT },
+    // КОГДА ВЛАДЕЛЕЦ ЭТО ПОПРОСИЛ — тот же момент, из которого сминтован идентификатор сборки,
+    // и он записывается ЗДЕСЬ, потому что больше его знать неоткуда. Очередь ставит куски и
+    // запрос поштучно, запрос — последним: её собственная отметка на строке говорит, когда
+    // строку записали, а не когда человек нажал, и на длинном батче это разные секунды.
+    data: { batch: BATCH_PARENT, requestedAt },
   }
 
   let normalized

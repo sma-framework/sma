@@ -392,6 +392,84 @@ export function writeRunReceipt({ dir, receipt, fsImpl, log } = {}) {
 }
 
 /**
+ * ЧЕТЫРЕ ЧИСЛА ПОСТАВЩИКА, НАЗВАННЫЕ ОДИН РАЗ — теми же именами, какими их пишет квитанция.
+ *
+ * Второе написание этих имён в модуле-читателе — ровно тот способ молча получить нули на
+ * квитанции, которая всё сказала: поле `cacheRead`, прочитанное как `cache_read`, отсутствует
+ * совершенно честно на вид.
+ */
+export const TOKEN_FIELDS = Object.freeze(['input', 'output', 'cacheRead', 'cacheWrite'])
+
+/** «Потрачено ноль» — четыре числа, а не пустой объект: складывающий не должен знать имён. */
+export function zeroTokens() {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+}
+
+/**
+ * readRunTokens({dir, fsImpl}) → четыре числа ОДНОЙ попытки, или `null`.
+ *
+ * ЧИТАТЕЛЬ ЖИВЁТ РЯДОМ С ПИСАТЕЛЕМ — как и у конспекта, и у свидетеля снимка выше. Имя файла и
+ * имя поля принадлежат этому модулю; дверь, которая полезла бы в `receipt.json` сама, завела бы
+ * второе мнение о том, где лежат числа и как они называются.
+ *
+ * NULL — ЭТО УТВЕРЖДЕНИЕ, и оно то же самое, что делает сама квитанция: финального кадра не
+ * было, попытка старше этого поля, каталог подмели — «поставщик ничего не сказал». Нули на этом
+ * месте были бы утверждением «поставщик сказал ноль», а это другое предложение.
+ *
+ * НЕЧИСЛО ВНУТРИ НАЗВАННОГО ОБЪЕКТА — НОЛЬ, а не отказ: квитанция, у которой поле есть, уже
+ * сказала «числа здесь»; спорить с ней целиком из-за одного испорченного счётчика значит терять
+ * три хороших числа ради одного плохого.
+ *
+ * @returns {{input:number, output:number, cacheRead:number, cacheWrite:number}|null}
+ */
+export function readRunTokens({ dir, fsImpl } = {}) {
+  if (typeof dir !== 'string' || dir.trim() === '') return null
+  const fs = io(fsImpl)
+  let record
+  try {
+    record = JSON.parse(String(fs.readFileSync(join(dir, 'receipt.json'), 'utf8')))
+  } catch {
+    return null
+  }
+  const tokens = record && typeof record === 'object' ? record.tokens : null
+  if (!tokens || typeof tokens !== 'object' || Array.isArray(tokens)) return null
+  const out = zeroTokens()
+  for (const field of TOKEN_FIELDS) {
+    const n = Number(tokens[field])
+    if (Number.isFinite(n)) out[field] = n
+  }
+  return out
+}
+
+/**
+ * sumRunTokens({runsDir, attemptIds, fsImpl}) → четыре числа, сложенные по НАЗВАННЫМ попыткам,
+ * или `null`, когда складывать негде.
+ *
+ * ДЕШЁВАЯ ЧЕСТНОСТЬ ВМЕСТО ПОЛНОТЫ, и разница между двумя видами «нечего показать» — весь смысл
+ * возвращаемого значения. Попытка, чья квитанция без чисел (или подметена вместе с каталогом),
+ * даёт НОЛЬ и не роняет сумму: она правда ничего не сообщила, а работа остальных попыток от
+ * этого не перестаёт быть измеренной. А вот каталога прогонов, которого нет вовсе — задача чужой
+ * машины, проект не подключён — не бывает «на ноль»: там мы не измеряли, и сумма честно
+ * отсутствует.
+ *
+ * ИДЕНТИФИКАТОРЫ ПОПЫТОК ПРИХОДЯТ СНАРУЖИ. Правило «как зовут попытку номер N задачи X» живёт у
+ * того, кто его завёл; здешнее дело — сложить то, что лежит в названных каталогах.
+ *
+ * @param {{runsDir?:string, attemptIds?:string[], fsImpl?:object}} [args]
+ * @returns {{input:number, output:number, cacheRead:number, cacheWrite:number}|null}
+ */
+export function sumRunTokens({ runsDir, attemptIds, fsImpl } = {}) {
+  if (typeof runsDir !== 'string' || runsDir.trim() === '') return null
+  const total = zeroTokens()
+  for (const attemptId of Array.isArray(attemptIds) ? attemptIds : []) {
+    const part = readRunTokens({ dir: attemptRunDir({ runsDir, attemptId }), fsImpl })
+    if (!part) continue
+    for (const field of TOKEN_FIELDS) total[field] += part[field]
+  }
+  return total
+}
+
+/**
  * One entry of the changed-file list as a person reads it, a rename naming both its sides.
  * EXPORTED because it is now asked for by TWO writers — the attempt's own log line and the
  * handover summary below — and two spellings of one format is how one of them starts lying.

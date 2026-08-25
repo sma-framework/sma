@@ -693,6 +693,9 @@ describe('GET /api/attempt/:id — AN ATTEMPT’S IDENTITY REACHES ITS OWN DOOR'
       // nobody in the session: an empty list of voices, not a lone executor row
       roles: [],
       rolesMore: 0,
+      // и ничего не потрачено — по той же причине: квитанции у этой попытки нет, а нули на
+      // её месте назвали бы бесплатной работу, которую никто не измерял
+      tokens: null,
     })
   })
 

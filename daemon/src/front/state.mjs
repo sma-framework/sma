@@ -100,6 +100,8 @@ import {
 } from '../queue/adapter.mjs'
 import { readWaveHolds } from '../queue/wave-holds.mjs'
 import { readAttempts, foldAttemptRows } from '../queue/attempt-ledger.mjs'
+import { attemptIdFor } from './journal.mjs'
+import { runsDirOf, sumRunTokens, zeroTokens, TOKEN_FIELDS, RUN_DIRS_KEEP } from '../queue/run-dir.mjs'
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../../scripts/sma/lib/write-pipeline.mjs'
 import { parseNoteToPair } from '../../../scripts/sma/lib/replay-exam.mjs'
@@ -1698,8 +1700,28 @@ function parkedStageTasks(rows, dirs, dir) {
 }
 
 /**
- * derivePhaseCard({projectDir, phaseId, fsImpl, parkedRows}) → one phase in full, or null when
- * the project has no such directory.
+ * phaseTaskRows(rows, dirs, dir) → строки работы, которые сами назвали ЭТУ фазу — по одной на
+ * задачу, последним её словом.
+ *
+ * ИМЯ ФАЗЫ РАЗРЕШАЕТСЯ ТЕМ ЖЕ ПРАВИЛОМ, что у припаркованных раундов рядом: конверт строки
+ * говорит «12», каталог зовётся «12-front», и знает об этом соответствии один findPhaseDir.
+ * Сравнение строк напрямую отдало бы фазе пустой список ровно тогда, когда у неё есть работа.
+ *
+ * СВЁРНУТО ПО ЗАДАЧЕ. Повторённая задача лежит в очереди двумя строками, и сумма по строкам
+ * посчитала бы её подходы дважды — задача платит за себя один раз.
+ */
+function phaseTaskRows(rows, dirs, dir) {
+  const named = (Array.isArray(rows) ? rows : []).filter((row) => {
+    const data = row && typeof row.data === 'object' && row.data !== null ? row.data : null
+    if (!data || (typeof data.phase !== 'string' && typeof data.phase !== 'number')) return false
+    return findPhaseDir(dirs, data.phase) === dir
+  })
+  return latestRowPerId(named)
+}
+
+/**
+ * derivePhaseCard({projectDir, phaseId, fsImpl, parkedRows, taskRows}) → one phase in full, or
+ * null when the project has no such directory.
  *
  * {id, name, stages, questions, plans, waves, summaries, uat}. The plans and summaries travel as
  * NAMES and door-relative paths — never their contents: a card is a table of contents, and the
@@ -1718,10 +1740,15 @@ function parkedStageTasks(rows, dirs, dir) {
  * over. A card built without them is still a card — every question simply carries no id, which
  * is exactly the state the door treats as «record it, wake nothing».
  *
- * @param {{projectDir?:string, phaseId?:string|number, fsImpl?:object, parkedRows?:object[]}} [deps]
+ * `taskRows` is the queue's rows again — passed IN for the same reason `parkedRows` is, and used
+ * for a different question: во что фаза обошлась. A card built without them simply carries no
+ * sum, which is the honest reading of «спросить было не у кого».
+ *
+ * @param {{projectDir?:string, phaseId?:string|number, fsImpl?:object, parkedRows?:object[],
+ *          taskRows?:object[]}} [deps]
  * @returns {object|null}
  */
-export function derivePhaseCard({ projectDir, phaseId, fsImpl, parkedRows } = {}) {
+export function derivePhaseCard({ projectDir, phaseId, fsImpl, parkedRows, taskRows } = {}) {
   if (typeof projectDir !== 'string' || projectDir.trim() === '') return null
   const wanted = String(phaseId ?? '').trim()
   if (wanted === '') return null
@@ -1775,6 +1802,19 @@ export function derivePhaseCard({ projectDir, phaseId, fsImpl, parkedRows } = {}
     // screen that wanted the flat column must not have to walk a tree to rebuild it.
     waves: wavesOf(io, root, dir, files),
     uat: acceptance.items,
+    // ВО ЧТО ОБОШЛАСЬ ФАЗА — сумма четырёх чисел поставщика по ЕЁ задачам, а по каждой задаче
+    // по всем её подходам. Фаза — это то, чем человек меряет кусок ночи; расход, посчитанный
+    // только по одной попытке, отвечает не на тот вопрос.
+    //
+    // ЗАДАЧИ ФАЗЫ УЗНАЮТСЯ ТЕМ ЖЕ ПРАВИЛОМ, каким узнаются её припаркованные раунды: конверт
+    // строки называет фазу, а какой каталог за этим именем — знает findPhaseDir, и второго
+    // ответа на это здесь не заводится.
+    //
+    // `null` — «мерить негде»: строк не передали, задач у фазы нет, каталога прогонов не
+    // существует. Ноль на этом месте назвал бы бесплатной работу, которую никто не измерял.
+    tokens: totalTokens(
+      phaseTaskRows(taskRows, dirs, dir).map(taskTokensReader({ runsDir: runsDirOf(projectDir), fsImpl })),
+    ),
     // WHICH FILE IS THE ACCEPTANCE DOCUMENT is answered HERE and nowhere else. The door that
     // writes a verdict into it needs the same answer, and it takes it off this card rather
     // than looking the directory up a second time: two spellings of one rule is how a screen
@@ -1862,6 +1902,51 @@ export const BATCH_DECISIONS = Object.freeze([
 const BATCH_STATE_ORDER = Object.freeze(['failed', 'awaiting_decision', 'running', 'waiting', 'done'])
 
 /**
+ * taskTokensReader({runsDir, fsImpl}) → (row) → четыре числа поставщика, сложенные по ВСЕМ
+ * попыткам этой задачи, или `null`.
+ *
+ * ПОЧЕМУ НЕ ЧЕРЕЗ ЛЕДЖЕР. Номер последнего подхода лежит на самой строке — очередь его туда и
+ * пишет, — а числа лежат в каталогах прогона, названных по задаче и номеру. Спрашивать ради
+ * этого книгу попыток значило бы читать второй источник на каждый опрос экрана ради факта,
+ * который уже в руках.
+ *
+ * ПОТОЛОК ПЕРЕБОРА — ЁМКОСТЬ САМОГО КАТАЛОГА, и он не «тихое урезание»: каталог прогонов хранит
+ * ровно столько попыток, а запрошенные сверх того гарантированно отсутствуют и добавили бы к
+ * сумме нули. Это защита от испорченной строки, которая назвалась миллионным подходом, а не
+ * граница измерения.
+ *
+ * @param {{runsDir?:string|null, fsImpl?:object}} [args]
+ * @returns {(row:object)=>({input:number,output:number,cacheRead:number,cacheWrite:number}|null)}
+ */
+function taskTokensReader({ runsDir, fsImpl } = {}) {
+  return (row) => {
+    const id = row && typeof row.id === 'string' ? row.id : ''
+    if (id === '') return null
+    const n = Number(row.attempt)
+    const last = Math.min(Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1, RUN_DIRS_KEEP)
+    const attemptIds = []
+    for (let i = 1; i <= last; i += 1) attemptIds.push(attemptIdFor(id, i))
+    return sumRunTokens({ runsDir, attemptIds, fsImpl })
+  }
+}
+
+/**
+ * totalTokens(parts) → сумма четырёх чисел по нескольким задачам, или `null`, когда ни одна из
+ * них ничего не сказала.
+ *
+ * ДВА ВИДА «НУЛЯ» РАЗЛИЧАЮТСЯ ЗДЕСЬ ТОЖЕ. Задача, чьи квитанции молчат, приходит сюда как `null`
+ * и в сумму не входит; но сборка, где НИ ОДНА задача не измерялась (каталога прогонов нет —
+ * чужая машина, проект не подключён), честно отдаёт отсутствие, а не бодрый ноль.
+ */
+function totalTokens(parts) {
+  const known = (Array.isArray(parts) ? parts : []).filter(Boolean)
+  if (known.length === 0) return null
+  const out = zeroTokens()
+  for (const part of known) for (const field of TOKEN_FIELDS) out[field] += Number(part[field]) || 0
+  return out
+}
+
+/**
  * deriveBatches(requests, rows, ctx) → the batches, each with its items, its own reading and
  * the item that is holding it.
  *
@@ -1877,10 +1962,10 @@ const BATCH_STATE_ORDER = Object.freeze(['failed', 'awaiting_decision', 'running
  *
  * @param {object[]} requests the batch request rows
  * @param {object[]} rows     every WORK row (the requests are not among them)
- * @param {{machineId?:string}} ctx
+ * @param {{machineId?:string, taskTokens?:(row:object)=>object|null}} ctx
  * @returns {object[]}
  */
-function deriveBatches(requests, rows, { machineId } = {}) {
+function deriveBatches(requests, rows, { machineId, taskTokens } = {}) {
   if (!Array.isArray(requests) || requests.length === 0) return []
 
   return [...requests]
@@ -1895,7 +1980,8 @@ function deriveBatches(requests, rows, { machineId } = {}) {
       // The grouping, the de-duplication of a repeated piece and the order are the QUEUE's own
       // (adapter.mjs): the screen draws the pieces in the very order the next one is handed out
       // in, and two answers to «which piece is next» would be two batches on one request.
-      const items = batchItemsOf(rows, batchId).map((r) => ({
+      const itemRows = batchItemsOf(rows, batchId)
+      const items = itemRows.map((r) => ({
         id: r.id,
         title: r.title ?? null,
         status: r.status,
@@ -1920,6 +2006,19 @@ function deriveBatches(requests, rows, { machineId } = {}) {
         machine: machineId,
         state,
         items,
+        // КОГДА ВЛАДЕЛЕЦ ЭТО ПОПРОСИЛ — момент, записанный дверью батча на строку запроса.
+        // Читается со строки, а не считается: «когда нажали» не выводится ни из одного статуса,
+        // и отметка самой очереди говорит о другом — когда строку записали (запрос пишется
+        // последним, и на длинной сборке это уже другая секунда). Строка, записанная до этого
+        // поля, честно молчит: `null`, а не подставленный `enqueuedAt`, который выглядел бы
+        // ровно так же и врал бы на величину, которую никто не заметит.
+        requestedAt: Number.isFinite(Number(req.data && req.data.requestedAt))
+          ? Number(req.data.requestedAt)
+          : null,
+        // ВО ЧТО ОБОШЛАСЬ ВСЯ СБОРКА — сумма четырёх чисел по её кускам, а по каждому куску —
+        // по всем его подходам. Кусок, чьи квитанции молчат, даёт ноль и суммы не роняет;
+        // `null` — «мерить негде», то есть каталога прогонов нет вовсе.
+        tokens: typeof taskTokens === 'function' ? totalTokens(itemRows.map((r) => taskTokens(r))) : null,
         // WHAT IS HOLDING THE ASSEMBLY, named rather than left for a reader to work out: the
         // loudest item, and its state IS the reason (waiting for a person / under way / not
         // started). Null when there is nothing to wait for.
@@ -2095,11 +2194,24 @@ export async function deriveState(deps = {}) {
   // can act on, and it is carried with its own truth rather than repainted as ours.
   const rows = deps.project ? allRows.filter((r) => inProject(r, deps.project)) : allRows
 
+  // THE TREE THE WORK HAPPENED IN, resolved through the SAME expression the workbench and the
+  // phase cycle already use: the connected project, and the served tree only when nothing is
+  // connected. It is named HERE, above the first reader, because two of them now ask for it —
+  // the commit log of a finished row below, and the run directories the batches are costed
+  // from. A second spelling of it would cost one of the two its answer, silently.
+  const gitDir =
+    (connectedProject(config) || {}).dir ||
+    (typeof deps.repoDir === 'string' && deps.repoDir.trim() !== '' ? deps.repoDir : null)
+  // ЧЕМ СЧИТАЕТСЯ РАСХОД ЗАДАЧИ — один читатель на весь опрос: каталог прогонов подключённого
+  // проекта плюс номер последнего подхода со строки. Проект не подключён — читателя нет, и
+  // каждая сумма честно отсутствует вместо того, чтобы быть нулём.
+  const taskTokens = taskTokensReader({ runsDir: runsDirOf(gitDir), fsImpl: deps.fsImpl })
+
   // The batches ride the SAME project filter as the tasks — a batch is work of one project.
   const batches = deriveBatches(
     deps.project ? batchRequestRows.filter((r) => inProject(r, deps.project)) : batchRequestRows,
     rows,
-    { machineId },
+    { machineId, taskTokens },
   )
 
   // ── ЭШЕЛОНЫ: что за волны в работе и какие из них владелец остановил ──
@@ -2275,12 +2387,8 @@ export async function deriveState(deps = {}) {
   })
 
   // ── done[] — «сделано за ночь»; durable sources only ──
-  // THE TREE THE WORK HAPPENED IN, resolved through the SAME expression the workbench and the
-  // phase cycle already use: the connected project, and the served tree only when nothing is
-  // connected. Without it the card's git reads ran in the daemon's launch directory.
-  const gitDir =
-    (connectedProject(config) || {}).dir ||
-    (typeof deps.repoDir === 'string' && deps.repoDir.trim() !== '' ? deps.repoDir : null)
+  // The tree the work happened in is named once, above the batches — without it the card's git
+  // reads ran in the daemon's launch directory.
   const done = doneRows.map((r) =>
     buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machineId }),
   )
