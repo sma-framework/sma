@@ -2923,9 +2923,28 @@ async function cmdSpendLane({ positionals, flags, dirs }) {
  * names what is NOT counted (variable per-turn hook stdout). caveman's ~1-1.5k/turn caveat
  * turned into our feature; no other framework meters its own overhead. Read-only, fail-open.
  */
+/**
+ * The top of the WORKING COPY the caller stands in — the tree a measurement verb
+ * describes. Deliberately NOT the coordination root: sessions and claims live in the
+ * shared main checkout so worktrees coordinate (registry.smaRoot, SPEC R7), but a
+ * document like CLAUDE.md or MEMORY.md belongs to the tree you asked in — a measurement
+ * that silently reads the main checkout describes the WRONG tree when asked from a
+ * worktree. Fail-open: git absent / not a repo → the .sma parent, exactly as before.
+ */
+async function measuredTreeRoot(dirs) {
+  try {
+    const { execFileSync } = await import('node:child_process')
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: GIT_READ_STDIO }).trim()
+    if (top) return top
+  } catch {
+    /* fall through to the install parent */
+  }
+  return dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+}
+
 async function cmdSpendSelfCost({ flags, dirs }) {
   const economy = await import('./lib/economy.mjs')
-  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const repoRoot = await measuredTreeRoot(dirs)
   const paths = { claudeMd: join(repoRoot, 'CLAUDE.md'), memoryMd: join(repoRoot, '.claude', 'memory', 'MEMORY.md') }
   const report = economy.selfCost({ paths })
 
@@ -2960,7 +2979,7 @@ async function cmdSpendSelfCost({ flags, dirs }) {
  */
 async function cmdSpendPromptSize({ flags, dirs }) {
   const economy = await import('./lib/economy.mjs')
-  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const repoRoot = await measuredTreeRoot(dirs)
 
   // measured history: the subagent-pack events already carry their injected size.
   let journalEvents = []

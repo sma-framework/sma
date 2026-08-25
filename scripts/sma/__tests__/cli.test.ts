@@ -33,6 +33,7 @@ import {
   existsSync,
   readdirSync,
   readFileSync,
+  realpathSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -647,5 +648,53 @@ describe('receipt-hash — потолок времени команды', () => 
     })
     expect(r.status, 'при достаточном потолке команда обязана дойти до конца').toBe(0)
     expect(r.stdout, 'дошедшая команда обязана дать квитанцию').toMatch(/[0-9a-f]{64}/)
+  })
+})
+
+describe('spend prompt-size / self-cost — прибор описывает то дерево, из которого запущен', () => {
+  // Координация (сессии, клеймы) НАМЕРЕННО живёт в общем главном чекауте (R7) — но
+  // документ вроде CLAUDE.md или MEMORY.md принадлежит рабочей копии, в которой стоит
+  // спрашивающий. До починки оба глагола строили пути от корня установки, и запуск из
+  // рабочей копии печатал пути главного дерева — число описывало НЕ ТО дерево.
+  let tree: string
+  let treeNorm: string
+  const norm = (s: string) => String(s).replace(/\\/g, '/').toLowerCase()
+
+  beforeEach(() => {
+    tree = mkdtempSync(join(tmpdir(), 'sma-measured-tree-'))
+    execFileSync('git', ['init', '-q'], { cwd: tree })
+    writeFileSync(join(tree, 'CLAUDE.md'), '# правила\nстрока правил рабочей копии\n')
+    mkdirSync(join(tree, '.claude', 'memory'), { recursive: true })
+    writeFileSync(join(tree, '.claude', 'memory', 'MEMORY.md'), '# ядро\nстрока ядра рабочей копии\n')
+    // 8.3-короткие имена Windows (JUNISA~1) против длинных из git --show-toplevel:
+    // сравниваем по канонической длинной форме, иначе тест падал бы на самом раннере.
+    treeNorm = norm(realpathSync.native(tree))
+  })
+  afterEach(() => {
+    rmSync(tree, { recursive: true, force: true })
+  })
+
+  function runFromTree(args: string[]): any {
+    const stdout = execFileSync('node', [CLI, ...args, '--json'], {
+      encoding: 'utf8',
+      cwd: tree,
+      env: { ...process.env, SMA_ROOT_OVERRIDE: join(tree, '.sma'), SMA_TERMINAL_NAME: 'Мозг' },
+    })
+    return JSON.parse(stdout)
+  }
+
+  it('prompt-size: путь ядра MEMORY.md указывает в рабочую копию, и число живое', () => {
+    const report = runFromTree(['spend', 'prompt-size'])
+    const mem = report.channels.find((c: any) => norm(c.path ?? '').endsWith('.claude/memory/memory.md'))
+    expect(mem, 'канал ядра MEMORY.md с путём обязан существовать').toBeTruthy()
+    expect(norm(realpathSync.native(mem.path)).startsWith(treeNorm), `путь ${mem.path} обязан лежать в дереве запуска`).toBe(true)
+    expect(mem.measured, 'ядро существует в дереве запуска — число обязано быть живым, не «не измерено»').toBe(true)
+  })
+
+  it('self-cost: поверхность ядра — из рабочей копии, а не из главного чекаута', () => {
+    const report = runFromTree(['spend', 'self-cost'])
+    const mem = (report.surfaces ?? []).find((s: any) => norm(s.path ?? '').endsWith('.claude/memory/memory.md'))
+    expect(mem, 'поверхность ядра MEMORY.md обязана существовать').toBeTruthy()
+    expect(norm(realpathSync.native(mem.path)).startsWith(treeNorm), `путь ${mem.path} обязан лежать в дереве запуска`).toBe(true)
   })
 })
