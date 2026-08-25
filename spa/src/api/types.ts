@@ -1321,8 +1321,10 @@ export interface EventFrame {
   count?: number
   /** `phase.stage`, `discussion.updated` — which phase moved. */
   phase?: string
-  /** `phase.stage` — which stage it moved to. */
+  /** `phase.stage` — which stage it moved to; `chat.stage` — where the live turn is. */
   stage?: string
+  /** `chat.stage` — the order the frames were written in, so a late one is not applied. */
+  seq?: number
   /** `ship.gate` — which step of the gate reported. */
   step?: string
   /** `ship.published` — the version that went out. Never a token, never a url. */

@@ -46,6 +46,9 @@ export const EVENT_LABEL: Record<EventName, string> = {
   'coordination.updated': 'Брони на файлы изменились',
   'ship.gate': 'Ворота выката отчитались о шаге',
   'ship.published': 'Версия опубликована',
+  // Этап живого хода разговора. Имя этапа приезжает рядом, в опознавательных полях кадра, —
+  // слов разговора в кадре нет, и эта строка не пытается сделать вид, что они там были.
+  'chat.stage': 'Разговор продвинулся',
 }
 
 /** The mark in the margin: what kind of news this is, at a glance. */

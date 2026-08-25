@@ -10,12 +10,15 @@ import {
   useSendChat,
   useStateQuery,
 } from '../api/queries'
+import { onFrame } from '../api/hints'
 import type { ChatDraft, PhaseCard, PhaseIndexRow, QueueRow, WaveRow, WaveTask } from '../api/types'
 import { waitWords } from '../screens/tasks/units'
 import { screenById } from '../screens/registry'
 import type { ScreenId } from '../screens/registry'
 import { DecisionCard, EMPTY_DRAFT, isOpen } from './DecisionCard'
 import type { DecisionDraft } from './DecisionCard'
+import { emptyStream, foldStream } from './chat-stream'
+import type { TurnStream } from './chat-stream'
 import { CONSOLE_CONTEXT_EVENT, CONSOLE_OPEN_EVENT, readConsoleContext } from './console-context'
 import type { ConsoleContext } from './console-context'
 import { refusalWords } from './format'
@@ -45,6 +48,16 @@ import { useComposerDraft } from './useComposerDraft'
  *     задачи сам.
  *   ВОПРОС О СОСТОЯНИИ — ответ в контексте открытого экрана. Контекст едет ВМЕСТЕ с текстом
  *     и виден человеку под его же словами.
+ *
+ * ═══════════════ РАЗГОВОР НЕ ОТВЕЧАЕТ В ПУСТОТУ ═════════════════════════════════
+ *
+ * Три вещи, и все три — про одно: человек, задавший вопрос, всё время видит, что происходит.
+ *   ПОЛУЧЕНО — реплика встаёт в ленту сразу, с пометкой, не дожидаясь ответа.
+ *   ДУМАЕТ — на месте будущего ответа стоит пузырь с пульсом, и живёт он до самого ответа.
+ *   ЭТАПЫ — пузырь наполняется тем, что дверь рассказывает о ходе кадрами живого потока
+ *     («читаю контекст…», «пишу ответ…»). Кадр несёт ИМЯ этапа и номер: слов разговора в
+ *     кадре нет — поток пишется всем открытым клиентам, а вопрос принадлежит спросившему.
+ *     Слова ответа приезжают ответом того запроса, который их спросил.
  *
  * ═══════════════ ПОЧЕМУ КОНТЕКСТ ЕДЕТ ВНУТРИ ТЕКСТА ══════════════════════════════
  *
@@ -81,6 +94,16 @@ interface Line {
   text: string
   /** Что уехало вместе с вопросом, названное словами. Только у реплик человека. */
   rode?: string
+  /**
+   * СУДЬБА РЕПЛИКИ ЧЕЛОВЕКА, СКАЗАННАЯ СРАЗУ.
+   *
+   * Реплика встаёт в ленту в тот же миг, когда её отправили, — и с пометкой, потому что
+   * реплика без пометки посреди молчания читается как «кажется, не ушло». «получено»
+   * означает ровно то, что видно: сообщение принято и уехало в дверь разговора. Если дверь
+   * отказала, пометка меняется на «не дошло» — это единственный случай, когда она меняется,
+   * и человек узнаёт о неудаче по своему же сообщению, а не по строке об ошибке где-то ниже.
+   */
+  mark?: string
   draft?: ChatDraft
   /**
    * Черновик предложен В ЭТОМ разговоре, только что.
@@ -259,6 +282,15 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
   const [pendingWave, setPendingWave] = useState<{ phase: string; wave: string; action: 'hold' | 'release' } | null>(
     null,
   )
+  /**
+   * ЖИВОЙ ХОД — то, что окно знает о ходе, пока ответа ещё нет.
+   *
+   * `null` — ничего не идёт. Пока идёт, сюда складываются этапы, приехавшие кадрами потока:
+   * пузырь на месте будущего ответа наполняется по мере прихода, а не мигает одним словом
+   * все девяносто секунд. Это ПОДСКАЗКА, не правда: канал может лечь, и тогда пузырь просто
+   * пульсирует молча — ответ всё равно приедет ответом запроса.
+   */
+  const [stream, setStream] = useState<TurnStream | null>(null)
 
   const state = useStateQuery()
   const phaseIndex = usePhaseIndexQuery()
@@ -338,7 +370,7 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' })
-  }, [lines.length, send.isPending, open])
+  }, [lines.length, send.isPending, stream?.stages.length, open])
 
   const pending = useMemo(
     () => pendingOf(state.data?.awaiting ?? [], phaseIndex.data?.phases ?? [], state.data?.activeProject ?? null),
@@ -360,8 +392,28 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
   const append = (line: Line) => setLines((was) => [...was, line])
 
   /**
+   * КАДРЫ ЖИВОГО ХОДА — с того канала, который оболочка уже держит.
+   *
+   * Своего соединения окно не открывает: живой слой раздаёт копию того, что слышит, и второй
+   * EventSource был бы вторым потоком к тому же демону. Подписка живёт ровно столько, сколько
+   * идёт ход, — закрытое окно и законченный ход не слушают ничего.
+   */
+  const turnIsLive = stream !== null
+  useEffect(() => {
+    if (!turnIsLive) return
+    return onFrame((evt) => setStream((was) => (was ? foldStream(was, evt) : was)))
+  }, [turnIsLive])
+
+  /**
    * Отправить вопрос. Контекст открытого экрана прибавляется к тексту и НАЗЫВАЕТСЯ под
    * репликой — человек видит ровно то, что уехало.
+   *
+   * СНИМОК КАРТОЧКИ ЕДЕТ ИДЕНТИФИКАТОРОМ. Когда разговор открыт с карточки задачи, окно
+   * называет двери её `taskId`, а состояние — ждёт ли она решения, сколько было попыток, чем
+   * они кончились — дверь читает по своему же реестру и кладёт в промпт ДАННЫМИ. Строки
+   * «контекст: <название>» для этого мало: имя места — это не его состояние, и разговор,
+   * которому дали только имя, отвечает из общих соображений ровно так же уверенно, как по
+   * данным (инцидент 25.08: «одобрять нечего» задаче, которая стояла и ждала решения).
    */
   const ask = (said: string) => {
     const body = said.trim()
@@ -369,11 +421,23 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
     setText('')
     setProblem(null)
     const rode = `контекст: ${context.line}`
-    append({ key: `said-${Date.now()}`, who: 'you', text: body, rode })
+    // Имя хода минтится ЗДЕСЬ, до того как запрос ушёл: этапы поедут в поток раньше, чем
+    // ответ вернётся, и отнести их к своему пузырю можно только по имени, которое окно уже
+    // знает.
+    const turnId = `ct-${Date.now()}-${Math.floor(Math.random() * 1e6)}`
+    const key = `said-${Date.now()}`
+    append({ key, who: 'you', text: body, rode, mark: 'получено' })
+    setStream(emptyStream(turnId))
     send.mutate(
-      { text: `${body}\n\n(${rode})`, ...(conversationId ? { conversationId } : {}) },
+      {
+        text: `${body}\n\n(${rode})`,
+        turnId,
+        ...(conversationId ? { conversationId } : {}),
+        ...(context.kind === 'task' && context.taskId ? { taskId: context.taskId } : {}),
+      },
       {
         onSuccess: (reply) => {
+          setStream(null)
           setConversationId(reply.conversationId)
           append({
             key: `heard-${Date.now()}`,
@@ -382,7 +446,11 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
             ...(reply.answer.draft ? { draft: reply.answer.draft, fresh: true } : {}),
           })
         },
-        onError: (err) => setProblem(refusalWords(err)),
+        onError: (err) => {
+          setStream(null)
+          setLines((was) => was.map((l) => (l.key === key ? { ...l, mark: 'не дошло' } : l)))
+          setProblem(refusalWords(err))
+        },
       },
     )
   }
@@ -559,7 +627,9 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
               {line.text}
             </div>
             <span className="font-mono text-[9.5px] text-tx3">
-              {line.who === 'you' ? (line.rode ? `вы · ${line.rode}` : 'вы') : 'система'}
+              {line.who === 'you'
+                ? [`вы`, line.rode, line.mark].filter(Boolean).join(' · ')
+                : 'система'}
             </span>
             {line.draft ? (
               <div className="mt-1 w-full rounded-[9px] border border-bd2 bg-card px-3 py-2.5">
@@ -591,7 +661,27 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
           </div>
         ))}
 
-        {send.isPending ? <span className="text-[11.5px] text-tx3">Думаю…</span> : null}
+        {/* ПУЗЫРЬ НА МЕСТЕ БУДУЩЕГО ОТВЕТА. Он встаёт туда, где через мгновение будет ответ, и
+            стоит там, пока ответа нет: пульс говорит, что система жива, а этапы —
+            что именно она делает прямо сейчас. Этапы приезжают кадрами потока и
+            накапливаются; кадры не доехали (канал лёг, старый демон) — остаётся честный
+            пульс без слов, и ответ всё равно придёт ответом запроса. */}
+        {send.isPending ? (
+          <div className="flex flex-col items-start gap-[3px]">
+            <div className="flex max-w-[86%] flex-col gap-1 rounded-[10px] border border-bd bg-card px-3 py-2.5">
+              {(stream?.stages ?? []).map((word, i) => (
+                <span key={`${i}-${word}`} className="text-[12px] leading-[1.55] text-tx2">
+                  {word}
+                </span>
+              ))}
+              <span className="flex items-center gap-2 text-[12px] leading-[1.55] text-tx3">
+                <Pulse />
+                думает…
+              </span>
+            </div>
+            <span className="font-mono text-[9.5px] text-tx3">система</span>
+          </div>
+        ) : null}
 
         {/* Вопросы, на которых система остановилась, — ниже ленты, там, где до них дотягивается
             рука, и над полем ввода, потому что работа стоит, пока на них не ответят. */}

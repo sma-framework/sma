@@ -82,6 +82,16 @@ export const EVENT_TYPES = Object.freeze([
   // that did not contain it — so the hub dropped it silently and «опубликовано» never rang
   // on any screen. That silent drop is exactly what the note above this list warns about.
   'ship.published', // a release went out (its VERSION, never a token, never a url)
+  // ── the conversation's own progress, declared 25.08.2026 ──
+  //
+  // A CHUNK OF PROGRESS, NEVER A CHUNK OF THE REPLY. The owner asked for the answer to
+  // arrive in pieces through THIS door rather than through a new one. What travels is the
+  // STAGE a turn is at — a short name out of a closed dictionary the daemon owns — and a
+  // sequence number, because the two absolute bans above are not negotiable for a new type
+  // any more than they were for `chat.reply`: this stream is written to EVERY open client,
+  // and the words of a conversation belong to the one who asked for them. The prose still
+  // rides the answer of the request that asked.
+  'chat.stage',
 ])
 
 /**
@@ -117,11 +127,15 @@ const EVENT_FIELDS = Object.freeze({
   'coordination.updated': [], // likewise — who claimed what is a read, never a frame
   'ship.gate': ['taskId', 'step'], // NEVER the gate's output
   'ship.published': ['version'], // the version string and nothing else
+  // The turn this is about, WHERE it is (a name from CHAT_STAGES — an enumerated word, the
+  // same class of field as `phase.stage`'s stage), and the order the frames were written in.
+  // NEVER a syllable of the question or of the reply.
+  'chat.stage': ['turnId', 'stage', 'seq'],
 })
 
 /** Fields serialised as a boolean / a number; everything else is stringified. */
 const BOOLEAN_FIELDS = new Set(['online'])
-const NUMBER_FIELDS = new Set(['count'])
+const NUMBER_FIELDS = new Set(['count', 'seq'])
 
 /** Dedup window for the touch→task.running hint (mirrors the loop's 30s touch throttle). */
 const RUNNING_DEDUP_MS = 30000

@@ -428,7 +428,7 @@ export function useSendChat() {
   return useMutation<
     Awaited<ReturnType<typeof api.sendChat>>,
     Error,
-    { text: string; conversationId?: string; turnId?: string }
+    { text: string; conversationId?: string; turnId?: string; taskId?: string }
   >({
     mutationFn: (input) => api.sendChat(input),
     onSuccess: () => {
