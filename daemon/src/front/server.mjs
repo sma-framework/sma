@@ -95,7 +95,7 @@ import { atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
 import { BATCH_PARENT, CAP_TITLE, isBatchParent, latestRowPerId, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
-import { proposeBreakdown, proposeWords } from './chat.mjs'
+import { CHAT_STAGES, proposeBreakdown, proposeWords, SNAPSHOT_EVENT_CAP, STATUS_LABELS } from './chat.mjs'
 import { createQuestions, findPhaseDir, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
@@ -2523,8 +2523,9 @@ const CHAT_HISTORY_LIMIT = 50
 const CHAT_HISTORY_MAX = 200
 
 /** The collaborator set the chat engine takes — the chat analogue of stateDeps. */
-function chatDeps(config, deps) {
+function chatDeps(config, deps, extra = {}) {
   return {
+    ...extra,
     adapter: deps.adapter,
     config,
     clock: deps.clock,
@@ -2594,19 +2595,107 @@ function pickTurn(t) {
 }
 
 /**
- * POST /api/chat — one conversation turn. Body {text, conversationId?}.
+ * СНИМОК КАРТОЧКИ, С КОТОРОЙ ОТКРЫТ РАЗГОВОР — собранный ДЕМОНОМ из своего же реестра.
+ *
+ * ПОЧЕМУ ЗДЕСЬ, А НЕ В ОКНЕ. Окно знает, какая карточка у человека на глазу, и не знает
+ * ничего больше: строка очереди, счёт попыток и их исход живут за этой дверью. Снимок,
+ * присланный клиентом, был бы недоверенным текстом — его пришлось бы проверять поле за полем
+ * и всё равно везти за забором, — и вдобавок второй правдой о задаче рядом с карточкой.
+ * Поэтому окно называет ИДЕНТИФИКАТОР, а читает реестр тот, кто им владеет.
+ *
+ * ЧИТАЕТСЯ ТЕМИ ЖЕ ШВАМИ, ЧТО И КАРТОЧКА: строка — из `adapter.list`, свёрнутая тем же
+ * правилом (`latestRowPerId`), попытки — тем же швом реестра и той же свёрткой
+ * (`foldAttemptRows`). Два способа прочитать одну задачу — это два экрана, которые однажды
+ * скажут человеку разное.
+ *
+ * `null` — «сказать нечего»: нет двери к очереди, нет такой строки, нечитаемый реестр. В
+ * промпт тогда не едет ничего, и разговор честно не видит карточки, вместо того чтобы видеть
+ * пустую.
+ *
+ * @returns {object|null}
+ */
+async function chatTaskSnapshot(taskId, deps) {
+  const adapter = deps.adapter
+  if (!taskId || !adapter || typeof adapter.list !== 'function') return null
+  let rows = []
+  try {
+    rows = (await adapter.list({})) || []
+  } catch {
+    return null
+  }
+  const row = latestRowPerId(rows.filter((r) => r && r.id === taskId))[0]
+  if (!row) return null
+
+  let raw = []
+  try {
+    if (typeof deps.ledger === 'function') raw = deps.ledger(taskId) || []
+    else if (deps.ledger && typeof deps.ledger.readAttempts === 'function') raw = deps.ledger.readAttempts(taskId) || []
+    else if (deps.ledgerDir) raw = readAttempts(deps.ledgerDir, taskId)
+  } catch {
+    raw = []
+  }
+  const attempts = foldAttemptRows(Array.isArray(raw) ? raw : [])
+
+  return {
+    id: row.id ?? null,
+    title: row.title ?? null,
+    status: row.status ?? null,
+    statusLabel: STATUS_LABELS[row.status] ?? null,
+    // НАЗВАНО ОТДЕЛЬНЫМ ПОЛЕМ, а не оставлено выводом из статуса: именно об этом разговор и
+    // соврал 25.08 в 14:11 («одобрять нечего» задаче, которая стояла и ждала решения).
+    awaitingDecision: row.status === 'awaiting_approval',
+    lane: row.lane ?? null,
+    attempts: attempts.length,
+    events: attempts.slice(-SNAPSHOT_EVENT_CAP).map((a) => ({
+      attempt: a.attempt ?? null,
+      outcome: a.outcome ?? null,
+      reason: a.failureReason ? REASON_LABELS[a.failureReason] ?? a.failureReason : null,
+      at: a.endedAt ?? a.startedAt ?? null,
+    })),
+  }
+}
+
+/**
+ * stageTeller(turnId, deps) → функция, которой движок сообщает, где сейчас ход.
+ *
+ * Номер кадра растёт на этой стороне: окно отбрасывает всё, что пришло не по порядку, а
+ * порядок знает только тот, кто пишет. Хода без имени (`turnId` не прислан) не бывает и в
+ * потоке: кадр, который некому отнести к своему пузырю, — это кадр, который окно всё равно
+ * выбросит, поэтому он не пишется вовсе.
+ */
+function stageTeller(turnId, deps) {
+  if (!turnId) return null
+  let seq = 0
+  return (stage) => {
+    if (!CHAT_STAGES.includes(stage)) return // имени вне закрытого списка на проводе не бывает
+    seq += 1
+    emitSafe(deps, { event: 'chat.stage', turnId, stage, seq })
+  }
+}
+
+/**
+ * POST /api/chat — one conversation turn. Body {text, conversationId?, turnId?, taskId?}.
  *
  * The `chat.reply` hint fires AFTER the engine has returned, which is after both turns are
  * on the transcript — a screen that re-reads on the hint can never find the book behind the
  * event. The hint carries a turn id and a status and NOTHING ELSE: the founder's question
  * and the answer's words go to the caller that asked, not to every open screen.
+ *
+ * ХОД ВИДЕН, ПОКА ОН ИДЁТ. Кроме итогового колокола эта дверь пишет в тот же поток этапы
+ * (`chat.stage`): «принято» — до того, как движок тронулся, потом то, что скажет о себе сам
+ * движок, и «готово» — когда ответ собран. Куском по проводу едет ИМЯ ЭТАПА: слова разговора
+ * в кадр не входят никогда, и новая дверь для этого не открывается — решение владельца.
+ *
+ * И ЕЩЁ ОДНО ПОЛЕ, БЕЗ НОВОЙ ДВЕРИ: `taskId` — идентификатор карточки, с которой открыт
+ * разговор. Тем же способом, каким сюда попал `machine` у соседних дверей: список разрешённых
+ * ключей, а не новая строка в таблице маршрутов.
  */
 async function handleChat({ req, res, config, deps }) {
   if (typeof deps.handleChatTurn !== 'function') return send501(res)
   const body = await readJsonBody(req, { cap: CHAT_BODY_CAP })
   if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
   const b = body.value || {}
-  if (rejectUnknownKeys(res, b, new Set(['text', 'conversationId', 'turnId']))) return undefined
+  if (rejectUnknownKeys(res, b, new Set(['text', 'conversationId', 'turnId', 'taskId']))) return undefined
   if (typeof b.text !== 'string' || b.text.trim() === '') return send400(res, 'text required')
   if (b.text.length > CHAT_TEXT_CAP) return send400(res, `text exceeds ${CHAT_TEXT_CAP} chars`)
   if (b.conversationId !== undefined && b.conversationId !== null) {
@@ -2619,15 +2708,28 @@ async function handleChat({ req, res, config, deps }) {
   if (b.turnId !== undefined && b.turnId !== null) {
     if (typeof b.turnId !== 'string' || !TURN_ID_RE.test(b.turnId)) return send400(res, 'invalid turnId')
   }
+  if (b.taskId !== undefined && b.taskId !== null) {
+    if (typeof b.taskId !== 'string' || !ID_RE.test(b.taskId)) return send400(res, 'invalid taskId')
+  }
+
+  const tellStage = stageTeller(b.turnId, deps)
+  // «Принято» уходит ДО движка: человек, который смотрит на своё сообщение, узнаёт, что оно
+  // дошло, а не что оно когда-нибудь получит ответ.
+  if (tellStage) tellStage('accepted')
+  const snapshot = b.taskId ? await chatTaskSnapshot(b.taskId, deps) : null
 
   const turn = await deps.handleChatTurn({
     text: b.text,
     ...(b.conversationId ? { conversationId: b.conversationId } : {}),
     ...(b.turnId ? { turnId: b.turnId } : {}),
-    deps: chatDeps(config, deps),
+    deps: chatDeps(config, deps, {
+      ...(snapshot ? { snapshot } : {}),
+      ...(tellStage ? { onStage: tellStage } : {}),
+    }),
   })
   const answer = pickAnswer(turn && turn.answer)
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+  if (tellStage) tellStage('done')
   emitSafe(deps, {
     event: 'chat.reply',
     turnId: `${turn.conversationId}-${clock()}`,

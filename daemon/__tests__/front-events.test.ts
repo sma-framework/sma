@@ -83,13 +83,16 @@ describe('events.mjs — EVENT_TYPES', () => {
     expect(EVENT_TYPES).toContain('spend.updated')
   })
 
-  it('the frozen vocabulary is EXACTLY twenty types with no duplicates', () => {
+  it('the frozen vocabulary is EXACTLY twenty-one types with no duplicates', () => {
     // TWENTY since 10.08.2026: `ship.published` was being emitted by the release handler into
     // a vocabulary that did not contain it, so the hub dropped it and the one frame a person
     // would actually notice — «опубликовано» — never rang. Declaring it is the fix.
-    expect(EVENT_TYPES).toHaveLength(20)
-    expect(new Set(EVENT_TYPES).size).toBe(20)
-    for (const t of ['chat.reply', 'machine.presence', 'project.updated', 'import.updated', 'ship.published']) {
+    // TWENTY-ONE since 25.08.2026: `chat.stage` — where a live conversation turn is, so the
+    // window stops answering into the void. It was declared under the same two absolute bans
+    // as `chat.reply`, and the frame test below is what holds it to them.
+    expect(EVENT_TYPES).toHaveLength(21)
+    expect(new Set(EVENT_TYPES).size).toBe(21)
+    for (const t of ['chat.reply', 'machine.presence', 'project.updated', 'import.updated', 'ship.published', 'chat.stage']) {
       expect(EVENT_TYPES).toContain(t)
     }
   })

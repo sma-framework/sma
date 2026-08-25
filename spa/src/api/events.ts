@@ -60,6 +60,9 @@ export const EVENT_NAMES = [
   // A release went out. Declared on the daemon's side after the release handler was found
   // ringing a bell its own vocabulary did not contain; it is here so the window hears it.
   'ship.published',
+  // Где сейчас ход разговора: короткое имя этапа и его номер. Слов разговора в кадре нет и
+  // не будет — их привозит ответ того запроса, который их спросил.
+  'chat.stage',
 ] as const
 
 /**

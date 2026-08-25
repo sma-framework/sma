@@ -470,10 +470,24 @@ export function removeMachine(id: string): Promise<OkResult> {
  * question narrowed by the window's current filter would answer about half the park while
  * looking like it answered about all of it.
  */
-export function sendChat(input: { text: string; conversationId?: string; turnId?: string }): Promise<ChatReply> {
+export function sendChat(input: {
+  text: string
+  conversationId?: string
+  turnId?: string
+  /**
+   * Карточка, С КОТОРОЙ открыт разговор — ИДЕНТИФИКАТОР и ничего больше.
+   *
+   * Снимок состояния собирает дверь по своему же реестру: то, что прислало бы окно, было бы
+   * вторым рассказом о задаче рядом с карточкой, и разошлись бы они молча.
+   */
+  taskId?: string
+}): Promise<ChatReply> {
   return postJson<ChatReply>(
     '/api/chat',
-    withOptional({ text: input.text }, { conversationId: input.conversationId, turnId: input.turnId }),
+    withOptional(
+      { text: input.text },
+      { conversationId: input.conversationId, turnId: input.turnId, taskId: input.taskId },
+    ),
   )
 }
 
