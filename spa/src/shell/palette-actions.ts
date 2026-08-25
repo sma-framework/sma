@@ -1,4 +1,5 @@
 import type { ScreenId } from '../screens/registry'
+import type { OpenSurfaceId } from './navigation'
 
 /**
  * palette-actions — every act the palette knows about, and the door each one goes through.
@@ -48,8 +49,18 @@ import type { ScreenId } from '../screens/registry'
  * that screen's own hook, and nothing else about the mechanism changes.
  */
 
-/** Where an entry leads: a screen to open, or a hook the screens already call. */
-export type PaletteDoor = { via: 'screen'; screen: ScreenId } | { via: 'hook'; hook: PaletteHookId }
+/**
+ * Where an entry leads: a screen to open, or a hook the screens already call.
+ *
+ * A screen door may also name one of the screen's OWN surfaces (`opens`) — the form behind one
+ * of its buttons, unfolded on arrival. That is still opening rather than pressing: the form
+ * asks its questions and posts nothing until the person presses the form's own button. Without
+ * it the three «new work» entries would all land on the same screen and leave a person hunting
+ * for the button the entry just promised.
+ */
+export type PaletteDoor =
+  | { via: 'screen'; screen: ScreenId; opens?: OpenSurfaceId }
+  | { via: 'hook'; hook: PaletteHookId }
 
 /**
  * The hooks the palette is allowed to call. Empty on purpose — see the header. Naming a hook
@@ -88,11 +99,38 @@ export const PALETTE_ACTIONS: readonly PaletteAction[] = [
     hint: '«Задачи» → карточка задачи → «Вернуть»',
     door: { via: 'screen', screen: 'tasks' },
   },
+  /*
+   * НОВАЯ РАБОТА — ТРИ ВИДА, И КАЖДЫЙ СВОЕЙ ДВЕРЬЮ.
+   *
+   * Работа заводится в этом продукте тремя разными способами: одной задачей, батчем и фазой.
+   * Раньше палитра знала только первый, и человек, которому нужны были два других, должен был
+   * помнить, на каком экране они живут. Теперь их три — по одному на вид работы.
+   *
+   * Первые два открывают ФОРМУ на экране «Задачи»: обе уже там, каждая за своей кнопкой в
+   * шапке, и дверь просто разворачивает нужную сразу. Ни одна из них ничего не ставит, пока
+   * человек не нажмёт кнопку самой формы, — закон файла цел.
+   *
+   * Третий — исключение из правила «строка обещает кнопку», и оно названо вслух: двери
+   * создания фазы в окне НЕТ (решение владельца — фаза заводится не кнопкой окна), поэтому
+   * строка обещает ровно то, что даёт, — экран, на котором фазы живут.
+   */
   {
-    id: 'enqueue',
-    title: 'Поставить новую задачу',
-    hint: '«Задачи» → форма новой задачи',
-    door: { via: 'screen', screen: 'tasks' },
+    id: 'new-task',
+    title: 'Новая задача',
+    hint: '«Задачи» → форма новой задачи. Форма открывается пустой, ставит задачу Ваша кнопка в ней',
+    door: { via: 'screen', screen: 'tasks', opens: 'new-task' },
+  },
+  {
+    id: 'new-batch',
+    title: 'Новый батч',
+    hint: '«Задачи» → форма батча: одна фраза, разобранная на состав. В очередь уезжает только отмеченное',
+    door: { via: 'screen', screen: 'tasks', opens: 'new-batch' },
+  },
+  {
+    id: 'new-phase',
+    title: 'Новая фаза',
+    hint: '«Конвейер фаз» — фазы заводятся не из окна, здесь их видно и здесь они двигаются по стадиям',
+    door: { via: 'screen', screen: 'pipeline' },
   },
   {
     id: 'phase-stage',

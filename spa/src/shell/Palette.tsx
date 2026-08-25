@@ -159,7 +159,7 @@ export function Palette() {
           // Every door of the static list is a screen today; the hook door is declared for the
           // day an act qualifies for it, and its reasoning lives beside the list.
           if (a.door.via === 'screen') {
-            openScreen({ screen: a.door.screen })
+            openScreen({ screen: a.door.screen, opens: a.door.opens })
             return true
           }
           return false
