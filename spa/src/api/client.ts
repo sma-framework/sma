@@ -36,6 +36,7 @@ import type {
   OnboardingState,
   PairingInvitation,
   PhaseCard,
+  PhaseFolder,
   PhaseIndex,
   PhaseStage,
   PhaseStageResult,
@@ -703,6 +704,27 @@ export function postDecisionAnswer(input: {
  */
 export function getArtifact(path: string): Promise<string> {
   return getText(`/api/artifact?path=${encodeURIComponent(path)}`)
+}
+
+/**
+ * Папка одной фазы: её каталог как дерево имён.
+ *
+ * Содержимого файлов здесь нет — дерево это оглавление, и файл читается отдельным вопросом
+ * ниже. Так экран не тянет весь каталог ради одного открытого файла.
+ */
+export function getPhaseFiles(id: string): Promise<PhaseFolder> {
+  return getJson<PhaseFolder>(`/api/phase/${encodeURIComponent(id)}/files`)
+}
+
+/**
+ * Один файл папки фазы, ТЕКСТОМ.
+ *
+ * Путь берётся из дерева и едет к двери нетронутым: дверь принимает ровно одно написание пути
+ * и на всякое другое отвечает одним и тем же отказом — собирать путь на экране значило бы
+ * заводить второе написание.
+ */
+export function getPhaseFile(id: string, path: string): Promise<string> {
+  return getText(`/api/phase/${encodeURIComponent(id)}/files?file=${encodeURIComponent(path)}`)
 }
 
 // ── the memory workbench ────────────────────────────────────────────────────────────

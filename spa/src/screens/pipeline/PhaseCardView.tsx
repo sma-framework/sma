@@ -15,6 +15,7 @@ import type { DecisionDraft } from '../../shell/DecisionCard'
 import { EntitySummary } from '../../shell/EntitySummary'
 import { currentStage, phaseStats } from '../../shell/stats'
 import { ArtifactViewer } from './ArtifactViewer'
+import { PhaseFolderView } from './PhaseFolder'
 import {
   doorWords,
   isOpen,
@@ -650,6 +651,11 @@ export function PhaseCardView({
                 </span>
               ))}
             </div>
+
+            {/* ПАПКА ФАЗЫ — то, что фаза оставила на диске, без посредничества проекции. Стоит
+                перед стадией, как в макете: сначала «что тут вообще есть», потом работа со
+                стадией. Предпросмотр — текст и только текст. */}
+            <PhaseFolderView id={id} />
 
             <Block
               title={`Стадия ${STAGE_ORDER.indexOf(stage) + 1} · ${STAGE_LABEL[stage]}`}

@@ -6,24 +6,27 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-TWO routes
- *     (re-frozen 2026-08-20 — the growth past the V5.4 fifty-three is EXPLICIT, NINE doors,
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-THREE routes
+ *     (re-frozen 2026-08-25 — the growth past the V5.4 fifty-three is EXPLICIT, TEN doors,
  *     each declared by the release that opened it: the chat stop button in v5.4.3, the
  *     running-task steering wheel in v5.5.0, SIX doors in v5.6.0 — the batch request,
  *     the word its owner answers a stopped batch with, the composition a phrase could have,
  *     the two doors of a task's WORDS (the one that proposes them and the one that corrects
  *     them), and the order that stops ONE echelon of ONE phase and starts it again — and,
- *     newest of them and NOT YET CARRYING A RELEASE OF ITS OWN, the door that CANCELS a
+ *     NOT YET CARRYING A RELEASE OF THEIR OWN, the door that CANCELS a
  *     task, so a person can stop work with a finger and the stopping leaves no live process
- *     behind it. That last one names no version on purpose: every other door here records
+ *     behind it, and the door that opens the FOLDER OF ONE PHASE for reading — its directory
+ *     as a tree, and one file of it as text — so what a phase left behind can be read where
+ *     the person already is instead of in a terminal. Those two name no version on purpose:
+ *     every other door here records
  *     the release that actually shipped it, and writing a number before it is cut would make
  *     this header a promise instead of a record — the stamp goes in when the release does;
- *     the previous freezes were SIXTY-ONE,
+ *     the previous freezes were SIXTY-TWO, 2026-08-20, SIXTY-ONE,
  *     2026-08-13, FIFTY-FIVE, 2026-08-12, FIFTY-THREE, 2026-08-06, THIRTY, 2026-08-01, and
  *     FOURTEEN, 2026-07-17). A path outside the table is 404 BEFORE any
  *     auth-error detail (no route reflection). No command-exec endpoint exists or ever may —
  *     adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 62 is a test.
+ *     invariant that polices it. Object.keys(ROUTES).length === 63 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
@@ -78,7 +81,13 @@
  */
 
 import { createServer } from 'node:http'
-import { readFileSync as fsReadFileSync, statSync as fsStatSync } from 'node:fs'
+import {
+  readFileSync as fsReadFileSync,
+  statSync as fsStatSync,
+  readdirSync as fsReaddirSync,
+  lstatSync as fsLstatSync,
+  realpathSync as fsRealpathSync,
+} from 'node:fs'
 import { join, extname, isAbsolute, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -87,7 +96,7 @@ import { atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
 import { BATCH_PARENT, CAP_TITLE, isBatchParent, latestRowPerId, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
 import { proposeBreakdown, proposeWords } from './chat.mjs'
-import { createQuestions, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
+import { createQuestions, findPhaseDir, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
@@ -230,29 +239,30 @@ const BUILD_INSTRUCTION_HTML =
   '</body></html>'
 
 /**
- * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-20; the FIFTY-THREE of the V5.4
- * freeze plus nine doors, eight of them declared once by the release that shipped them —
+ * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-25; the FIFTY-THREE of the V5.4
+ * freeze plus ten doors, eight of them declared once by the release that shipped them —
  * the chat stop button in v5.4.3, the running-task steering wheel in v5.5.0, in v5.6.0 the
  * batch request, the word its owner answers a stopped batch with, the composition a phrase
  * could have, the two doors of a task's WORDS (the one that proposes them and the one that
  * corrects them), and the order that stops ONE echelon of ONE phase and starts it again —
- * and the ninth, carrying no release stamp until one is actually cut, the door that CANCELS
- * a task: a person stops the work, and the row is closed only after the live child under it
- * is dead).
- * Exactly SIXTY-TWO entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
- * marks the four dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
- * /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic asset segment
- * (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 62) and no route may be
+ * and two carrying no release stamp until one is actually cut: the door that CANCELS
+ * a task (a person stops the work, and the row is closed only after the live child under it
+ * is dead), and the door that READS THE FOLDER OF ONE PHASE — its directory as a tree, and
+ * one file of it as text, both bounded, neither able to leave that directory).
+ * Exactly SIXTY-THREE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * marks the five dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
+ * /api/phase/:id/files, /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic
+ * asset segment (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
+ * polices — its size is a test (Object.keys(ROUTES).length === 63) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time; the last nine joined one release at a time, additively — nothing was
- * removed or renamed. ALL SIXTY-TWO ARE LIVE — the table carries no stub, and the shape
+ * a time; the last ten joined one release at a time, additively — nothing was
+ * removed or renamed. ALL SIXTY-THREE ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  *
- * THREE OF THE NINE PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
+ * THREE OF THE TEN PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
  * two word doors are a PAIR (the first returns a draft for a person to correct, the second
  * writes only onto a task whose work is not over), and the batch-composition door is the same
  * promise about a whole batch. Between them they are the whole of «система предлагает,
@@ -331,6 +341,8 @@ export const ROUTES = Object.freeze({
   'POST /api/wave/hold': 'handleWaveHold',
   // ── остановка задачи человеком: сначала убить живого ребёнка, потом закрыть строку ──
   'POST /api/task/cancel': 'handleTaskCancel',
+  // ── папка фазы: её каталог, как он лежит на диске, и один файл из него ТЕКСТОМ ──
+  'GET /api/phase/:id/files': 'handlePhaseFiles',
 })
 
 /**
@@ -443,8 +455,9 @@ const PHASE_INDEX_SEGMENT = 'index'
 
 /**
  * matchRoute(method, pathname) → { handler, params } | { badId:true } | null.
- * Static routes hit the frozen table by key; the five dynamic routes match a prefix and
- * validate their segment against ID_RE (task/diff/phase/attempt) or ASSET_RE (assets) — a
+ * Static routes hit the frozen table by key; the six dynamic routes match a prefix and
+ * validate their segment against ID_RE (task/diff/phase/phase-folder/attempt) or ASSET_RE
+ * (assets) — a
  * failing segment → badId → 400, never a 404 that would hint the route shape. Anything else
  * → null → 404. Every branch below is the SAME shape on purpose: an error that varies with
  * the route is an error that maps the surface.
@@ -458,6 +471,15 @@ export function matchRoute(method, pathname) {
     if (diff) return ID_RE.test(diff[1]) ? { handler: 'handleDiff', params: { id: diff[1] } } : { badId: true }
     const task = pathname.match(/^\/api\/task\/(.+)$/)
     if (task) return ID_RE.test(task[1]) ? { handler: 'handleTask', params: { id: task[1] } } : { badId: true }
+    // ПАПКА ФАЗЫ СТОИТ ПЕРЕД КАРТОЧКОЙ, и порядок здесь несущий: `12-front/files` попал бы под
+    // выражение карточки целиком, а косая черта не проходит ID_RE — так что дверь папки, стоящая
+    // ниже, отвечала бы 400 на собственный законный адрес и никогда бы не открывалась.
+    const phaseFiles = pathname.match(/^\/api\/phase\/(.+)\/files$/)
+    if (phaseFiles) {
+      return ID_RE.test(phaseFiles[1])
+        ? { handler: 'handlePhaseFiles', params: { id: phaseFiles[1] } }
+        : { badId: true }
+    }
     const phase = pathname.match(/^\/api\/phase\/(.+)$/)
     if (phase) {
       const seg = phase[1]
@@ -3621,6 +3643,231 @@ async function handlePhaseCard({ res, params, deps }) {
   return sendJson(res, 200, card)
 }
 
+// ══════════ ПАПКА ФАЗЫ: её каталог на диске, читаемый из окна и только читаемый ══════════
+//
+// ЗАЧЕМ ЭТА ДВЕРЬ, КОГДА РЯДОМ ЕСТЬ ДВЕРЬ ДОКУМЕНТА. Дверь документа открывает файл, ИМЯ
+// которого уже назвала карточка: планы, итоги, приёмка — то, что проекция умеет узнавать. Всё
+// остальное, что фаза оставила в своём каталоге, для окна не существовало вовсе, и человек шёл
+// смотреть это в терминал. Эта дверь отвечает на другой вопрос — «что вообще лежит в папке
+// фазы» — и отвечает списком, а не догадкой проекции о том, какой файл важен.
+//
+// ОДИН КОРЕНЬ, И ЭТО КАТАЛОГ ОДНОЙ ФАЗЫ. Не проект, не `.planning/` целиком — ровно
+// `.planning/phases/<каталог этой фазы>`. Какой каталог за номером фазы — знает `findPhaseDir`,
+// тот же, которым это знает карточка и выходные ворота демона; второго ответа здесь не заводится.
+//
+// ТОЛЬКО ЧТЕНИЕ. Здесь нет записи, нет удаления и нет ветки, которая могла бы их получить: дверь
+// умеет отдать дерево и отдать один файл текстом, и ничего третьего в ней не написано.
+//
+// ЗАМОК СТОИТ ТРИЖДЫ, И КАЖДАЯ ПРОВЕРКА ЛОВИТ СВОЁ. По ТЕКСТУ (нет сегмента `..`, нет ведущей
+// косой, нет буквы диска, нет нулевого байта), по РАЗРЕШЁННОМУ пути (он обязан остаться внутри
+// корня — сравнение по границе разделителя, чтобы сосед с похожим началом имени не прошёл) и по
+// НАСТОЯЩЕМУ пути (`realpath` обоих концов: ссылка наружу разрешается наружу и на этом ловится —
+// текстовая проверка о ней не знает в принципе). Отказ всегда ОДИН И ТОТ ЖЕ 400: вызывающий
+// узнаёт, что путь не принят, и ничего о том, как устроен диск за дверью.
+
+/** Где живут каталоги фаз под проектом — в той же прямой косой, что и у соседних дверей. */
+const PHASE_FOLDER_ROOT = '.planning/phases'
+
+/** Файл, который человек читает глазами, — не груз: после этого потолка это уже не документ. */
+const PHASE_FILE_MAX_BYTES = 512 * 1024
+const PHASE_FILE_PATH_CAP = 512
+
+/**
+ * Сколько записей несёт одно дерево и как глубоко оно ходит.
+ *
+ * Каталог фазы — это десятки файлов, а не тысячи; потолки стоят не потому, что кто-то ждёт
+ * тысячу, а потому что ответ, размер которого задаёт содержимое диска, — это не ответ. Дерево,
+ * упёршееся в потолок, говорит об этом полем `truncated`, а не молча обрывается: «показано не
+ * всё» и «больше ничего нет» — разные факты, и окно обязано различать их словами.
+ */
+const PHASE_TREE_MAX_ENTRIES = 400
+const PHASE_TREE_MAX_DEPTH = 6
+
+/**
+ * Файловая поверхность папки фазы: настоящая fs в бою, подставная в тестах.
+ *
+ * ЧЕСТНО ПРО ПОДСТАВНОЙ ШОВ. Шов, который не умеет отличить ссылку от файла, отвечает обычным
+ * `stat`, а шов, который не умеет разрешить ссылку, отвечает самим путём. Это не дыра: ссылка
+ * существует только на НАСТОЯЩЕМ диске, и там оба вопроса всегда заданы настоящей fs, — а
+ * текстовая проверка и проверка разрешённого пути стоят при любом шве.
+ */
+function phaseFolderIo(deps) {
+  const io = (deps && deps.fsImpl) || null
+  return {
+    readdirSync: (io && io.readdirSync) || fsReaddirSync,
+    statSync: (io && io.statSync) || fsStatSync,
+    readFileSync: (io && io.readFileSync) || fsReadFileSync,
+    lstatSync: (io && (io.lstatSync || io.statSync)) || fsLstatSync,
+    realpathSync: (io && io.realpathSync) || (io ? (p) => p : fsRealpathSync),
+  }
+}
+
+/** Путь `p` лежит в корне `root` или сам им является — сравнение по границе разделителя. */
+function insideRoot(root, p) {
+  return p === root || p.startsWith(`${root}/`) || p.startsWith(`${root}\\`)
+}
+
+/**
+ * safePhaseFilePath(io, root, rel) → путь, который можно открыть, или null.
+ *
+ * `null` — ЕДИНСТВЕННОЕ значение отказа: какое именно правило нарушено, остаётся делом этой
+ * функции и никогда не становится ответом вызывающему.
+ *
+ * Ненайденный путь отказом ЗДЕСЬ не считается: `realpath` не может сказать о несуществующем
+ * файле, снаружи он или внутри, и превращать «нет такого файла» в «путь не принят» значило бы
+ * отвечать 400 на честную опечатку. Такой путь идёт дальше и умирает на `stat` как 404.
+ */
+function safePhaseFilePath(io, root, rel) {
+  if (typeof rel !== 'string' || rel === '' || rel.length > PHASE_FILE_PATH_CAP) return null
+
+  const path = rel.replace(/\\/g, '/')
+  if (path.split('/').includes('..')) return null // сегмент обхода, в любом написании
+  if (path.startsWith('/') || isAbsolute(rel) || /^[A-Za-z]:/.test(path)) return null
+  if (path.includes('\0')) return null
+
+  const rootResolved = resolvePath(root)
+  const full = resolvePath(root, path)
+  if (!insideRoot(rootResolved, full)) return null
+
+  // третья проверка — по НАСТОЯЩИМ путям обоих концов. Корень разрешается тоже: временный
+  // каталог сам бывает ссылкой, и сравнение настоящего пути с ненастоящим корнем отказывало бы
+  // всему подряд там, где ничего плохого не происходит.
+  let realRoot = null
+  let realFull = null
+  try {
+    realRoot = io.realpathSync(rootResolved)
+    realFull = io.realpathSync(full)
+  } catch {
+    realRoot = null
+    realFull = null
+  }
+  if (realRoot !== null && realFull !== null && !insideRoot(realRoot, realFull)) return null
+
+  return join(root, path)
+}
+
+/** Каталоги раньше файлов, внутри — по имени: так папку читает глаз, привыкший к редактору. */
+function folderOrder(a, b) {
+  if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+}
+
+/**
+ * phaseTree(io, root) → {entries, truncated} — папка фазы как дерево имён и размеров.
+ *
+ * СОДЕРЖИМОГО ФАЙЛОВ ЗДЕСЬ НЕТ. Дерево — это оглавление; сам файл читается ОТДЕЛЬНЫМ вопросом к
+ * той же двери, и это единственное место, где чтение файла ограничено потолком и замком.
+ *
+ * ССЫЛКА — НЕ СОДЕРЖИМОЕ ПАПКИ ФАЗЫ, и её здесь нет вовсе. Пройти по ней значило бы показать в
+ * дереве фазы чужой каталог, а показать её как файл — пообещать чтение, которое замок всё равно
+ * не даст. Каталог, который не читается, — это пустой узел, а не отказ всего дерева: одна
+ * недоступная папка не должна стоить человеку вида на остальные.
+ */
+function phaseTree(io, root) {
+  const budget = { left: PHASE_TREE_MAX_ENTRIES }
+
+  const walk = (dir, prefix, depth) => {
+    let names
+    try {
+      names = io.readdirSync(dir).map(String)
+    } catch {
+      return []
+    }
+    const rows = []
+    for (const name of names) {
+      if (budget.left <= 0) break
+      const full = join(dir, name)
+      let st
+      try {
+        st = io.lstatSync(full)
+      } catch {
+        continue
+      }
+      if (st && typeof st.isSymbolicLink === 'function' && st.isSymbolicLink()) continue
+      budget.left -= 1
+      const rel = prefix === '' ? name : `${prefix}/${name}`
+      if (st && typeof st.isDirectory === 'function' && st.isDirectory()) {
+        rows.push({
+          name,
+          path: rel,
+          kind: 'dir',
+          children: depth + 1 < PHASE_TREE_MAX_DEPTH ? walk(full, rel, depth + 1) : [],
+        })
+      } else {
+        rows.push({ name, path: rel, kind: 'file', size: Number.isFinite(st && st.size) ? st.size : null })
+      }
+    }
+    return rows.sort(folderOrder)
+  }
+
+  const entries = walk(root, '', 0)
+  return { entries, truncated: budget.left <= 0 }
+}
+
+/**
+ * GET /api/phase/:id/files — дерево папки фазы, а с `?file=<путь внутри неё>` — ОДИН файл ТЕКСТОМ.
+ *
+ * ТЕКСТ, А НЕ РАЗМЕТКА. Возвращается `text/plain` с `nosniff` и `no-store`: что делать с
+ * содержимым — дело экрана, а демон, отдавший HTML за файл, которым он не управляет, вручил бы
+ * браузеру всё, что в этом файле оказалось.
+ *
+ * ДВОИЧНЫЙ ФАЙЛ ОТКАЗЫВАЕТСЯ СЛОВАМИ. Нулевой байт — то же правило, по которому двоичный файл
+ * узнаёт git: показывать «текст», собранный из картинки, значит показывать мусор и называть его
+ * документом. Превышение потолка — отдельный отказ по размеру, а не обрезанная полуправда.
+ */
+function handlePhaseFiles({ res, params, query, deps }) {
+  const projectDir = phaseCycleDir(deps)
+  if (typeof projectDir !== 'string' || projectDir.trim() === '') return send404(res)
+
+  const io = phaseFolderIo(deps)
+  const phasesRoot = join(projectDir, ...PHASE_FOLDER_ROOT.split('/'))
+  let dirs
+  try {
+    dirs = io.readdirSync(phasesRoot).map(String)
+  } catch {
+    return send404(res) // у проекта нет каталога фаз — значит, нет и папки этой фазы
+  }
+  const dir = findPhaseDir(dirs, String((params && params.id) || ''))
+  if (!dir) return send404(res)
+  const root = join(phasesRoot, dir)
+
+  const asked = query && typeof query.file === 'string' ? query.file : ''
+  if (asked === '') {
+    const tree = phaseTree(io, root)
+    return sendJson(res, 200, {
+      phase: dir,
+      // ПУТЬ ФАЗЫ, А НЕ ПУТЬ НА ДИСКЕ ВЛАДЕЛЬЦА: наружу едет только то, что отсюда и началось.
+      root: `${PHASE_FOLDER_ROOT}/${dir}`,
+      entries: tree.entries,
+      truncated: tree.truncated,
+    })
+  }
+
+  const full = safePhaseFilePath(io, root, asked)
+  if (!full) return send400(res, 'invalid path')
+
+  let stat
+  try {
+    stat = io.statSync(full)
+  } catch {
+    return send404(res)
+  }
+  if (!stat || (typeof stat.isFile === 'function' && !stat.isFile())) return send400(res, 'invalid path')
+  if (Number.isFinite(stat.size) && stat.size > PHASE_FILE_MAX_BYTES) return send413(res)
+
+  let raw
+  try {
+    raw = io.readFileSync(full)
+  } catch {
+    return send404(res)
+  }
+  const bytes = Buffer.isBuffer(raw) ? raw : Buffer.from(String(raw), 'utf8')
+  // шов, у которого нечего было спросить о размере, всё равно ограничен: потолок — свойство двери
+  if (bytes.byteLength > PHASE_FILE_MAX_BYTES) return send413(res)
+  if (bytes.includes(0)) return send400(res, 'not a text file')
+  return sendText(res, 200, bytes.toString('utf8'))
+}
+
 /** Every row the queue holds, or an empty list when it cannot say. */
 async function allRowsOf(deps) {
   const adapter = deps.adapter
@@ -5274,6 +5521,8 @@ export const HANDLERS = Object.freeze({
   handleWaveHold,
   // остановка задачи человеком: сначала умирает живой ребёнок, потом закрывается строка
   handleTaskCancel,
+  // папка фазы: дерево её каталога и один файл из него текстом, только чтение
+  handlePhaseFiles,
 })
 
 // ── the dispatcher ──

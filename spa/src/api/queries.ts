@@ -17,6 +17,7 @@ import type {
   MemoryLintReport,
   OnboardingState,
   PhaseCard,
+  PhaseFolder,
   PhaseIndex,
   SearchResults,
   StatePayload,
@@ -58,6 +59,15 @@ export const PHASE_KEY = ['phase'] as const
 export const phaseIndexKey = ['phase', 'index'] as const
 export const phaseKey = (id: string) => ['phase', id] as const
 export const artifactKey = (path: string) => ['artifact', path] as const
+/**
+ * Папка фазы и один её файл — под тем же головным ключом, что и карточка.
+ *
+ * Обновление, заказанное на голове семейства, освежает и папку: каталог фазы меняется ровно
+ * тогда, когда по фазе что-то произошло, и держать для него отдельную голову значило бы
+ * помнить где-то ещё, что её тоже надо позвать.
+ */
+export const phaseFilesKey = (id: string) => ['phase', id, 'files'] as const
+export const phaseFileKey = (id: string, path: string) => ['phase', id, 'files', path] as const
 export const MEMORY_DRAFTS_KEY = ['memory', 'drafts'] as const
 export const MEMORY_LINT_KEY = ['memory', 'lint'] as const
 export const COORDINATION_KEY = ['coordination'] as const
@@ -530,6 +540,32 @@ export function usePhaseQuery(id: string | null) {
  * One document, as text. A finished document does not move under the eye, so it is read once
  * and then left alone — the same treatment a diff gets, and for the same reason.
  */
+/** Папка фазы: что лежит в её каталоге. Читается вместе с карточкой и стареет так же. */
+export function usePhaseFilesQuery(id: string | null) {
+  return useQuery<PhaseFolder>({
+    queryKey: phaseFilesKey(id ?? ''),
+    queryFn: () => api.getPhaseFiles(id as string),
+    enabled: !!id,
+    staleTime: STATE_STALE_MS,
+  })
+}
+
+/**
+ * Один файл папки фазы, текстом.
+ *
+ * В отличие от документа, файл рабочего каталога МОЖЕТ измениться под глазом — его правят из
+ * терминала, пока окно открыто, — поэтому он стареет как всё остальное, а не читается один раз
+ * навсегда.
+ */
+export function usePhaseFileQuery(id: string | null, path: string | null) {
+  return useQuery<string>({
+    queryKey: phaseFileKey(id ?? '', path ?? ''),
+    queryFn: () => api.getPhaseFile(id as string, path as string),
+    enabled: !!id && !!path,
+    staleTime: STATE_STALE_MS,
+  })
+}
+
 export function useArtifactQuery(path: string | null) {
   return useQuery<string>({
     queryKey: artifactKey(path ?? ''),

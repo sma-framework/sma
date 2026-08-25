@@ -262,7 +262,9 @@ Every door in it is live: there is no «coming soon» handler left in the table.
 - **The phase cycle, run from the app.** An index of every phase with «N open / M answered», a
   card per phase with its four stages and a button on each, plans and summaries opened in place
   as plain text, and the acceptance list answered line by line. A phase is named the way *you*
-  named it in the roadmap, not by its directory.
+  named it in the roadmap, not by its directory. The phase's own **folder** is on that card too —
+  its directory as a tree, any file in it previewed as text, read-only and never reaching outside
+  that directory.
 - **A parked question is answered on a card.** When a stage stops to ask, the question arrives in
   the window in exactly the shape the engine parked it — a variant or your own words, one of the
   two, and the form says which to remove rather than silently dropping one.
