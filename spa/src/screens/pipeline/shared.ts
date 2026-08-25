@@ -5,7 +5,7 @@ import { onFrame } from '../../api/hints'
 import { PHASE_KEY } from '../../api/queries'
 import type { PhaseQuestion, PhaseStage, PhaseStageStatus } from '../../api/types'
 import { isOpen } from '../../shell/DecisionCard'
-import { refusalWords, STAGE_LABEL } from '../../shell/format'
+import { refusalWords, STAGE_LABEL, STAGE_ORDER } from '../../shell/format'
 
 /**
  * shared.ts — the words this screen uses, and the ONE place it touches anything but a hook.
@@ -23,15 +23,13 @@ import { refusalWords, STAGE_LABEL } from '../../shell/format'
  * `refusalWords` reaches for exactly the same two, for exactly that reason.
  */
 
-/** The four stages, in the order a phase goes through them. The card never invents a fifth. */
-export const STAGE_ORDER: readonly PhaseStage[] = ['discuss', 'plan', 'execute', 'verify'] as const
-
 /**
- * What each stage is called on the glass. The words MOVED to the shell the day a second
- * screen needed them — the conversation now drafts a stage of its own — and are re-exported
- * here so this folder's readers still find them where they expect. One spelling, two screens.
+ * What each stage is called on the glass, and the order a phase goes through them. Both MOVED
+ * to the shell the day a second screen needed them — the conversation drafts a stage of its own,
+ * and the phase's «стадия N из 4» counts by the order — and are re-exported here so this
+ * folder's readers still find them where they expect. One spelling, two screens.
  */
-export { STAGE_LABEL }
+export { STAGE_LABEL, STAGE_ORDER }
 
 /** What a stage leaves behind — the thing that makes it «готово», said in words. */
 export const STAGE_WHAT: Record<PhaseStage, string> = {

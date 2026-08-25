@@ -12,6 +12,8 @@ import type {
 } from '../../api/types'
 import { DecisionCard, EMPTY_DRAFT } from '../../shell/DecisionCard'
 import type { DecisionDraft } from '../../shell/DecisionCard'
+import { EntitySummary } from '../../shell/EntitySummary'
+import { currentStage, phaseStats } from '../../shell/stats'
 import { ArtifactViewer } from './ArtifactViewer'
 import {
   doorWords,
@@ -447,14 +449,14 @@ export function PhaseCardView({
       ? undefined
       : (state.data?.waves ?? []).find((r) => r.phase === String(id) && r.wave === String(w.wave))
 
-  /** Стадия на глазу: выбранная человеком, иначе идущая, иначе первая незакрытая. */
-  const stage: PhaseStage =
-    picked ??
-    (phase
-      ? (STAGE_ORDER.find((s) => phase.stages[s] === 'in-progress') ??
-        STAGE_ORDER.find((s) => phase.stages[s] !== 'done') ??
-        STAGE_ORDER[STAGE_ORDER.length - 1])
-      : STAGE_ORDER[0])
+  /**
+   * Стадия на глазу: выбранная человеком, иначе та, на которой фаза стоит.
+   *
+   * ПРАВИЛО «ГДЕ СЕЙЧАС ФАЗА» ЖИВЁТ В ОДНОМ МЕСТЕ (`currentStage`) — им же считается «стадия N
+   * из 4» в окошке показателей. Пока правил было два, число и раскрытая стадия могли назвать
+   * разные стадии одной фазы, и человек читал бы это как ошибку экрана.
+   */
+  const stage: PhaseStage = picked ?? (phase ? currentStage(phase.stages) : STAGE_ORDER[0])
 
   /**
    * ФАЗА НЕ НАЗЫВАЕТ СЕБЯ ЗАКРЫТОЙ, ПОКА НЕ ЗАКРЫТЫ ПРОВЕРКА И ПРИЁМКА.
@@ -481,6 +483,27 @@ export function PhaseCardView({
       : phase && phase.uat.length === 0
         ? 'списка приёмки нет — приёмка не закрыта'
         : `приёмка: одобрено ${uatPassed} из ${phase?.uat.length ?? 0}`
+
+  /**
+   * О ЧЁМ ЭТА ФАЗА — словами ЕЁ СОБСТВЕННОГО ДОКУМЕНТА. Абзац и его источник приезжают дверью;
+   * окно не пересказывает и не сокращает, а называет, откуда слова взяты: «из контекста фазы» и
+   * «из роадмапа» — разные по весу утверждения.
+   *
+   * Нет ни того, ни другого — так и сказано словами. Пустое место на карточке читается как
+   * «экран не дочитал», а фаза без описания — нормальное состояние, а не поломка.
+   */
+  const describe: { text: string; source: string | null } = phase?.description
+    ? {
+        text: phase.description.text,
+        source:
+          phase.description.source === 'context'
+            ? 'из документа обсуждения этой фазы'
+            : 'из роадмапа — своего документа обсуждения у фазы пока нет',
+      }
+    : {
+        text: 'Описания нет: ни документа обсуждения, ни строки роадмапа про эту фазу окно не нашло.',
+        source: null,
+      }
 
   /**
    * Ворота, на которых стоит счётчик вопросов, — те, что за идущей стадией. Число вопросов у
@@ -585,11 +608,20 @@ export function PhaseCardView({
 
         {phase ? (
           <div className="flex max-w-[1040px] flex-col gap-4">
-            {phaseWhy ? (
-              <p className="m-0 text-[11.5px] text-tx3">
-                Фаза не закрыта: {phaseWhy}. Пройденные стадии исполнения этого не отменяют.
-              </p>
-            ) : null}
+            {/* Описание и показатели — пара, принятая владельцем 25.08. Строки-дубля с теми же
+                числами под заголовком нет: числа живут в окошке, и только там. Почему фаза не
+                закрыта, сказано ТАМ ЖЕ, рядом с числами, которые это объясняют. */}
+            <EntitySummary
+              describeTitle="Описание фазы"
+              text={describe.text}
+              source={describe.source}
+              note={
+                phaseWhy
+                  ? `Фаза не закрыта: ${phaseWhy}. Пройденные стадии исполнения этого не отменяют.`
+                  : null
+              }
+              stats={phaseStats(phase, Date.now())}
+            />
 
             {/* Дорога фазы: стадия — ворота — стадия. Ворота называют, что требуется от вас. */}
             <div className="flex items-stretch">
