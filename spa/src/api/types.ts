@@ -1860,6 +1860,37 @@ export interface PhaseWork {
   startedAt: number | null
 }
 
+/**
+ * Одна запись папки фазы: файл или подкаталог, как они лежат на диске.
+ *
+ * `path` — путь ВНУТРИ каталога фазы, ровно в том написании, какое принимает дверь: экран
+ * отдаёт его назад нетронутым, а не собирает из кусков. Второе написание одного пути — это
+ * второй ответ на вопрос, который у двери один.
+ *
+ * `size` у файла — байты, `null` — «размер спросить не удалось», а не ноль. У каталога размера
+ * нет вовсе; `children` пуст и у пустого каталога, и у того, что глубже потолка обхода.
+ */
+export interface PhaseFileNode {
+  name: string
+  path: string
+  kind: 'dir' | 'file'
+  size?: number | null
+  children?: PhaseFileNode[]
+}
+
+/**
+ * Папка фазы целиком: чей это каталог, как он называется относительно проекта и что в нём есть.
+ *
+ * `truncated` — «показано не всё»: дерево упёрлось в собственный потолок. Экран обязан сказать
+ * это словами, потому что молча оборванный список читается как «больше ничего нет».
+ */
+export interface PhaseFolder {
+  phase: string
+  root: string
+  entries: PhaseFileNode[]
+  truncated: boolean
+}
+
 /** Starting a stage puts a task in the queue, and the answer names it. */
 export interface PhaseStageResult extends OkResult {
   taskId: string
