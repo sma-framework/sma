@@ -23,10 +23,25 @@ import type { ScreenId } from '../screens/registry'
 
 export const OPEN_SCREEN_EVENT = 'sma:open-screen'
 
+/**
+ * The surfaces a screen can be asked to come up WITH — a form the screen already has behind
+ * one of its own buttons, unfolded on arrival instead of after one more press.
+ *
+ * This is a door being opened, not a button being pressed: the form still asks everything it
+ * asks and still posts nothing until the person presses its own «поставить». The list is a
+ * closed one on purpose — an arriving request naming anything else is read as naming nothing,
+ * so a stray shout into the window cannot unfold a surface the sender invented.
+ */
+export type OpenSurfaceId = 'new-task' | 'new-batch'
+
+const OPEN_SURFACES: readonly OpenSurfaceId[] = ['new-task', 'new-batch']
+
 export interface OpenScreenDetail {
   screen: ScreenId
   /** The task the target screen is to open on, when the target screen is about one task. */
   taskId?: string
+  /** The screen's own surface to unfold on arrival, when the request asks for one. */
+  opens?: OpenSurfaceId
 }
 
 /** Ask the window for another screen. The shell is what hears this. */
@@ -43,7 +58,11 @@ export function readOpenScreen(e: Event): OpenScreenDetail | null {
   const detail = (e as CustomEvent<OpenScreenDetail>).detail
   if (!detail || typeof detail !== 'object') return null
   if (!SCREENS.some((s) => s.id === detail.screen)) return null
-  return { screen: detail.screen, taskId: typeof detail.taskId === 'string' ? detail.taskId : undefined }
+  return {
+    screen: detail.screen,
+    taskId: typeof detail.taskId === 'string' ? detail.taskId : undefined,
+    opens: OPEN_SURFACES.includes(detail.opens as OpenSurfaceId) ? detail.opens : undefined,
+  }
 }
 
 const OpenedWith = createContext<OpenScreenDetail | null>(null)

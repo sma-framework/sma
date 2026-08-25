@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { usePhaseIndexQuery, useStateQuery } from '../../api/queries'
 import { TaskPanel } from '../../shell/TaskPanel'
+import { useOpenedWith } from '../../shell/navigation'
 import { useTellConsoleContext } from '../../shell/console-context'
 import { clockLabel, plural } from '../../shell/format'
 import { PhaseCardView } from '../pipeline/PhaseCardView'
@@ -110,6 +111,29 @@ export function Screen() {
   const [openBatch, setOpenBatch] = useState<string | null>(null)
   /** Раскрыта ли группа строк с неизвестным проектом. Свёрнута — но её заголовок виден всегда. */
   const [unknownOpen, setUnknownOpen] = useState(false)
+
+  /*
+   * ЭКРАН, ОТКРЫТЫЙ СРАЗУ НА ФОРМЕ.
+   *
+   * Из палитры сюда приходят две просьбы: «новая задача» и «новый батч». Это просьба РАЗВЕРНУТЬ
+   * форму — ту же, что за кнопкой в шапке, — а не поставить работу: форма спрашивает всё, что
+   * спрашивала, и не отправляет ничего до своей кнопки. Открыт остаётся ровно один вид формы:
+   * две сразу — это два ответа на один вопрос (то же правило, что у кнопок в шапке).
+   *
+   * Просьба живёт в объекте открытия, и каждое открытие — новый объект, поэтому вторая просьба
+   * подряд разворачивает форму снова, даже если человек успел закрыть первую.
+   */
+  const openedWith = useOpenedWith()
+  useEffect(() => {
+    if (openedWith?.opens === 'new-task') {
+      setNewOpen(true)
+      setBatchOpen(false)
+    }
+    if (openedWith?.opens === 'new-batch') {
+      setBatchOpen(true)
+      setNewOpen(false)
+    }
+  }, [openedWith])
 
   // Карточка фазы живёт теперь и здесь, значит и два звонка фазового цикла нужны здесь: без
   // них раскрытая фаза осталась бы такой, какой её открыли, пока человек не ушёл и не вернулся.
