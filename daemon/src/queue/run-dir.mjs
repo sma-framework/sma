@@ -12,7 +12,9 @@
  *   transcript.jsonl a REFERENCE to the attempt's transcript in the ledger, with its digest,
  *                   its line count and its size — never a second copy of it;
  *   receipt.json    how the try ENDED: the outcome, the gate that decided it, the verdict,
- *                   the lesson, and the memory layer as the stream observed it;
+ *                   the lesson, the memory layer as the stream observed it, and what the try
+ *                   cost in the provider's own four numbers (`tokens` — in, out, cache read,
+ *                   cache write; `null` when no final frame ever arrived to read them off);
  *   continuation.md THE HANDOVER SUMMARY — what the next try at this task needs to know about
  *                   this one, in prose: the approach that was taken, how it ended and why,
  *                   what the person said when they handed the work back, and which files

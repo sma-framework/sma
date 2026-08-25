@@ -85,9 +85,70 @@ function attemptNumber(v) {
 }
 
 /**
+ * ЧЕТЫРЕ ЧИСЛА ОДНОЙ ПОПЫТКИ — вход, выход, чтение кэша, запись кэша.
+ *
+ * ЗАЧЕМ ИХ ЧЕТЫРЕ, А НЕ ДВА. Строка книги трат несёт вход и выход, потому что книга отвечает
+ * на вопрос «сколько потрачено». У попытки вопрос другой — «из чего сложился этот счёт», — и
+ * ответ на него без кэша не читается вовсе: сессия, у которой миллион прочитан из кэша, и
+ * сессия, у которой тот же миллион отправлен заново, стоят по-разному в разы, а по двум
+ * числам выглядят одинаково.
+ *
+ * ЭТО ТЕЛЕМЕТРИЯ ПРОВАЙДЕРА, А НЕ НАШ РАСЧЁТ. Здесь ничего не оценивается и не выводится:
+ * что кадр сказал, то и записано. Оценка живёт в `estimateUsage` и называется оценкой; у
+ * попытки, чей кадр так и не пришёл, четырёх чисел просто НЕТ (вызывающий пишет отсутствие),
+ * потому что догадка в поле «провайдер сообщил» — это ложь, а не приближение.
+ *
+ * ОБА НАПИСАНИЯ ПОЛЕЙ. Кадр приходит от внешней командной строки, и она за свою историю
+ * писала счётчики и camelCase, и snake_case. Читаются оба — читатель, знающий одно, молча
+ * возвращает нули на потоке, который вообще-то всё сказал.
+ *
+ * @param {{modelUsage?:object|null}} resultEvent — parseClaudeEvent output for a `result` frame
+ * @returns {{input:number, output:number, cacheRead:number, cacheWrite:number}}
+ */
+export function claudeTokensFromResult(resultEvent = {}) {
+  const modelUsage = resultEvent && typeof resultEvent.modelUsage === 'object' ? resultEvent.modelUsage : {}
+  const counts = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  // ОДНА ПОПЫТКА — ОДИН СЧЁТ, сколько бы моделей в ней ни говорило: сессия, сменившая модель
+  // на середине, потратила сумму, а не последнее из двух чисел.
+  for (const k of Object.keys(modelUsage || {})) {
+    const mu = modelUsage[k] || {}
+    counts.input += num(mu.inputTokens ?? mu.input_tokens)
+    counts.output += num(mu.outputTokens ?? mu.output_tokens)
+    counts.cacheRead += num(mu.cacheReadInputTokens ?? mu.cache_read_input_tokens)
+    counts.cacheWrite += num(mu.cacheCreationInputTokens ?? mu.cache_creation_input_tokens)
+  }
+  return counts
+}
+
+/**
+ * codexTokensFromFinal(finalEvent) → те же четыре числа с финального кадра Codex.
+ *
+ * ЗАПИСЬ КЭША У ЭТОГО ПОСТАВЩИКА НЕ СООБЩАЕТСЯ ВОВСЕ — его `usage` знает про кэш только
+ * прочитанное. Ноль здесь означает «поставщик про это не говорит», и это ровно тот случай,
+ * когда ноль честнее пропуска: четвёрка полей у попытки одна на обоих поставщиков, иначе
+ * читателю пришлось бы знать, чьей попытке принадлежит квитанция, прежде чем её прочесть.
+ *
+ * @param {{usage?:object}} finalEvent — parseCodexEvent output for a `turn.completed` frame
+ * @returns {{input:number, output:number, cacheRead:number, cacheWrite:number}}
+ */
+export function codexTokensFromFinal(finalEvent = {}) {
+  const usage = finalEvent && typeof finalEvent.usage === 'object' ? finalEvent.usage || {} : {}
+  return {
+    input: num(usage.input_tokens ?? usage.inputTokens),
+    output: num(usage.output_tokens ?? usage.outputTokens),
+    cacheRead: num(usage.cached_input_tokens ?? usage.cachedInputTokens ?? usage.cache_read_input_tokens),
+    cacheWrite: 0,
+  }
+}
+
+/**
  * claudeUsageFromResult(resultEvent, ctx) → a canonical usage row from a parsed Claude
  * `result` event (parseClaudeEvent output). Sums the modelUsage token counts and carries
  * the event's total_cost_usd verbatim. source: 'stream-result'.
+ *
+ * ОДИН ЧИТАТЕЛЬ КАДРА НА КНИГУ И НА КВИТАНЦИЮ: суммирование живёт в `claudeTokensFromResult`
+ * выше и зовётся отсюда. Две копии одного разбора согласны в день, когда их написали, и
+ * расходятся в день, когда поставщик переименует поле в одной из них.
  *
  * @param {{totalCostUsd?:number|null, modelUsage?:object|null}} resultEvent
  * @param {{accountName?:string, taskId?:string, attempt?:number, model?:string}} [ctx]
@@ -98,13 +159,7 @@ export function claudeUsageFromResult(resultEvent = {}, { accountName, taskId, a
   const modelKeys = Object.keys(modelUsage || {})
   const modelName = model ?? modelKeys[0] ?? null
 
-  let inputTokens = 0
-  let outputTokens = 0
-  for (const k of modelKeys) {
-    const mu = modelUsage[k] || {}
-    inputTokens += num(mu.inputTokens ?? mu.input_tokens)
-    outputTokens += num(mu.outputTokens ?? mu.output_tokens)
-  }
+  const { input: inputTokens, output: outputTokens } = claudeTokensFromResult(resultEvent)
 
   const row = {
     accountName: accountName ?? null,
@@ -133,9 +188,9 @@ export function claudeUsageFromResult(resultEvent = {}, { accountName, taskId, a
  * @returns {object}
  */
 export function codexUsageFromFinal(finalEvent = {}, ctx = {}) {
-  const usage = finalEvent && typeof finalEvent.usage === 'object' ? finalEvent.usage : {}
-  const inputTokens = num(usage.input_tokens ?? usage.inputTokens)
-  const outputTokens = num(usage.output_tokens ?? usage.outputTokens)
+  // ТОТ ЖЕ ЧИТАТЕЛЬ КАДРА, что у квитанции попытки — см. `claudeUsageFromResult` о двух копиях
+  // одного разбора.
+  const { input: inputTokens, output: outputTokens } = codexTokensFromFinal(finalEvent)
 
   if (inputTokens === 0 && outputTokens === 0) {
     // A4 gap — book a time-based estimate, never blind $0. The provider is NAMED on the way in:

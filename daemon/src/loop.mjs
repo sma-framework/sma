@@ -136,7 +136,7 @@ import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
-import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage } from './runner/usage.mjs'
+import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage, claudeTokensFromResult, codexTokensFromFinal } from './runner/usage.mjs'
 import {
   readPendingRedirects,
   markConsumed,
@@ -1987,6 +1987,7 @@ function writeAttemptRunDir(deps, task, {
   gate,
   lesson,
   approach,
+  tokens,
 } = {}) {
   const config = deps.config || {}
   // THE SAME TREE THE COPY WAS CUT FROM — one source for both, so a run directory can never
@@ -2096,6 +2097,10 @@ function writeAttemptRunDir(deps, task, {
     // passes through; re-parsing it at the door would be a second reading of the same frames
     // and the two would drift the first time either changed.
     approach: approach ?? null,
+    // ЧЕТЫРЕ ЧИСЛА ПОСТАВЩИКА — тем же путём и по той же причине, что и записка выше: кадр
+    // разобран ОДИН раз, там, где книга трат его уже читает, и доезжает сюда, а не читается у
+    // двери второй раз. `null` значит «финального кадра не было» — см. `bookAttemptUsage`.
+    tokens: tokens ?? null,
     // THE NEEDLES THIS ATTEMPT'S SECOND BELT LOOKS FOR — taken from the spawn's own environment
     // HERE, where that environment is known, and carried to the closing door for the fifth
     // file. They live in memory for the length of one tick and are written into no record: the
@@ -2306,6 +2311,13 @@ function writeAttemptOutcome(deps, worktree, receipt, task) {
       ...receipt,
       gate: run.gate || 'reverify',
       ...receiptFactsOf(run),
+      // ЧЕМ ЭТА ПОПЫТКА ОБОШЛАСЬ, В ЧИСЛАХ ПОСТАВЩИКА. Они сняты с финального кадра потока в
+      // одном месте — там же, где книга трат берёт свою строку, — и лежат ЗДЕСЬ, у попытки,
+      // потому что книга отвечает про окно и про задачу, а спрашивают про попытку: строк на
+      // задачу столько же, сколько попыток, и сложить их обратно в «вот эта» нечем.
+      // `null` — «финального кадра не было», а не «ничего не потратили»: оценка, которую в
+      // таком случае получает книга, честно названа оценкой и в измерение не переезжает.
+      tokens: run.tokens ?? null,
       parity: parity ? { results: run.parityResults ?? [], summary: parity } : null,
     },
   })
@@ -2943,9 +2955,27 @@ function steeredSpawn(deps, taskId, spawnWorker) {
  *
  * Never fatal. The price of an attempt is bookkeeping; an attempt that did its work must not be
  * failed because the book could not be written.
+ *
+ * И ЧТО ОНО ВОЗВРАЩАЕТ. Четыре числа телеметрии поставщика — вход, выход, чтение кэша, запись
+ * кэша, — снятые с того же самого финального кадра, что и строка книги. Дальше они едут в
+ * квитанцию попытки: книга отвечает «сколько потрачено за окно», квитанция — «из чего сложился
+ * счёт ИМЕННО ЭТОЙ попытки», и второй ответ нельзя получить из первого, потому что строк на
+ * задачу много, а спросить человек хочет про одну.
+ *
+ * ЧИТАТЬ КАДР И ВЕСТИ КНИГУ — РАЗНЫЕ ОБЯЗАННОСТИ. Демон, собранный без книги, всё равно
+ * оставляет квитанцию, и числа в ней не должны зависеть от того, подключён ли писатель книги:
+ * иначе «у попытки нет чисел» означало бы то одно, то другое.
+ *
+ * NULL — ЭТО УТВЕРЖДЕНИЕ, А НЕ НУЛИ. Кадра не было вовсе (процесс убили, связь оборвали) —
+ * значит, поставщик не сказал ничего, и в книгу идёт ОЦЕНКА, честно названная оценкой. Она не
+ * имеет права попасть в поле, которое читается как «столько сообщил поставщик»: догадка в
+ * измерении — это ложь, а не приближение.
  */
 function bookAttemptUsage(deps, task, route, streamLines, now, startedAt) {
-  if (typeof deps.bookUsage !== 'function') return
+  // Книга — необязательный сосед: её отсутствие не отменяет чтения кадра (см. заголовок).
+  const book = (row) => {
+    if (typeof deps.bookUsage === 'function') deps.bookUsage(row)
+  }
   try {
     const workers = Array.isArray(deps.config && deps.config.workers) ? deps.config.workers : []
     const worker = route && route.workerId ? workers.find((w) => w && w.id === route.workerId) : null
@@ -2979,19 +3009,21 @@ function bookAttemptUsage(deps, task, route, streamLines, now, startedAt) {
       if (isCodex) {
         const event = parseCodexEvent(line)
         if (!event || event.type !== 'turn.completed') continue
-        deps.bookUsage(codexUsageFromFinal(event, { ...ctx, startedAt, endedAt: now }))
-        return
+        book(codexUsageFromFinal(event, { ...ctx, startedAt, endedAt: now }))
+        return codexTokensFromFinal(event)
       }
       const event = parseClaudeEvent(line)
       if (!event || event.type !== 'result') continue
-      deps.bookUsage(claudeUsageFromResult(event, ctx))
-      return
+      book(claudeUsageFromResult(event, ctx))
+      return claudeTokensFromResult(event)
     }
     // NO FINAL FRAME IN THE STREAM — see the header. The attempt still ran and still spent; the
     // book gets a line that says so and says, honestly, that it is an estimate.
-    deps.bookUsage(estimateUsage({ ...ctx, startedAt, endedAt: now }))
+    book(estimateUsage({ ...ctx, startedAt, endedAt: now }))
+    return null
   } catch {
     /* the price of an attempt never fails the attempt */
+    return null
   }
 }
 
@@ -3856,8 +3888,9 @@ export async function tick(deps = {}) {
 
       // (7a) WHAT IT COST — read off this attempt's own stream, before any gate decides its
       // fate. A refused attempt still spent the tokens, so the book is written for every
-      // attempt and not only for the ones that end well.
-      bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
+      // attempt and not only for the ones that end well. Четыре числа того же кадра едут
+      // отсюда в каталог прогона и дальше в квитанцию — один разбор на двух читателей.
+      const attemptTokens = bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
       unbookedSpend = null // paid — the catch below must not pay it a second time
 
       // (7b) THE APPROACH NOTE — read off the same stream, appended as the journal's
@@ -3934,6 +3967,7 @@ export async function tick(deps = {}) {
         gate: isDocument ? 'document' : 'reverify',
         lesson: lessonLayerOf(lessonEval),
         approach: note,
+        tokens: attemptTokens,
       })
 
       // An infra failure, a provider abort or a worker marker is the SHARPER signal and wins
@@ -4456,7 +4490,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // WHAT IT COST — off this attempt's own stream, before any gate decides its fate. A refused
   // forge attempt still spent the tokens; the forge lane booked nothing at all until now, so
   // «Расходы» answered zero to a night of real sessions.
-  bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
+  const attemptTokens = bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
 
   // The forge lane creates an attempt, so the forge lane owes a note like any other lane.
   // THE STREAM IS NOT TEXT: the markers live inside JSON frames, so the raw lines are
@@ -4508,6 +4542,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     gate: 'forge',
     lesson: { none: 'полоса-кузница: урок с этой попытки не требуется' },
     approach: forgeNote,
+    tokens: attemptTokens,
   })
 
   if (exit.spawnError) {
