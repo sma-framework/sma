@@ -23,7 +23,7 @@
 > Every subsystem of SMA on one interactive page — the fastest way to see how everything connects.
 
 > ### 🆕 [What's new — the taskboard, and numbers that do not lie →](#whats-new--the-taskboard-and-numbers-that-do-not-lie)
-> Every unit of work reads as one line and opens into its own view; the conversation about it is one keystroke away — and the gate that lets work out measures the worker's own copy, reddening only on what the worker actually broke.
+> Every unit of work stands in the column of the stage it is at and opens into its own view, and what waits on **you** has a column of its own; the conversation about it is one keystroke away — and the gate that lets work out measures the worker's own copy, reddening only on what the worker actually broke.
 
 > ### 🧭 [Roadmap →](ROADMAP.md) · [по-русски](ROADMAP.ru.md)
 > Where SMA is and what comes next: **V5 orchestration (a 24/7 worker fleet) — shipped → V5.1 works-with-what-you-have + the working front — shipped (v5.1.0) → V5.2 measured memory — shipped (v5.2.0) → V5.3 governance + hardened fleet — shipped (v5.3.0) → V5.4 the whole working day without the terminal — shipped (v5.4.0) → V5.5 the engine: steering a live session — shipped (v5.5.0) → V5.6 the taskboard and honest numbers — in the repository, current.** The whole release history, note by note, is in [docs/DETAILS.md](docs/DETAILS.md#the-v5-series-release-by-release).
@@ -155,7 +155,9 @@ Then repeat with `2`, `3`, and so on. For something small, skip all four: `/sma-
 
 ## What's new — the taskboard, and numbers that do not lie
 
-The window had a board of cards. This work turns it into the place the owner actually works from: **every unit of work reads as one line, opens into its own view, and the conversation about it happens without leaving the screen** — and every figure beside it is either measured or admitted to be missing.
+The window had a board of cards. This work turns it into the place the owner actually works from: **every unit of work stands in the column of the stage it is at, opens into its own view, and the conversation about it happens without leaving the screen** — and every figure beside it is either measured or admitted to be missing. There are six columns — discussion, planning, execution, verification, **waiting on you**, and done — a phase stands by its own stage, a task and a batch by their state, and the finished ones are folded into a counter so the working columns keep the screen. Names on the cards are small on purpose («17.7 Phone»); the full name lives on the page of the thing itself, which is what the card opens into.
+
+The first cut of this screen read every unit as one line instead, and said so here. The owner accepted the column layout in its place on 25.08.2026; the reason the list existed — that a person comes to this screen to find what is stuck on **them** — did not go away, it got a column of its own.
 
 **Three real kinds of work, not one thing wearing three labels.**
 
@@ -171,7 +173,7 @@ A task is the bottom of the hierarchy and the way in is the same from everywhere
 
 **The words of a task are derived by the system, not typed by you.** You write the formulation. Press once and SMA proposes the description and the marks of success the way a planner derives criteria from a goal — visible on the card, and yours to correct. Nothing is queued by the proposal itself; a draft is a draft until you confirm it. Setting up a pack works the same way: write the sentence, and the system proposes what it could be made of — matching entries from your backlog and new sub-tasks split out of the sentence — every candidate confirmable, removable, and never queued without your word.
 
-**A worker that stops with a question is impossible to miss.** The stop shows up in three places at once — the band at the top of the list, the row itself, and the card — each carrying how long it has been waiting. You answer from the conversation window, and the worker **continues the same session**: the return does not start over, and the context you already paid for stays in its head.
+**A worker that stops with a question is impossible to miss.** The stop shows up in two places at once — the **waiting on you** column, in amber, and the card itself — each carrying how long it has been waiting. The column says what is waiting and what there is to decide; the decision itself is taken on the card, which is what a click opens, because a decision made off one line of text is not a decision. You answer from the conversation window, and the worker **continues the same session**: the return does not start over, and the context you already paid for stays in its head.
 
 **Talk to the system without leaving the screen — `Ctrl K`.** The conversation opens over whatever you are looking at and takes its context from it, so «what is the state of this?» means *this*. Three things can come out of it: a decision on a waiting question, which travels to the worker; an order, which becomes a task and appears in the list; or an answer about the current state. Search and actions moved to `Ctrl P`.
 

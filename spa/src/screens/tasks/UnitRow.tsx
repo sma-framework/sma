@@ -1,5 +1,6 @@
+import { KIND_TONE, Ribbon, TONE } from './tone'
 import { KIND_WORD, STATE_WORD } from './units'
-import type { UnitState, WorkUnit } from './units'
+import type { WorkUnit } from './units'
 
 /**
  * UnitRow — one unit of work as one line, in the shape the accepted design gives it:
@@ -18,41 +19,6 @@ import type { UnitState, WorkUnit } from './units'
  * «начата и не закончена», и пульсирующая точка на фазе, где сейчас не запущена ни одна
  * стадия, обещала бы движение, которого нет.
  */
-
-/** The tone of each state, once — the row, the dot and the ribbon all read it from here. */
-const TONE: Record<UnitState, { dot: string; seg: string; word: string }> = {
-  run: { dot: 'bg-blue', seg: 'bg-blue', word: 'text-blue' },
-  dec: { dot: 'bg-warn', seg: 'bg-warn', word: 'text-warn-tx' },
-  ok: { dot: 'bg-green', seg: 'bg-green', word: 'text-ok-tx' },
-  wait: { dot: 'bg-tx3', seg: '', word: 'text-tx3' },
-  fail: { dot: 'bg-err', seg: 'bg-err', word: 'text-err-tx' },
-  // Два слова владельца — приглушённые: решение человека закрывает кусок или сборку, но не
-  // объявляет их ни сделанными, ни сломанными. Цвет здесь молчит, а слово говорит.
-  skip: { dot: 'bg-tx3', seg: 'bg-bd2', word: 'text-tx3' },
-  off: { dot: 'bg-tx3', seg: 'bg-bd2', word: 'text-tx3' },
-}
-
-const KIND_TONE: Record<WorkUnit['kind'], string> = {
-  inline: 'border-blue/25 bg-blue-s text-blue',
-  batch: 'border-violet/25 bg-violet-s text-violet',
-  phase: 'border-bd2 bg-surf text-teal',
-}
-
-/** The step ribbon. A segment nothing measured is an outline, never a filled block. */
-function Ribbon({ segs }: { segs: UnitState[] }) {
-  if (segs.length === 0) return null
-  return (
-    <div className="flex h-2 items-stretch gap-[3px]">
-      {segs.map((s, i) => (
-        <div
-          key={i}
-          title={STATE_WORD[s]}
-          className={`flex-1 rounded-[2px] ${s === 'wait' ? 'border border-dashed border-bd2' : TONE[s].seg}`}
-        />
-      ))}
-    </div>
-  )
-}
 
 export function UnitRow({
   unit,
