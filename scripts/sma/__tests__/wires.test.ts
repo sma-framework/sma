@@ -619,6 +619,39 @@ describe('след с экранированием — скаляр в кавы�
   })
 })
 
+describe('игла с экранированием — скаляр в кавычках доезжает до матчера литералом', () => {
+  it('иглы, объявленные внутри JSON и с удвоенными слэшами, находятся и зеленеют', () => {
+    const { evaluation: ev, inventory: inv } = evaluate('escaped-needle')
+
+    // Замок от пустоты: все три записи разобраны и судимы.
+    expect(inv.counts.artifacts).toBe(3)
+
+    // КОНТРОЛЬ, без которого тест доказывал бы, что прибор не нашёл того, чего нет:
+    // иглы лежат в дереве буква в букву — кавычки, два слэша, слэш-точка.
+    const { root } = caseDirs('escaped-needle')
+    expect(readFileSync(join(root, 'tree', 'catalog.json'), 'utf8')).toContain(String.raw`"NEEDLE_MARKER": "opus"`)
+    expect(readFileSync(join(root, 'tree', 'fixture-path.json'), 'utf8')).toContain(String.raw`C:\\`)
+    expect(readFileSync(join(root, 'tree', 'regex-like.txt'), 'utf8')).toContain(String.raw`MARKER\.LITERAL`)
+
+    const namedReds = ev.red
+      .map((r: { contains?: string; declaredPath?: string; reason: string }) => `${r.declaredPath}: ${r.contains} (${r.reason})`)
+      .join(' | ')
+    expect(ev.counts.red, namedReds).toBe(0)
+    expect(ev.exitCode).toBe(EXIT_CODES.clean)
+  })
+
+  it('запись хранит объявление КАК НАПИСАНО — отчёт эхом повторяет план, вердикты не протухают', () => {
+    const { evaluation: ev } = evaluate('escaped-needle')
+    const greens = ev.green.filter((g: { kind: string }) => g.kind === 'artifact')
+    const declared = greens.map((g: { contains: string }) => g.contains)
+    // В записи — сырая форма скаляра с экранированием, как в плане; снятая форма живёт
+    // только внутри матчера.
+    expect(declared).toContain(String.raw`\"NEEDLE_MARKER\": \"opus\"`)
+    expect(declared).toContain(String.raw`C:\\\\`)
+    expect(declared).toContain(String.raw`MARKER\\.LITERAL`)
+  })
+})
+
 describe('вычислитель — живое зеленеет (3), не построенное молчит (4)', () => {
   it('(3) живая фикстура: код 0, красных нет, зелень стоит на названных файлах', () => {
     const { root } = caseDirs('live')

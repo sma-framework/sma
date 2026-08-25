@@ -421,6 +421,20 @@ function undoubleScalarEscapes(text) {
 }
 
 /**
+ * A `contains:` needle is a LITERAL, not a regular expression, so here the quoted-scalar
+ * escaping is undone in full: `\"` becomes a quote and `\\` becomes one backslash.
+ * Without this a needle declared inside JSON — contains: "\"bin\"" — reaches the matcher
+ * with its backslashes still on and can never match the file it names, so a live artifact
+ * reads as red. Only these two escapes are undone: a lone backslash (`\.`) stays exactly
+ * as written, for the same reason undoubleScalarEscapes above refuses to strip wholesale.
+ * The record keeps `contains` AS WRITTEN — the report echoes the plan, and verdicts keyed
+ * on the declaration keep matching; the undone form exists only inside the matcher.
+ */
+function unescapeNeedleScalar(text) {
+  return text.replace(/\\(["\\])/g, '$1')
+}
+
+/**
  * compilePattern(pattern) -> {source, regexSource, regex|null, error|null}. A trace is
  * external data written by a human years ago; an unparseable one is MARKED, never thrown
  * and never dropped. Compiling is not running: bounding the cost of a hostile pattern
@@ -1161,7 +1175,7 @@ export function evaluateInventory({ inventory, treeDir, roots, broadLimit, verdi
     } catch {
       st = null
     }
-    const needle = String(art.contains)
+    const needle = unescapeNeedleScalar(String(art.contains))
     let found = false
     if (st && st.isDirectory()) {
       found = scanFiles
