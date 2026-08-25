@@ -30,6 +30,11 @@
 
 > **This is not a memory plugin.** It is a working discipline for shipping real code with an AI agent: memory that arrives at the exact moment it is needed, coordination that stops two terminals from overwriting each other, and a **trust spine** in which every "done" is settled by a script, re-derived by a blind verifier, and blocks the next release if it is false. It writes only to a few folders next to your code — **your source tree is never touched** — and everything it knows or enforces is a plain file you can read, diff, and revert.
 
+> ### 🤝 The promise
+> 1. Every task you hand to SMA is done by a worker in its own copy of your project, is checked by a script rather than by anyone's word, and comes back to you with a receipt — what was promised, what was done, how it is proven — and rolls back with one command.
+> 2. The worker works in exactly your environment: the same rules, hooks, memory, skills and permissions you have in your terminal — and each of its tasks leaves a lesson the system applies to the next one.
+> 3. Not a single number and not a single "done" in SMA is invented: everything this README states is verified by a command you can run yourself.
+
 ---
 
 ## Install
