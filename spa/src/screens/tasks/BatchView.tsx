@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { useBatchDecide, useStateQuery } from '../../api/queries'
 import type { BatchItem, BatchItemState } from '../../api/types'
+import { EntitySummary } from '../../shell/EntitySummary'
 import { TaskPanel } from '../../shell/TaskPanel'
+import { batchStats, clockOfMs } from '../../shell/stats'
 import { plural } from '../../shell/format'
 import { doorWords } from '../pipeline/shared'
 import { BATCH_ITEM_TONE, STATE_WORD } from './units'
@@ -99,7 +101,9 @@ export function BatchView({
   const batch = (state.data?.batches ?? []).find((b) => b.id === id) ?? null
   const items = batch?.items ?? []
   const n = items.length
-  const closed = items.filter((i) => i.state === 'done').length
+  // Закрытые куски считает окошко показателей (`batchStats`) — второй счёт здесь назвал бы ту
+  // же сборку двумя разными числами. Пропущенные считаются тут: это не показатель, а слово
+  // владельца о куске, и сказать его нужно в описании, а не цифрой.
   const skipped = items.filter((i) => i.state === 'skipped').length
   const started = items.some((i) => i.state !== 'waiting')
   const opened = items.find((i) => i.id === openItem) ?? null
@@ -147,12 +151,30 @@ export function BatchView({
             }.`
           : 'Сборка закрыта: каждый элемент произвёл или отпущен вами.'
 
-  const meta =
+  /**
+   * ОПИСАНИЕ СБОРКИ — ЭТО СЛОВА ВЛАДЕЛЬЦА И МОМЕНТ, КОГДА ОН ИХ СКАЗАЛ.
+   *
+   * Название сборки и есть его фраза: дверь батча записывает её как заголовок запроса, ничего
+   * не сочиняя. Момент приезжает отдельным полем той же строки — и `null` у него значит ровно
+   * «сборка старше этой отметки», а не «только что»: отметка постановки в очередь выглядела бы
+   * здесь так же и врала бы на величину, которую никто не заметит.
+   *
+   * Числа сюда НЕ ПИШУТСЯ. Прежде под заголовком стояла строка «батч · 3 элемента · закрыто 1
+   * из 3 …» — те же самые числа, что теперь стоят в окошке показателей. Владелец вычеркнул её
+   * (25.08): два места для одного числа — это одно место, где оно однажды разойдётся.
+   */
+  const requestedClock = clockOfMs(batch?.requestedAt ?? null)
+  const describe =
     n === 0
-      ? 'батч · элементов нет'
-      : `батч · ${n} ${plural(n, 'элемент', 'элемента', 'элементов')} · закрыто ${closed} из ${n}${
-          skipped > 0 ? ` · пропущено ${skipped}` : ''
-        } · один работник ведёт сборку, по одному элементу за раз`
+      ? 'Элементов у этой постановки нет — держать сборку нечему.'
+      : `Один работник ведёт сборку, по одному элементу за раз: ${n} ${plural(
+          n,
+          'элемент',
+          'элемента',
+          'элементов',
+        )}, и закроется она только вместе.${
+          skipped > 0 ? ` Пропущено вашим решением: ${skipped}.` : ''
+        }`
 
   const h = Math.max(n, 1) * STEP + 10
   const mid = h / 2
@@ -217,14 +239,22 @@ export function BatchView({
 
         {batch ? (
           <div className="flex flex-col gap-4">
-            <div className="flex items-start justify-between gap-5">
-              <div className="min-w-0">
-                <h2 className="m-0 truncate text-[19px] font-semibold leading-tight text-tx">
-                  {batch.title ?? 'Без названия'}
-                </h2>
-                <p className="m-0 mt-1.5 text-[11.5px] text-tx2">{meta}</p>
-              </div>
-            </div>
+            {/* Заголовок миниатюрный: имя сборки человек уже прочитал в пути наверху, а место
+                под ним принадлежит описанию и показателям, а не второму написанию имени. */}
+            <h2 className="m-0 truncate text-[13px] font-semibold leading-tight text-tx">
+              {batch.title ?? 'Без названия'}
+            </h2>
+
+            <EntitySummary
+              describeTitle="Описание батча"
+              text={`«${batch.title ?? 'Без названия'}» — этими словами сборку и заказали. ${describe}`}
+              source={
+                requestedClock
+                  ? `запрос владельца, ${requestedClock}`
+                  : 'момент просьбы не записан — сборка старше этой отметки'
+              }
+              stats={batchStats(batch, Date.now())}
+            />
 
             {/* ВСТАВШАЯ СБОРКА СПРАШИВАЕТ. Слова вариантов — движковые, не наши. */}
             {batch.question ? (

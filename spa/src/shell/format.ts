@@ -30,6 +30,17 @@ export const STAGE_LABEL: Record<PhaseStage, string> = {
   verify: 'Приёмка',
 }
 
+/**
+ * ПОРЯДОК ЧЕТЫРЁХ СТАДИЙ — дорога фазы, названная один раз.
+ *
+ * Он жил у экрана фаз, пока его не спросил ВТОРОЙ читатель: окошко показателей считает по нему
+ * «стадия N из 4», и это тот же вопрос, что рисует дорога. Поэтому порядок переехал сюда, к
+ * названиям стадий, — по тому же правилу, по которому здесь оказались они сами, — а прежнее
+ * место его перепубликует. Два написания одной дороги однажды разошлись бы, и «стадия 3 из 4»
+ * указывала бы не на ту стадию, которую человек видит открытой.
+ */
+export const STAGE_ORDER: readonly PhaseStage[] = ['discuss', 'plan', 'execute', 'verify'] as const
+
 /** Russian counts three ways. This is that rule, written once. */
 export function plural(n: number, one: string, few: string, many: string): string {
   const m10 = n % 10

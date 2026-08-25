@@ -1372,15 +1372,22 @@ function roadmapTitles(projectDir, io) {
     } catch {
       continue // no roadmap of that name — not an error, just no titles from it
     }
-    for (const line of raw.split(/\r?\n/)) {
-      const m = line.match(ROADMAP_HEADING)
+    const lines = raw.split(/\r?\n/)
+    for (let i = 0; i < lines.length; i += 1) {
+      const m = lines[i].match(ROADMAP_HEADING)
       if (!m) continue
       const n = Number(m[1])
       const full = m[2].trim()
       headings.push({ n, full })
       // FIRST heading wins: a roadmap that mentions a phase twice is naming it once and
       // referring to it afterwards.
-      if (!byNumber.has(n)) byNumber.set(n, { n, title: stripLeadingAside(full) })
+      //
+      // `lead` — абзац, который стоит ПОД этим заголовком. Он читается здесь, тем же единственным
+      // чтением файла, потому что нужен он ровно тогда, когда у фазы нет своего CONTEXT.md, и
+      // второе открытие того же роадмапа ради одной строки было бы вторым источником одного факта.
+      if (!byNumber.has(n)) {
+        byNumber.set(n, { n, title: stripLeadingAside(full), lead: paragraphAt(lines, i + 1) })
+      }
     }
   }
 
@@ -1417,6 +1424,88 @@ function shortAsideNumber(title) {
   if (!m) return null
   const numbers = m[1].match(/\d+(?:\.\d+)?/g)
   return numbers && numbers.length === 1 ? Number(numbers[0]) : null
+}
+
+/**
+ * ОПИСАНИЕ ФАЗЫ СЛОВАМИ — сколько его вообще едет и откуда оно берётся.
+ *
+ * Абзац, а не документ: карточка отвечает на вопрос «о чём эта фаза», а сам файл открывается
+ * одним кликом через дверь артефактов — то единственное место, где чтение файла ограничено.
+ * Потолок здесь по той же причине, что у шапки плана рядом: файл на диске написан тем, кто его
+ * написал, и абзац, приехавший на сорок тысяч знаков, должен стоить ограниченной работы.
+ */
+const DESCRIPTION_CAP = 600
+const DESCRIPTION_HEAD_CHARS = 8192
+
+/** `- **слово** — текст` → `слово — текст`. Разметка снимается, слова остаются. */
+function stripMarkdownLine(line) {
+  return String(line)
+    .replace(/^[>\s]*(?:[-*+]|\d+\.)\s+/, '')
+    .replace(/\*\*|__|`/g, '')
+    .trim()
+}
+
+/**
+ * paragraphAt(lines, from) → первый связный абзац начиная с этой строки, или null.
+ *
+ * Пустые строки и заголовки ПЕРЕД абзацем пропускаются (описание почти всегда стоит под
+ * названием), пустая строка или заголовок ПОСЛЕ его начала — конец абзаца. Ничего не
+ * додумывается: файл, в котором после этого места только заголовки, честно отдаёт null.
+ */
+function paragraphAt(lines, from) {
+  const out = []
+  for (let i = Math.max(0, from); i < lines.length; i += 1) {
+    const line = String(lines[i] ?? '').trim()
+    const blank = line === '' || line.startsWith('#')
+    if (out.length === 0) {
+      if (blank) continue
+    } else if (blank) {
+      break
+    }
+    const words = stripMarkdownLine(line)
+    if (words !== '') out.push(words)
+  }
+  const text = out.join(' ').trim()
+  if (text === '') return null
+  return text.length > DESCRIPTION_CAP ? `${text.slice(0, DESCRIPTION_CAP).trimEnd()}…` : text
+}
+
+/** Первый абзац файла, мимо его собственной шапки-фронтматтера. */
+function firstParagraph(text) {
+  if (text == null) return null
+  const lines = String(text).slice(0, DESCRIPTION_HEAD_CHARS).split(/\r?\n/)
+  let from = 0
+  // Фронтматтер — это учётная запись файла, а не рассказ о фазе.
+  if ((lines[0] ?? '').trim() === '---') {
+    from = 1
+    while (from < lines.length && lines[from].trim() !== '---') from += 1
+    from += 1
+  }
+  return paragraphAt(lines, from)
+}
+
+/**
+ * phaseDescription(...) → {text, source} — о чём эта фаза, СЛОВАМИ ЕЁ СОБСТВЕННОГО ДОКУМЕНТА,
+ * или null, когда сказать нечем.
+ *
+ * ИСТОЧНИК И ЗАПАСНОЙ ПУТЬ НАЗВАНЫ ЗДЕСЬ ОДИН РАЗ. Основной — `-CONTEXT.md` самой фазы: это
+ * документ, которым кончается её обсуждение, и в нём стоят слова владельца, а не пересказ.
+ * Запасной — абзац роадмапа под заголовком этой фазы: фаза, обсуждение которой ещё не дошло до
+ * контекста, всё равно чем-то названа. Ни один из двух не выдумывается: нет обоих — `null`, и
+ * экран говорит «описания нет» словами вместо пустого места, которое читается как поломка.
+ *
+ * `source` едет вместе с текстом, потому что «это из контекста фазы» и «это из роадмапа» —
+ * разные по весу утверждения, и человек имеет право видеть, какое из них перед ним.
+ */
+function phaseDescription(io, root, dir, files, titles) {
+  const contextName = files.find((f) => f.endsWith(STAGE_ARTIFACTS.discuss.produces))
+  if (contextName) {
+    const text = firstParagraph(readTextOrNull(io, join(root, dir, contextName)))
+    if (text) return { text, source: 'context' }
+  }
+  const dirNumber = phaseNumberOf(dir)
+  const entry = dirNumber === null ? null : titles.get(dirNumber)
+  return entry && entry.lead ? { text: entry.lead, source: 'roadmap' } : null
 }
 
 /**
@@ -1720,6 +1809,42 @@ function phaseTaskRows(rows, dirs, dir) {
 }
 
 /**
+ * СКОЛЬКО ПОДХОДОВ ЗАПИСАНО НА СТРОКЕ — одно правило на фазу и на батч.
+ *
+ * Ноль здесь значит «ни одного», а не «неизвестно»: строка, которую ещё никто не брал, честно
+ * не потратила ни хода, и это ИЗМЕРЕННЫЙ ноль. Второе написание этого разбора у батча однажды
+ * посчитало бы те же ходы иначе — сборка и фаза меряют одни и те же строки очереди.
+ */
+function attemptsOf(row) {
+  const n = Number(row && row.attempt)
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 0
+}
+
+/**
+ * phaseWork(rows) → {tasks, done, attempts, startedAt} — чем фаза меряется, кроме расхода.
+ *
+ * ПО ТЕМ ЖЕ САМЫМ СТРОКАМ, по которым складываются токены рядом: окошко показателей не может
+ * назвать одну фазу двумя разными объёмами работы, потому что список задач у обоих чисел один.
+ *
+ * `startedAt` — САМЫЙ РАННИЙ МОМЕНТ, КОГДА ЗАДАЧУ ФАЗЫ ВЗЯЛИ В РАБОТУ, а не когда её поставили
+ * в очередь: «фаза идёт с 06:12» — про работу, а не про намерение. `null` — ни одну задачу ещё
+ * не брали, и экран говорит это прочерком, а не сегодняшней полночью.
+ */
+function phaseWork(rows) {
+  const list = Array.isArray(rows) ? rows : []
+  let done = 0
+  let attempts = 0
+  let startedAt = null
+  for (const row of list) {
+    if (row && row.status === 'completed') done += 1
+    attempts += attemptsOf(row)
+    const at = toMs(row && row.claimedAt)
+    if (Number.isFinite(at) && (startedAt === null || at < startedAt)) startedAt = at
+  }
+  return { tasks: list.length, done, attempts, startedAt }
+}
+
+/**
  * derivePhaseCard({projectDir, phaseId, fsImpl, parkedRows, taskRows}) → one phase in full, or
  * null when the project has no such directory.
  *
@@ -1789,10 +1914,18 @@ export function derivePhaseCard({ projectDir, phaseId, fsImpl, parkedRows, taskR
   }
 
   const acceptance = readAcceptance(io, root, dir, files)
+  // Роадмап читается ОДИН раз на карточку: из него берутся и имя фазы, и запасной абзац
+  // описания. Два чтения одного файла ради двух его строк — это два ответа на один вопрос.
+  const titles = roadmapTitles(projectDir, io)
+  // Задачи фазы узнаются один раз: по ним считаются и расход, и её собственные счётчики.
+  const rows = phaseTaskRows(taskRows, dirs, dir)
 
   return {
     id: dir,
-    name: phaseTitleOf(dir, roadmapTitles(projectDir, io)),
+    name: phaseTitleOf(dir, titles),
+    // О ЧЁМ ЭТА ФАЗА — абзац её контекста, а если контекста ещё нет, абзац роадмапа. `null`
+    // означает ровно «сказать нечем», и экран говорит это словами.
+    description: phaseDescription(io, root, dir, files, titles),
     stages: stagesOf(files),
     questions,
     plans: artifactsOf(files, dir, PLAN_SUFFIX),
@@ -1812,9 +1945,15 @@ export function derivePhaseCard({ projectDir, phaseId, fsImpl, parkedRows, taskR
     //
     // `null` — «мерить негде»: строк не передали, задач у фазы нет, каталога прогонов не
     // существует. Ноль на этом месте назвал бы бесплатной работу, которую никто не измерял.
-    tokens: totalTokens(
-      phaseTaskRows(taskRows, dirs, dir).map(taskTokensReader({ runsDir: runsDirOf(projectDir), fsImpl })),
-    ),
+    tokens: totalTokens(rows.map(taskTokensReader({ runsDir: runsDirOf(projectDir), fsImpl }))),
+    // ЧЕМ ЕЩЁ МЕРЯЕТСЯ ФАЗА, кроме расхода: сколько у неё задач, сколько из них закрыто, сколько
+    // подходов на них потрачено и когда за неё взялись впервые. Всё — по тем же самым строкам,
+    // по которым сложены токены, поэтому окошко показателей не может назвать одну и ту же фазу
+    // двумя разными объёмами работы.
+    //
+    // `null` — «спросить было не у кого»: строк не передали вовсе. Пустой список строк — это
+    // ИЗМЕРЕННЫЙ ноль (у фазы нет задач), и он отличается от неизвестности честно.
+    work: Array.isArray(taskRows) ? phaseWork(rows) : null,
     // WHICH FILE IS THE ACCEPTANCE DOCUMENT is answered HERE and nowhere else. The door that
     // writes a verdict into it needs the same answer, and it takes it off this card rather
     // than looking the directory up a second time: two spellings of one rule is how a screen
@@ -2019,6 +2158,10 @@ function deriveBatches(requests, rows, { machineId, taskTokens } = {}) {
         // по всем его подходам. Кусок, чьи квитанции молчат, даёт ноль и суммы не роняет;
         // `null` — «мерить негде», то есть каталога прогонов нет вовсе.
         tokens: typeof taskTokens === 'function' ? totalTokens(itemRows.map((r) => taskTokens(r))) : null,
+        // СКОЛЬКО ХОДОВ СТОИЛА СБОРКА — подходы её кусков, сложенные тем же правилом, каким их
+        // считает фаза рядом. Это ИЗМЕРЕННОЕ число, а не оценка: строки сборки известны поимённо,
+        // и подход, записанный на строке, — единственное, что о ходах вообще известно.
+        attempts: itemRows.reduce((n, r) => n + attemptsOf(r), 0),
         // WHAT IS HOLDING THE ASSEMBLY, named rather than left for a reader to work out: the
         // loudest item, and its state IS the reason (waiting for a person / under way / not
         // started). Null when there is nothing to wait for.
