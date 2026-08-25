@@ -441,8 +441,24 @@ const BATCH_ROLES = Object.freeze([BATCH_PARENT])
  * OPTIONAL, and absent rather than guessed. A source that does not know which echelon it is
  * producing work for writes no key at all — an invented «wave 1» would make that work stoppable
  * by an order nobody gave about it.
+ *
+ * `requestedAt` — КОГДА ВЛАДЕЛЕЦ ПОПРОСИЛ СБОРКУ, в миллисекундах эпохи, как и `claimedAt`
+ * рядом. Это не то же самое, что `enqueuedAt` строки: очередь ставит куски и запрос ПОШТУЧНО,
+ * последним пишется запрос, и его отметка — про то, когда его записали, а не про то, когда
+ * человек нажал. Момент знает только дверь батча; не донесённый до строки, он существует ровно
+ * до конца её вызова. Как и `wave`, ключ ОПЦИОНАЛЬНЫЙ: строка, записанная до этого поля, честно
+ * не говорит о нём ничего, а выдуманный момент был бы хуже молчания.
  */
-const ALLOWED_DATA_KEYS = Object.freeze(['kind', 'stage', 'phase', 'wave', 'batch', 'skipped', 'cancelled'])
+const ALLOWED_DATA_KEYS = Object.freeze([
+  'kind',
+  'stage',
+  'phase',
+  'wave',
+  'batch',
+  'skipped',
+  'cancelled',
+  'requestedAt',
+])
 
 /** The explicit field allowlist — the ONLY keys a task record carries (notify.mjs explicit-pick posture). */
 const ALLOWED_TASK_KEYS = Object.freeze([
@@ -1142,6 +1158,14 @@ export function validateTask(task) {
     }
     if (task.data.batch !== undefined && !BATCH_ROLES.includes(task.data.batch)) {
       throw new InvalidTaskError(`task "${task.id}" has invalid data.batch "${task.data.batch}"`)
+    }
+    // МОМЕНТ — ЧИСЛО, И ТОЛЬКО ЧИСЛО. Отметка времени, приехавшая текстом, разбирается по-разному
+    // на каждой стороне, а сравнение двух таких отметок молча становится сравнением строк.
+    if (
+      task.data.requestedAt !== undefined &&
+      (typeof task.data.requestedAt !== 'number' || !Number.isFinite(task.data.requestedAt))
+    ) {
+      throw new InvalidTaskError(`task "${task.id}" data.requestedAt must be a number of milliseconds`)
     }
     // THE OWNER'S WORD RIDES ON THE REQUEST ROW AND NOWHERE ELSE. A piece carrying «cancelled»
     // would be a second place to look for the same decision, and the two would disagree the
