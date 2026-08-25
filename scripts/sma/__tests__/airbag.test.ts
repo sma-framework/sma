@@ -14,6 +14,9 @@
  *     pins head + current branch.
  *   - Test 6 (fail-open): a throwing runner → {ok:false} and NEVER throws; checkAirbag
  *     degrades to WARN + ok:false receipt, never a deny.
+ *   - Test 6a (degraded capture): the hash-object batch dies → per-file retry; ONE
+ *     unhashable path loses only itself (recorded by NAME), the snapshot completes,
+ *     and the per-class pin still lands.
  *   - Test 7 (design-trap spy): the runner is NEVER invoked with the archive verb ('bundle').
  *   - Test 8 (probe): native false today; SMA_NATIVE_CHECKPOINTS → native + stand-down (once).
  *   - Test 9 (soft-deny): armed + dirty → deny; a one-shot GATE-AIRBAG override token allows.
@@ -102,6 +105,10 @@ describe('takeSnapshot', () => {
     expect(updateRefs).toHaveLength(1)
     expect(updateRefs[0].args[1]).toMatch(/^refs\/sma\/airbag\/.*\/head$/)
     expect(updateRefs[0].args[2]).toBe('HEAD')
+    // untracked DIRECTORIES must arrive as files: a bare porcelain call collapses a
+    // new folder into one `dir/` line, and hash-object exits 128 on a directory.
+    const status = calls.find((c) => c.args[0] === 'status')
+    expect(status?.args).toContain('-uall')
     // no stash-create on a clean tree
     expect(calls.some((c) => c.args[0] === 'stash')).toBe(false)
     // EVERY runner call is a fixed argv ARRAY (never a shell string)
@@ -202,6 +209,32 @@ describe('takeSnapshot', () => {
     }).not.toThrow()
     expect(r.ok).toBe(false)
     expect(r.error).toContain('boom')
+  })
+
+  it('Test 6a: an unhashable path degrades the capture step — the snapshot completes and still pins', () => {
+    // The batch dies (as it does when a path vanishes mid-flight or cannot be read);
+    // the per-file retry then loses ONLY the bad path — by NAME, never content — and
+    // the snapshot goes on to its per-class pin instead of breaking off.
+    const { run, calls } = mkRunner({
+      'status --porcelain': '?? good.txt\n?? bad.txt\n',
+      'hash-object': (_args: string[], opts: any) => {
+        const input = String(opts?.input ?? '')
+        if (input.split('\n').filter(Boolean).length > 1) throw new Error('fatal: Unable to add bad.txt to database')
+        if (input.startsWith('bad.txt')) throw new Error('fatal: Unable to add bad.txt to database')
+        return 'aaa111\n'
+      },
+      mktree: 'tree999\n',
+    })
+    const r = takeSnapshot({ cmdClass: 'branch-delete', meta: { branchName: 'feature/x' } }, { runGit: run, statSize: () => 1 })
+
+    expect(r.ok).toBe(true) // the snapshot COMPLETED
+    expect(r.untrackedHashFailed).toEqual(['bad.txt']) // the casualty, recorded by name
+    expect(r.untrackedCount).toBe(1) // only what was actually captured counts
+    expect(r.indexPathMap).toEqual({ 0: 'good.txt' })
+    expect(r.refs.untracked).toBeTruthy() // the surviving file still got its pinned tree
+    // the per-class pin ran AFTER the degraded capture — the doomed branch is pinned
+    const bref = calls.find((c) => c.args[0] === 'update-ref' && c.args[1].endsWith('/branch-feature-x'))
+    expect(bref?.args[2]).toBe('refs/heads/feature/x')
   })
 })
 

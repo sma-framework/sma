@@ -173,7 +173,7 @@ function rand4() {
 
 /**
  * parsePorcelain(text) -> {dirtyTracked:boolean, untracked:string[]}. ONE
- * `status --porcelain` call yields both: a `??` line is untracked; any other
+ * `status --porcelain -uall` call yields both: a `??` line is untracked; any other
  * non-blank status line is a tracked modification (staged or unstaged).
  */
 function parsePorcelain(text) {
@@ -207,6 +207,8 @@ function refSafe(name) {
  * The working tree and the index are NEVER touched — only object-store / ref writes
  * (update-ref, stash create, hash-object -w, mktree). NEVER invokes the archive verb.
  * Fully fail-open: any runner throw yields {ok:false, error} and NEVER throws (test 6).
+ * The untracked-capture step additionally degrades on its OWN (untrackedHashFailed
+ * names in the receipt) so one unhashable path never costs the per-class pins below it.
  *
  * @param {{cmdClass:string, meta?:object}} evt
  * @param {{runGit:Function, now?:Function, statSize?:Function, repoRoot?:string}} deps
@@ -250,8 +252,11 @@ export function takeSnapshot(evt = {}, deps = {}) {
     runGit(['update-ref', `${base}/head`, 'HEAD'])
     refs.head = `${base}/head`
 
-    // (2) ONE porcelain call → both tracked-dirty and the untracked list.
-    const porcelain = String(runGit(['status', '--porcelain']) ?? '')
+    // (2) ONE porcelain call → both tracked-dirty and the untracked list. `-uall`
+    //     expands untracked DIRECTORIES into their files: without it a new folder
+    //     arrives as a single `dir/` line, and hash-object exits 128 on a directory —
+    //     which used to break the snapshot off before the per-class pins below ran.
+    const porcelain = String(runGit(['status', '--porcelain', '-uall']) ?? '')
     const { dirtyTracked, untracked } = parsePorcelain(porcelain)
     receipt.dirty = dirtyTracked
 
@@ -288,27 +293,63 @@ export function takeSnapshot(evt = {}, deps = {}) {
       if (truncated) receipt.untrackedTruncated = true
       receipt.untrackedRemaining = untracked.slice(capped.length) // NAMES only
 
+      let pinnedPaths = capped
       if (capped.length) {
-        const blobOut = String(runGit(['hash-object', '-w', '--stdin-paths'], { input: capped.join('\n') + '\n' }) ?? '')
-        const shas = blobOut.split('\n').map((s) => s.trim()).filter(Boolean)
-        // build a single-level tree; entry NAME = zero-based index (path chars never
-        // enter a tree name — the receipt's index→path map is the restore key).
-        const mkLines = []
-        const indexPathMap = {}
-        for (let i = 0; i < shas.length && i < capped.length; i++) {
-          mkLines.push(`100644 blob ${shas[i]}\t${i}`)
-          indexPathMap[i] = capped[i]
-        }
-        if (mkLines.length) {
-          const tree = String(runGit(['mktree'], { input: mkLines.join('\n') + '\n' }) ?? '').trim()
-          if (tree) {
-            runGit(['update-ref', `${base}/untracked`, tree])
-            refs.untracked = `${base}/untracked`
-            receipt.indexPathMap = indexPathMap
+        // Guarded like the per-class pins below: an untracked-capture failure DEGRADES
+        // this step (the names survive in the receipt, the content does not) and NEVER
+        // breaks the snapshot off — the per-class pins after it must still run.
+        try {
+          let shas
+          try {
+            const blobOut = String(runGit(['hash-object', '-w', '--stdin-paths'], { input: capped.join('\n') + '\n' }) ?? '')
+            shas = blobOut.split('\n').map((s) => s.trim()).filter(Boolean)
+          } catch {
+            // The batch died on one unhashable path (vanished mid-flight, unreadable).
+            // Re-hash file by file so ONE bad path loses only itself; the bad paths
+            // are recorded by NAME (never content) under untrackedHashFailed.
+            shas = []
+            pinnedPaths = []
+            const failed = []
+            for (const p of capped) {
+              let sha = ''
+              try {
+                sha = String(runGit(['hash-object', '-w', '--stdin-paths'], { input: p + '\n' }) ?? '').trim()
+              } catch {
+                /* this one path is the casualty — skip it, keep the rest */
+              }
+              if (sha) {
+                shas.push(sha)
+                pinnedPaths.push(p)
+              } else {
+                failed.push(p)
+              }
+            }
+            if (failed.length) receipt.untrackedHashFailed = failed
           }
+          // build a single-level tree; entry NAME = zero-based index (path chars never
+          // enter a tree name — the receipt's index→path map is the restore key).
+          const mkLines = []
+          const indexPathMap = {}
+          for (let i = 0; i < shas.length && i < pinnedPaths.length; i++) {
+            mkLines.push(`100644 blob ${shas[i]}\t${i}`)
+            indexPathMap[i] = pinnedPaths[i]
+          }
+          if (mkLines.length) {
+            const tree = String(runGit(['mktree'], { input: mkLines.join('\n') + '\n' }) ?? '').trim()
+            if (tree) {
+              runGit(['update-ref', `${base}/untracked`, tree])
+              refs.untracked = `${base}/untracked`
+              receipt.indexPathMap = indexPathMap
+            }
+          }
+        } catch {
+          // Even the degraded path failed (mktree / update-ref) — keep the names,
+          // drop the content, finish the snapshot.
+          receipt.untrackedHashFailed = capped.slice()
+          pinnedPaths = []
         }
       }
-      receipt.untrackedCount = capped.length
+      receipt.untrackedCount = pinnedPaths.length
     }
 
     // (5) per-class extra pins — each guarded so a missing ref never fails the snapshot.

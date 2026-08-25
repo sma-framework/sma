@@ -31,17 +31,20 @@
  * a door, a matcher, a settings entry, a budget, an order change — puts a person's destructive
  * command in front of git with no restore point behind it.
  *
- * IT IS RED AGAIN, AND THE REDNESS IS DECLARED. The door is gone and the hook does answer —
- * but demanding the restore point itself, rather than a line about it, showed the snapshot
- * breaking off before the doomed branch is pinned. The case is therefore marked `it.fails`:
- * the reason, the reproduction and the condition for removing the mark are written above the
- * case itself. Green here means "the defect is still there, exactly as described"; the day it
- * is fixed this file turns the suite red until the mark comes off.
+ * IT WENT RED A SECOND TIME, AND THAT RED IS ALSO OVER. Demanding the restore point itself,
+ * rather than a line about it, showed the snapshot breaking off before the doomed branch was
+ * pinned: `git status --porcelain` collapses an untracked DIRECTORY into a single `?? dir/`
+ * line, `git hash-object` exits 128 on a directory, and the exception left the snapshot
+ * before the per-class pins ran. The case carried `it.fails` while that was the recorded
+ * state of the product. The cure landed since: the untracked enumeration passes `-uall` so
+ * directories arrive as files, and the capture step is guarded on its own so an unhashable
+ * path degrades that step instead of aborting the snapshot. The mark is off, the assertions
+ * were NOT relaxed, and the second case below holds the exact scene the defect lived in.
  */
 
 import { describe, it, expect, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -113,38 +116,23 @@ function journalRecords(repoDir: string): any[] {
 
 describe('a destructive command routed through the installed hook leaves a restore point', () => {
   /**
-   * MARKED `it.fails` ON PURPOSE — THE FAILURE IS DECLARED, NOT HIDDEN.
+   * THIS CASE WORE `it.fails` AND THE MARK IS OFF — THE DEFECT IT DECLARED IS FIXED.
    *
-   * `it.fails` inverts the verdict: the suite is green only while this case FAILS, and the
-   * day it starts passing the suite goes red and forces this mark to be removed. That is the
-   * opposite of a skip: nothing here stops running, and nothing here was weakened to fit.
+   * What was broken: `git status --porcelain` collapsed an untracked DIRECTORY into a
+   * single `?? dir/` line, `git hash-object` exited 128 on it, and the untracked-capture
+   * step of `takeSnapshot` — unguarded, unlike the per-class pin steps below it — took
+   * the whole snapshot down before the doomed branch was pinned. A fresh `git init` has
+   * no `.gitignore`, the airbag's own `.sma/` is therefore untracked, and this case hit
+   * the defect on exactly that: the most ordinary tree there is, not a contrived corner.
    *
-   * WHAT IS BROKEN. `git status --porcelain` collapses an untracked DIRECTORY into a single
-   * `?? dir/` line. `git hash-object` on a directory exits 128. The untracked-capture step of
-   * `takeSnapshot` is not wrapped in its own try/catch (the per-class pin step below it is),
-   * so that exception leaves the whole snapshot early — before the doomed branch gets pinned.
-   * The receipt records the truth (`ok:false`, refs `[head]` where a healthy run has
-   * `[head,branch]`) and the hook warns the person, so nothing about it is silent. But a
-   * branch delete recovered from a HEAD pin alone is not recovered.
-   *
-   * This case reproduces it in its own temporary repository: a fresh `git init` has no
-   * `.gitignore`, the airbag's own `.sma/` is therefore untracked, and the snapshot breaks
-   * off on it. That is not a contrived corner — it is the state of any tree with a new
-   * untracked folder in it.
-   *
-   * THE MARK COMES OFF when the untracked step survives an unhashable path (skip the entry,
-   * mark the receipt, keep going) or the snapshot enumerates untracked files rather than
-   * directories. The cure is known and was measured; it costs hook time against a 300 ms
-   * budget, so choosing it is a human's call and not this file's. Until then: `ok:false` here
-   * is the recorded state of the product, and the two assertions below are what will notice
-   * the day it changes. NEVER re-green this by relaxing them.
-   *
-   * One honest caveat about the mechanism: `it.fails` is satisfied by ANY failure, so while
-   * this mark is on, a regression elsewhere in the wire (hook exit code, matcher, receipt
-   * absent) would be absorbed by it instead of shouting. That is the price of declaring the
-   * failure inside the gate, and it is another reason the mark is meant to be short-lived.
+   * What cured it: the enumeration passes `-uall` (directories arrive as files) and the
+   * capture step is guarded on its own (an unhashable path degrades that step, recorded
+   * by name in the receipt, and the snapshot finishes its pins). Both assertions that
+   * used to fail — `ok:true` and the pinned doomed branch — now hold as written; neither
+   * was relaxed to get here. The case below this one keeps the untracked-directory scene
+   * pinned explicitly, so the defect cannot return unnamed.
    */
-  it.fails('writes an airbag receipt for a branch delete, allows the command, and never fails the hook', () => {
+  it('writes an airbag receipt for a branch delete, allows the command, and never fails the hook', () => {
     const branch = `sma-airbag-probe-${Date.now()}`
     const repoDir = makeRepoWithDoomedBranch(branch)
 
@@ -176,9 +164,9 @@ describe('a destructive command routed through the installed hook leaves a resto
     const decision = printed ? (JSON.parse(printed).hookSpecificOutput ?? {}).permissionDecision : 'allow'
     expect(decision, 'the shipped default refused a command instead of merely protecting it').not.toBe('deny')
 
-    // …AND THE RESTORE POINT EXISTS. This is the assertion the current tree fails: the hook
-    // ran, said nothing, and wrote nothing, because the stream that protects the work is
-    // behind a door the default leaves shut.
+    // …AND THE RESTORE POINT EXISTS. This is the assertion that once failed for a whole
+    // release: the hook ran, said nothing, and wrote nothing, because the stream that
+    // protects the work was behind a door the default left shut.
     const receipts = journalRecords(repoDir).filter((r) => r && r.type === 'airbag')
     expect(receipts.length, 'the hook ran over a destructive command and left no restore point').toBeGreaterThan(0)
     expect(receipts.some((r) => r.detail && r.detail.cmdClass === 'branch-delete')).toBe(true)
@@ -202,5 +190,64 @@ describe('a destructive command routed through the installed hook leaves a resto
       (detail.refs ?? {}).branch,
       `only [${Object.keys(detail.refs ?? {}).join(',')}] was pinned — the deleted branch has no restore point`,
     ).toBeTruthy()
+  })
+
+  /**
+   * THE SCENE OF THE FIXED DEFECT, BUILT ON PURPOSE. The case above meets an untracked
+   * directory by accident (`.sma/` appears in a fresh repository with no `.gitignore`);
+   * this one lays the directory down deliberately, so the coverage does not hinge on
+   * where the runtime happens to keep its state. A snapshot that meets `?? dir/` must
+   * FINISH — hash the directory's files, pin the doomed branch, report ok — because a
+   * tree with a new untracked folder in it is the most common tree there is.
+   */
+  it('finishes the snapshot over an untracked directory and pins the doomed branch', () => {
+    const branch = `sma-airbag-dir-${Date.now()}`
+    const repoDir = makeRepoWithDoomedBranch(branch)
+    mkdirSync(join(repoDir, 'drafts'))
+    writeFileSync(join(repoDir, 'drafts', 'note.txt'), 'not yet added\n')
+
+    const frame = {
+      session_id: 'pre-live-wire-untracked-dir',
+      tool_name: 'Bash',
+      tool_input: { command: `git branch -D ${branch}` },
+    }
+
+    const res = spawnSync(process.execPath, [cliPath, 'pre'], {
+      cwd: repoDir,
+      encoding: 'utf8',
+      input: JSON.stringify(frame),
+      env: shellAfterInstall(),
+    })
+
+    if (res.error || res.signal) {
+      throw new Error(`the hook did not complete — signal=${res.signal} error=${res.error ? res.error.message : 'none'}\nstderr: ${(res.stderr ?? '').slice(0, 600)}`)
+    }
+    expect(res.status, `the hook exited ${res.status}; stderr: ${(res.stderr ?? '').slice(0, 600)}`).toBe(0)
+
+    // The signature of the old defect, asserted absent at the source: git refusing a
+    // directory fed to hash-object was the exact line the broken snapshot died on.
+    expect(res.stderr ?? '').not.toContain('Unable to add')
+
+    const receipts = journalRecords(repoDir).filter(
+      (r) => r && r.type === 'airbag' && r.detail && r.detail.cmdClass === 'branch-delete',
+    )
+    expect(receipts.length, 'the hook ran over a destructive command and left no restore point').toBeGreaterThan(0)
+    const detail = (receipts[0] ?? {}).detail ?? {}
+
+    // The snapshot FINISHED: ok, the doomed branch pinned, and the directory's file
+    // captured under the untracked tree — refs [head,branch] where the defect left [head].
+    expect(
+      detail.ok,
+      `the snapshot did not complete: ok=${JSON.stringify(detail.ok)} refs=${JSON.stringify(detail.refs)}`,
+    ).toBe(true)
+    expect(
+      (detail.refs ?? {}).branch,
+      `only [${Object.keys(detail.refs ?? {}).join(',')}] was pinned — the deleted branch has no restore point`,
+    ).toBeTruthy()
+    expect(
+      (detail.refs ?? {}).untracked,
+      'the untracked directory contributed no pinned tree — its files were not captured',
+    ).toBeTruthy()
+    expect(Object.values(detail.indexPathMap ?? {})).toContain('drafts/note.txt')
   })
 })
