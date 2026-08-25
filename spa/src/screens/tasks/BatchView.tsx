@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useBatchDecide, useStateQuery } from '../../api/queries'
 import type { BatchItem, BatchItemState } from '../../api/types'
 import { EntitySummary } from '../../shell/EntitySummary'
+import { LiveTimer } from '../../shell/LiveTimer'
 import { TaskPanel } from '../../shell/TaskPanel'
 import { batchStats, clockOfMs } from '../../shell/stats'
 import { plural } from '../../shell/format'
@@ -204,6 +205,23 @@ export function BatchView({
             </span>
           ))}
         </nav>
+        {/* Живое время сборки — от момента, когда её попросил владелец. Сломавшийся кусок
+            останавливает сборку и спрашивает человека: колечко встаёт, цвет меняется, время
+            ожидания продолжает расти — именно оно и есть цена простоя. */}
+        {batch ? (
+          <LiveTimer
+            state={
+              batch.state === 'failed'
+                ? 'failed'
+                : batch.question || batch.state === 'awaiting_decision'
+                  ? 'waiting'
+                  : batch.state === 'running'
+                    ? 'running'
+                    : 'idle'
+            }
+            since={batch.requestedAt ?? null}
+          />
+        ) : null}
         {batch ? (
           <span
             className={`flex-none rounded-[8px] px-2.5 py-1 text-[11.5px] font-semibold ${
