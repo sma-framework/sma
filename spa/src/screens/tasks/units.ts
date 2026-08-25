@@ -81,6 +81,25 @@ export type UnitState = 'run' | 'dec' | 'ok' | 'wait' | 'fail' | 'skip' | 'off'
 /** What a unit IS — all three kinds of the accepted design, now that the engine has all three. */
 export type UnitKind = 'inline' | 'batch' | 'phase'
 
+/**
+ * ЧТО ИМЕННО ЖДЁТ ЧЕЛОВЕКА — и что он может с этим сделать, словами.
+ *
+ * Стоит ТОЛЬКО на единице в состоянии `dec`: это единственное состояние, про которое известно,
+ * что работа лежит на человеке. Три поля отвечают на три разных вопроса — «сколько ждёт»,
+ * «что случилось» и «что теперь» — и ни одно не подменяет другое.
+ *
+ * `age` пуст, когда возраста никто не мерил: очередь кладёт его только строке, ждущей дольше
+ * настроенного терпения, и «0 мин» здесь читалось бы как измерение, которого не делали.
+ */
+export interface WaitWords {
+  /** «41 МИН» / «6 Ч» — голосом столбика. Пусто, когда чтение возраста не несёт. */
+  age: string
+  /** ЧТО ждёт: одно предложение о том, почему работа стоит на человеке. */
+  what: string
+  /** ЧТО сделать — призыв, а не кнопка: карточка ОТКРЫВАЕТСЯ, решение принимается внутри неё. */
+  cta: string
+}
+
 /** Where a click on a unit goes. */
 export type UnitTarget =
   | { screen: 'task'; id: string }
@@ -108,6 +127,14 @@ export interface WorkUnit {
    * движении, и ставить её там значило бы обещать работу, которой нет.
    */
   live: boolean
+  /**
+   * Слова ожидания — только у `dec`-единицы, и `undefined` у всех остальных.
+   *
+   * Это не второе мнение о состоянии, а его развёрнутая речь для столбика «ЖДУТ ВАС»: единица,
+   * которая на человеке НЕ стоит, этих слов не имеет вовсе, поэтому янтарную карточку нельзя
+   * нарисовать там, где никто никого не ждёт.
+   */
+  wait?: WaitWords
   target: UnitTarget
 }
 
@@ -186,6 +213,19 @@ export function waitWords(hours: number | undefined): string | null {
   const whole = Math.floor(hours)
   const minutes = Math.round((hours - whole) * 60)
   return minutes > 0 ? `${whole} ч ${String(minutes).padStart(2, '0')} м` : `${whole} ч`
+}
+
+/**
+ * «41 МИН» / «6 Ч» — тот же возраст ожидания, но голосом янтарной карточки: покрупнее и
+ * покороче, потому что в столбике он стоит первым и читается раньше имени.
+ *
+ * Пустая строка — это «возраста никто не назвал», и карточка тогда не пишет его вовсе. Ноль
+ * здесь был бы утверждением «ждёт нисколько», которого никто не измерял.
+ */
+export function ageLabel(hours: number | undefined): string {
+  if (typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0) return ''
+  if (hours < 1) return `${Math.round(hours * 60)} МИН`
+  return `${Math.floor(hours)} Ч`
 }
 
 /** «событие 12 с назад» — the one sign of life a running row carries. */
@@ -276,6 +316,16 @@ function phaseUnit(row: PhaseIndexRow): WorkUnit {
     dur: '—',
     segs,
     live: running,
+    // Возраста вопроса фазы указатель не называет — поэтому в карточке его нет вовсе, а не
+    // «0 мин». Слова же о том, ЧТО ждёт, у фазы есть: их считает сама дверь.
+    wait:
+      row.open > 0
+        ? {
+            age: '',
+            what: `${row.open} ${plural(row.open, 'вопрос', 'вопроса', 'вопросов')} к вам на стадиях фазы — без ответа фаза дальше не пойдёт`,
+            cta: 'Ответить на вопросы →',
+          }
+        : undefined,
     target: { screen: 'phase', id: row.id },
   }
 }
@@ -355,6 +405,21 @@ function batchUnit(row: BatchRow): WorkUnit {
     dur: '—',
     segs: items.map((i) => BATCH_ITEM_TONE[i.state] ?? 'wait'),
     live: items.some((i) => i.state === 'running'),
+    // Слово сборки принадлежит владельцу и произносится ВНУТРИ неё: столбик называет, что
+    // именно встало, и зовёт открыть, а «пропустить · повторить · бросить» — это уже три
+    // разных решения, и нажимаются они на карточке, где видно, о чём они.
+    wait:
+      state === 'dec'
+        ? {
+            age: '',
+            what: row.question
+              ? `«${row.question.itemTitle ?? row.question.itemId}» не получилось — сборка стоит на этом элементе`
+              : holding
+                ? `Сборка стоит: «${holding.title ?? holding.id}» ${HOLD_WORDS[holding.state]}`
+                : 'Сборка ждёт вашего решения',
+            cta: 'Открыть: пропустить · повторить · бросить →',
+          }
+        : undefined,
     target: { screen: 'batch', id: row.id },
   }
 }
@@ -390,6 +455,20 @@ function queueUnit(row: QueueRow, awaiting: boolean): WorkUnit {
     dur: '—',
     segs: [],
     live: false,
+    // ЧТО ждёт — из статуса самой строки, а не одним общим «ждёт решения»: подход, дошедший до
+    // приёмки, и строка, вернувшаяся к человеку иначе, — разные новости, и решают по ним разное.
+    // Чего очередь не знает (что именно сделал работник), карточка не выдумывает: это лежит на
+    // карточке задачи, куда она и открывается.
+    wait: awaiting
+      ? {
+          age: ageLabel(row.agedForHours),
+          what:
+            row.status === 'awaiting_approval'
+              ? 'Работа сделана и лежит на приёмке: работник остановился и не решает за вас'
+              : 'Задача стоит на вашем слове — сама она дальше не пойдёт',
+          cta: 'Открыть: одобрить или вернуть →',
+        }
+      : undefined,
     target: { screen: 'task', id: row.id },
   }
 }
@@ -522,9 +601,90 @@ export function buildUnits(input: UnitsInput): WorkUnit[] {
   return units.sort((a, b) => RANK[a.state] - RANK[b.state])
 }
 
-/** The figures over the list, counted off the units themselves so they cannot disagree. */
-export function countUnits(units: WorkUnit[]): Record<UnitState, number> {
-  const out: Record<UnitState, number> = { run: 0, dec: 0, ok: 0, wait: 0, fail: 0, skip: 0, off: 0 }
-  for (const u of units) out[u.state] += 1
+/**
+ * ═══════════════════ СТОЛБИКИ ПО СТАДИЯМ — ТОЖЕ ПРОЕКЦИЯ, А НЕ ВТОРАЯ ПРАВДА ═══════════════════
+ *
+ * Раскладка по столбикам считается ЗДЕСЬ, над теми же единицами, и ни одного нового вопроса к
+ * демону не задаёт. Поэтому её можно проверить прогоном на голых данных — а вёрстка остаётся
+ * вёрсткой: столбик, чья принадлежность живёт только в разметке, проверяется глазом и ровно
+ * поэтому расходится с правдой молча.
+ *
+ * СТОЛБИК — ЭТО ГДЕ РАБОТА СТОИТ НА ДОРОГЕ, А НЕ ЧТО С НЕЙ ПРОИСХОДИТ. Второе говорит сама
+ * карточка своим словом и точкой: фаза, у которой стадия «Исполнение» ещё не запущена, стоит
+ * в «Исполнении» и при этом честно пишет «Не начата». Если бы столбик отвечал ещё и за
+ * состояние, у шести столбиков было бы семь смыслов, и первый же спор двух смыслов человек
+ * прочитал бы как ошибку экрана.
+ */
+export type BoardColumn = 'discuss' | 'plan' | 'execute' | 'verify' | 'you' | 'done'
+
+/** Слева направо — так, как работа идёт. Порядок объявлен один раз и здесь. */
+export const BOARD_COLUMNS: BoardColumn[] = ['discuss', 'plan', 'execute', 'verify', 'you', 'done']
+
+/** Заголовки столбиков — в словах принятого макета. */
+export const COLUMN_WORD: Record<BoardColumn, string> = {
+  discuss: 'Обсуждение',
+  plan: 'Планирование',
+  execute: 'Исполнение',
+  verify: 'Проверка',
+  you: 'ЖДУТ ВАС',
+  done: 'Готово',
+}
+
+/**
+ * Четыре стадии фазы — и четыре первых столбика. Список стоит рядом со `STAGES` и в том же
+ * порядке НАРОЧНО: стадия N фазы и есть столбик N, и связь эта проверяется прогоном.
+ */
+const STAGE_COLUMN: BoardColumn[] = ['discuss', 'plan', 'execute', 'verify']
+
+/**
+ * В КАКОМ СТОЛБИКЕ СТОИТ ЕДИНИЦА.
+ *
+ * Три правила, по убыванию громкости:
+ *
+ *   1. Ждёт человека (`dec`) — «ЖДУТ ВАС», чем бы она ни была занята. Работа, стоящая на
+ *      человеке, не должна отыскиваться среди движущейся: в этом весь смысл столбика.
+ *   2. Фаза — по СВОЕЙ стадии: идущая, если такая есть, иначе первая непройденная. Стадии
+ *      фаза несёт лентой (`segs`), считанной с её собственных артефактов, поэтому здесь
+ *      ничего не домысливается. Все четыре пройдены — «Готово».
+ *   3. Инлайн и батч стадий не имеют вовсе: у них одна дорога — исполнение. Поэтому идущая и
+ *      ждущая работника единица стоят в «Исполнении», а всё закрытое — в «Готово».
+ *
+ * ЗАКРЫТОЕ — ЭТО ok, fail, skip и off. Три последних слова не означают удачи, и столбик их
+ * удачей не называет: он называет их ЗАКРЫТЫМИ — дальше сами они не пойдут. Своё слово каждая
+ * карточка несёт при себе (`STATE_WORD`), а «не получилось» стоит в свёрнутом столбике ПЕРВЫМ,
+ * потому что порядок единиц ставит неудачу впереди удачи (`RANK`).
+ */
+export function columnOf(unit: WorkUnit): BoardColumn {
+  if (unit.state === 'dec') return 'you'
+  if (unit.kind === 'phase' && unit.segs.length === STAGES.length) {
+    const running = unit.segs.indexOf('run')
+    const at = running !== -1 ? running : unit.segs.findIndex((s) => s !== 'ok')
+    return at === -1 ? 'done' : STAGE_COLUMN[at]
+  }
+  return unit.state === 'run' || unit.state === 'wait' ? 'execute' : 'done'
+}
+
+export interface BoardColumnView {
+  key: BoardColumn
+  title: string
+  units: WorkUnit[]
+}
+
+/**
+ * Шесть столбиков в их порядке — и пустой столбик остаётся столбиком.
+ *
+ * Пустое «Планирование», убранное с экрана, двигало бы соседей при каждом опросе состояния:
+ * человек читает доску по МЕСТУ, и место, которое переезжает, приходится искать заново.
+ */
+export function buildBoard(units: WorkUnit[]): BoardColumnView[] {
+  const byColumn = new Map<BoardColumn, WorkUnit[]>(BOARD_COLUMNS.map((c) => [c, []]))
+  for (const u of units) byColumn.get(columnOf(u))?.push(u)
+  return BOARD_COLUMNS.map((key) => ({ key, title: COLUMN_WORD[key], units: byColumn.get(key) ?? [] }))
+}
+
+/** Счётчики шапки — по столбикам, посчитанные по тем же единицам, что в них и лежат. */
+export function countColumns(units: WorkUnit[]): Record<BoardColumn, number> {
+  const out: Record<BoardColumn, number> = { discuss: 0, plan: 0, execute: 0, verify: 0, you: 0, done: 0 }
+  for (const u of units) out[columnOf(u)] += 1
   return out
 }

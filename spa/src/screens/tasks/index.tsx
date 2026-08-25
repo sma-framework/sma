@@ -6,29 +6,43 @@ import { clockLabel, plural } from '../../shell/format'
 import { PhaseCardView } from '../pipeline/PhaseCardView'
 import { usePhaseBells } from '../pipeline/shared'
 import { BatchView } from './BatchView'
-import { Inbox } from './Inbox'
-import type { InboxItem } from './Inbox'
 import { NewBatchForm } from './NewBatchForm'
 import { NewTaskForm } from './NewTaskForm'
+import { UnitCard } from './UnitCard'
 import { UnitRow } from './UnitRow'
-import { buildUnits, countUnits, splitByProject, waitWords } from './units'
-import type { WorkUnit } from './units'
+import { WaitCard } from './WaitCard'
+import { BOARD_COLUMNS, COLUMN_WORD, buildBoard, buildUnits, countColumns, splitByProject } from './units'
+import type { BoardColumn, WorkUnit } from './units'
 
 /**
- * «Задачи» — the whole of the work in one look, one line per unit of work.
+ * «Задачи» — вся работа в один взгляд: шесть столбиков по стадиям, единица работы — карточка.
  *
- * ═════════════════════ WHY A LIST AND NOT A BOARD ═════════════════════
+ * ═════════ ЗАКОН «СПИСОК, А НЕ ДОСКА» — ПРОЖИЛ СВОЁ И СНЯТ ВЛАДЕЛЬЦЕМ 25.08.2026 ═════════
  *
- * The board this screen used to be sorted tasks into five columns, which answered «в какой
- * стадии эта задача» and refused to answer the two questions a person actually arrives with:
- * what is stuck on ME, and what is the work made OF. A column cannot say that a phase is a
- * phase, that it has four stages, and that three of them are done — every unit was flattened
- * into the same card, so the shape of the work was invisible.
+ * ЧТО ЗДЕСЬ СТОЯЛО. «WHY A LIST AND NOT A BOARD»: доска, бывшая на этом месте до списка,
+ * раскладывала задачи по пяти столбикам, отвечала на «в какой стадии эта задача» и отказывалась
+ * отвечать на два вопроса, с которыми человек сюда приходит, — что стоит на МНЕ и из чего
+ * работа СДЕЛАНА. Все единицы у той доски были одинаковыми плитками: столбик не мог сказать,
+ * что фаза — это фаза, что у неё четыре стадии и три из них пройдены. Список это исправил —
+ * строка несла вид единицы, её слово и точку, состав, ленту шагов, что дальше и сколько идёт, —
+ * а всё, что ждало человека, поднималось из списка в полосу наверху.
  *
- * The list says the shape. Each line carries the KIND of unit, its own state in a word and a
- * dot, what it is made of, how far its steps got, what happens next, and how long. What is
- * stuck on a person is lifted out of the list entirely into the band at the top, because a
- * question waiting 41 minutes should not have to be found by scrolling.
+ * КЕМ И КОГДА СНЯТО. Владельцем, 25.08.2026, словом: он принял клик-макет со столбиками по
+ * стадиям и подтвердил решение явно. Не «переспорили доводы» — решение принял тот, чьё это
+ * окно и чья это работа.
+ *
+ * ПОЧЕМУ ЭТО НЕ ВОЗВРАТ К ПРЕЖНЕЙ ДОСКЕ. Столбиков шесть, и два из них — не стадии: «ЖДУТ ВАС»
+ * и «Готово». Оба вопроса, которые прежняя доска не брала, теперь у столбиков есть чем
+ * ответить: карточка несёт вид единицы, её слово, состав и ленту стадий — то самое, чего плитке
+ * старой доски не хватало, — а всё, что стоит на человеке, стоит своим столбиком и своим
+ * янтарным цветом. Полосу наверху он и заменил: две янтарные площадки об одном и том же учат
+ * человека не читать ни одну.
+ *
+ * ЧТО ИЗ ПРЕЖНЕГО ЗАКОНА ЖИВО. Форма работы по-прежнему видна (лента стадий, состав, слово
+ * состояния); то, что ждёт человека, по-прежнему нельзя искать прокруткой; и раскладка живёт
+ * не в вёрстке, а в проекции (`units.ts`), где её проверяет прогон. История не стёрта: здесь
+ * записано, что стояло, кто снял и почему, — чтобы следующий, кому покажется, что столбики
+ * взялись из моды, прочитал, чем за них заплачено.
  *
  * ═════════════════════ NOTHING HERE IS DRAWN FROM NOTHING ═════════════════════
  *
@@ -49,12 +63,28 @@ import type { WorkUnit } from './units'
  * ведут не туда, откуда пришли», только в самой крупной своей форме.
  */
 
-/** «41 МИН» / «6 Ч» — how long something has been on the person, in the band's own voice. */
-function ageLabel(hours: number | undefined): string {
-  if (typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0) return ''
-  if (hours < 1) return `${Math.round(hours * 60)} МИН`
-  return `${Math.floor(hours)} Ч`
+/**
+ * Цвет счётчика и заголовка столбика. Три стадии движения — синие, потому что там работа идёт;
+ * первая — серая, потому что там она ещё не пошла; «ЖДУТ ВАС» — янтарный, «Готово» — зелёный.
+ */
+const COLUMN_TONE: Record<BoardColumn, string> = {
+  discuss: 'text-tx3',
+  plan: 'text-blue',
+  execute: 'text-blue',
+  verify: 'text-blue',
+  you: 'text-warn-tx',
+  done: 'text-ok-tx',
 }
+
+/**
+ * СКОЛЬКО ЗАКРЫТЫХ КАРТОЧЕК ВИДНО в свёрнутом столбике «Готово».
+ *
+ * Столбик закрытого растёт без конца и вытолкнул бы работающие столбики вверх экрана, поэтому
+ * он свёрнут в счётчик. Но свёрнутый наглухо, он читался бы как «там ничего не происходит»,
+ * поэтому последние карточки остаются: видно, ЧЕМ именно закрылось. Порядок единиц ставит
+ * «не получилось» впереди «готово» — значит неудача не прячется под счётчиком.
+ */
+const DONE_SHOWN = 2
 
 function Counter({ n, label, tone }: { n: number; label: string; tone: string }) {
   return (
@@ -114,13 +144,17 @@ export function Screen() {
     [data, phaseIndex.data, activeProject, machine, selfMachine],
   )
 
-  const counts = countUnits(units)
+  // Шесть столбиков и шесть чисел над ними — из ОДНОЙ раскладки: счётчик, посчитанный
+  // отдельно от того, что лежит в столбике, однажды разойдётся с ним, и человек прочитает
+  // расхождение как ошибку экрана.
+  const board = useMemo(() => buildBoard(units), [units])
+  const counts = useMemo(() => countColumns(units), [units])
 
   /**
    * РАБОТА, ЧЕЙ ПРОЕКТ НЕИЗВЕСТЕН — та же проекция, отдельной группой.
    *
-   * Эти строки поставлены раньше, чем задача научилась знать свой проект. Список выше их не
-   * показывает — он о выбранном проекте, — а выбросить их совсем нельзя: работа, которую прячет
+   * Эти строки поставлены раньше, чем задача научилась знать свой проект. Доска выше их не
+   * показывает — она о выбранном проекте, — а выбросить их совсем нельзя: работа, которую прячет
    * каждый фильтр, невидима, и человек не может ни решить её, ни даже узнать, что она есть.
    *
    * Строится тем же `buildUnits` и рисуется теми же строками — чтобы группа не стала вторым
@@ -168,52 +202,6 @@ export function Screen() {
    * «читаю» значило бы не показать задачи, которые уже прочитаны.
    */
   const answered = data !== undefined && (phaseIndex.data !== undefined || phaseIndex.isError)
-
-  /** The band: the awaiting tasks and the phases that parked a question, longest wait first. */
-  const inbox: InboxItem[] = useMemo(() => {
-    const waitingTasks = (data?.awaiting ?? []).filter(
-      (r) => (!activeProject || r.project === activeProject) && (!machine || r.machine === machine),
-    )
-    const fromTasks: InboxItem[] = [...waitingTasks]
-      // Дольше всех ждущее — первым. Строка без возраста уходит в конец: очередь кладёт возраст
-      // только тем, кто ждёт дольше терпения, значит её ожидание короче любого названного.
-      .sort((a, b) => (b.agedForHours ?? 0) - (a.agedForHours ?? 0))
-      .map((r) => ({
-        id: `task:${r.id}`,
-        age: ageLabel(r.agedForHours),
-        text: r.title ?? 'Без названия',
-        cta: 'Решить →',
-        onOpen: () => setSelectedId(r.id),
-      }))
-
-    const fromPhases: InboxItem[] = (phaseIndex.data?.phases ?? [])
-      .filter((p) => p.open > 0)
-      .map((p) => ({
-        id: `phase:${p.id}`,
-        // Возраст вопроса фазы дверь не называет — и здесь он поэтому не пишется вовсе.
-        age: '',
-        text: `${p.name}: ${p.open} ${p.open === 1 ? 'вопрос ждёт' : 'вопроса ждут'} вашего ответа`,
-        cta: 'Ответить →',
-        onOpen: () => setOpenPhase(p.id),
-      }))
-
-    return [...fromTasks, ...fromPhases]
-  }, [data, phaseIndex.data, activeProject, machine])
-
-  /**
-   * «ЖДУТ ВАС: 3 · ДОЛЬШЕ ВСЕХ — 41 МИН» — счётчик и возраст самого старого ожидания.
-   *
-   * Возраст берётся из ожидающих задач, потому что только у них он измерен. Если ни у одной
-   * строки его нет, полоса так и говорит — счётчик от этого не становится враньём, а число
-   * минут не берётся из воздуха.
-   */
-  const inboxHeadline = useMemo(() => {
-    const oldest = (data?.awaiting ?? [])
-      .filter((r) => (!activeProject || r.project === activeProject) && (!machine || r.machine === machine))
-      .reduce<number | undefined>((max, r) => (r.agedForHours != null && (max == null || r.agedForHours > max) ? r.agedForHours : max), undefined)
-    const words = waitWords(oldest)
-    return `Ждут вас: ${inbox.length} · ${words ? `дольше всех — ${words}` : 'сколько ждут — нет данных'}`
-  }, [data, activeProject, machine, inbox.length])
 
   /** The roster in one sentence — who is on the work right now. */
   const workerLine = useMemo(() => {
@@ -358,21 +346,15 @@ export function Screen() {
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-auto px-7 py-5">
-        <Inbox items={inbox} headline={inboxHeadline} />
-
         <div className="mb-2.5 flex items-baseline gap-3">
-          <span className="text-[13px] font-semibold text-tx">Задачи · верхний уровень</span>
+          <span className="text-[13px] font-semibold text-tx">Задачи · верхний уровень · по стадиям</span>
+          {/* Счётчики — ПО СТОЛБИКАМ, и все шесть стоят всегда, включая нулевые: число здесь
+              измерено (столбик пуст), а не выдумано, и исчезающий счётчик двигал бы соседей. */}
           {answered ? (
             <div className="flex gap-3">
-              <Counter n={counts.run} label="в работе" tone="text-blue" />
-              <Counter n={counts.dec} label="ждут решения" tone="text-warn-tx" />
-              <Counter n={counts.ok} label="готово" tone="text-ok-tx" />
-              <Counter n={counts.wait} label="не начаты" tone="text-tx3" />
-              {counts.fail > 0 ? <Counter n={counts.fail} label="не получилось" tone="text-err-tx" /> : null}
-              {/* Слова владельца показываются, только когда они сказаны: счётчик «отменено 0»
-                  рассказывал бы о решении, которого никто не принимал. */}
-              {counts.skip > 0 ? <Counter n={counts.skip} label="пропущено" tone="text-tx3" /> : null}
-              {counts.off > 0 ? <Counter n={counts.off} label="отменено" tone="text-tx3" /> : null}
+              {BOARD_COLUMNS.map((key) => (
+                <Counter key={key} n={counts[key]} label={COLUMN_WORD[key].toLowerCase()} tone={COLUMN_TONE[key]} />
+              ))}
             </div>
           ) : (
             <span className="text-[11.5px] text-tx3">считаю…</span>
@@ -406,9 +388,36 @@ export function Screen() {
             </button>
           </div>
         ) : (
-          <div className="overflow-hidden rounded-[10px] border border-bd bg-card shadow-panel">
-            {units.map((unit, i) => (
-              <UnitRow key={`${unit.kind}:${unit.id}`} unit={unit} first={i === 0} onOpen={openUnit} />
+          /*
+            ШЕСТЬ СТОЛБИКОВ — И НИ ОДНОГО РЕШЕНИЯ, ПРИНЯТОГО ЗДЕСЬ.
+            Что в каком столбике лежит, решает проекция (`buildBoard`), и её проверяет прогон;
+            разметка эти столбики только рисует. Раскладка, живущая в вёрстке, проверяется
+            глазом — и ровно поэтому расходится с правдой молча.
+          */
+          <div className="flex items-start gap-3">
+            {board.map((col) => (
+              <div key={col.key} className="flex min-w-0 flex-1 flex-col gap-2">
+                <div className="flex items-baseline gap-1.5 px-0.5">
+                  <span className="text-[10px] font-semibold tracking-[0.05em] text-tx2 uppercase">{col.title}</span>
+                  <span className={`text-[11px] font-semibold tabular-nums ${COLUMN_TONE[col.key]}`}>
+                    {col.units.length}
+                  </span>
+                </div>
+
+                {col.key === 'you'
+                  ? col.units.map((unit) => (
+                      <WaitCard key={`${unit.kind}:${unit.id}`} unit={unit} onOpen={openUnit} />
+                    ))
+                  : (col.key === 'done' ? col.units.slice(0, DONE_SHOWN) : col.units).map((unit) => (
+                      <UnitCard key={`${unit.kind}:${unit.id}`} unit={unit} onOpen={openUnit} />
+                    ))}
+
+                {col.key === 'done' && col.units.length > DONE_SHOWN ? (
+                  <span className="px-0.5 text-[10.5px] text-tx3">
+                    ещё {col.units.length - DONE_SHOWN} — свёрнуты
+                  </span>
+                ) : null}
+              </div>
             ))}
           </div>
         )}
