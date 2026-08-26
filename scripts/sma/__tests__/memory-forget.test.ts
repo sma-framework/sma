@@ -306,10 +306,13 @@ describe('memory forget — one command, and it says which state it applied', ()
     // and it said it before this merge rather than after.
     // Note that this is the SECOND lock on the same number — the docs audit holds the other
     // six places — so the two move together or not at all.
+    // It is 96 for the FIFTH time in the same shape: the journal chain's acknowledgment
+    // ritual arrived as its own verb — the break stays evidence, and a human's written
+    // reason is the only thing that moves it out of the red count.
     // The claim this case actually makes is the line below it: the deletion surface stayed a
     // SUBCOMMAND of the corpus namespace and never grew a top-level key, which is what a count
     // alone could never say.
-    expect(keys).toBe(95)
+    expect(keys).toBe(96)
     // and the handler that WOULD have been added is absent by name
     expect(block).not.toContain('forget')
   })
