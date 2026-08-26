@@ -265,7 +265,9 @@ section: **[V3 trust-spine subcommands](#v3-trust-spine-subcommands)**.
 ### Tamper-evident journal + release-tag pin
 
 Every `.sma/journal` line is hash-chained: `prev` = sha256 of the previous raw
-line (`genesis` for the first). The whole V2 history is a legacy prev-less
+line (`genesis` for the first). Appends to one file are serialized by a per-file
+lock — one window is many one-shot hook processes running in parallel, and two
+of them linking to the same tip was a real, observed chain break. The whole V2 history is a legacy prev-less
 PREFIX that is never retro-broken; tamper-evidence starts the moment the first
 chained line lands. `chain-verify` reports any edit, deletion, or post-chain
 insertion. A break is NEVER auto-repaired: the `chain-start` ritual — a human

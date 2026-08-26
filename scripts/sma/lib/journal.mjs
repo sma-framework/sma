@@ -2,10 +2,13 @@
  * journal.mjs — per-terminal collision-event journal (R10, B15/B20), made
  * TAMPER-EVIDENT by a per-file hash chain.
  *
- * Each terminal appends to its OWN <terminalId>.jsonl file — there is no shared
- * append-file race by construction (shared-file appends are NOT atomic on Windows,
- * SPEC R10). The reader merge-sorts across all terminal files by (ts, terminal, seq)
- * so the timeline is stable even under equal timestamps.
+ * Each terminal appends to its OWN <terminalId>.jsonl file — two TERMINALS never
+ * share a file by construction (shared-file appends are NOT atomic on Windows,
+ * SPEC R10). One WINDOW is still many PROCESSES though: hooks are one-shot cli
+ * runs and the harness fires tool calls in parallel, so appends to one file are
+ * additionally serialized by a per-file append lock (see withAppendLock). The
+ * reader merge-sorts across all terminal files by (ts, terminal, seq) so the
+ * timeline is stable even under equal timestamps.
  *
  * HASH CHAIN: every line appendEvent writes now carries `prev` =
  * lineHash of the previous non-blank raw line in that file ('genesis' for the
@@ -47,6 +50,9 @@ import {
   readFileSync,
   readdirSync,
   mkdirSync,
+  writeFileSync,
+  statSync,
+  unlinkSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -120,32 +126,95 @@ function parseFile(path) {
  * @param {{terminalId:string, journalDir?:string, now?:string}} opts
  * @returns {object} the written event
  */
+/**
+ * withAppendLock(file, fn) — serialize the read-tip-then-append critical section.
+ *
+ * WHY THIS EXISTS. «One terminal — one file» was the no-race construction, but one
+ * WINDOW is not one PROCESS: every hook is a one-shot cli process, the window token
+ * is inherited by every child, and the harness runs tool calls IN PARALLEL — so two
+ * hooks of the same window can hit the same file at the same instant. Each computed
+ * `prev` from the same tip and the second line landed with a stale link: a real
+ * chain break with both neighbours carrying the same timestamp. Three such breaks
+ * were found in one workshop (all on parallel-work days) and acknowledged by the
+ * chain-start ritual; this lock closes the race itself.
+ *
+ * Mechanics: `<file>.lock` created with wx (exclusive). Holder writes its pid; a
+ * lock older than staleMs is swept (a crashed holder must not wedge every future
+ * append). Waiting is a bounded sync sleep (hooks are synchronous one-shots).
+ * FAIL-OPEN: if the lock cannot be had within timeoutMs the append proceeds
+ * WITHOUT it — losing the event would be worse than risking a break, and a break
+ * is exactly what verifyChain exists to surface.
+ */
+function withAppendLock(file, fn) {
+  const lockPath = `${file}.lock`
+  const timeoutMs = 2000
+  const staleMs = 10000
+  const deadline = Date.now() + timeoutMs
+  let held = false
+  while (!held && Date.now() < deadline) {
+    try {
+      writeFileSync(lockPath, String(process.pid), { flag: 'wx' })
+      held = true
+    } catch {
+      try {
+        const age = Date.now() - statSync(lockPath).mtimeMs
+        if (age > staleMs) unlinkSync(lockPath) // crashed holder — sweep and retry
+      } catch {
+        // lock vanished between the failed create and the stat — retry immediately
+      }
+      if (!held) sleepSync(15)
+    }
+  }
+  try {
+    return fn()
+  } finally {
+    if (held) {
+      try {
+        unlinkSync(lockPath)
+      } catch {
+        // already swept as stale by a waiter — nothing to release
+      }
+    }
+  }
+}
+
+/** Bounded synchronous sleep (appendEvent is a sync API called from one-shot hooks). */
+function sleepSync(ms) {
+  const sab = new Int32Array(new SharedArrayBuffer(4))
+  Atomics.wait(sab, 0, 0, ms)
+}
+
 export function appendEvent(evt, opts = {}) {
   const dir = resolveJournalDir(opts)
   mkdirSync(dir, { recursive: true })
   const file = join(dir, `${opts.terminalId}.jsonl`)
 
-  const { events } = parseFile(file)
-  const lastSeq = events.length ? events[events.length - 1].seq ?? events.length : 0
+  // The whole read-tip → build-record → append section runs under the per-file
+  // append lock: two parallel hooks of one window serialize instead of both
+  // linking to the same tip (see withAppendLock above).
+  return withAppendLock(file, () => {
+    const { events } = parseFile(file)
+    const lastSeq = events.length ? events[events.length - 1].seq ?? events.length : 0
 
-  // Hash-chain: prev = lineHash of the last non-blank raw line, or
-  // 'genesis' for the first line of the file. Computed over the RAW bytes so a
-  // later verifyChain re-derives the identical link.
-  const last = lastRawLine(file)
-  const prev = last == null ? 'genesis' : lineHash(last)
+    // Hash-chain: prev = lineHash of the last non-blank raw line, or
+    // 'genesis' for the first line of the file. Computed over the RAW bytes so a
+    // later verifyChain re-derives the identical link.
+    const last = lastRawLine(file)
+    const prev = last == null ? 'genesis' : lineHash(last)
 
-  const record = {
-    ts: opts.now ?? new Date().toISOString(),
-    terminal: opts.terminalId,
-    seq: lastSeq + 1,
-    type: evt.type ?? 'warn', // 'warn'|'collision'|'claim'|'release'|'steal'|'snapshot-fail'|'chain-start'
-    actors: evt.actors ?? [],
-    scope: evt.scope ?? null,
-    detail: evt.detail ?? null,
-    prev, // hash-chain link — MUST stay last so JSON.stringify order is deterministic
-  }
-  appendFileSync(file, JSON.stringify(record) + '\n')
-  return record
+    const record = {
+      ts: opts.now ?? new Date().toISOString(),
+      terminal: opts.terminalId,
+      seq: lastSeq + 1,
+      type: evt.type ?? 'warn', // 'warn'|'collision'|'claim'|'release'|'steal'|'snapshot-fail'|'chain-start'
+      actors: evt.actors ?? [],
+      scope: evt.scope ?? null,
+      detail: evt.detail ?? null,
+      prev, // hash-chain link — MUST stay last so JSON.stringify order is deterministic
+    }
+    appendFileSync(file, JSON.stringify(record) + '\n')
+    return record
+  })
 }
 
 /**

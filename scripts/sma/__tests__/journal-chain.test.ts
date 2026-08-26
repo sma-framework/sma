@@ -203,3 +203,30 @@ describe('chainStart — the acknowledgment ritual', () => {
     expect(res.breaks.some((b) => b.index === 2)).toBe(true)
   })
 })
+
+describe('appendEvent — parallel writers serialize (the append lock)', () => {
+  it('eight concurrent processes appending to ONE file leave the chain whole', async () => {
+    const { spawn } = await import('node:child_process')
+    const script = [
+      "const { appendEvent } = await import(process.argv[1]);",
+      "for (let i = 0; i < 5; i++) appendEvent({ type: 'claim', detail: process.argv[3] + '-' + i }, { terminalId: 't1', journalDir: process.argv[2] });",
+    ].join('\n')
+    const libUrl = new URL('../lib/journal.mjs', import.meta.url).href
+    const runs = Array.from({ length: 8 }, (_, w) =>
+      new Promise<number>((resolve) => {
+        const child = spawn(process.execPath, ['--input-type=module', '-e', script, libUrl, journalDir, `w${w}`], { stdio: 'ignore' })
+        child.on('exit', (code) => resolve(code ?? -1))
+      }),
+    )
+    const codes = await Promise.all(runs)
+    expect(codes).toEqual(Array(8).fill(0))
+
+    const res = verifyChain({ journalDir })
+    expect(res.breaks).toEqual([])
+    expect(res.ok).toBe(true)
+    // every append landed: 8 writers × 5 events, seq strictly 1..40
+    const events = raw().map((l) => JSON.parse(l))
+    expect(events).toHaveLength(40)
+    expect(events.map((e) => e.seq)).toEqual(Array.from({ length: 40 }, (_, i) => i + 1))
+  })
+})
