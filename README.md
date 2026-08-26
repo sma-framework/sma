@@ -609,7 +609,7 @@ The `/sma-*` workflow family (run inside a Claude Code session):
 | `/sma-deleteme` | Remove SMA in one action; your memory corpus stays |
 | `/sma-update` | Check installed vs available versions and update via the standard installer; everything local stays |
 
-Underneath runs the coordination + accountability CLI — 95 verbs, each with an in-product explainer. Call it from your project root, the way the hooks do:
+Underneath runs the coordination + accountability CLI — 96 verbs, each with an in-product explainer. Call it from your project root, the way the hooks do:
 
 ```bash
 node scripts/sma/cli.mjs status            # who is working on what, right now

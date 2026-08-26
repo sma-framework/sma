@@ -113,6 +113,7 @@ export const COMMAND_TOPICS = {
   'receipt-hash': 'receipts',
   'chain-tip': 'receipts',
   'chain-verify': 'receipts',
+  'chain-start': 'receipts', // the ritual writes INTO the chain the receipts explainer describes
   'pretask-pack': 'receipts',
   'subagent-verify': 'receipts',
   'subagent-receipts': 'receipts',

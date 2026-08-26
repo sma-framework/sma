@@ -7248,16 +7248,63 @@ async function cmdChainVerify({ flags, dirs }) {
     printJson(res)
     return res.ok ? 0 : 1
   }
+  const ackNote = res.acknowledged?.length
+    ? ` · признано ритуалом chain-start: ${res.acknowledged.length} (улики сохранены)`
+    : ''
   if (res.ok) {
-    process.stdout.write(`SMA chain-verify: цепочка журнала цела — 0 разрывов (legacy-префикс: ${res.legacyLines}).\n`)
+    process.stdout.write(`SMA chain-verify: цепочка журнала цела — 0 живых разрывов (legacy-префикс: ${res.legacyLines})${ackNote}.\n`)
+    for (const a of res.acknowledged ?? []) {
+      process.stdout.write(`  признан: ${a.file} seq=${a.seq ?? '—'} index=${a.index}: ${a.reason} (ритуал в строке ${a.ackAt})\n`)
+    }
     return 0
   }
-  process.stdout.write(`SMA chain-verify: НАЙДЕНЫ разрывы (${res.breaks.length}) — правка/удаление/вставка после начала цепочки:\n`)
+  process.stdout.write(`SMA chain-verify: НАЙДЕНЫ живые разрывы (${res.breaks.length})${ackNote} — правка/удаление/вставка после начала цепочки:\n`)
   for (const b of res.breaks) {
     process.stdout.write(`  ${b.file} seq=${b.seq ?? '—'} index=${b.index}: ${b.reason}\n`)
   }
-  process.stdout.write('Разрыв — это улика; НЕ «чинить» перезаписью строки. Единственный путь вперёд — новый chain-start поверх, с сохранённым разрывом.\n')
+  process.stdout.write('Разрыв — это улика; НЕ «чинить» перезаписью строки. Единственный путь вперёд — ритуал `chain-start --file <файл> --reason "<почему>"`, признающий разрыв с сохранением улики.\n')
   return 1
+}
+
+/**
+ * chain-start --file <terminal[.jsonl]> --reason "<почему>" [--actor <кто>] [--json] —
+ * the HUMAN ritual over the journal chain: acknowledge every live break of ONE
+ * file with a single appended, chained line (evidence preserved verbatim —
+ * nothing is rewritten or deleted). Refuses without --reason, refuses when the
+ * file has no live breaks. NOT hook-facing; never called by automation.
+ */
+async function cmdChainStart({ flags, dirs }) {
+  const journal = await import('./lib/journal.mjs')
+  const file = typeof flags.file === 'string' ? flags.file.trim() : ''
+  const reason = typeof flags.reason === 'string' ? flags.reason.trim() : ''
+  if (!file || !reason) {
+    process.stdout.write('SMA chain-start: ритуал — решение человека, и он требует обоих слов: --file <журнал> --reason "<почему разрыв признаётся>".\n')
+    return 1
+  }
+  const res = journal.chainStart({
+    terminalId: file,
+    reason,
+    ...(typeof flags.actor === 'string' && flags.actor.trim() ? { actor: flags.actor.trim() } : {}),
+    journalDir: dirs.journalDir,
+  })
+  if (wantsJson(flags)) {
+    printJson(res)
+    return res.ok ? 0 : 1
+  }
+  if (!res.ok) {
+    const said = res.error === 'no-live-breaks'
+      ? 'в этом файле нет живых разрывов — признавать нечего, ритуал не пишется'
+      : res.error === 'no-reason'
+        ? 'причина пуста — ритуал без причины не пишется'
+        : `отказ: ${res.error}`
+    process.stdout.write(`SMA chain-start: ${said}.\n`)
+    return 1
+  }
+  process.stdout.write(`SMA chain-start: признано разрывов ${res.acknowledges.length} в ${file.replace(/\.jsonl$/, '')}.jsonl — улики сохранены, строка ритуала seq=${res.record.seq}:\n`)
+  for (const a of res.acknowledges) {
+    process.stdout.write(`  index=${a.index} seq=${a.seq ?? '—'} (${a.reason}) · hash ${a.hash.slice(0, 12)}…\n`)
+  }
+  return 0
 }
 
 /** Normalize on-disk line endings so the byte-compare is CRLF-agnostic (autocrlf). */
@@ -12649,6 +12696,7 @@ const HANDLERS = {
   'receipt-hash': cmdReceiptHash, // the receipt emit path
   'chain-tip': cmdChainTip, // merged journal chain tip (release-tag pin)
   'chain-verify': cmdChainVerify, // tamper detector over the journal chain
+  'chain-start': cmdChainStart, // the human ritual: acknowledge a break, evidence preserved
   'pretask-pack': cmdPretaskPack, // PreToolUse(Task) pack injection
   'subagent-verify': cmdSubagentVerify, // SubagentStop tree-verified receipts
   'subagent-receipts': cmdSubagentReceipts, // receipt coverage/phantoms/pack-p95 report
@@ -12697,7 +12745,7 @@ const HANDLERS = {
 /**
  * Verbs that print their OWN `--help`. The global intercept below hands `--help`
  * to these handlers instead of printing the verb list, so a subcommand can
- * document its own flags. Deliberately an opt-in allow-list: 93 other verbs keep
+ * document its own flags. Deliberately an opt-in allow-list: 94 other verbs keep
  * the existing behaviour untouched. (That count is the dispatch table minus this
  * allow-list, and the numbers audit now holds it to exactly that — so when two
  * lines of work add verbs at once the count is their SUM, not either side's figure.)
@@ -12714,7 +12762,7 @@ async function main() {
   // teach exactly that call. A door the docs name has to open.
   if (!cmd || cmd === '--help' || cmd === '-h' || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|turn-diff|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|wires|arena|batch|deleteme|memory-preview|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|approvals|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|turn-diff|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|chain-start|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|wires|arena|batch|deleteme|memory-preview|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|approvals|exam|update>\n',
     )
     return 0
   }

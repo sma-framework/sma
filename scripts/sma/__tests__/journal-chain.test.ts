@@ -13,6 +13,10 @@
  *   - Test 5: back-compat — readJournal merge-sort unchanged (extra fields
  *     ignored); a corrupt line skip-counts in the READER while verifyChain
  *     reports it as a break in the VERIFIER.
+ *   - Test 6: the chain-start ritual — a human-reasoned acknowledgment line
+ *     moves a break to `acknowledged` (ok again) with the evidence preserved;
+ *     refuses without a reason or without live breaks; the binding is to the
+ *     broken line's exact bytes, so touching it again makes the break live.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -20,7 +24,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { appendEvent, readJournal, verifyChain, chainTip, lineHash } from '../lib/journal.mjs'
+import { appendEvent, readJournal, verifyChain, chainTip, chainStart, lineHash } from '../lib/journal.mjs'
 
 let journalDir: string
 const file = () => join(journalDir, 't1.jsonl')
@@ -138,5 +142,64 @@ describe('back-compat — reader stays fail-open while verifier detects', () => 
     expect(verifier.ok).toBe(false)
     // the corrupt line is a break in the chained region
     expect(verifier.breaks.some((b) => b.reason === 'corrupt')).toBe(true)
+  })
+})
+
+
+describe('chainStart — the acknowledgment ritual', () => {
+  const breakTheMiddle = () => {
+    appendEvent({ type: 'claim', detail: 'a' }, { terminalId: 't1', journalDir, now: 'T1' })
+    appendEvent({ type: 'claim', detail: 'b' }, { terminalId: 't1', journalDir, now: 'T2' })
+    appendEvent({ type: 'claim', detail: 'c' }, { terminalId: 't1', journalDir, now: 'T3' })
+    const lines = raw()
+    lines[1] = lines[1].replace('"detail":"b"', '"detail":"X"')
+    writeFileSync(file(), lines.join('\n') + '\n')
+  }
+
+  it('acknowledges the live break: verifyChain ok again, evidence preserved, ritual line chained', () => {
+    breakTheMiddle()
+    const before = verifyChain({ journalDir })
+    expect(before.ok).toBe(false)
+    expect(before.breaks[0].index).toBe(2)
+
+    const preTip = raw()[raw().length - 1]
+    const res = chainStart({ terminalId: 't1', reason: 'два писателя сошлись в одном файле', actor: 'owner', journalDir, now: 'T4' })
+    expect(res.ok).toBe(true)
+    expect(res.acknowledges).toHaveLength(1)
+    expect(res.acknowledges[0]).toMatchObject({ index: 2, reason: 'prev-mismatch' })
+    // the ritual line rides the chain: prev = lineHash of the previous last raw line
+    expect(res.record.prev).toBe(lineHash(preTip))
+    expect(res.record.type).toBe('chain-start')
+
+    const after = verifyChain({ journalDir })
+    expect(after.ok).toBe(true)
+    expect(after.breaks).toHaveLength(0)
+    expect(after.acknowledged).toHaveLength(1)
+    expect(after.acknowledged[0]).toMatchObject({ file: 't1.jsonl', index: 2, reason: 'prev-mismatch' })
+    // the broken line itself is still on disk, byte for byte (evidence preserved)
+    expect(raw()[2]).toContain('"prev"')
+  })
+
+  it('refuses without a reason and refuses when there is nothing to acknowledge — appending nothing', () => {
+    appendEvent({ type: 'claim', detail: 'a' }, { terminalId: 't1', journalDir, now: 'T1' })
+    const linesBefore = raw().length
+    expect(chainStart({ terminalId: 't1', reason: '   ', journalDir })).toMatchObject({ ok: false, error: 'no-reason' })
+    expect(chainStart({ terminalId: 't1', reason: 'clean file', journalDir })).toMatchObject({ ok: false, error: 'no-live-breaks' })
+    expect(raw().length).toBe(linesBefore)
+  })
+
+  it('binds to the broken line bytes: touch the acknowledged line again and the break is live again', () => {
+    breakTheMiddle()
+    expect(chainStart({ terminalId: 't1', reason: 'признано', journalDir, now: 'T4' }).ok).toBe(true)
+    expect(verifyChain({ journalDir }).ok).toBe(true)
+
+    // tamper with the ACKNOWLEDGED successor line (index 2) once more
+    const lines = raw()
+    lines[2] = lines[2].replace('"detail":"c"', '"detail":"Y"')
+    writeFileSync(file(), lines.join('\n') + '\n')
+    const res = verifyChain({ journalDir })
+    expect(res.ok).toBe(false)
+    // the old acknowledgment no longer matches the new bytes — the break is live
+    expect(res.breaks.some((b) => b.index === 2)).toBe(true)
   })
 })

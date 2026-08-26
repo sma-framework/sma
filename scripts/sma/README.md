@@ -37,7 +37,7 @@ page; direct-CLI subcommands return meaningful exit codes.
 
 ## Every verb at a glance
 
-All 95, grouped by what they are for. The sections after this table go deeper
+All 96, grouped by what they are for. The sections after this table go deeper
 on the ones with real surface area; `sma explain <verb>` answers for any of
 them in plain language, in English or Russian.
 
@@ -117,7 +117,7 @@ them in plain language, in English or Russian.
 | `evidence` | The burden-of-proof record required before a risky operation is allowed to proceed |
 | `preship` | The release gate: an open trust-class event blocks the ship |
 | `disposition` | The append-only human ruling that clears such an event — the agent cannot forgive itself |
-| `chain-tip` · `chain-verify` | Emit the tamper-evident journal chain tip (pinned into release tags); detect any edit to history |
+| `chain-tip` · `chain-verify` · `chain-start` | Emit the tamper-evident journal chain tip (pinned into release tags); detect any edit to history; acknowledge a break by the human ritual, evidence preserved |
 | `pretask-pack` | Hand a subagent its inherited context by construction rather than by hope |
 | `subagent-verify` · `subagent-receipts` | Check every claimed file write against the real tree; surface the phantom ones |
 | `integrity` · `skeptic` · `canary` · `nearmiss` | The guards that keep the published numbers honest: audits, countersignatures, planted false-dones, near-miss capture |
@@ -259,7 +259,8 @@ section: **[V3 trust-spine subcommands](#v3-trust-spine-subcommands)**.
 | `reverify` | re-run every SUMMARY receipt across the SAFE_COMMAND boundary; diff observed-vs-expected hashes; append verdicts to the `sma.receipts` ledger. The footprint receipt compares a plan's frontmatter `footprint:` claim against `git diff --numstat` actuals — an overrun is a scored `sma.economy` miss | `--summary <path>` \| `--all` \| `--fresh-clone` \| `--count <verdict>` \| `--footprint <plan>` \| `--footprint-selftest` \| `--footprint-overruns` \| `--json` |
 | `receipt-hash` | the emit path: run one allowlisted command and print the observation sha256 as the last line (paste into a SUMMARY `receipts:` block). The digest binds the exact command + exit code + normalized stdout; `--exit-only` drops stdout for nondeterministic outputs (command and exit stay bound); `--unsafe-ack` admits one off-allowlist command and stamps `unsafe_ack: true` on the receipt | `<command> [--exit-only] [--unsafe-ack] [--cwd <path>]` |
 | `chain-tip` | print the deterministic merged journal chain tip (pinned into the release tag) | `--json` |
-| `chain-verify` | verify the tamper-evident journal chain; list breaks | `--count breaks` \| `--json` |
+| `chain-verify` | verify the tamper-evident journal chain; list live and acknowledged breaks | `--count breaks` \| `--json` |
+| `chain-start` | the human ritual over the chain: acknowledge every live break of ONE journal file with a single appended, chained line — evidence preserved verbatim, nothing rewritten or deleted; refuses without a reason and refuses when there is nothing to acknowledge; touch the acknowledged line again and the break is live again | `--file <terminal[.jsonl]>` \| `--reason "<words>"` \| `--actor <name>` \| `--json` |
 
 ### Tamper-evident journal + release-tag pin
 
@@ -267,8 +268,10 @@ Every `.sma/journal` line is hash-chained: `prev` = sha256 of the previous raw
 line (`genesis` for the first). The whole V2 history is a legacy prev-less
 PREFIX that is never retro-broken; tamper-evidence starts the moment the first
 chained line lands. `chain-verify` reports any edit, deletion, or post-chain
-insertion (a break is NEVER auto-repaired — append a new chain-start on top,
-preserving the break).
+insertion. A break is NEVER auto-repaired: the `chain-start` ritual — a human
+decision with a written reason — appends one chained acknowledgment line on
+top, preserving the broken line verbatim as evidence; until a person writes
+that line, the break stays live and `chain-verify` stays red.
 
 `chain-tip` emits a deterministic merged tip; the **sma-ship release ritual
 pins `SMA-Journal-Tip: <tip>`** as the final line of the annotated `V1.N` tag

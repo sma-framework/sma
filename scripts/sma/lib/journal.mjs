@@ -19,10 +19,22 @@
  * evidence and is NEVER auto-repaired: the only forward path is a new
  * chain-start appended on top, with the break preserved.
  *
+ * THE CHAIN-START RITUAL (chainStart): a human decision, never automatic. It
+ * appends ONE ordinary chained line of type 'chain-start' whose detail names,
+ * for every live break it acknowledges, the break's index AND the lineHash of
+ * the broken line's exact bytes — plus the human's stated reason. verifyChain
+ * then reports such breaks under `acknowledged` instead of `breaks`, and `ok`
+ * is computed over LIVE breaks only. The binding is positional and
+ * content-bound on purpose: touch the acknowledged line again, or shift it,
+ * and the acknowledgment no longer matches — the break is live again. The
+ * ritual line itself rides the chain like any other line, so it is exactly as
+ * tamper-evident as what it acknowledges.
+ *
  * Two postures, two jobs: the READER (readJournal/parseFile) stays FAIL-OPEN —
  * a corrupt line is skip-and-counted, never a throw. The VERIFIER (verifyChain)
  * is the tamper detector — the same corrupt line is a reported break. Neither
- * ever WRITES (verifyChain/chainTip are read-only).
+ * ever WRITES (verifyChain/chainTip are read-only; the ONE writer of the
+ * ritual is chainStart, and it only ever APPENDS).
  *
  * Fail-open (C9): a corrupted line is skipped-and-counted, never a throw; an empty
  * or missing journal dir yields a zero-event report.
@@ -126,7 +138,7 @@ export function appendEvent(evt, opts = {}) {
     ts: opts.now ?? new Date().toISOString(),
     terminal: opts.terminalId,
     seq: lastSeq + 1,
-    type: evt.type ?? 'warn', // 'warn'|'collision'|'claim'|'release'|'steal'|'snapshot-fail'
+    type: evt.type ?? 'warn', // 'warn'|'collision'|'claim'|'release'|'steal'|'snapshot-fail'|'chain-start'
     actors: evt.actors ?? [],
     scope: evt.scope ?? null,
     detail: evt.detail ?? null,
@@ -137,21 +149,27 @@ export function appendEvent(evt, opts = {}) {
 }
 
 /**
- * verifyChain(opts) -> {ok, breaks, legacyLines, files}. The tamper detector:
- * walks each file's non-blank lines in order. Prev-less lines are allowed ONLY
- * as a contiguous LEGACY PREFIX (the whole V2 history); from the first chained
- * line onward every line MUST parse AND carry prev === lineHash(previous raw
- * line). Detects edits (successor's prev no longer matches), deletions (the
- * successor's expected prev shifts), and post-chain prev-less insertions. An
- * unparseable line inside the chained region is a break (reason 'corrupt').
- * NEVER writes anything.
+ * verifyChain(opts) -> {ok, breaks, acknowledged, legacyLines, files}. The
+ * tamper detector: walks each file's non-blank lines in order. Prev-less lines
+ * are allowed ONLY as a contiguous LEGACY PREFIX (the whole V2 history); from
+ * the first chained line onward every line MUST parse AND carry prev ===
+ * lineHash(previous raw line). Detects edits (successor's prev no longer
+ * matches), deletions (the successor's expected prev shifts), and post-chain
+ * prev-less insertions. An unparseable line inside the chained region is a
+ * break (reason 'corrupt'). NEVER writes anything.
  *
  * break shape: {file, seq, index, reason}. reasons: 'prev-mismatch' (edit or
  * deletion), 'legacy-after-chain' (a prev-less line after chaining started),
  * 'corrupt' (unparseable line in the chained region).
  *
+ * ACKNOWLEDGED breaks: a break whose (index, exact line bytes) are named by a
+ * LATER 'chain-start' line in the same file (see chainStart) is reported under
+ * `acknowledged` — with the evidence preserved verbatim — and does not count
+ * against `ok`. Any further tampering (the line's bytes change, or its index
+ * shifts) breaks the binding and the break is live again.
+ *
  * @param {{journalDir?:string}} [opts]
- * @returns {{ok:boolean, breaks:object[], legacyLines:number, files:string[]}}
+ * @returns {{ok:boolean, breaks:object[], acknowledged:object[], legacyLines:number, files:string[]}}
  */
 export function verifyChain(opts = {}) {
   const dir = resolveJournalDir(opts)
@@ -159,14 +177,40 @@ export function verifyChain(opts = {}) {
   try {
     files = readdirSync(dir).filter((f) => f.endsWith('.jsonl')).sort()
   } catch {
-    return { ok: true, breaks: [], legacyLines: 0, files: [] } // missing dir -> honest clean-empty
+    return { ok: true, breaks: [], acknowledged: [], legacyLines: 0, files: [] } // missing dir -> honest clean-empty
   }
 
   const breaks = []
+  const acknowledged = []
   let legacyLines = 0
 
   for (const f of files) {
     const nb = rawLines(join(dir, f))
+
+    // Pass 1 — collect the ritual's acknowledgments: {index, hash} pairs named
+    // by 'chain-start' lines, each valid only for breaks ABOVE that line.
+    const acks = []
+    for (let i = 0; i < nb.length; i++) {
+      let obj
+      try {
+        obj = JSON.parse(nb[i])
+      } catch {
+        continue
+      }
+      if (obj?.type !== 'chain-start' || !Array.isArray(obj?.detail?.acknowledges)) continue
+      for (const a of obj.detail.acknowledges) {
+        if (Number.isInteger(a?.index) && typeof a?.hash === 'string' && a.index < i) {
+          acks.push({ index: a.index, hash: a.hash, at: i })
+        }
+      }
+    }
+    const settle = (brk) => {
+      const ack = acks.find((a) => a.index === brk.index && a.hash === lineHash(nb[brk.index]))
+      if (ack) acknowledged.push({ ...brk, ackAt: ack.at })
+      else breaks.push(brk)
+    }
+
+    // Pass 2 — the unchanged walk; every found break settles as live or acknowledged.
     let chaining = false
     for (let i = 0; i < nb.length; i++) {
       const line = nb[i]
@@ -175,7 +219,7 @@ export function verifyChain(opts = {}) {
         obj = JSON.parse(line)
       } catch {
         if (chaining) {
-          breaks.push({ file: f, seq: null, index: i, reason: 'corrupt' })
+          settle({ file: f, seq: null, index: i, reason: 'corrupt' })
         }
         // an unparseable line in the legacy prefix is skipped (reader fail-open)
         continue
@@ -183,7 +227,7 @@ export function verifyChain(opts = {}) {
       const hasPrev = obj != null && obj.prev != null && obj.prev !== ''
       if (!hasPrev) {
         if (chaining) {
-          breaks.push({ file: f, seq: obj?.seq ?? null, index: i, reason: 'legacy-after-chain' })
+          settle({ file: f, seq: obj?.seq ?? null, index: i, reason: 'legacy-after-chain' })
         } else {
           legacyLines += 1 // contiguous legacy prefix — never retro-broken
         }
@@ -193,12 +237,52 @@ export function verifyChain(opts = {}) {
       chaining = true
       const expected = i === 0 ? 'genesis' : lineHash(nb[i - 1])
       if (obj.prev !== expected) {
-        breaks.push({ file: f, seq: obj.seq ?? null, index: i, reason: 'prev-mismatch' })
+        settle({ file: f, seq: obj.seq ?? null, index: i, reason: 'prev-mismatch' })
       }
     }
   }
 
-  return { ok: breaks.length === 0, breaks, legacyLines, files }
+  return { ok: breaks.length === 0, breaks, acknowledged, legacyLines, files }
+}
+
+/**
+ * chainStart({terminalId, reason, actor?, journalDir?, now?}) — the ritual
+ * writer: acknowledge ALL live breaks of ONE terminal's journal file with one
+ * appended, chained 'chain-start' line. A HUMAN decision: refuses without a
+ * non-empty reason, refuses when the file has no live breaks (nothing to
+ * acknowledge is not a ritual), never rewrites or deletes anything — the break
+ * stays in place as evidence, this line only names it acknowledged.
+ *
+ * @param {{terminalId:string, reason:string, actor?:string, journalDir?:string, now?:string}} opts
+ * @returns {{ok:boolean, error?:string, record?:object, acknowledges?:object[]}}
+ */
+export function chainStart(opts = {}) {
+  const terminalId = String(opts.terminalId ?? '').replace(/\.jsonl$/, '')
+  const reason = String(opts.reason ?? '').trim()
+  if (!terminalId) return { ok: false, error: 'no-terminal' }
+  if (!reason) return { ok: false, error: 'no-reason' }
+
+  const dir = resolveJournalDir(opts)
+  const file = `${terminalId}.jsonl`
+  const live = verifyChain({ journalDir: dir }).breaks.filter((b) => b.file === file)
+  if (!live.length) return { ok: false, error: 'no-live-breaks' }
+
+  const nb = rawLines(join(dir, file))
+  const acknowledges = live.map((b) => ({
+    index: b.index,
+    seq: b.seq,
+    reason: b.reason,
+    hash: lineHash(nb[b.index]),
+  }))
+  const record = appendEvent(
+    {
+      type: 'chain-start',
+      actors: opts.actor ? [String(opts.actor)] : [],
+      detail: { reason, acknowledges },
+    },
+    { terminalId, journalDir: dir, ...(opts.now ? { now: opts.now } : {}) },
+  )
+  return { ok: true, record, acknowledges }
 }
 
 /**
