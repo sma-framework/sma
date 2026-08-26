@@ -247,6 +247,13 @@ export const TASK_STATUSES = Object.freeze([
  *                     hosted connectors the vendor felt like attaching that minute. Refusing
  *                     by name costs one attempt; spawning anyway spends the subscription on
  *                     work done under the wrong profile, and no card could ever say so
+ *   liveness_killed — the SWEEP's own verdict: the attempt let its lease go unrenewed past the
+ *                     deadline, so the watchdog stopped the child and handed the task back.
+ *                     Named apart from runtime_offline because the runtime was FINE — the
+ *                     WORKER went silent — and a card reading «среда исполнения недоступна»
+ *                     sends a person to check a machine that was never broken. Apart from
+ *                     timeout too: that one is a run reporting its own clock ran out, this one
+ *                     is somebody ELSE's judgement passed over its silence
  *   timeout / runtime_offline / window_exhausted — infra causes
  *   wait_for_window / budget_stop / api_cap_unset / day_priority_protected — ROUTE AND MONEY
  *                     causes: the dispatcher decided, before any process existed, that this
@@ -296,6 +303,14 @@ export const FAIL_REASONS = Object.freeze([
   'missing_access',
   'timeout',
   'runtime_offline',
+  // THE WATCHDOG'S VERDICT, AND NOT AN OUTAGE. The liveness sweep declares an attempt dead when
+  // its lease went unrenewed past the deadline, stops the child and hands the task back — and
+  // until this word existed it buried that attempt as `runtime_offline`, writing «среда
+  // исполнения недоступна» over an environment that was alive the whole time while a worker sat
+  // silent. The reader was sent to fix a machine instead of a wedged attempt, which is the exact
+  // harm every division in this list exists to prevent. runtime_offline now means only what it
+  // says: the environment really was unreachable.
+  'liveness_killed',
   'window_exhausted',
   // THE FOUR THE DISPATCHER DECIDES BEFORE A PROCESS EXISTS. `fail()` throws on a word it
   // does not carry, so a tick that finally tells the truth about a route would take the
@@ -326,6 +341,7 @@ export const REASON_LABELS = Object.freeze({
   missing_access: 'нужен человек: не хватает доступа',
   timeout: 'истекло время',
   runtime_offline: 'среда исполнения недоступна',
+  liveness_killed: 'убита сторожем живости: молчала дольше срока',
   window_exhausted: 'окно подписки исчерпано',
   wait_for_window: 'нет свободного окна — ждёт окна подписки, платный канал не задействован',
   budget_stop: 'остановлено бюджетом: месячный лимит платного канала выбран',

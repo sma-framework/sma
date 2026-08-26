@@ -13,7 +13,10 @@
  * line, and on restart the sweep re-derives every task's live path from durable state.
  *
  * REQUEUE MECHANICS: a stale-active task is requeued by `adapter.fail(id,
- * 'runtime_offline')`. On the pg-boss backend this hands the SAME job row back to
+ * 'liveness_killed')` — THE SWEEP'S OWN WORD, not an outage report. It used to write
+ * `runtime_offline` here, and a card reading «среда исполнения недоступна» sent a person to
+ * check a machine that had been alive the whole time: what went silent was the WORKER.
+ * On the pg-boss backend this hands the SAME job row back to
  * pg-boss's retryLimit/retryBackoff — «замолчал — задача вернулась в очередь» falls
  * out of the library, WITHOUT re-enqueuing (so no task field is lost). The adapter's
  * fail() is also what appends the durable attempt row. The sweep is the
@@ -78,7 +81,7 @@ function countNoProgress(attempts) {
  *   - terminal (completed/failed) → not audited (no live-path obligation);
  *   - queued → OK (queued IS a durable live path);
  *   - active with a fresh renewal (now - leaseRenewedAt <= expireMs) → OK;
- *   - active with a STALE touch → no live path → adapter.fail(id, 'runtime_offline')
+ *   - active with a STALE touch → no live path → adapter.fail(id, 'liveness_killed')
  *     (→ attempt row via the adapter + pg-boss auto-retry), counted as requeued, and
  *     counted as throttled when its cooldown (>= 2 no-progress runs) is non-zero.
  *
@@ -216,7 +219,12 @@ export async function livenessSweep({ adapter, ledger, clock = Date.now, expireM
     // у кого он был, мёртв или недостижим. Потребуй мы жетона и здесь, замолчавшая попытка
     // осталась бы висеть навсегда, а именно её перевыдача — весь смысл этого обхода.
     // Очередь такой вызов принимает намеренно: непредъявленный жетон у неё — не отказ.
-    await adapter.fail(r.id, 'runtime_offline') // → attempt row (adapter) + pg-boss auto-retry
+    //
+    // И ПРИГОВОР НАЗЫВАЕТСЯ СВОИМ ИМЕНЕМ. `liveness_killed`, а не `runtime_offline`: среда была
+    // жива — молчал работник, и карточка «среда исполнения недоступна» отправляла человека
+    // чинить машину, с которой ничего не случилось. `runtime_offline` остаётся за настоящей
+    // недоступностью среды (её называет тик, когда процесс не удалось даже запустить).
+    await adapter.fail(r.id, 'liveness_killed') // → attempt row (adapter) + pg-boss auto-retry
     requeued += 1
     if (cooldownMs > 0) throttled += 1
   }

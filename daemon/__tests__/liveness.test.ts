@@ -7,7 +7,7 @@
  * clocks — no in-memory task registry, no live Postgres):
  *   - queued task → OK (audited, not requeued)
  *   - active + fresh touch → OK
- *   - active + STALE touch → fail(runtime_offline) + attempt row + requeue (attempt+1)
+ *   - active + STALE touch → fail(liveness_killed) + attempt row + requeue (attempt+1)
  *   - kill-drill: daemon death mid-task → task back to queued, attempt+1, ledger row
  *   - computeCooldownMs exponential throttle at n=2,3,4,10
  *   - CAS: won on 1 row, LOST (no throw) on 0 rows; claim generation in the WHERE
@@ -17,6 +17,7 @@ import { describe, it, expect } from 'vitest'
 
 import { livenessSweep, computeCooldownMs } from '../src/queue/liveness.mjs'
 import { casTransition } from '../src/queue/cas.mjs'
+import { FAIL_REASONS, REASON_LABELS } from '../src/queue/adapter.mjs'
 
 const mkClock = (start = 1000) => {
   const s = { now: start }
@@ -161,7 +162,7 @@ describe('livenessSweep — durable live-path audit', () => {
     expect(res.requeued).toBe(0)
   })
 
-  it('kill-drill: daemon death mid-task requeues the task with attempt+1 and a runtime_offline attempt row (zero lost state)', async () => {
+  it('kill-drill: daemon death mid-task requeues the task with attempt+1 and a liveness_killed attempt row (zero lost state)', async () => {
     const c = mkClock(1000)
     const ledger = makeFakeLedger()
     const adapter = makeFakeAdapter({ clock: c.clock, ledger })
@@ -178,7 +179,7 @@ describe('livenessSweep — durable live-path audit', () => {
     expect(res.requeued).toBe(1)
     const attempts = ledger.readAttempts('BL-1')
     expect(attempts).toHaveLength(1)
-    expect(attempts[0].failureReason).toBe('runtime_offline')
+    expect(attempts[0].failureReason).toBe('liveness_killed')
   })
 
   it('a task with >= 2 prior no-progress attempts is throttled on requeue', async () => {
@@ -577,5 +578,53 @@ describe('сторож живости останавливает ребёнка 
     await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000, attemptTurns: makeTurns(true, tape) })
 
     expect(tape).toEqual([])
+  })
+})
+
+/**
+ * ═══ ИСХОД УБИТОЙ ПОПЫТКИ НАЗЫВАЕТСЯ СВОИМ ИМЕНЕМ ═══════════════════════════════════════════
+ *
+ * ПОВОД. Приговор сторожа писался словом `runtime_offline`, и красная карточка говорила «среда
+ * исполнения недоступна» — про среду, которая всё это время была жива. Молчал РАБОТНИК. Человек
+ * читал карточку и шёл чинить машину, с которой ничего не случилось, — ровно та подмена, ради
+ * запрета которой в этом словаре вообще проведены границы.
+ *
+ * ЧТО УТВЕРЖДАЕТСЯ. Не «слово существует», а ПРОВОД: слово, с которым сторож зовёт очередь,
+ * доезжает до строки попытки в реестре — и это `liveness_killed`, а НЕ `runtime_offline`.
+ * Отдельно — что слово принято закрытым словарём и несёт человеческую подпись: `fail()`
+ * бросает на слове, которого не носит, поэтому непризнанный приговор уронил бы весь обход.
+ */
+describe('приговор сторожа доезжает как liveness_killed, а не runtime_offline', () => {
+  it('провод: с чем сторож зовёт очередь, то и лежит в строке попытки', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const inner = makeFakeAdapter({ clock: c.clock, ledger })
+    inner._seed(claimed({ id: 'BL-1', attempt: 1, claimedAt: 1000, leaseRenewedAt: 1000 }))
+    const reasons: string[] = []
+    const adapter = {
+      ...inner,
+      async fail(id: string, reason: string) {
+        reasons.push(reason) // ЧЕМ позвали — половина провода
+        return inner.fail(id, reason)
+      },
+    }
+    c.advance(500000) // молчит дольше срока
+
+    const res = await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000 })
+
+    expect(res.requeued).toBe(1)
+    expect(reasons).toEqual(['liveness_killed'])
+    // ВТОРАЯ половина: то же слово в durable-строке, которую прочитает человек.
+    const [row] = ledger.readAttempts('BL-1')
+    expect(row.failureReason).toBe('liveness_killed')
+    expect(row.failureReason).not.toBe('runtime_offline')
+  })
+
+  it('слово признано закрытым словарём и несёт подпись — иначе fail() уронил бы обход', () => {
+    expect(FAIL_REASONS).toContain('liveness_killed')
+    expect(REASON_LABELS.liveness_killed).toBe('убита сторожем живости: молчала дольше срока')
+    // и подпись про среду осталась только у настоящей недоступности среды
+    expect(REASON_LABELS.runtime_offline).toBe('среда исполнения недоступна')
+    expect(REASON_LABELS.liveness_killed).not.toContain('среда')
   })
 })
