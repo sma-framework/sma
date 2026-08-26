@@ -591,3 +591,45 @@ describe('обычный проект: провизия из основного 
     expect(readFileSync(join(copyTree, '.claude', 'memory', 'x.md'), 'utf8')).toContain('ОСНОВНОГО')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. Пересобираемый каталог, названный ссылкой, едет копией — изоляция попытки
+//    не пробивается джанкшеном (запись в копии не появляется в основном дереве).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('write-каталог в списке link получает копию, не ссылку', () => {
+  it('materializeInclude: не-зависимость в link -> mode copy с named-причиной; запись в копию не течёт в main', async () => {
+    const { materializeInclude } = await import('../lib/worktree.mjs')
+    const sandbox = mkdtempSync(join(tmpdir(), 'sma-wt-linkguard-'))
+    try {
+      const mainTree = join(sandbox, 'main')
+      const copyTree = join(sandbox, 'copy')
+      mkdirSync(join(mainTree, 'daemon', 'static', 'app'), { recursive: true })
+      writeFileSync(join(mainTree, 'daemon', 'static', 'app', 'bundle.js'), 'built-main\n')
+      mkdirSync(join(mainTree, 'node_modules', 'dep'), { recursive: true })
+      writeFileSync(join(mainTree, 'node_modules', 'dep', 'i.js'), 'x\n')
+      mkdirSync(copyTree, { recursive: true })
+
+      const { materialized } = materializeInclude({
+        mainRoot: mainTree,
+        copyPath: copyTree,
+        manifest: { copy: [], link: ['daemon/static/app', 'node_modules'] },
+        execGit: () => ({ status: 1, stdout: '' }),
+      })
+      const app = materialized.find((m: any) => m.path === 'daemon/static/app')
+      expect(app, 'write-каталог не обработан').toBeTruthy()
+      expect(app.mode).toBe('copy')
+      expect(app.requested).toBe('link')
+      expect(String(app.linkRefusedReason || '')).toContain('writable')
+      expect(lstatSync(join(copyTree, 'daemon', 'static', 'app')).isSymbolicLink()).toBe(false)
+
+      const deps = materialized.find((m: any) => m.path === 'node_modules')
+      expect(deps.mode, 'зависимость перестала линковаться').toBe('link')
+
+      // провод изоляции: запись в каталог КОПИИ не появляется в основном дереве
+      writeFileSync(join(copyTree, 'daemon', 'static', 'app', 'bundle.js'), 'built-in-copy\n')
+      expect(readFileSync(join(mainTree, 'daemon', 'static', 'app', 'bundle.js'), 'utf8')).toBe('built-main\n')
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true })
+    }
+  })
+})

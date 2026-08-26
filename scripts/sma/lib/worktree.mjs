@@ -709,6 +709,15 @@ export const DEFAULT_WORKTREE_INCLUDE = Object.freeze({
 })
 
 /**
+ * The ONLY shape a manifest may attach by reference: a dependency directory
+ * (node_modules at any depth). Everything else under `link` is treated as
+ * writable and travels as a copy instead — see the link loop in
+ * materializeInclude for why a junction to a rebuildable directory pierces the
+ * attempt's isolation.
+ */
+const DEPENDENCY_LINK_RE = /(^|\/)node_modules$/
+
+/**
  * Never carried, whatever the manifest says: git's own directory and the coordination
  * directory (runtime state of the MAIN checkout — a copy that inherits it would
  * register as the main checkout), plus the scheduler lock, which is a live-process
@@ -1038,7 +1047,25 @@ export function materializeInclude(opts = {}) {
     }
     for (const entry of Array.isArray(manifest.link) ? manifest.link : []) {
       try {
-        materialized.push(materializeLinkEntry(entry, ctx))
+        // A link is admissible ONLY for a dependency directory (node_modules at any
+        // depth) — those are read-only to an attempt. Anything else named under
+        // `link` is a directory somebody REBUILDS, and a junction turns a build in
+        // the copy into a write into the MAIN tree: the attempt's isolation is
+        // pierced and a git rollback of the branch cannot bring the clobbered
+        // output back. Such an entry is not refused — the decision is made FOR the
+        // manifest: the directory travels as a copy, and the answer says so in
+        // words (`requested: 'link'` + the reason), so nobody has to diff
+        // behaviour against intent later.
+        if (DEPENDENCY_LINK_RE.test(normalizeRel(entry).replace(/\/+$/, ''))) {
+          materialized.push(materializeLinkEntry(entry, ctx))
+        } else {
+          const rec = materializeCopyEntry(entry, ctx)
+          materialized.push({
+            ...rec,
+            requested: 'link',
+            linkRefusedReason: 'writable: a linked copy would write through into the main tree',
+          })
+        }
       } catch (err) {
         materialized.push({ path: entry, mode: 'skipped', reason: `error: ${err && err.message}` })
       }
