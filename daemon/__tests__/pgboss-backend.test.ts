@@ -285,6 +285,22 @@ function makeFakeBackend({
       if (j && j.state === 'active') j.data = { ...(j.data || {}), workerId }
       return { rows: [] }
     }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes("SET state = 'completed'")) {
+      // ПОЗДНЯЯ ПРАВДА: строку, которую сторож живости вернул в очередь, закрывает не
+      // библиотека — её собственный план правит только АКТИВНЫЕ строки и промолчал бы, — а
+      // свой оператор бэкенда. Смоделирован ровно как написан: по JOB id и только в тех двух
+      // состояниях ожидания, в которых строку нашли. Стоит ВЫШЕ ветки слов, чей префикс и
+      // чей `$2::jsonb` этот оператор разделяет: иначе правда о завершении приехала бы в
+      // задание как заплатка к его словам.
+      const [jobId, output] = params
+      const j = jobs.get(String(jobId))
+      if (j && (j.state === 'created' || j.state === 'retry')) {
+        j.state = 'completed'
+        j.completed_on = now()
+        j.output = JSON.parse(String(output))
+      }
+      return { rows: [] }
+    }
     if (sql.startsWith('UPDATE pgboss.job') && sql.includes('$2::jsonb')) {
       // setWords(): the words of a task MERGED into the job payload, keyed by JOB id — the
       // same shape assignWorker uses. Modelled as a MERGE and not as a replacement, because
@@ -606,6 +622,62 @@ describe('pg-boss backend — stopping work that is waiting after a lost attempt
     const piece = [...jobs.values()].find((j: any) => j.data && j.data.id === 'B-18-1')
     expect(piece.state).not.toBe('cancelled') // изъять его действительно не удалось
     expect(lines.some((l) => l.includes('B-18-1'))).toBe(true) // и об этом сказано
+  })
+})
+
+/**
+ * ПОЗДНЯЯ ПРАВДА О СТРОКЕ, КОТОРУЮ УЖЕ ЗАБРАЛ СТОРОЖ.
+ *
+ * Между захватом задачи и её закрытием стоит сторож живости: он объявляет замолчавшего
+ * мёртвым и возвращает задачу в очередь. Работник при этом мог не молчать, а не успеть
+ * сказать — и его завершение с квитанцией приезжает к строке, которой уже распорядились. Дверь
+ * завершения адресуется АКТИВНОЙ строке и отвечала «нет такой активной задачи», после чего
+ * зелёная работа хоронилась под исходом, реконструированным по молчанию.
+ *
+ * СТРОКА ЗДЕСЬ ПАРКУЕТСЯ СОБСТВЕННЫМ СРОКОМ БИБЛИОТЕКИ, а не вызовом сторожа: у этой подделки
+ * `fail` закрывает строку, тогда как живая библиотека возвращает её в состояние ожидания —
+ * ровно то, в которое её кладёт истёкшая аренда. Состояние поэтому берётся у того пути,
+ * который подделка моделирует правдиво.
+ */
+describe('pg-boss backend — правда завершения, пришедшая после приговора сторожа', () => {
+  it('строку, вернувшуюся в очередь, закрывает НАЗВАННОЕ позднее завершение — и только оно', async () => {
+    const c = mkClock()
+    const ledgerDir = mkLedgerDir()
+    const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir })
+    await adapter.enqueue(backlog())
+    const claimed: any = await adapter.claimNext('w1', {})
+    expect(claimed.id).toBe('BL-196')
+
+    // Аренда потеряна — строка ждёт следующей попытки. Человек видит обычную работу в очереди.
+    c.advance(6000)
+    expect((await adapter.list({})).find((r: any) => r.id === 'BL-196').status).toBe('queued')
+
+    // СЕГОДНЯШНИЙ ОТВЕТ ОСТАВЛЕН НА МЕСТЕ: неназванное завершение по-прежнему адресуется
+    // активной строке, которой нет. Ни одна другая дорога в новую ветку не заезжает.
+    await expect(
+      adapter.complete('BL-196', { receiptRef: 'reverify:abc', attemptToken: claimed.attemptToken }),
+    ).rejects.toThrow(/no active task/)
+
+    // А названное — закрывает строку правдой завершения.
+    expect(
+      await adapter.complete('BL-196', {
+        receiptRef: 'reverify:abc',
+        workerId: 'w1',
+        attemptToken: claimed.attemptToken,
+        afterSweep: true,
+      }),
+    ).toBe(true)
+
+    // Работа сделана и ждёт слова человека — и в очередь её больше никто не выдаст.
+    expect((await adapter.list({})).find((r: any) => r.id === 'BL-196').status).toBe('awaiting_approval')
+    expect(await adapter.claimNext('w2', {})).toBeNull()
+
+    // В реестре попыток — завершение с квитанцией, и БЕЗ выдуманного перехода: активной строки
+    // не было, а пары «вернулась в очередь → произведено» контракт состояний не объявляет.
+    const rows = readAttempts(ledgerDir, 'BL-196')
+    expect(rows.map((r: any) => r.outcome)).toEqual(['completed'])
+    expect(rows[0].receiptRef).toBe('reverify:abc')
+    expect(Object.hasOwn(rows[0], 'idempotencyKey')).toBe(false)
   })
 })
 
