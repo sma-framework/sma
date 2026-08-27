@@ -612,7 +612,7 @@ describe('the tick file keeps its disciplines', () => {
     expect(src).not.toMatch(/new Set\b/)
   })
 
-  it('never writes the reserved push literal (SMA-3 comment discipline)', () => {
+  it('never writes the reserved push literal (the discipline binds the source, not a comment)', () => {
     expect(src.toLowerCase()).not.toMatch(/git\s+push/)
   })
 })
