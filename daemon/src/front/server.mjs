@@ -2656,6 +2656,58 @@ async function chatTaskSnapshot(taskId, deps) {
 }
 
 /**
+ * СНИМОК ДОСКИ ДЛЯ РАЗГОВОРА — та же правда, что отдаёт дверь состояния.
+ *
+ * Собирается ТЕМ ЖЕ derive и теми же deps, что GET /api/state, и из выдачи берётся явный
+ * короткий срез: активный проект, счётчики, очередь и ожидающие одобрения (списки
+ * ограничены). Отдельная свёртка тех же строк была бы ВТОРОЙ правдой о доске — а два
+ * способа прочитать одну доску однажды скажут человеку разное.
+ *
+ * `null` — «сказать нечего»: derive не подключён или упал. В промпт тогда не едет ничего,
+ * и разговор честно не видит доску, вместо того чтобы видеть пустую.
+ *
+ * @returns {Promise<object|null>}
+ */
+async function chatBoardSnapshot(config, deps) {
+  if (typeof deps.deriveState !== 'function') return null
+  let payload
+  try {
+    payload = await deps.deriveState(stateDeps(config, deps))
+  } catch {
+    return null
+  }
+  if (!payload || typeof payload !== 'object') return null
+
+  const brief = (t) => ({
+    id: t?.id ?? null,
+    title: t?.title ?? null,
+    project: t?.project ?? null,
+    status: t?.status ?? null,
+    statusLabel: STATUS_LABELS[t?.status] ?? null,
+  })
+  const k = payload.kpis && typeof payload.kpis === 'object' ? payload.kpis : {}
+  return {
+    activeProject: payload.activeProject ?? null,
+    projects: (Array.isArray(payload.projects) ? payload.projects : []).slice(0, BOARD_LIST_CAP).map((p) => ({
+      id: p?.id ?? null,
+      name: p?.name ?? null,
+      taskCounts: p?.taskCounts ?? null,
+    })),
+    kpis: {
+      queued: k.queued ?? null,
+      awaitingApproval: k.awaitingApproval ?? null,
+      workersBusy: k.workersBusy ?? null,
+      workersTotal: k.workersTotal ?? null,
+    },
+    awaiting: (Array.isArray(payload.awaiting) ? payload.awaiting : []).slice(0, BOARD_LIST_CAP).map(brief),
+    queue: (Array.isArray(payload.queue) ? payload.queue : []).slice(0, BOARD_LIST_CAP).map(brief),
+  }
+}
+
+/** Сколько строк каждого списка доски едет в снимок разговора. Сводка, а не выгрузка. */
+export const BOARD_LIST_CAP = 10
+
+/**
  * stageTeller(turnId, deps) → функция, которой движок сообщает, где сейчас ход.
  *
  * Номер кадра растёт на этой стороне: окно отбрасывает всё, что пришло не по порядку, а
@@ -2717,6 +2769,9 @@ async function handleChat({ req, res, config, deps }) {
   // дошло, а не что оно когда-нибудь получит ответ.
   if (tellStage) tellStage('accepted')
   const snapshot = b.taskId ? await chatTaskSnapshot(b.taskId, deps) : null
+  // Доска едет с КАЖДЫМ ходом, не только с открытым с карточки: вопрос «что у нас
+  // происходит?» — это вопрос свободной ветки, и отвечать на него она должна по данным.
+  const board = await chatBoardSnapshot(config, deps)
 
   const turn = await deps.handleChatTurn({
     text: b.text,
@@ -2724,6 +2779,7 @@ async function handleChat({ req, res, config, deps }) {
     ...(b.turnId ? { turnId: b.turnId } : {}),
     deps: chatDeps(config, deps, {
       ...(snapshot ? { snapshot } : {}),
+      ...(board ? { board } : {}),
       ...(tellStage ? { onStage: tellStage } : {}),
     }),
   })

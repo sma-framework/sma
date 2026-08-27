@@ -42,7 +42,7 @@ import { Readable } from 'node:stream'
 import { describe, it, expect } from 'vitest'
 
 import { TASK_LANES } from '../src/queue/adapter.mjs'
-import { createFrontServer, ROUTES, CHAT_BODY_CAP, STAGE_COMMANDS } from '../src/front/server.mjs'
+import { createFrontServer, ROUTES, CHAT_BODY_CAP, STAGE_COMMANDS, BOARD_LIST_CAP } from '../src/front/server.mjs'
 import {
   classifyTurn,
   draftFromIntent,
@@ -574,6 +574,29 @@ describe('the free branch (outside the queue)', () => {
     expect(prompt).toContain(CHAT_BOUNDARY_FORMULA)
   })
 
+  it('the board snapshot rides into the prompt as DATA — the free branch sees the queue it is asked about', async () => {
+    const dir = tmp()
+    const session = fakeSession([resultLine('Одна задача ждёт одобрения: «Памятка работнику».')])
+    const { deps: d } = freeDeps(dir, session, {
+      board: {
+        activeProject: 'sma',
+        kpis: { queued: 0, awaitingApproval: 1, workersBusy: 0, workersTotal: 1 },
+        awaiting: [{ id: 'b-14', title: 'Памятка работнику', project: 'sma-dev', status: 'awaiting_approval' }],
+        queue: [],
+      },
+    })
+
+    await handleChatTurn({ text: 'Какой проект выбран и сколько задач ждёт одобрения?', deps: d })
+
+    const prompt = session.calls[0].prompt as string
+    expect(prompt).toContain('## Снимок доски')
+    expect(prompt).toContain('board-snapshot') // fenced — data, never instruction
+    expect(prompt).toContain('"awaitingApproval": 1')
+    expect(prompt).toContain('Памятка работнику')
+    // and with no board the section simply is not there — «не вижу» stays honest
+    expect(buildChatPrompt({ voice: { text: 'v' }, text: 'вопрос' })).not.toContain('Снимок доски')
+  })
+
   it('a fresh install is not mute: the voice falls back to the neutral base policy', async () => {
     const dir = tmp()
     const session = fakeSession([resultLine('Отвечаю.')])
@@ -850,6 +873,60 @@ describe('POST /api/chat — the conversation, reached through the front', () =>
     const front = createFrontServer({ config: { token: FRONT_TOKEN }, deps: {} })
     const res = await hit(front, { method: 'POST', url: '/api/chat', headers: chatHeaders(), body: { text: 'привет' } })
     expect(res.statusCode).toBe(501)
+  })
+
+  it('the door hands the engine a board snapshot cut from the SAME state derive', async () => {
+    const dir = tmp()
+    const seen: any[] = []
+    const awaitingRows = Array.from({ length: BOARD_LIST_CAP + 2 }, (_, i) => ({
+      id: `w-${i}`,
+      title: `Ожидает ${i}`,
+      project: 'sma',
+      status: 'awaiting_approval',
+      machine: 'self', // not part of the pick — must stay home
+    }))
+    const { front } = chatFront(dir, {
+      deriveState: async () => ({
+        activeProject: 'sma',
+        projects: [{ id: 'sma', name: 'sma', connected: true, taskCounts: { queued: 2 } }],
+        kpis: { queued: 2, awaitingApproval: 12, workersBusy: 0, workersTotal: 1, spentTodayEur: 3 },
+        awaiting: awaitingRows,
+        queue: [],
+      }),
+      handleChatTurn: async ({ deps: engineDeps }: any) => {
+        seen.push(engineDeps.board)
+        return { conversationId: 'conv-31', kind: 'free', answer: { kind: 'text', text: 'ок' } }
+      },
+    })
+
+    const res = await hit(front, { method: 'POST', url: '/api/chat', headers: chatHeaders(), body: { text: 'Что у нас происходит?' } })
+    expect(res.statusCode).toBe(200)
+
+    const board = seen[0]
+    expect(board.activeProject).toBe('sma')
+    // the kpi pick is EXPLICIT — money does not ride into a prompt because a payload had it
+    expect(board.kpis).toEqual({ queued: 2, awaitingApproval: 12, workersBusy: 0, workersTotal: 1 })
+    expect(board.awaiting).toHaveLength(BOARD_LIST_CAP) // a summary, not a dump
+    expect(board.awaiting[0]).toMatchObject({ id: 'w-0', title: 'Ожидает 0', project: 'sma', status: 'awaiting_approval' })
+    expect(JSON.stringify(board)).not.toContain('machine') // unpicked fields stay home
+    expect(board.projects).toEqual([{ id: 'sma', name: 'sma', taskCounts: { queued: 2 } }])
+  })
+
+  it('a fallen state derive is an ABSENT board, never a fallen turn', async () => {
+    const dir = tmp()
+    const seen: any[] = []
+    const { front } = chatFront(dir, {
+      deriveState: async () => {
+        throw new Error('derive упал')
+      },
+      handleChatTurn: async ({ deps: engineDeps }: any) => {
+        seen.push('board' in engineDeps)
+        return { conversationId: 'conv-32', kind: 'free', answer: { kind: 'text', text: 'ок' } }
+      },
+    })
+    const res = await hit(front, { method: 'POST', url: '/api/chat', headers: chatHeaders(), body: { text: 'привет' } })
+    expect(res.statusCode).toBe(200)
+    expect(seen[0]).toBe(false) // the engine says «не вижу» instead of seeing an empty board
   })
 
   it('attachments survive the door’s pick — as {rel} and nothing more', async () => {
