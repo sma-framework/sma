@@ -1027,7 +1027,10 @@ export function Screen() {
             disabled={busy}
             className="flex-none rounded-[9px] bg-blue px-4 py-2 text-[12px] font-semibold text-white hover:bg-blue-d disabled:opacity-60"
           >
-            Одобрить
+            {/* НАЖАТО — ЗНАЧИТ СКАЗАНО ВСЛУХ. За дверью приёмки живёт слияние с прогоном
+                тестов — минуты, и всё это время молчащая кнопка неотличима от зависшего
+                окна (узкий экран говорил «Принимаю…» с самого начала, широкий — молчал). */}
+            {approve.isPending ? 'Принимаю…' : 'Одобрить'}
           </button>
         ) : null}
         {canReturn ? (
@@ -1257,7 +1260,7 @@ export function Screen() {
                       disabled={busy}
                       className="rounded-lg bg-blue px-4 py-2 text-[11.5px] font-semibold text-white hover:bg-blue-d disabled:opacity-60"
                     >
-                      Вернуть с комментарием
+                      {returnTask.isPending ? 'Возвращаю…' : 'Вернуть с комментарием'}
                     </button>
                   </div>
                 </div>

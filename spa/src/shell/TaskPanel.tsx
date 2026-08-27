@@ -290,7 +290,7 @@ export function TaskPanel({
                     disabled={busy}
                     className="flex-1 rounded-[9px] bg-blue py-2.5 text-[12px] font-semibold text-white hover:bg-blue-d disabled:opacity-60"
                   >
-                    Вернуть с комментарием
+                    {returnTask.isPending ? 'Возвращаю…' : 'Вернуть с комментарием'}
                   </button>
                   <button
                     type="button"
@@ -313,7 +313,8 @@ export function TaskPanel({
                     disabled={busy}
                     className="flex-1 rounded-[9px] bg-blue py-2.5 text-[12px] font-semibold text-white hover:bg-blue-d disabled:opacity-60"
                   >
-                    Одобрить
+                    {/* Одна речь на всех поверхностях: пока приёмка идёт, кнопка говорит это. */}
+                    {approve.isPending ? 'Принимаю…' : 'Одобрить'}
                   </button>
                 ) : null}
                 {canReturn ? (

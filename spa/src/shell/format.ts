@@ -11,7 +11,7 @@
  * value that is not there stays a dash — an empty place is never dressed up as a zero.
  */
 
-import { isNotReady, isRaceLost } from '../api/client'
+import { isDeadline, isNotReady, isRaceLost } from '../api/client'
 import type { PhaseStage, ReceiptProof, ReceiptSummary, TaskStatus, WindowFact } from '../api/types'
 
 /**
@@ -247,6 +247,11 @@ export function receiptProofLabel(proof: ReceiptProof | null | undefined): strin
 export function refusalWords(err: unknown): string {
   if (isNotReady(err)) return 'Это действие пока недоступно.'
   if (isRaceLost(err)) return 'За эту задачу уже ответили с другой стороны.'
+  // ПРОСРОЧКА — НЕ ОТКАЗ, и «попробуйте ещё раз» здесь — ловушка: демон мог уже держать
+  // нажатие в своей очереди, и повтор станет вторым решением (живая приёмка 26.08 ровно
+  // так и сломалась). Сначала — посмотреть, что стало с карточкой.
+  if (isDeadline(err))
+    return 'Демон не ответил вовремя. Нажатие могло дойти — обновите карточку и проверьте, прежде чем решать снова.'
   return 'Не получилось отправить. Попробуйте ещё раз.'
 }
 

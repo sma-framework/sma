@@ -95,6 +95,52 @@ export function isSignedOut(err: unknown): boolean {
   return err instanceof ApiError && (err.status === 401 || err.status === 403)
 }
 
+/**
+ * ОЖИДАНИЕ, КОТОРОЕ КОНЧИЛОСЬ: дверь не ответила за отведённый срок.
+ *
+ * Без срока запрос живёт столько, сколько живёт сокет браузера, — минуты. Живая приёмка
+ * 26.08 измерила, чего это стоит: клик «Одобрить», сделанный в замирание демона, молча
+ * лежал в очереди браузера и выстрелил через минуты — когда человек уже считал его
+ * пропавшим и принял ДРУГОЕ решение. Опоздавший клик победил человека.
+ *
+ * Отменённый запрос — это ЧЕСТНОЕ НЕИЗВЕСТНО, не «не дошло»: демон мог уже держать его в
+ * своей очереди и исполнить после того, как окно перестало ждать. Поэтому слова об этой
+ * ошибке никогда не говорят «попробуйте ещё раз» — они велят сначала посмотреть на карточку.
+ */
+export class DeadlineError extends Error {
+  constructor(seconds: number) {
+    super(`окно не дождалось ответа за ${seconds} с`)
+    this.name = 'DeadlineError'
+  }
+}
+
+/** Само ожидание кончилось — в отличие от отказа, у которого есть статус и причина. */
+export function isDeadline(err: unknown): boolean {
+  return err instanceof DeadlineError
+}
+
+/**
+ * Чтение может подождать полминуты — дольше человек сам уходит со страницы. Действию
+ * даётся дольше всех: за дверью приёмки стоит слияние с прогоном тестов, и легитимные
+ * три минуты нельзя объявлять просрочкой — иначе окно бросит работающую приёмку.
+ */
+const GET_DEADLINE_MS = 30_000
+const POST_DEADLINE_MS = 180_000
+
+async function fetchWithDeadline(path: string, init: RequestInit, deadlineMs: number): Promise<Response> {
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), deadlineMs)
+  try {
+    return await fetch(path, { ...init, signal: ctl.signal })
+  } catch (err) {
+    // Своя отмена получает своё имя; чужие сетевые ошибки проходят как были.
+    if (ctl.signal.aborted) throw new DeadlineError(Math.round(deadlineMs / 1000))
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** Two people acted on the same task at the same moment; the other one won. */
 export function isRaceLost(err: unknown): boolean {
   return err instanceof ApiError && err.status === 409
@@ -111,28 +157,36 @@ async function failure(res: Response): Promise<never> {
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path, {
-    method: 'GET',
-    credentials: 'same-origin',
-    headers: { accept: 'application/json' },
-  })
+  const res = await fetchWithDeadline(
+    path,
+    {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { accept: 'application/json' },
+    },
+    GET_DEADLINE_MS,
+  )
   if (!res.ok) return failure(res)
   return (await res.json()) as T
 }
 
 async function getText(path: string): Promise<string> {
-  const res = await fetch(path, { method: 'GET', credentials: 'same-origin' })
+  const res = await fetchWithDeadline(path, { method: 'GET', credentials: 'same-origin' }, GET_DEADLINE_MS)
   if (!res.ok) return failure(res)
   return await res.text()
 }
 
 async function postJson<T>(path: string, body: Record<string, unknown>): Promise<T> {
-  const res = await fetch(path, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json', accept: 'application/json' },
-    body: JSON.stringify(body),
-  })
+  const res = await fetchWithDeadline(
+    path,
+    {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(body),
+    },
+    POST_DEADLINE_MS,
+  )
   if (!res.ok) return failure(res)
   return (await res.json()) as T
 }
