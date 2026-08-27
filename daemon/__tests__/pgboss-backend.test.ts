@@ -1278,3 +1278,92 @@ describe('attempt-ledger — append-only per-task history', () => {
     expect((row as any).secret).toBeUndefined()
   })
 })
+
+// ── the two ends of a failed attempt, at the door where the repeat is actually decided ──
+
+/**
+ * ГДЕ ЖИВЁТ ПОВТОР — И ПОЧЕМУ ЕГО ВИДНО ТОЛЬКО ПО ДВЕРИ.
+ *
+ * Отказ в этой очереди — ВОЗВРАЩАЕМЫЙ исход, и ветку «вернуть в очередь или закрыть» выбирает
+ * САМА БИБЛИОТЕКА внутри `boss.fail`, по `retryLimit` (об этом сказано в шапке бэкенда). Снаружи
+ * этот выбор не наблюдается ничем, кроме того, кого позвали: позвали отказ — значит два повтора
+ * с тем же потолком на командной строке решены и оплачены заранее.
+ *
+ * Поэтому дела ниже утверждают ДВЕРЬ, а не состояние: упор в потолок ходов не имеет права
+ * доехать до `boss.fail`, а всякая прочая причина обязана доезжать туда ровно как раньше — с
+ * нетронутым планом перевыдач у строки. Половина того же провода со стороны цикла — в
+ * `turn-cap-parks-wire.test.ts`.
+ */
+describe('pg-boss backend — упор в потолок ходов паркуется, прочие причины повторяются', () => {
+  it('turns_exhausted НЕ идёт в boss.fail: строку забирают из очереди, а не отдают на повтор', async () => {
+    const c = mkClock()
+    const { adapter, boss, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    const failCalls: any[] = []
+    const cancelCalls: any[] = []
+    const realFail = boss.fail.bind(boss)
+    const realCancel = boss.cancel.bind(boss)
+    boss.fail = async (name: string, id: string, out: any) => {
+      failCalls.push({ name, id, out })
+      return realFail(name, id, out)
+    }
+    boss.cancel = async (name: string, id: string) => {
+      cancelCalls.push({ name, id })
+      return realCancel(name, id)
+    }
+
+    await adapter.enqueue(backlog({ id: 'BL-CAP' }))
+    const taken = await adapter.claimNext('w1', {})
+    expect(taken.id).toBe('BL-CAP')
+
+    expect(await adapter.parkForPerson('BL-CAP', 'turns_exhausted', { attemptToken: taken.attemptToken })).toBe(true)
+
+    // ДВЕРЬ ПОВТОРА НЕ ТРОНУТА — именно в ней библиотека и решает про перевыдачу.
+    expect(failCalls).toHaveLength(0)
+    expect(cancelCalls).toHaveLength(1)
+
+    // И строка больше не достижима ни для одной выдачи — ни сейчас, ни после задержки повтора.
+    const handed = []
+    for (let i = 0; i < 3; i += 1) {
+      handed.push(await adapter.claimNext('w2', {}))
+      c.advance(60000)
+    }
+    expect(handed).toEqual([null, null, null])
+
+    const row = (await adapter.list({})).find((r: any) => r.id === 'BL-CAP')
+    expect(row.status).toBe('failed')
+    expect(row.failure_reason).toBe('turns_exhausted')
+    // Строка ушла из состояний, из которых библиотека раздаёт работу.
+    const job = [...jobs.values()].find((j: any) => j.data && j.data.id === 'BL-CAP')
+    expect(['created', 'retry', 'active']).not.toContain(job.state)
+  })
+
+  it('прочие причины идут в boss.fail как раньше — план перевыдач строки не тронут', async () => {
+    const c = mkClock()
+    const { adapter, boss, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    const failCalls: any[] = []
+    const cancelCalls: any[] = []
+    const realFail = boss.fail.bind(boss)
+    const realCancel = boss.cancel.bind(boss)
+    boss.fail = async (name: string, id: string, out: any) => {
+      failCalls.push({ name, id, out })
+      return realFail(name, id, out)
+    }
+    boss.cancel = async (name: string, id: string) => {
+      cancelCalls.push({ name, id })
+      return realCancel(name, id)
+    }
+
+    await adapter.enqueue(backlog({ id: 'BL-RED' }))
+    const taken = await adapter.claimNext('w1', {})
+    await adapter.fail('BL-RED', 'tests_red', { attemptToken: taken.attemptToken })
+
+    expect(cancelCalls).toHaveLength(0)
+    expect(failCalls).toHaveLength(1)
+    expect(failCalls[0].out).toEqual({ reason: 'tests_red' })
+
+    // Граница перевыдач на строке — та же, что была: развилка не отняла повтор ни у кого,
+    // кроме одной названной причины.
+    const job = [...jobs.values()].find((j: any) => j.data && j.data.id === 'BL-RED')
+    expect(job.retryLimit).toBe(2)
+  })
+})
