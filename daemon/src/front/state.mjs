@@ -2729,6 +2729,63 @@ function attemptDuration(attempt) {
   return ms >= 0 ? ms : null
 }
 
+/**
+ * The GIT PART of a finished card, remembered per task — because it is history.
+ *
+ * Both reads below are SYNCHRONOUS subprocesses, and the done list is every finished task the
+ * fold still carries. Measured 26.08.2026 on the founder's machine: two spawns per finished
+ * task per poll, an uncapped list, a 3-second poll — /api/state answered in 26,7 s while
+ * /api/diff (one spawn) answered in 0,4 s, and for those 26 s the ONE event loop served
+ * nobody. A finished task's commit log does not change after it finishes, so paying that
+ * price more than once per task is pure waste.
+ *
+ * An EMPTY answer is remembered too, but only briefly: after approve the branch is deleted,
+ * so the oldest cards fail both reads on every poll — the full spawn price for an exit code.
+ * Briefly, not forever, because empty can also mean «asked in the wrong tree» (a project
+ * connected a moment later), and that answer deserves a second chance.
+ */
+const DONE_GIT_CACHE = new Map() // `${taskId}|${cwd}` -> { commits, diffStat, emptyAt }
+const DONE_GIT_CACHE_CAP = 1000
+const DONE_GIT_EMPTY_RETRY_MS = 60_000
+
+function doneGitFacts(taskId, execGit, gitOpts) {
+  if (typeof execGit !== 'function') return { commits: [], diffStat: null }
+  const key = `${taskId}|${gitOpts.cwd || ''}`
+  const hit = DONE_GIT_CACHE.get(key)
+  if (hit && (hit.emptyAt === null || Date.now() - hit.emptyAt < DONE_GIT_EMPTY_RETRY_MS)) return hit
+
+  const branch = `wt/${taskId}`
+  let commits = []
+  let diffStat = null
+  try {
+    commits = String(execGit(['log', '--oneline', `-${DONE_COMMIT_CAP}`, branch], gitOpts) || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .slice(0, DONE_COMMIT_CAP)
+  } catch {
+    commits = []
+  }
+  try {
+    // WHAT THIS TASK CHANGED, measured from the point its branch left the project's own
+    // history. The name `main` used to be written here in full, and a project whose trunk is
+    // called anything else («master», a release line, a detached checkout) made this an
+    // exception on every single card. `HEAD...<branch>` asks git for the merge-base itself,
+    // so the comparison point is the tree's own position and no branch name is assumed.
+    diffStat = String(execGit(['diff', '--shortstat', `HEAD...${branch}`], gitOpts) || '').trim() || null
+  } catch {
+    diffStat = null
+  }
+
+  const entry = { commits, diffStat, emptyAt: commits.length === 0 && diffStat === null ? Date.now() : null }
+  DONE_GIT_CACHE.set(key, entry)
+  if (DONE_GIT_CACHE.size > DONE_GIT_CACHE_CAP) {
+    // the Map iterates in insertion order — the first key is the oldest memory
+    DONE_GIT_CACHE.delete(DONE_GIT_CACHE.keys().next().value)
+  }
+  return entry
+}
+
 function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machineId }) {
   const attempts = readTaskAttempts(r.id)
   const last = attempts.length ? attempts[attempts.length - 1] : null
@@ -2736,29 +2793,7 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machi
 
   const branch = `wt/${r.id}`
   const gitOpts = gitDir ? { cwd: gitDir } : {}
-  let commits = []
-  let diffStat = null
-  if (typeof execGit === 'function') {
-    try {
-      commits = String(execGit(['log', '--oneline', `-${DONE_COMMIT_CAP}`, branch], gitOpts) || '')
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .slice(0, DONE_COMMIT_CAP)
-    } catch {
-      commits = []
-    }
-    try {
-      // WHAT THIS TASK CHANGED, measured from the point its branch left the project's own
-      // history. The name `main` used to be written here in full, and a project whose trunk is
-      // called anything else («master», a release line, a detached checkout) made this an
-      // exception on every single card. `HEAD...<branch>` asks git for the merge-base itself,
-      // so the comparison point is the tree's own position and no branch name is assumed.
-      diffStat = String(execGit(['diff', '--shortstat', `HEAD...${branch}`], gitOpts) || '').trim() || null
-    } catch {
-      diffStat = null
-    }
-  }
+  const { commits, diffStat } = doneGitFacts(r.id, execGit, gitOpts)
 
   const out = {
     id: r.id,
