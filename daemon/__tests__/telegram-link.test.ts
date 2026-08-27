@@ -30,7 +30,7 @@ import {
   TelegramApiError,
   TelegramTokenMissingError,
 } from '../src/telegram/client.mjs'
-import { createTelegramBridge, LINK_REPLY, STRANGER_REPLY, NON_TEXT_REPLY } from '../src/telegram/poll.mjs'
+import { createTelegramBridge, NO_BRAIN_REPLY, STRANGER_REPLY, NON_TEXT_REPLY } from '../src/telegram/poll.mjs'
 
 /** Похож на настоящий: числовой id бота, двоеточие, секрет. */
 const BOT_TOKEN = '7654321:AAH-fake-secret-value-for-tests-only'
@@ -166,15 +166,16 @@ describe('клиент Bot API — токен берётся в момент в�
 describe('опросный цикл, шаг 1 — кто получает ответ, а кто ничего', () => {
   const config = { telegram: { botToken: BOT_TOKEN, chatId: OWNER_CHAT } }
 
-  it('текст из спаренного чата получает ответ-заглушку про связь', async () => {
+  it('мост без подключённого мозга честно говорит об этом и НЕ выдумывает ответа', async () => {
     const t = transport({ batches: [[textUpdate(10, OWNER_CHAT, 'привет')]] })
+    // Ни одного сотрудника: разговор к этому мосту не подключён.
     const bridge = createTelegramBridge({ config, fetchImpl: t.fetchImpl })!
     expect(bridge).not.toBe(null)
 
     const actions = await bridge.pollOnce()
 
     expect(actions).toEqual([{ action: 'answered' }])
-    expect(t.sent()).toEqual([{ method: 'sendMessage', payload: { chat_id: OWNER_CHAT, text: LINK_REPLY } }])
+    expect(t.sent()).toEqual([{ method: 'sendMessage', payload: { chat_id: OWNER_CHAT, text: NO_BRAIN_REPLY } }])
     // офсет ведётся: следующий опрос просит только то, что после прочитанного
     expect(bridge.offset()).toBe(11)
   })

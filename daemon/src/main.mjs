@@ -101,7 +101,7 @@ import { tick, runDaemon, parseVerbResult } from './loop.mjs'
 import { createTelegramBridge } from './telegram/poll.mjs'
 import { createAgingMemory } from './policy/aging-memory.mjs'
 import { createWorkerStats } from './front/worker-stats.mjs'
-import { createFrontServer } from './front/server.mjs'
+import { createFrontServer, runChatTurn } from './front/server.mjs'
 import {
   deriveState,
   parseReceiptSummary,
@@ -745,15 +745,7 @@ export function createDaemon(o = {}) {
       }
     : undefined
 
-  // (4a) THE TELEGRAM LINK — step one, and it is a NULL on every daemon that was not asked
-  // for it. The factory itself refuses a config with no `telegram.botToken`, so this line
-  // constructs nothing, arms no timer and makes no request unless the owner connected a bot:
-  // a daemon without one runs byte-for-byte the way it ran before the bridge existed. The
-  // decision lives in the factory rather than in a condition here for the usual reason — a
-  // predicate written twice is a predicate that will one day disagree with itself.
-  const telegram = o.telegram ?? createTelegramBridge({ config, log: (line) => console.log(`[SmaDaemon] ${line}`) })
-
-  // (4b) THE CONNECTED PROJECT. The window shows a project the daemon does
+  // (4a) THE CONNECTED PROJECT. The window shows a project the daemon does
   // not own — read-only, live while the watcher holds, and honest about it when it does not.
   // Three things are composed here and nowhere else:
   //   - WHICH project is connected. The registry's active entry, re-read on every call, so a
@@ -1253,6 +1245,30 @@ export function createDaemon(o = {}) {
         // уборки в самой двери; здесь важно лишь то, что зависимость вообще есть.
         memoryHarvest: o.memoryHarvest ?? memoryHarvest,
       },
+    })
+
+  // (5a) THE TELEGRAM LINK — a NULL on every daemon that was not asked for one. The factory
+  // itself refuses a config with no `telegram.botToken`, so this line constructs nothing, arms
+  // no timer and makes no request unless the owner connected a bot: a daemon without one runs
+  // byte-for-byte the way it ran before the bridge existed. The decision lives in the factory
+  // rather than in a condition here for the usual reason — a predicate written twice is a
+  // predicate that will one day disagree with itself.
+  //
+  // IT STANDS AFTER THE FRONT ON PURPOSE, and this is the whole of the wiring: the bridge's
+  // one capability is the front door's OWN turn assembly, called with the front's OWN
+  // collaborator set (`front.deps`, echoed back by the factory for exactly this kind of use).
+  // Not a copy of that set — the same object — so the board snapshot, the transcript directory
+  // and the free branch the phone reaches are the ones the window reaches, and «мозг
+  // идентичный» is a property of the assembly instead of a rule somebody has to keep. Building
+  // a second dependency set here is precisely how a bot starts answering «одобрять нечего» to
+  // a task that is standing in front of the founder awaiting his decision.
+  const telegram =
+    o.telegram ??
+    createTelegramBridge({
+      config,
+      chatTurn: ({ text, conversationId }) =>
+        runChatTurn({ config, deps: front.deps ?? {}, text, conversationId }),
+      log: (line) => console.log(`[SmaDaemon] ${line}`),
     })
 
   /**

@@ -2742,6 +2742,41 @@ function stageTeller(turnId, deps) {
 }
 
 /**
+ * runChatTurn({config, deps, text, …}) — ОДИН ход разговора со ВСЕМ, что дверь чата собирает.
+ *
+ * ПОЧЕМУ ЭТО ОТДЕЛЬНОЕ ИМЯ, А НЕ ТЕЛО ОБРАБОТЧИКА. Разговор идёт теперь из двух мест: из окна
+ * (через дверь ниже) и из телеграма (через мост, которому дверей не добавляли). Слово владельца
+ * о втором — «мозг должен быть идентичным, один в один как бы я писал в фронте», а идентичность
+ * мозга — это не одинаковый вызов `handleChatTurn`, а ОДИН И ТОТ ЖЕ набор сотрудников: снимок
+ * доски, снимок карточки, стенограмма, полоса свободной ветки. Собранный дважды, он однажды
+ * разойдётся — и бот ответит «одобрять нечего» задаче, которая стоит и ждёт решения, ровно как
+ * это уже случилось у окна 25.08. Поэтому сборка живёт здесь, в одном экземпляре, и обе стороны
+ * зовут её, а не повторяют.
+ *
+ * Новой двери при этом не появляется: `ROUTES` не изменилась ни на строку — мост зовёт функцию
+ * в этом же процессе, тем же способом, каким её зовёт обработчик ниже.
+ *
+ * @param {{config:object, deps:object, text:string, conversationId?:string, turnId?:string, taskId?:string, tellStage?:Function}} o
+ * @returns {Promise<{conversationId:string, kind:string, answer:object}>}
+ */
+export async function runChatTurn({ config, deps, text, conversationId, turnId, taskId, tellStage } = {}) {
+  const snapshot = taskId ? await chatTaskSnapshot(taskId, deps) : null
+  // Доска едет с КАЖДЫМ ходом, не только с открытым с карточки: вопрос «что у нас
+  // происходит?» — это вопрос свободной ветки, и отвечать на него она должна по данным.
+  const board = await chatBoardSnapshot(config, deps)
+  return deps.handleChatTurn({
+    text,
+    ...(conversationId ? { conversationId } : {}),
+    ...(turnId ? { turnId } : {}),
+    deps: chatDeps(config, deps, {
+      ...(snapshot ? { snapshot } : {}),
+      ...(board ? { board } : {}),
+      ...(tellStage ? { onStage: tellStage } : {}),
+    }),
+  })
+}
+
+/**
  * POST /api/chat — one conversation turn. Body {text, conversationId?, turnId?, taskId?}.
  *
  * The `chat.reply` hint fires AFTER the engine has returned, which is after both turns are
@@ -2784,20 +2819,15 @@ async function handleChat({ req, res, config, deps }) {
   // «Принято» уходит ДО движка: человек, который смотрит на своё сообщение, узнаёт, что оно
   // дошло, а не что оно когда-нибудь получит ответ.
   if (tellStage) tellStage('accepted')
-  const snapshot = b.taskId ? await chatTaskSnapshot(b.taskId, deps) : null
-  // Доска едет с КАЖДЫМ ходом, не только с открытым с карточки: вопрос «что у нас
-  // происходит?» — это вопрос свободной ветки, и отвечать на него она должна по данным.
-  const board = await chatBoardSnapshot(config, deps)
 
-  const turn = await deps.handleChatTurn({
+  const turn = await runChatTurn({
+    config,
+    deps,
     text: b.text,
-    ...(b.conversationId ? { conversationId: b.conversationId } : {}),
-    ...(b.turnId ? { turnId: b.turnId } : {}),
-    deps: chatDeps(config, deps, {
-      ...(snapshot ? { snapshot } : {}),
-      ...(board ? { board } : {}),
-      ...(tellStage ? { onStage: tellStage } : {}),
-    }),
+    conversationId: b.conversationId,
+    turnId: b.turnId,
+    taskId: b.taskId,
+    tellStage,
   })
   const answer = pickAnswer(turn && turn.answer)
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
