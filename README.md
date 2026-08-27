@@ -411,6 +411,16 @@ Across machines, daemons federate. You nominate one daemon as the **hub** and in
 
 The network between your machines is **yours, not ours**: a private mesh (WireGuard, Tailscale, or a self-hosted coordinator). **The daemon never asks to be exposed to the public internet**, and no vendor cloud appears anywhere in this design.
 
+### Connections — Telegram: being built, and step one is the link
+
+You create your **own** bot in Telegram — @BotFather, half a minute — and connect it to your own daemon: `telegram.botToken` and `telegram.chatId` in the daemon's `config.json`, edited in the file you already own. There is deliberately **no new door in the window** for this yet: a button that connects a thing which is not built behind it is a promise, and this product ships the connection as a file you edit until the thing behind it exists.
+
+**A daemon with no token in that file has no Telegram in it at all.** Nothing is constructed, no loop is armed, no request is ever made — an install that never wanted a bot runs exactly as it ran before any of this existed. That is not a sentence in a header: the suite builds the real daemon from a config with no token and asserts the **absence of the loop object**, because a flag can be computed correctly and still arm a timer.
+
+**Step one is the link, and it says so honestly.** Text from your paired chat gets one sentence back: the connection is alive, and the brain arrives in a later step — decisions and conversation still live in the window. Any other chat gets one sentence naming whose bot this is, and **nothing else happens at all**: the paired check runs before the message content is even looked at, so a stranger cannot reach a single branch behind it. Voice, photos and documents get a polite «text only, for now», which is better than silence.
+
+**The token never leaves its module in any shape.** A Bot API address carries the credential *in its path*, so an ordinary transport failure quotes the whole thing — which is exactly how a credential ends up in a log file somebody later pastes into an issue. Every string this client produces passes one reduction first, and the credential becomes `bot[REDACTED]` by three independent rules: the literal token, its secret half, and the shape of the url whatever token it carried. The test that guards this breaks the call on purpose and reads the **words** of the error and of the log line, rather than trusting the sentence you just read.
+
 ### What the machine needs — measured, not guessed
 
 The core of SMA needs nothing: it is plain files next to your code. The **fleet** is what asks for a
