@@ -239,5 +239,11 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   # daemon's whole life, and then nobody — not the founder, not a support command — could so
   # much as read the log while the thing they are debugging is running. Measured: `Get-Content`
   # answered «being used by another process» for as long as the daemon lived.
-  [System.IO.File]::AppendAllText($logFile, ($_ | Out-String), $utf8NoBom)
+  #
+  # THE DATE IS RESOLVED PER LINE, NOT PER LAUNCH. This wrapper lives as long as the daemon
+  # does, so a name computed once above pins every later day to the launch day's file.
+  # Measured 26.08.2026: "daemon-20260826.log" never existed - 1134 lines of the 26th, and
+  # the crash dump that ended the process, all sat in daemon-20260825.log where nobody looked.
+  $lineFile = Join-Path $logDir ("daemon-{0}.log" -f (Get-Date -Format 'yyyyMMdd'))
+  [System.IO.File]::AppendAllText($lineFile, ($_ | Out-String), $utf8NoBom)
 }
