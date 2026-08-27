@@ -100,7 +100,7 @@ import { createQuestions, findPhaseDir, ALL_CHECKPOINT_SUFFIXES } from './questi
 import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
-import { readJournal, DISPATCH_REASONS, attemptIdFor } from './journal.mjs'
+import { readJournal, DISPATCH_REASONS, REDIRECT_MODE_LABELS, attemptIdFor } from './journal.mjs'
 import {
   runsDirOf,
   attemptRunDir,
@@ -679,9 +679,10 @@ async function handleDone({ res, query, config, deps }) {
 const JOURNAL_ROW_CAP = 200
 
 /**
- * readTaskJournal(id, deps) → the three layers of ONE task, shaped for the card:
- * `dispatcher[]` (code + its human подпись + when), `memoryTrace` (IDS only, de-duplicated)
- * and the per-attempt approach notes. The ledger is the SAME injected seam the attempts
+ * readTaskJournal(id, deps) → the layers of ONE task, shaped for the card:
+ * `dispatcher[]` (code + its human подпись + when), `memoryTrace` (IDS only, de-duplicated),
+ * `redirects[]` (what a person said to the running work, and when) and the per-attempt
+ * approach notes. The ledger is the SAME injected seam the attempts
  * use (fn-object / ledgerDir), and every failure path yields EMPTY layers — a card must
  * open for a task that predates the journal.
  */
@@ -699,6 +700,10 @@ function readTaskJournal(id, deps) {
 
   const { entries } = readJournal({ taskId: id, entries: rows })
   const dispatcher = []
+  // ЧТО ЧЕЛОВЕК СКАЗАЛ ПО ХОДУ — в том порядке, в каком говорил. Слой не сводится и не
+  // складывается: две поправки — это два разных слова, сказанные в разное время, и лента хода
+  // показывает каждое своей строкой. Текст едет как ДАННЫЕ — экран рисует его текстовым узлом.
+  const redirects = []
   const notes = new Set()
   const reflexes = new Set()
   const approachByAttempt = new Map()
@@ -716,6 +721,16 @@ function readTaskJournal(id, deps) {
         label: DISPATCH_REASONS[payload.code] ?? null, // the code is what is stored; this is its подпись
         ts: row.recordedAt ?? null,
       })
+    } else if (row.layer === 'redirect') {
+      redirects.push({
+        id: payload.redirectId ?? null,
+        mode: payload.mode ?? null,
+        label: REDIRECT_MODE_LABELS[payload.mode] ?? null, // код хранится, подпись рисуется
+        text: String(payload.text ?? ''),
+        truncated: payload.truncated === true,
+        ts: row.recordedAt ?? null,
+        attempt: Number.isFinite(Number(row.attempt)) ? Number(row.attempt) : null,
+      })
     } else if (row.layer === 'memory') {
       for (const n of Array.isArray(payload.notes) ? payload.notes : []) notes.add(n)
       for (const r of Array.isArray(payload.reflexes) ? payload.reflexes : []) reflexes.add(r)
@@ -728,6 +743,7 @@ function readTaskJournal(id, deps) {
 
   return {
     dispatcher,
+    redirects,
     memoryTrace: {
       notes: [...notes],
       reflexes: [...reflexes],
@@ -1221,7 +1237,7 @@ async function handleTask({ res, params, config, deps }) {
     branch,
     commits,
     returnedNotes,
-    journal: { dispatcher: journal.dispatcher, memoryTrace: journal.memoryTrace },
+    journal: { dispatcher: journal.dispatcher, memoryTrace: journal.memoryTrace, redirects: journal.redirects },
   })
 }
 
@@ -2887,6 +2903,12 @@ const LIVE_CHANNEL_PROVIDERS = Object.freeze(['claude', 'api'])
  * fail this door, which is the posture every other reader in this file already takes.
  */
 function hasLiveChannel(taskId, deps) {
+  const provider = lastValue(foldAttemptRows(attemptRowsOf(taskId, deps)), (a) => a && a.provider)
+  return provider === null || LIVE_CHANNEL_PROVIDERS.includes(provider)
+}
+
+/** This task's attempt rows through whichever ledger seam was injected; unreadable → []. */
+function attemptRowsOf(taskId, deps) {
   let rows = []
   try {
     if (typeof deps.ledger === 'function') rows = deps.ledger(taskId) || []
@@ -2895,8 +2917,52 @@ function hasLiveChannel(taskId, deps) {
   } catch {
     rows = []
   }
-  const provider = lastValue(foldAttemptRows(Array.isArray(rows) ? rows : []), (a) => a && a.provider)
-  return provider === null || LIVE_CHANNEL_PROVIDERS.includes(provider)
+  return Array.isArray(rows) ? rows : []
+}
+
+/**
+ * journalRedirect(body, redirectId, deps) — the correction, written into the HISTORY of the
+ * attempt it was said to.
+ *
+ * ═══════ WHY THE DOOR WRITES TWICE, AND WHY THAT IS NOT A SECOND STORE ═══════
+ * `data/redirects/<task>.ndjson` is a DELIVERY QUEUE: lines are consumed and marked done, and
+ * the file answers «what has not been handed over yet». That is a different question from «what
+ * did this person say to this attempt, and when» — and the card asks the second one. For as long
+ * as only the queue existed, the card could not show that anybody had steered the work at all:
+ * the founder's word reached the worker and vanished from the story of the task. So the same
+ * door that accepts the word records it as one journal row, in the layer the vocabulary now
+ * carries, beside the dispatcher's reason and the worker's note.
+ *
+ * ═══════ WHICH ATTEMPT IT IS FILED UNDER ═══════
+ * The one that was running when the word was said — the last one the ledger knows. A task with
+ * no attempts yet files under 1: the line is durable, it waits, and the first turn collects it.
+ * That is «when it was said», which is what a card shows; it is not a claim about which turn
+ * eventually received it — the delivery file owns that fact and is not touched here.
+ *
+ * FAIL-OPEN, LOUDLY. The correction is already DURABLE by the time this runs. A journal that
+ * cannot be written costs the story a line; it must never cost the founder his steering, so the
+ * failure is logged and the door answers 200 exactly as it did before.
+ */
+function journalRedirect(body, redirectId, deps) {
+  const append = deps.ledger && typeof deps.ledger.appendJournal === 'function' ? deps.ledger.appendJournal : null
+  if (!append) return
+  // ПОСЛЕДНИЙ ПОДХОД — по НОМЕРУ, а не по месту в файле: строки реестра дописываются с двух
+  // сторон, и «последняя прочитанная» не значит «самая новая».
+  let attempt = 0
+  for (const row of foldAttemptRows(attemptRowsOf(body.taskId, deps))) {
+    const n = Number(row && row.attempt)
+    if (Number.isFinite(n) && n > attempt) attempt = n
+  }
+  try {
+    append({
+      taskId: body.taskId,
+      attempt: attempt || 1,
+      layer: 'redirect',
+      payload: { mode: body.mode, text: body.text, redirectId },
+    })
+  } catch (err) {
+    console.error(`[SmaFront] redirect not journaled for ${body.taskId}: ${String((err && err.message) || err)}`)
+  }
 }
 
 /**
@@ -2946,6 +3012,7 @@ async function handleRedirect({ req, res, config, deps }) {
     fsImpl: deps.fsImpl,
   })
   if (!wrote.ok) return send400(res, wrote.error === 'text too long' ? `text exceeds ${REDIRECT_TEXT_CAP} chars` : 'text required')
+  journalRedirect(b, wrote.id, deps)
   let live = false
   if (b.mode === 'interrupt' && deps.attemptTurns && typeof deps.attemptTurns.stop === 'function') {
     live = deps.attemptTurns.stop(b.taskId)

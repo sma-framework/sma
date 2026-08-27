@@ -2307,6 +2307,9 @@ describe('server.mjs — GET /api/task/:id carries the decision journal', () => 
     const out = JSON.parse(res.body)
     expect(out.journal).toEqual({
       dispatcher: [],
+      // Слой поправок — тем же пустым списком: задача, в ход которой никто не вмешивался, и
+      // задача старше слоя читаются одинаково, и обе — списком, а не отсутствием ключа.
+      redirects: [],
       // Каждое поле НАЗВАНО нулём, а не опущено: карточка читает одну форму для любой задачи,
       // и «этого ключа здесь нет» — то, с чего поверхность начинает гадать.
       memoryTrace: { notes: [], reflexes: [], loaded: null, autoMemoryReads: null, reflexSource: null, lesson: null, approach: null },
