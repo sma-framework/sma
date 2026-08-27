@@ -1619,7 +1619,10 @@ const PRED_UNSCORED = {
         if (!validatePrediction(entry).valid) continue
         // LOCK 1: a command the safety boundary refuses can never be run, so
         // demanding a verdict for it would stop work over a defect in the
-        // wording of the claim. It is named at close, in words, not gated.
+        // wording of the claim. It is named, in words, by the scorer itself —
+        // predict.unsafeCommandReason on the record, printed as «не измерено»
+        // — and a run in which NOTHING was measured exits red there
+        // (predict.measurementVerdict). Named and honest, still not gated here.
         if (!isSafeCommand(entry.check_command)) continue
         // LOCK 2: a horizon that has not arrived is registered, not owed. Asked
         // through the SAME function the scorer asks — a second copy of this
