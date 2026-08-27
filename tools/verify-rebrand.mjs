@@ -23,6 +23,10 @@
  *       it points at a register the adopter cannot read.
  *   (f) SOURCE COMMENTS: no internal register id survives in the COMMENT TEXT of
  *       shipped `.mjs/.cjs/.ts/.tsx`. Armed 2026-08-06 — see the scope block.
+ *   (g) TEST TITLES: no internal register id survives in the TITLE of a
+ *       `describe/it/test` call under a test directory. A title is the one string in
+ *       a test file that is prose rather than data — see the note under (d)'s
+ *       exclusions.
  *
  * WHAT "PUBLISHED" MEANS HERE — the git-tracked set, and the reason for it.
  * A push publishes the REPOSITORY, not the npm tarball: `files[]` in package.json
@@ -62,6 +66,12 @@
  *     sanctioned there (a demo of decision-locking must show decision ids). The
  *     exclusion is by PATH, never by shape: a `__tests__` file is data in its
  *     literals and prose in its comments, so it is exempt from (d) and read by (f).
+ *     Its TITLES are the third class and the hole that exemption left: `it('…')`
+ *     names a behaviour in words, is printed to whoever reads the report, and was
+ *     riding through the gate on the same path exclusion that protects the sample
+ *     ids one line below it. Check (g) reads the FIRST STRING ARGUMENT of
+ *     `describe/it/test` and nothing else, so both readings survive — the title is
+ *     prose and is held to the law, the fixtures around it stay data.
  *   - THIS FILE. Its patterns ARE the shapes, so scanning it would report the
  *     detector as the leak. The prose around them obeys the same rule as any other
  *     comment: the ids that appear below are pattern specimens, nothing else.
@@ -273,6 +283,24 @@ function publishedFiles() {
 }
 
 /**
+ * TITLE_CALL — the shape of a test title's opening, read off the CODE that precedes
+ * the quote. `describe`/`it`/`test` plus any chained modifier (`it.only`,
+ * `describe.skip`, `test.concurrent`), then the paren, then the first argument.
+ *
+ * It is matched against the code text ONLY — the tokenizer feeds it the characters
+ * it has classified as code, never the raw line — and that is the whole reason it is
+ * safe: a `describe(` written INSIDE a string literal (the fixtures of the suite that
+ * covers this very rule, and any doc string that quotes a test) is not code, so it
+ * cannot open a phantom title. The boundary before the name forbids a leading dot, so
+ * `suite.it(` is somebody else's method, not ours.
+ *
+ * The failure mode is a MISS, like everywhere else in this tokenizer: a title reached
+ * through a returned function (`it.each(rows)('…')`) has code between the name and the
+ * quote and is not read. Widening that is free later; a false alarm would not be.
+ */
+const TITLE_CALL = /(?:^|[^\p{L}\p{N}_$.])(?:describe|it|test)(?:\.[A-Za-z_$][\w$]*)*\s*\(\s*$/u
+
+/**
  * splitSource() — ONE tokenizer, two consumers.
  *
  * Checks (d) and (f) ask opposite questions of the same file ("what is inside a
@@ -292,6 +320,13 @@ function publishedFiles() {
  *     span them — which is also how a multi-line help string finally gets read.
  * A regex literal is not tracked as its own state; the two rules above are what keep
  * that cheap approximation from turning into noise.
+ *
+ * The third consumer, check (g), needs one bit more than the text: WHICH literal was
+ * the first argument of a test call. It is answered here rather than by a second scan
+ * of the raw source, for the reason above — a `describe(` inside a quote is text, and
+ * only the tokenizer knows the difference. `codeTail` carries the last hundred-odd
+ * CODE characters (comments and literal bodies never enter it) across line breaks, so
+ * a title written on its own line is still attributed to the call that opened above it.
  */
 function splitSource(text) {
   const lines = text.split('\n')
@@ -299,10 +334,14 @@ function splitSource(text) {
   const literals = []
   let inBlock = false
   let inTemplate = false
+  let codeTail = ''
+  let titleOpen = false // the literal being read is a test title
+  const code = (s) => { codeTail = (codeTail + s).slice(-160) }
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     let comment = ''
     let literal = ''
+    let title = false
     let quote = '' // per-line by construction: a quoted literal does not survive its own line
     let j = 0
     while (j < line.length) {
@@ -316,20 +355,37 @@ function splitSource(text) {
       }
       if (inTemplate || quote) {
         if (c === '\\') { literal += line.slice(j, j + 2); j += 2; continue }
-        if (inTemplate ? c === '`' : c === quote) { inTemplate = false; quote = ''; j++; continue }
+        if (inTemplate ? c === '`' : c === quote) {
+          inTemplate = false
+          quote = ''
+          titleOpen = false
+          code('"') // a closed literal is not an open paren: the next quote starts fresh
+          j++
+          continue
+        }
         literal += c
+        if (titleOpen) title = true
         j++
         continue
       }
-      if (c === '\\') { j += 2; continue }
+      if (c === '\\') { code(line.slice(j, j + 2)); j += 2; continue }
       if (c === '/' && d === '/') { comment += line.slice(j + 2); break }
       if (c === '/' && d === '*') { inBlock = true; j += 2; continue }
-      if (c === '`') { inTemplate = true; j++; continue }
-      if (c === "'" || c === '"') { quote = c; j++; continue }
+      if (c === '`' || c === "'" || c === '"') {
+        titleOpen = TITLE_CALL.test(codeTail)
+        if (c === '`') inTemplate = true
+        else quote = c
+        j++
+        continue
+      }
+      code(c)
       j++
     }
+    // A quoted literal dies with its line; the template and the title state do not.
+    if (quote) titleOpen = false
+    code('\n')
     if (comment.trim()) comments.push({ n: i + 1, text: comment })
-    if (literal.trim()) literals.push({ n: i + 1, text: literal })
+    if (literal.trim()) literals.push({ n: i + 1, text: literal, title })
   }
   return { comments, literals }
 }
@@ -476,6 +532,37 @@ for (const r of PUBLISHED) {
   }
 }
 
+// ---- (g) internal register ids in test titles --------------------------------
+/**
+ * A test directory. Its files are exempt from check (d) because their literals are
+ * DATA — a test of this very scanner has to spell a forbidden shape to prove the
+ * scanner catches it. That exemption was reading the whole file, titles included, and
+ * a title is not data: `it('D-11-08 stays locked')` is a sentence about behaviour,
+ * printed to whoever reads the report, and the house law bans these shapes in product
+ * files at all. So the exemption keeps its narrow half and loses the wide one.
+ *
+ * Scope is the FIRST STRING ARGUMENT and nothing else — the same wide shape set that
+ * check (d) applies to any other user-facing string. Fixtures and demo payloads stay
+ * out by path, exactly as they are for check (f).
+ */
+const TEST_DIR = /(^|\/)__tests__(\/|$)/
+let testTitlesScanned = 0
+for (const r of PUBLISHED) {
+  if (!CODE_EXT.test(r)) continue
+  if (!TEST_DIR.test(r)) continue
+  if (COMMENT_EXCLUDED.test(r)) continue
+  const abs = path.join(ROOT, r)
+  if (!fs.existsSync(abs)) continue
+  const buf = fs.readFileSync(abs)
+  if (buf.includes(0)) continue // already reported as unreadable by check (d)
+  for (const h of splitSource(buf.toString('utf8')).literals) {
+    if (!h.title) continue
+    testTitlesScanned++
+    if (!REGISTER_ID.test(h.text) && !PREDICTION_ID.test(h.text) && !INTERNAL_PLAN_STRING.test(h.text)) continue
+    errors.push(`TEST-TITLE: ${r}:${h.n}: ${h.text.trim().slice(0, 120)}`)
+  }
+}
+
 // ---- (e) internal plan shapes in published markdown -------------------------
 // Same surface as check (d): the git-tracked set, not `files[]`. The npm allowlist
 // was the narrower of the two and left published markdown unread.
@@ -512,9 +599,10 @@ console.log(`residue hits: ${residueHits}`)
 console.log(`published files scanned for internal ids: ${idScanned} (of which markdown: ${mdScanned})`)
 console.log(`published markdown scanned for internal plan shapes: ${shippedDocsScanned}`)
 console.log(`shipped source files scanned for comment-text ids: ${commentFilesScanned}`)
+console.log(`test titles scanned: ${testTitlesScanned}`)
 if (errors.length) {
   console.error(`\nFAIL — ${errors.length} violation(s):`)
   for (const e of errors) console.error('  ' + e)
   process.exit(1)
 }
-console.log('OK — rebrand intact (dispatch resolves, zero residue, colors applied, no internal ids in published markdown / root config / user-facing strings / source comments, no internal plan shapes in published markdown)')
+console.log('OK — rebrand intact (dispatch resolves, zero residue, colors applied, no internal ids in published markdown / root config / user-facing strings / source comments / test titles, no internal plan shapes in published markdown)')
