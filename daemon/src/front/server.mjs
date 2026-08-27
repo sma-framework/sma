@@ -2522,10 +2522,19 @@ const CONVERSATION_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 const CHAT_HISTORY_LIMIT = 50
 const CHAT_HISTORY_MAX = 200
 
-/** The collaborator set the chat engine takes — the chat analogue of stateDeps. */
+/**
+ * The collaborator set the chat engine takes — the chat analogue of stateDeps.
+ *
+ * ПРОЕКТ ХОДА БЕРЁТСЯ ТАМ ЖЕ, ГДЕ ЕГО БЕРЁТ ДВЕРЬ ПОСТАНОВКИ ЗАДАЧ — `doorProject`, то есть
+ * из конфига этого демона, а не из тела запроса. Причина та же, слово в слово: беседа
+ * принадлежит проекту, на который смотрел человек, когда говорил, и ни один вызывающий не
+ * вправе назвать его сам. Проекта не выбрано — поля нет, и ход честно записан «без проекта».
+ * Мост телеграма зовёт эту же сборку, поэтому у бота и у окна проект хода один и тот же.
+ */
 function chatDeps(config, deps, extra = {}) {
   return {
     ...extra,
+    ...doorProject(config),
     adapter: deps.adapter,
     config,
     clock: deps.clock,
@@ -2594,12 +2603,18 @@ function pickAttachments(r) {
   return list.length ? { attachments: list } : {}
 }
 
-/** A stored turn as it leaves the process — the same picking, plus who said it and when. */
+/**
+ * A stored turn as it leaves the process — the same picking, plus who said it and when.
+ *
+ * `project` уезжает НАЗВАННЫМ, включая `null`: ход без проекта — это ход «без проекта», а не
+ * ход неизвестно чей, и читателю на той стороне это должно быть видно так же, как здесь.
+ */
 function pickTurn(t) {
   const r = t && typeof t === 'object' ? t : {}
   return {
     ts: r.ts ?? null,
     conversationId: r.conversationId ?? null,
+    project: typeof r.project === 'string' && r.project !== '' ? r.project : null,
     role: r.role ?? 'user',
     kind: r.kind ?? null,
     text: typeof r.text === 'string' ? r.text : '',
@@ -3033,6 +3048,13 @@ async function handleTaskCancel({ req, res, deps }) {
  * narrows it; `?limit=` is clamped between one turn and CHAT_HISTORY_MAX, so no query can
  * ask for the whole book. The turns are DATA on the way out exactly as they were on the way
  * in: explicit-picked, never interpreted.
+ *
+ * `?project=` СУЖАЕТ книгу до бесед одного проекта — тем же параметром и тем же разбором
+ * (`projectFilter`), которым сужается чтение картины, и по той же причине: экран, открытый на
+ * проекте, должен видеть его разговоры и только их. Новой двери для этого не появилось — эта
+ * принимала параметры с рождения. Не назвали проект — книга не сужается вовсе: ходы, у которых
+ * проекта нет (сказанные до появления поля или при невыбранном проекте), так и остаются
+ * читаемыми, не подмешиваясь при этом ни в одну проектную нить.
  */
 function handleChatHistory({ res, query, deps }) {
   if (typeof deps.readChatHistory !== 'function') return send501(res)
@@ -3040,12 +3062,14 @@ function handleChatHistory({ res, query, deps }) {
   const limit = Number.isFinite(asked) && asked > 0 ? Math.min(Math.floor(asked), CHAT_HISTORY_MAX) : CHAT_HISTORY_LIMIT
   const asObj = query && typeof query.conversationId === 'string' ? query.conversationId : ''
   const conversationId = CONVERSATION_ID_RE.test(asObj) ? asObj : undefined
+  const project = projectFilter(query)
   let turns = []
   try {
     turns =
       deps.readChatHistory({
         dir: deps.chatDir,
         ...(conversationId ? { conversationId } : {}),
+        ...(project ? { project } : {}),
         limit,
         fsImpl: deps.fsImpl,
       }) || []
