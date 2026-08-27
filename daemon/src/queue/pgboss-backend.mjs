@@ -354,7 +354,19 @@ export function createPgBossQueue({
   async function defaultExecSql(sql, params) {
     if (!queueUrl) throw new Error('list()/resolve require queueUrl or an injected execSql')
     if (!poolPromise) {
-      poolPromise = import('pg').then(({ default: pg }) => new pg.Pool({ connectionString: queueUrl, ...CLIENT_ENCODING }))
+      poolPromise = import('pg').then(({ default: pg }) => {
+        const pool = new pg.Pool({ connectionString: queueUrl, ...CLIENT_ENCODING })
+        // AN IDLE CLIENT'S DEATH IS AN EVENT, NOT A VERDICT. When Postgres goes away
+        // (a restart, the machine shutting down under us), the pool EMITS 'error' for the
+        // idle connection that died — and an EventEmitter with no listener turns that emit
+        // into a throw on the event loop. Measured 27.08.2026: that throw was the whole
+        // daemon's death — «Connection terminated unexpectedly», no line in its own voice,
+        // and a crash dump in a log file named for another day. The pool replaces dead idle
+        // clients by itself; the next query gets a fresh one or fails in ITS caller's hands,
+        // where every caller already answers for a bad queue. So: name it, and live.
+        pool.on('error', (err) => log(`pool error: ${maskError(err)} — простаивавшее соединение очереди умерло, пул заменит его сам`))
+        return pool
+      })
     }
     const pool = await poolPromise
     return pool.query(sql, params)

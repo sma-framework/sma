@@ -25,16 +25,25 @@ import { describe, it, expect, vi } from 'vitest'
 // Recorders live in a hoisted block: `vi.mock` factories are lifted above the imports, so a
 // plain `const` declared here would not exist yet when the factory runs.
 const { pools } = vi.hoisted(() => ({
-  pools: [] as Array<{ queries: number; ended: number }>,
+  pools: [] as Array<{ queries: number; ended: number; errorListeners: number }>,
 }))
 
 vi.mock('pg', () => {
   class FakePool {
-    rec: { queries: number; ended: number }
+    rec: { queries: number; ended: number; errorListeners: number }
 
     constructor(_opts: unknown) {
-      this.rec = { queries: 0, ended: 0 }
+      this.rec = { queries: 0, ended: 0, errorListeners: 0 }
       pools.push(this.rec)
+    }
+
+    // The real `pg.Pool` is an EventEmitter, and the backend now LEANS on that: a pool with
+    // no 'error' listener turns an idle client's death into an uncaught throw (measured
+    // 27.08.2026 — it killed the whole daemon). A fake poorer than the library would hide
+    // exactly that wire, so this one records the subscription instead of lacking it.
+    on(event: string, _fn: unknown) {
+      if (event === 'error') this.rec.errorListeners += 1
+      return this
     }
 
     async query(_sql: string, _params?: unknown[]) {
@@ -62,6 +71,18 @@ describe('pgboss backend — the lazy pool follows the adapter lifecycle', () =>
 
     await adapter.execSql('select 1', [])
     expect(pools).toHaveLength(1)
+  })
+
+  it('every pool it opens carries an error listener — an idle client dying must not kill the process', async () => {
+    pools.length = 0
+    const adapter = createPgBossQueue({ queueUrl: QUEUE_URL })
+    await adapter.execSql('select 1', [])
+    expect(pools[0].errorListeners).toBe(1)
+
+    // …and the pool a RESTART opens is protected the same way, not only the first one.
+    await adapter.stop()
+    await adapter.execSql('select 2', [])
+    expect(pools[1].errorListeners).toBe(1)
   })
 
   it('stop() ends the pool it opened', async () => {
