@@ -892,6 +892,35 @@ export function createDaemon(o = {}) {
   // that gets rediscovered by the next person to lose an afternoon to it.
   const unknownDispatchCodes = o.unknownDispatchCodes ?? createUnknownDispatchRegistry({ journal: daemonJournal, clock })
 
+  // ── ONE DERIVE IN FLIGHT, AND ITS ANSWER LIVES A MOMENT ──────────────────────────────────
+  //
+  // The window polls /api/state every 3 seconds, and /api/done rides the SAME full derive.
+  // The derive itself can be expensive (it walks the ledger, the corpus and — before its git
+  // reads were remembered — spawned two subprocesses per finished task), and everything here
+  // shares ONE event loop. Measured 26.08.2026: a 26-second derive with a 3-second poll means
+  // the loop is saturated by overlapping copies of the SAME question, and every other door —
+  // including the founder's «Одобрить» — waits behind them.
+  //
+  // Two rules, both bounded by the poll the window already lives with:
+  //   (1) while a derive for a project filter is IN FLIGHT, every caller shares that flight;
+  //   (2) a settled answer is handed out again for a moment shorter than one poll interval.
+  // A rejection settles the flight like a value does — the next caller past the moment asks
+  // fresh, so a failing derive cannot pin its failure to the door.
+  const DERIVE_SHARE_MS = 2500
+  const deriveFlights = new Map() // project key -> { promise, pending, settledAt }
+  const sharedDeriveState = (sd) => {
+    const key = sd && typeof sd.project === 'string' ? sd.project : ''
+    const hit = deriveFlights.get(key)
+    if (hit && (hit.pending || clock() - hit.settledAt < DERIVE_SHARE_MS)) return hit.promise
+    const flight = { promise: null, pending: true, settledAt: 0 }
+    flight.promise = deriveState(sd).finally(() => {
+      flight.pending = false
+      flight.settledAt = clock()
+    })
+    deriveFlights.set(key, flight)
+    return flight.promise
+  }
+
   // (5) the roster front — the wrapped adapter + the derive + the merge verb + CAS seam.
   const front =
     o.front ??
@@ -941,7 +970,9 @@ export function createDaemon(o = {}) {
         // back to the build that shipped beside it — its own default, decided from its own
         // module url and never from a process's current directory.
         ...(typeof o.staticDir === 'string' && o.staticDir.trim() !== '' ? { staticDir: o.staticDir } : {}),
-        deriveState,
+        // the derive behind /api/state and /api/done — shared-flight wrapped (see above), so
+        // overlapping polls of a slow derive collapse into one instead of stacking the loop.
+        deriveState: sharedDeriveState,
         parseReceiptSummary,
         // The phase cycle's two read models. Injected like every other derive, so the door
         // carries no build edge onto state.mjs.
@@ -1554,6 +1585,23 @@ export function describeBootFailure(err, config = {}) {
 // ── process entrypoint (the plist target). Import stays side-effect-free. ──
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
 if (isMain) {
+  // ── A DEATH GETS ITS NAME. ────────────────────────────────────────────────────────────────
+  //
+  // The boot .catch below covers the START; after start() resolved this process used to have
+  // no error net at all. Measured 27.08.2026: Postgres went down under a running daemon, an
+  // event nobody listened for became an uncaught throw, and the last words in the log were a
+  // raw object dump with no line saying WHO died or WHY — the diagnosis took an outside
+  // autopsy. These two nets do not try to survive (a process in an unknown state serving a
+  // queue would be worse than a dead one the supervisor can restart): they say the daemon's
+  // own name, the reason, and then die honestly with exit 1.
+  process.on('uncaughtException', (err) => {
+    console.error(`[SmaDaemon] СМЕРТЬ: uncaughtException — ${(err && err.stack) || err}`)
+    process.exit(1)
+  })
+  process.on('unhandledRejection', (err) => {
+    console.error(`[SmaDaemon] СМЕРТЬ: unhandledRejection — ${(err && err.stack) || err}`)
+    process.exit(1)
+  })
   const park = createDaemon()
   park
     .start()
