@@ -1073,6 +1073,66 @@ export function createPgBossQueue({
   }
 
   /**
+   * parkForPerson(taskId, reason) — THE FAILURE THAT MAY NOT BE REPEATED, written into the
+   * queue as a closed row that waits for a PERSON.
+   *
+   * AND NEVER `boss.fail`, which is the whole reason this door exists beside the other one.
+   * A failure in this queue is the RETRYABLE outcome and the branch is taken INSIDE the
+   * library, by `retryLimit`, where nothing of ours can see it: the row is deleted, inserted
+   * back in the retry state, and handed out again — twice, on the same subscription, with the
+   * SAME turn ceiling on the command line. For a cause a repetition cannot touch those two
+   * attempts are paid for a known outcome. So the row is taken out of the queue instead.
+   *
+   * THE LIBRARY'S OWN CANCEL, for the same reason `cancelTask` uses it: the statement that
+   * hands work out belongs to pg-boss, and its `cancel` is the one call that moves a row out
+   * of everything short of completed by the very plan the fetch is written against. A state
+   * written by a statement of ours would have to agree with that plan for ever.
+   *
+   * THE REASON RIDES WITH IT, and it is the TRUE one — `turns_exhausted`, not the `manual` a
+   * stop writes. Every reader of a finished row takes its cause from the job's output; a row
+   * saying `manual` here would blame a person for a ceiling the daemon set, and the card would
+   * ask him to confirm a decision he never made instead of asking him to take one.
+   *
+   * ONLY AN ATTEMPT THAT IS UNDER WAY IS PARKED. This ending is the end of a RUN, and the run
+   * is the active row; a task waiting in the queue has no attempt to park, and `false` says so
+   * rather than closing work nobody has tried yet.
+   */
+  async function parkForPerson(taskId, reason, { attemptToken } = {}) {
+    if (!FAIL_REASONS.includes(reason)) {
+      throw new InvalidFailReasonError(`parkForPerson: "${reason}" is not one of ${FAIL_REASONS.join('|')}`)
+    }
+    const job = await resolveActiveJob(taskId)
+    if (!job) return false
+    // A STRANGER MAY NOT PARK SOMEBODY ELSE'S ATTEMPT, and here the fence matters more than it
+    // does on the retryable door: this ending is terminal, so a stale worker's word would close
+    // work that is running right now under a newer token, with no re-issue behind it to undo.
+    refuseStaleAttempt('parkForPerson', taskId, tokenOfJob(job), attemptToken)
+    await bossInstance.cancel(job.name, job.id)
+    await runSql(
+      `UPDATE pgboss.job SET output = coalesce(output, '{}'::jsonb) || jsonb_build_object('reason', $2::text)
+        WHERE id = $1`,
+      [job.id, reason],
+    )
+    coalesce.delete(taskId)
+    if (ledgerDir) {
+      recordAttempt(ledgerDir, {
+        taskId,
+        outcome: 'failed',
+        failureReason: reason,
+        endedAt: new Date(now()).toISOString(),
+        // NO TRANSITION STAMP, and the absence is the honest answer rather than a gap. The
+        // failure edge this backend can name is RUNNING -> RETRYABLE, and this attempt is
+        // precisely the one that will NOT be retried; RUNNING -> CANCELLED is the human abort
+        // edge, and no human aborted anything — he has not been asked yet. The contract table
+        // declares no edge for «stopped at our own ceiling, waiting for a person», so none is
+        // claimed: the same choice the late-completion path above makes, for the same reason.
+        // The fact itself is not lost — the reason is on this row and on the card.
+      })
+    }
+    return true
+  }
+
+  /**
    * READ-ONLY resolution of a job that is WAITING TO BE HANDED OUT — in EITHER of the two
    * states this queue waits in.
    *
@@ -1408,6 +1468,7 @@ export function createPgBossQueue({
     setWords,
     complete,
     fail,
+    parkForPerson,
     cancelTask,
     list,
     stats,

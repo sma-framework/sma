@@ -275,6 +275,8 @@ export function createEventHub({
  *   touch              → task.running (deduped per task; hint plumbing, never truth)
  *   complete           → task.awaiting_approval + spend.updated + worker.presence
  *   fail               → task.failed + spend.updated + worker.presence
+ *   parkForPerson      → task.failed + spend.updated + worker.presence (the ending that will
+ *                        not be retried announces itself exactly as loudly as the one that will)
  *
  * @param {object} adapter a conforming QueueAdapter
  * @param {{emit:Function}} hub the event hub (or any {emit})
@@ -355,6 +357,29 @@ export function wrapAdapterWithEvents(adapter, hub, { clock = Date.now } = {}) {
       // until now — a word from a different vocabulary («no_receipt») that a client would
       // have written into the row as though it were a state. The reason is on the read
       // model, where it has a label; the frame says only that the row is now failed.
+      emit({ event: 'task.failed', taskId, status: 'failed' })
+      emit({ event: 'spend.updated', taskId })
+      emit({ event: 'worker.presence', taskId })
+      lastRunning.delete(taskId)
+      return r
+    },
+    /**
+     * THE OTHER ENDING OF A FAILED ATTEMPT — the one that will NOT be retried, so the screen
+     * has to hear about it exactly as loudly as about the retryable one.
+     *
+     * Named here rather than left to the `...adapter` spread above for one reason: a method
+     * that passed through unwrapped would move the durable row and announce NOTHING, so a live
+     * board would go on showing work as running until the next poll. This wrapper is what the
+     * composition root hands the tick — the same lesson the fencing token left on `touch`.
+     *
+     * The frames are the failure's own, and deliberately so: the row IS failed (the closed
+     * five-status vocabulary has no sixth word for «parked»), and what makes this ending
+     * different is the reason on the card, which the read model already carries with its
+     * подпись. A private event here would be a second vocabulary for one state.
+     */
+    async parkForPerson(taskId, reason, opts) {
+      if (typeof adapter.parkForPerson !== 'function') return false
+      const r = await adapter.parkForPerson(taskId, reason, opts)
       emit({ event: 'task.failed', taskId, status: 'failed' })
       emit({ event: 'spend.updated', taskId })
       emit({ event: 'worker.presence', taskId })

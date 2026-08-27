@@ -100,7 +100,7 @@ import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync 
 import { dirname, join } from 'node:path'
 
 import { pipelineEnabled } from './config.mjs'
-import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
+import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS, failureAwaitsAPerson, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
@@ -4807,11 +4807,42 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
   // needed. Asked even when this refusal came before a run directory was ever made: the answer
   // is cached on the COPY, so an early exit owes and pays the same record as a late one.
   attachChangedFiles(deps, worktree)
-  // THE SAME TOKEN, AND THIS HALF MATTERS AS MUCH AS THE OTHER ONE. A failure is the
-  // RETRYABLE outcome, so a stale worker failing by name alone would hand a RUNNING attempt's
-  // work to yet a third worker while the second is still doing it. The token names the
-  // attempt that is really ending; the queue refuses a foreign one out loud.
-  await adapter.fail(task.id, reason, { attemptToken: task.attemptToken })
+  // ═══ ДВА КОНЦА У НЕУДАВШЕЙСЯ ПОПЫТКИ, И ВЫБОР МЕЖДУ НИМИ СДЕЛАН ЗДЕСЬ, ВСЛУХ ═══════════
+  //
+  // Until now there was one: every reason went through `fail`, the RETRYABLE door, and the
+  // durable queue handed the row back twice more. For `turns_exhausted` those two re-issues are
+  // decided before they run — the ceiling that stopped the attempt is the daemon's own and
+  // travels onto the next command line unchanged, so attempt two and attempt three walk into
+  // the same wall at the same step. Two paid attempts, one known outcome, on a subscription
+  // somebody is paying for. What that ending needs is not another worker but a PERSON: raise
+  // the ceiling, cut the task in pieces, or drop it — and the card now says exactly that.
+  //
+  // WHICH REASONS TAKE WHICH DOOR IS NOT DECIDED HERE. The question is asked of the queue's own
+  // vocabulary (`failureAwaitsAPerson`, beside the reason dictionary), so the policy lives in
+  // one place with the words that explain it to a person, and this line only obeys it. Every
+  // other reason — a provider that cut the run, a lease the watchdog took back, an environment
+  // that was down — keeps the retryable door and its re-issues exactly as before: those are
+  // the causes a second attempt can outlive.
+  //
+  // THE TOKEN TRAVELS THROUGH BOTH, AND THIS HALF MATTERS AS MUCH AS THE OTHER ONE. A failure
+  // is the retryable outcome, so a stale worker failing by name alone would hand a RUNNING
+  // attempt's work to yet a third worker while the second is still doing it — and on the
+  // parking door a stranger's word would CLOSE that running attempt with nothing behind it.
+  // The token names the attempt that is really ending; the queue refuses a foreign one out loud.
+  const awaitsPerson = failureAwaitsAPerson(reason)
+  if (awaitsPerson && typeof adapter.parkForPerson !== 'function') {
+    // AN ADAPTER WITHOUT THE PARKING DOOR SAYS SO OUT LOUD. It then keeps the old behaviour —
+    // the retryable door and its two re-issues — because a tick that threw here would lose the
+    // failure itself, which is worse. But it is never silent: the whole point of the fork is
+    // that a subscription is not spent on a known outcome, and a seam quietly falling back to
+    // spending it is exactly the kind of silence this product refuses.
+    writeLog(deps, { type: 'park-door-missing', taskId: task.id, reason })
+  }
+  if (awaitsPerson && typeof adapter.parkForPerson === 'function') {
+    await adapter.parkForPerson(task.id, reason, { attemptToken: task.attemptToken })
+  } else {
+    await adapter.fail(task.id, reason, { attemptToken: task.attemptToken })
+  }
   if (ledger && typeof ledger.recordAttempt === 'function') {
     // THE «ПОЧЕМУ» IS THE POINT. A ledger that cannot be written must not take the reason
     // down with it: the row is attempted, and a refusing ledger says so out loud instead
