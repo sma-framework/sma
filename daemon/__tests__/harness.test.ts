@@ -564,7 +564,11 @@ describe('readHarness — the stockTeam key is ADDITIVE (modules 8/9/12 keep the
       env: {},
       homedir: NO_HOME,
     })
-    expect(Object.keys(out).sort()).toEqual(['agents', 'drafts', 'mcp', 'skills', 'stockTeam'].sort())
+    // `telegram` joined the payload the same way `stockTeam` did — ADDITIVELY: the five keys
+    // above keep their shape byte for byte, and the sixth is the state of the owner's own bot.
+    // A daemon nobody connected one to still gets the key, reading 'off'.
+    expect(Object.keys(out).sort()).toEqual(['agents', 'drafts', 'mcp', 'skills', 'stockTeam', 'telegram'].sort())
+    expect(out.telegram).toMatchObject({ status: 'off', tokenTail: null, code: null, chat: null })
     expect(Array.isArray(out.stockTeam)).toBe(true)
     expect(out.stockTeam.map((e: any) => e.id).sort()).toEqual(['sma-planner', 'sma-verifier'])
     // the four existing keys keep their shape exactly
@@ -670,14 +674,14 @@ async function call(front: any, opts: any) {
 }
 
 describe('POST /api/agent/toggle — the stock team rides the EXISTING door (no route added)', () => {
-  it('the route table is still exactly sixty-three entries and carries no stock-team route', () => {
+  it('the route table is still exactly sixty-four entries and carries no stock-team route', () => {
     // V5.4 freeze (53) + chat/stop + redirect + the batch request + the word answering a stopped
     // batch + the two doors of a task's words (proposed by the system, corrected by its owner)
     // + the composition a phrase could have (proposed too — and putting it in is another door)
     // + the order that stops ONE echelon of ONE phase and starts it again
     // + the door a person cancels a task through
     // + the door that reads the folder of one phase (its tree, and one file of it as text).
-    expect(Object.keys(ROUTES)).toHaveLength(63)
+    expect(Object.keys(ROUTES)).toHaveLength(64)
     expect(Object.keys(ROUTES).filter((k) => /stock/i.test(k))).toEqual([])
   })
 

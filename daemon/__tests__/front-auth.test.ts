@@ -218,7 +218,7 @@ describe('auth.mjs — timing-safe token + cookie', () => {
 
 // ── the closed route table ──
 
-describe('server.mjs — the closed SIXTY-THREE-route table', () => {
+describe('server.mjs — the closed SIXTY-FOUR-route table', () => {
   // THE ONE PLACE the size of the surface is written down. If this number ever needs to
   // change again, that change is a declared re-freeze revision, not a routine edit. FILLING
   // a declared slot does not change it — that is the entire point of declaring them all at
@@ -248,8 +248,8 @@ describe('server.mjs — the closed SIXTY-THREE-route table', () => {
   // door opens only the documents the card knows how to name; everything else a phase left in
   // its own directory existed for a terminal and for nothing else. Read-only, and the path is
   // locked three times over (text, resolved, real), so no spelling of it leaves that directory.
-  it('the frozen table has EXACTLY sixty-three routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(63)
+  it('the frozen table has EXACTLY sixty-four routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(64)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 

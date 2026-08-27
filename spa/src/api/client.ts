@@ -50,6 +50,7 @@ import type {
   ShipPublishResult,
   StatePayload,
   TaskDetail,
+  TelegramLink,
   ToggleResult,
   UpdateReport,
 } from './types'
@@ -451,6 +452,25 @@ export function assignSkill(skillId: string, workerIds: string[]): Promise<Toggl
 /** Switch one connection on or off. */
 export function toggleMcp(serverId: string, enabled: boolean): Promise<ToggleResult> {
   return postJson<ToggleResult>('/api/mcp/toggle', { serverId, enabled })
+}
+
+/** The three words the Telegram door answers to — the door's own vocabulary, mirrored. */
+export type TelegramAction = 'connect' | 'code' | 'disconnect'
+
+/**
+ * Connect the owner's own bot, re-issue its pairing code, or let it go.
+ *
+ * THE TOKEN TRAVELS ONE WAY. It goes out in the body of `connect` and never comes back: the
+ * answer is the same read model the harness carries, whose token field is four characters
+ * long. There is no argument to this function, and no shape of its result, that reads a
+ * credential back out of the daemon — by the time the window could ask, the whole value is
+ * already gone from every payload the door knows how to build.
+ */
+export function connectTelegram(action: TelegramAction, botToken?: string): Promise<OkResult & { telegram: TelegramLink }> {
+  return postJson<OkResult & { telegram: TelegramLink }>(
+    '/api/connection/telegram',
+    withOptional({ action }, { botToken: action === 'connect' ? botToken : undefined }),
+  )
 }
 
 // ── projects ────────────────────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-THREE routes
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-FOUR routes
  *     (re-frozen 2026-08-25 — the growth past the V5.4 fifty-three is EXPLICIT, TEN doors,
  *     each declared by the release that opened it: the chat stop button in v5.4.3, the
  *     running-task steering wheel in v5.5.0, SIX doors in v5.6.0 — the batch request,
@@ -21,12 +21,14 @@
  *     every other door here records
  *     the release that actually shipped it, and writing a number before it is cut would make
  *     this header a promise instead of a record — the stamp goes in when the release does;
- *     the previous freezes were SIXTY-TWO, 2026-08-20, SIXTY-ONE,
+ *     the previous freezes were SIXTY-THREE, 2026-08-25, SIXTY-TWO, 2026-08-20, SIXTY-ONE,
  *     2026-08-13, FIFTY-FIVE, 2026-08-12, FIFTY-THREE, 2026-08-06, THIRTY, 2026-08-01, and
- *     FOURTEEN, 2026-07-17). A path outside the table is 404 BEFORE any
- *     auth-error detail (no route reflection). No command-exec endpoint exists or ever may —
- *     adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 63 is a test.
+ *     FOURTEEN, 2026-07-17). The SIXTY-FOURTH is the SETTINGS DOOR OF ONE CONNECTION: the
+ *     owner connects their own Telegram bot from the window — a token in, a short-lived
+ *     pairing code out, and the same door disconnects. A path outside the table is 404 BEFORE
+ *     any auth-error detail (no route reflection). No command-exec endpoint exists or ever
+ *     may — adding a route requires touching THIS table AND the guard
+ *     invariant that polices it. Object.keys(ROUTES).length === 64 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
@@ -117,6 +119,7 @@ import { BATCH_DECISIONS, parseReceiptProof } from './state.mjs'
 import { readTaskChanges } from './task-changes.mjs'
 import { DRAFT_KINDS } from '../forge/forge.mjs'
 import { buildPairingInstruction } from './federation.mjs'
+import { mintPairing, telegramLinkView } from '../telegram/pairing.mjs'
 import { scanEstate, enrollSelections } from './import-scanner.mjs'
 import { createOnboarding } from './onboarding.mjs'
 import { collectDiagnostics } from './diagnostics.mjs'
@@ -250,17 +253,17 @@ const BUILD_INSTRUCTION_HTML =
  * a task (a person stops the work, and the row is closed only after the live child under it
  * is dead), and the door that READS THE FOLDER OF ONE PHASE — its directory as a tree, and
  * one file of it as text, both bounded, neither able to leave that directory).
- * Exactly SIXTY-THREE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * Exactly SIXTY-FOUR entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the five dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/phase/:id/files, /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic
  * asset segment (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 63) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 64) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time; the last ten joined one release at a time, additively — nothing was
- * removed or renamed. ALL SIXTY-THREE ARE LIVE — the table carries no stub, and the shape
+ * a time; the last eleven joined one release at a time, additively — nothing was
+ * removed or renamed. ALL SIXTY-FOUR ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  *
  * THREE OF THE TEN PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
@@ -344,6 +347,8 @@ export const ROUTES = Object.freeze({
   'POST /api/task/cancel': 'handleTaskCancel',
   // ── папка фазы: её каталог, как он лежит на диске, и один файл из него ТЕКСТОМ ──
   'GET /api/phase/:id/files': 'handlePhaseFiles',
+  // ── НАСТРОЙКИ ОДНОГО ПОДКЛЮЧЕНИЯ: свой бот Telegram — подключить, выдать код пары, отключить ──
+  'POST /api/connection/telegram': 'handleConnectionTelegram',
 })
 
 /**
@@ -2037,6 +2042,7 @@ async function handleHarness({ res, config, deps }) {
     repoDir: deps.repoDir,
     fsImpl: deps.fsImpl,
     env: deps.env,
+    clock: deps.clock,
   })
   sendJson(res, 200, payload)
 }
@@ -5499,6 +5505,93 @@ async function handleBudgetSet({ req, res, config, deps }) {
 }
 
 /**
+ * The three words POST /api/connection/telegram answers to, and the whole of its vocabulary.
+ *
+ * `connect` carries the token. `code` re-issues a pairing code for the bot that is already
+ * stored — the press for «десять минут прошло», which must not require a person to fetch
+ * their credential from BotFather again, because this product deliberately cannot show it
+ * back to them. `disconnect` removes the bot, the pair and any live code together.
+ */
+export const TELEGRAM_ACTIONS = Object.freeze(['connect', 'code', 'disconnect'])
+
+/** The in-process half of the one-config rule for the link (see refreshWorkers). */
+function refreshTelegram(config, next) {
+  if (!next || typeof next !== 'object') return
+  if (next.telegram === undefined) delete config.telegram
+  else config.telegram = next.telegram
+}
+
+/**
+ * POST /api/connection/telegram — body {action ∈ TELEGRAM_ACTIONS, botToken?}. THE ONE DOOR
+ * OF THE TELEGRAM CONNECTION, and the reason a person never opens the daemon's config file to
+ * connect their own bot.
+ *
+ * ═════════════ THE TOKEN GOES IN AND NEVER COMES BACK OUT ═══════════════════════════
+ * This is the only route in the table whose request body carries a credential, and the whole
+ * shape of the handler follows from that one fact:
+ *   - THE ANSWER IS THE VIEW, NEVER THE BODY. What comes back is `telegramLinkView`, whose
+ *     token field is four characters long by construction — the response is not «the stored
+ *     config minus a field», so there is no field to forget to remove.
+ *   - NOTHING IS ECHOED ON REFUSAL EITHER. A malformed token is a 400 whose message names the
+ *     SHAPE (the applier's own error, which never quotes a value); it is not «"…" is not a
+ *     token», which is how a credential lands in a browser console and a support screenshot.
+ *   - THE CODE IS MINTED HERE AND WRITTEN BY THE APPLIER. The door owns the clock (deps.clock,
+ *     so the suite drives expiry without waiting); the file is owned by config.mjs, exactly as
+ *     it is for the conveyor, the money and the roster.
+ *
+ * ═════════════ AND THE LOOP IS REBUILT IN THE SAME BREATH ═══════════════════════════
+ * `deps.telegramRestart` is what makes the connection real on a RUNNING daemon: without it the
+ * token would be written and no loop would be listening for the pairing code until somebody
+ * restarted the process. It is best-effort — a link that refuses to come up must not turn a
+ * successful write into a 500, so the state the window then shows is the truth on disk.
+ */
+async function handleConnectionTelegram({ req, res, config, deps }) {
+  if (typeof deps.applyTelegramConnect !== 'function' || typeof deps.applyTelegramDisconnect !== 'function') {
+    return send501(res)
+  }
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['action', 'botToken']))) return undefined
+  if (typeof b.action !== 'string' || !TELEGRAM_ACTIONS.includes(b.action)) {
+    return send400(res, `action must be one of ${TELEGRAM_ACTIONS.join('|')}`)
+  }
+  if (b.action === 'connect' && (typeof b.botToken !== 'string' || b.botToken.trim() === '')) {
+    return send400(res, 'connect requires the bot token BotFather gave you')
+  }
+  if (b.action !== 'connect' && b.botToken !== undefined) {
+    return send400(res, 'botToken belongs to the connect action only')
+  }
+
+  const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+  let next
+  try {
+    if (b.action === 'disconnect') {
+      next = deps.applyTelegramDisconnect(config, configIo(deps))
+    } else {
+      const pairing = mintPairing({ now: clock() })
+      next = deps.applyTelegramConnect(
+        config,
+        { ...(b.action === 'connect' ? { botToken: b.botToken.trim() } : {}), pairing },
+        configIo(deps),
+      )
+    }
+  } catch (err) {
+    return applierError(res, err)
+  }
+  refreshTelegram(config, next)
+  if (typeof deps.telegramRestart === 'function') {
+    try {
+      deps.telegramRestart()
+    } catch {
+      /* the write landed; a link that will not come up is visible in the state, not as a 500 */
+    }
+  }
+  emitSafe(deps, { event: 'harness.updated' })
+  return sendJson(res, 200, { ok: true, telegram: telegramLinkView(config, { now: clock() }) })
+}
+
+/**
  * POST /api/agent/model — body {agent, model?, effort?}, at least one of the two.
  *
  * The model and the effort are the ONE part of a worker's session that does not come from the
@@ -5826,6 +5919,8 @@ export const HANDLERS = Object.freeze({
   handleTaskCancel,
   // папка фазы: дерево её каталога и один файл из него текстом, только чтение
   handlePhaseFiles,
+  // настройки одного подключения: свой бот Telegram — токен внутрь, код пары наружу
+  handleConnectionTelegram,
 })
 
 // ── the dispatcher ──
