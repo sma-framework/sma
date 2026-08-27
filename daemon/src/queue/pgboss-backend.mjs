@@ -979,12 +979,38 @@ export function createPgBossQueue({
       )
     }
     const job = await resolveActiveJob(taskId)
-    if (!job) throw new UnknownTaskError(`complete: no active task "${taskId}"`)
+    // ═══ СТРОКА, КОТОРУЮ УЖЕ ЗАБРАЛ СТОРОЖ ЖИВОСТИ ══════════════════════════════════════
+    //
+    // Активной строки нет, а завершение пришло — и звонящий НАЗЫВАЕТ этот случай вслух
+    // (`afterSweep`): между захватом и этой секундой сторож объявил замолчавшего мёртвым и
+    // вернул задачу в очередь, где она ждёт своей отсрочки. Работа при этом добежала и
+    // предъявила квитанцию, а квитанция сильнее исхода, реконструированного по молчанию.
+    // Флаг обязателен: без него дверь отвечает ровно как отвечала, и ни одна другая дорога
+    // сюда случайно не заезжает.
+    const parked = !job && result.afterSweep === true ? await resolveWaitingJob(taskId) : null
+    if (!job && !parked) throw new UnknownTaskError(`complete: no active task "${taskId}"`)
     // WHOSE ATTEMPT IS BEING CLOSED — asked BEFORE any mutation, like the missing receipt above.
     // The resolution finds the ACTIVE row of this task, whichever attempt that is; this is the
     // one question it cannot answer, and the one the live queue proved has to be asked.
+    //
+    // И ЖИВУЮ ПОПЫТКУ СОСЕДА ЭТА ДВЕРЬ ПО-ПРЕЖНЕМУ НЕ ПЕРЕБИВАЕТ: если задачу успел захватить
+    // второй работник, разрешение выше находит ЕГО активную строку с ЕГО жетоном — и отказ
+    // случается здесь, до всякой записи. Ожидающая строка ничьей попыткой не является, жетона
+    // в ней запрос не читает, и отсутствие остаётся отсутствием.
     refuseStaleAttempt('complete', taskId, tokenOfJob(job), result.attemptToken)
-    await bossInstance.complete(job.name, job.id, { receiptRef: result.receiptRef })
+    if (job) {
+      await bossInstance.complete(job.name, job.id, { receiptRef: result.receiptRef })
+    } else {
+      // pg-boss закрывает ТОЛЬКО активную строку (его собственный план: `WHERE state =
+      // 'active'`), а эта уже вернулась в ожидание — вызов библиотеки не сделал бы ничего и
+      // сделал бы это молча. Поэтому правда пишется тем же оператором, каким эта дверь уже
+      // правит строку задания, и в тех же двух состояниях ожидания, в которых её нашли.
+      await runSql(
+        `UPDATE pgboss.job SET state = 'completed', completed_on = now(), output = $2::jsonb
+          WHERE id = $1 AND state IN ('created','retry')`,
+        [parked.id, JSON.stringify({ receiptRef: result.receiptRef })],
+      )
+    }
     coalesce.delete(taskId)
     // Finished work is not finished business: the task now owes a human a word, and the
     // front's approve/return CAS from exactly this state (events.mjs already ANNOUNCES
@@ -998,6 +1024,11 @@ export function createPgBossQueue({
         outcome: 'completed',
         receiptRef: result.receiptRef,
         endedAt: new Date(now()).toISOString(),
+        // НА ПОЗДНЕМ ПУТИ ШТАМПА НЕТ, и это не пропуск: активной строки не было, а переход
+        // «вернулась в очередь → произведено» в контракте состояний не объявлен. Пустой штамп
+        // пишет строку без полей перехода — ровно как это уже делает дверь завершения в цикле,
+        // — вместо выдуманной пары, которой никто не совершал. Сам факт при этом не теряется:
+        // рядом в реестре лежит строка приговора сторожа, а поздняя правда названа в журнале.
         ...jobStamp(job, { from: 'RUNNING', to: 'PRODUCED', actor: 'worker', taskId }),
       })
     }

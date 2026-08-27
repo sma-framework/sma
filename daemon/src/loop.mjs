@@ -100,7 +100,7 @@ import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync 
 import { dirname, join } from 'node:path'
 
 import { pipelineEnabled } from './config.mjs'
-import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS, taskContextOf } from './queue/adapter.mjs'
+import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
@@ -4627,7 +4627,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
  * door) writes the row with no transition fields rather than an invented pair.
  */
 async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from, sessionId, startedAt, worktree }) {
-  const { adapter, ledger, report } = deps
+  const { adapter, ledger, report, journal } = deps
   // THE VERDICT FIRST, THE ROW SECOND. The five parity receipts are computed here rather than
   // where the receipt file is written, because the ledger row below is appended BEFORE that
   // file exists — and the row is what the card reads. Asked in the other order, the verdict
@@ -4638,7 +4638,7 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
   // is built from. One question to git per attempt, cached on the copy — whichever door
   // arrives here first.
   attachChangedFiles(deps, worktree)
-  await adapter.complete(task.id, {
+  const closing = {
     receiptRef,
     branch,
     diffStat,
@@ -4654,7 +4654,47 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
     // Absent (a row claimed before this product knew about tokens) stays absent: the contract
     // reads absence as absence and never as a licence to invent one.
     attemptToken: task.attemptToken,
-  })
+  }
+  try {
+    await adapter.complete(task.id, closing)
+  } catch (err) {
+    // ═══ ПОЗДНЯЯ ПРАВДА ПЕРЕЗАПИСЫВАЕТ ПРИГОВОР СТОРОЖА ══════════════════════════════════
+    //
+    // Строки этой задачи в очереди больше нет ни одной активной — значит между началом
+    // попытки и этой секундой её забрал сторож живости: он объявил замолчавшего мёртвым и
+    // вернул задачу в очередь (liveness.mjs). А работа при этом ДОБЕЖАЛА и предъявила
+    // квитанцию. До сих пор такое завершение проваливалось наружу, попадало в общий улов
+    // тика и заканчивалось ещё одним `runtime_offline`: зелёная работа оставалась
+    // похороненной под исходом, который сторож РЕКОНСТРУИРОВАЛ по молчанию. Квитанция
+    // сильнее реконструкции — исход строки переписывается правдой завершения.
+    if (!(err instanceof UnknownTaskError)) throw err
+    // СНАЧАЛА СТРОКА, ПОТОМ ДЕЙСТВИЕ — та же выправка, что у сторожа: написанная после,
+    // она пропала бы ровно в том случае, где стоит дороже всего. И это ВТОРАЯ запись, а не
+    // замена первой: приговор сторожа остаётся в журнале выше своей строкой, поздняя правда
+    // ложится рядом — читающий видит оба события, а не молчаливую подмену одного другим.
+    if (typeof journal === 'function') {
+      try {
+        journal({
+          type: 'attempt.late_complete',
+          taskId: task.id,
+          attempt: task.attempt ?? null,
+          receiptRef,
+          detail:
+            `завершение попытки ${task.attempt ?? '?'} задачи ${task.id} пришло ПОСЛЕ того, как ` +
+            'сторож живости закрыл строку и вернул задачу в очередь; работа предъявила квитанцию ' +
+            `${receiptRef || 'без ссылки'} — исход строки перезаписывается правдой завершения.`,
+        })
+      } catch {
+        /* повествование никогда не стоит работы, которая уже сделана */
+      }
+    }
+    // Тот же вызов, тем же жетоном, но названный вслух: это завершение для строки, которую
+    // уже забрал сторож. Жетон здесь по-прежнему решает: если задачу успел ЗАХВАТИТЬ второй
+    // работник, очередь откажет чужим жетоном — и правильно, поздняя правда смеет перебить
+    // реконструкцию сторожа, но не живую попытку соседа. Такой отказ уходит наверх и
+    // становится обычным провалом тика.
+    await adapter.complete(task.id, { ...closing, afterSweep: true })
+  }
   if (ledger && typeof ledger.recordAttempt === 'function') {
     ledger.recordAttempt({
       taskId: task.id,
