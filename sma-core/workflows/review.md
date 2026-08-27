@@ -77,7 +77,7 @@ No external AI CLIs found. Install at least one:
 - cursor: https://cursor.com (Cursor IDE agent mode)
 - agy: curl -fsSL https://antigravity.google/cli/install.sh | bash (Antigravity CLI — free with Google credentials)
 
-Then run /sma-review again.
+Then ask for the cross-AI peer review again.
 ```
 Exit.
 

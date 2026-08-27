@@ -1,4 +1,4 @@
-import type { TaskAttempt, TaskStatus, WaitingTicket } from '../../api/types'
+import type { JournalRedirect, TaskAttempt, TaskStatus, WaitingTicket } from '../../api/types'
 import { clockLabel } from '../../shell/format'
 import { approachEvents } from './flow'
 import type { FlowTone } from './flow'
@@ -14,18 +14,24 @@ const TONE_CLASS: Record<FlowTone, string> = {
   fail: 'text-err-tx',
   wait: 'text-warn-tx',
   plain: 'text-tx2',
+  // Слово человека — самым читаемым цветом строки и без своего оттенка: это не состояние
+  // работы, а чужая реплика в ней.
+  said: 'text-tx',
 }
 
 export function LiveFlow({
   attempts,
   status,
   ticket,
+  redirects,
 }: {
   attempts: TaskAttempt[]
   status: TaskStatus | null
   ticket?: WaitingTicket | null
+  /** Поправки человека из журнала попытки. Текст рисуется текстовым узлом — как есть. */
+  redirects?: JournalRedirect[] | null
 }) {
-  const events = approachEvents({ attempts, status, ticket })
+  const events = approachEvents({ attempts, status, ticket, redirects })
   const newest = events.find((e) => !!e.at)?.at ?? null
 
   return (
@@ -43,7 +49,9 @@ export function LiveFlow({
           {events.map((e) => (
             <div key={e.key} className="flex gap-2.5 font-mono text-[11px] leading-[1.45]">
               <span className="flex-none text-tx3">{e.at ? clockLabel(e.at) : '—'}</span>
-              <span className={`min-w-0 ${TONE_CLASS[e.tone]}`}>{e.text}</span>
+              {/* Текст события — только текстовый узел. `break-words`: слово человека может
+                  быть длиннее колонки, и переносится оно, а не вылезает за карточку. */}
+              <span className={`min-w-0 break-words ${TONE_CLASS[e.tone]}`}>{e.text}</span>
             </div>
           ))}
         </div>

@@ -12,6 +12,7 @@ import {
 } from '../api/queries'
 import { onFrame } from '../api/hints'
 import type { ChatDraft, PhaseCard, PhaseIndexRow, QueueRow, WaveRow, WaveTask } from '../api/types'
+import { bookOf, threadOf } from '../screens/chat/thread'
 import { waitWords } from '../screens/tasks/units'
 import { screenById } from '../screens/registry'
 import type { ScreenId } from '../screens/registry'
@@ -304,7 +305,9 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
   const panelRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
-  const seeded = useRef(false)
+  // Чей разговор сейчас в ленте: `undefined` — не читали ещё, `null` — читали без выбранного
+  // проекта. «Прочитана ли книга» и «книга какого проекта прочитана» — разные вопросы.
+  const seededFor = useRef<string | null | undefined>(undefined)
 
   // ── контекст: что рассказал экран, а если он промолчал — имя экрана из реестра ──
   useEffect(() => {
@@ -348,21 +351,25 @@ export function SystemConsole({ screen }: { screen: ScreenId }) {
     return () => document.removeEventListener('keydown', onKey)
   }, [open])
 
-  // Книга разговора читается ОДИН раз: она — запись сказанного, а не правда о парке.
+  // Книга разговора читается ОДИН раз НА ПРОЕКТ: она — запись сказанного, а не правда о парке,
+  // и у каждого проекта эта запись своя. Правило выбора нити — общее с экраном «Разговор»
+  // (`thread.ts`), а не второе его написание: два правила об одной нити однажды разойдутся.
+  const project = state.data?.activeProject ?? null
   useEffect(() => {
-    if (seeded.current || !history.data) return
-    seeded.current = true
+    if (!history.data || history.isFetching) return
+    if (seededFor.current === project) return
+    seededFor.current = project
+    const book = bookOf(history.data.turns, project)
     setLines(
-      history.data.turns.map((t, i) => ({
+      book.map((t, i) => ({
         key: `book-${i}`,
         who: t.role === 'assistant' ? 'system' : 'you',
         text: t.text,
         ...(t.draft ? { draft: t.draft } : {}),
       })),
     )
-    const last = [...history.data.turns].reverse().find((t) => t.conversationId)
-    if (last?.conversationId) setConversationId(last.conversationId)
-  }, [history.data])
+    setConversationId(threadOf(book))
+  }, [history.data, history.isFetching, project])
 
   useEffect(() => {
     if (open) inputRef.current?.focus()

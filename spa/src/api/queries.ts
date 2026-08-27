@@ -179,11 +179,25 @@ export function useHarnessQuery() {
   })
 }
 
-/** What has been said in the conversation. */
+/**
+ * Чтение книги разговора — с сужением по выбранному проекту, из того же зеркала и по тем же
+ * причинам, что и чтение картины: провод должен быть прогоняем без React, а ключ чтения
+ * остаётся ОДИН (`CHAT_KEY`) — перечитывание после смены проекта заказано инвалидацией того же
+ * ключа, а не расщеплением кэша по проектам.
+ *
+ * Зеркало пустое — дверь спрашивают без сужения. Это «сужать нечем», а не «проект по
+ * умолчанию»: книга приезжает целиком, включая ходы, у которых проекта нет вовсе.
+ */
+export async function chatHistoryQueryFn(): Promise<ChatHistory> {
+  const project = selectedProject()
+  return api.getChatHistory(project ? { project } : {})
+}
+
+/** What has been said in the conversation — of the project the window is looking at. */
 export function useChatHistoryQuery(enabled = true) {
   return useQuery<ChatHistory>({
     queryKey: CHAT_KEY,
-    queryFn: () => api.getChatHistory(),
+    queryFn: chatHistoryQueryFn,
     enabled,
     staleTime: STATE_STALE_MS,
   })
@@ -381,13 +395,16 @@ export function useTelegramLink() {
  *
  * Вынесено из хука, чтобы провод «выбор → перечитывание» проверялся прогоном, а не чтением
  * обработчика успеха: обработчик можно переписать, и разрыв вернётся молча.
+ *
+ * Вместе с картиной перечитывается КНИГА РАЗГОВОРА: у нового проекта своя беседа, и книга,
+ * оставшаяся от прежнего, — это чужая нить на экране, который уже про другое.
  */
 export async function selectProjectAndRefresh(
   queryClient: Pick<QueryClient, 'invalidateQueries'>,
   id: string,
 ): Promise<Awaited<ReturnType<typeof api.selectProject>>> {
   const result = await api.selectProject(id)
-  refreshAfterAction(queryClient)
+  refreshAfterAction(queryClient, [CHAT_KEY])
   return result
 }
 

@@ -442,7 +442,7 @@ describe("taskContext — the human's snapshot of what this task is about, livin
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 21-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 23-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -475,6 +475,18 @@ describe('constants — taxonomy', () => {
       // исполнения недоступна» about an environment that was alive the whole time, sending a
       // person to check a machine instead of a wedged attempt
       'liveness_killed',
+      // THE TWO SPLIT OUT OF liveness_killed THE DAY THE SWEEP GOT A LIVENESS PROBE. While it
+      // could only ask the clock, every silence was one event and got one word — and a worker
+      // thinking quietly past its lease was buried as a wedge. Now the sweep asks the handle:
+      //   worker_process_gone — the handle SAW the child end. A fact, not a verdict on silence,
+      //     and it sends the reader to the worker's own log instead of hunting a wedge
+      //   attempt_lifetime_exceeded — the process is ALIVE and was stopped anyway: the attempt
+      //     outgrew MAX_ATTEMPT_LIFETIME_MS, the one ceiling that keeps «silence is not death»
+      //     from becoming «silence is forever». The only reason here that closes running work,
+      //     so it must read as neither silence nor crash — the answer is a bigger ceiling or a
+      //     smaller task, exactly as with turns_exhausted
+      'worker_process_gone',
+      'attempt_lifetime_exceeded',
       'window_exhausted',
       // THE FOUR THE DISPATCHER DECIDES BEFORE ANY PROCESS EXISTS. They are named apart from
       // window_exhausted because that one word used to be written over all of them: a person

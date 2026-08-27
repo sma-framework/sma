@@ -540,9 +540,10 @@ export function removeMachine(id: string): Promise<OkResult> {
  * Say something to the team lead. It reads and suggests; it starts nothing by itself.
  *
  * The turn carries the conversation it belongs to and nothing else. It does NOT carry the
- * project: a conversation is about the household, the daemon accepts no such field, and a
- * question narrowed by the window's current filter would answer about half the park while
- * looking like it answered about all of it.
+ * PROJECT — и это не значит, что ход проекту не принадлежит: принадлежит, и записан вместе с
+ * ним. Имя ставит ДВЕРЬ из конфига (тем же `doorProject`, которым штампуется задача), потому
+ * что проект хода — это то, на что человек смотрел, а не поле, которое волен назвать
+ * вызывающий. Сужается по нему ЧТЕНИЕ книги (`getChatHistory`), а не эта отправка.
  */
 export function sendChat(input: {
   text: string
@@ -666,10 +667,19 @@ export function holdWave(input: {
   return postJson('/api/wave/hold', { phase: input.phase, wave: String(input.wave), action: input.action })
 }
 
-/** What has been said so far. */
-export function getChatHistory(opts: { limit?: number } = {}): Promise<ChatHistory> {
-  const q = opts.limit ? `?limit=${encodeURIComponent(String(opts.limit))}` : ''
-  return getJson<ChatHistory>(`/api/chat/history${q}`)
+/**
+ * What has been said so far — сужено проектом, если он назван.
+ *
+ * Слово владельца: «разговор по разным проектам тоже разный должен быть». Сужает ДВЕРЬ, а не
+ * окно: она читает книгу и знает, при каком проекте сказан каждый ход. Без `project` дверь
+ * отдаёт книгу целиком — это честное «сужать нечем», а не «покажи всё на всякий случай».
+ */
+export function getChatHistory(opts: { limit?: number; project?: string } = {}): Promise<ChatHistory> {
+  const parts = [
+    ...(opts.limit ? [`limit=${encodeURIComponent(String(opts.limit))}`] : []),
+    ...(opts.project ? [`project=${encodeURIComponent(opts.project)}`] : []),
+  ]
+  return getJson<ChatHistory>(`/api/chat/history${parts.length ? `?${parts.join('&')}` : ''}`)
 }
 
 // ── bringing your own helpers in ────────────────────────────────────────────────────

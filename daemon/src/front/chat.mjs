@@ -805,6 +805,19 @@ function historyFile(dir) {
  * reading order, bounded in size. The turn's text is stored verbatim as DATA — no
  * interpretation, no execution, ever.
  *
+ * ═══ ХОД ЗАПИСЫВАЕТСЯ ВМЕСТЕ С ПРОЕКТОМ, ПРИ КОТОРОМ ОН СКАЗАН ═══
+ *
+ * Слово владельца: «разговор по разным проектам тоже разный должен быть». Книга одна на весь
+ * дом, и это правильно — но ход в ней принадлежит ОДНОМУ проекту, и записать это можно только
+ * здесь: потом никакое чтение не восстановит, на что человек смотрел, когда говорил. Ровно та
+ * же причина, по которой проект штампуется на задаче в дверях постановки, и имя берётся ТАМ
+ * ЖЕ — у двери, из конфига (`doorProject`), а не из присланного поля: проект хода — это то,
+ * что было выбрано, а не то, что назвал вызывающий.
+ *
+ * Поля НЕТ, когда проект не выбран, — тем же правилом, что и у задачи: выдуманное имя читатель
+ * принял бы за измеренное. Старые ходы, записанные до этого дня, поля тоже не несут и читаются
+ * как «без проекта» — они не пропадают и не подмешиваются ни в одну нить.
+ *
  * @param {{dir:string, turn:object, fsImpl?:object, clock?:Function, cap?:number}} args
  * @returns {object} the record written
  */
@@ -822,6 +835,7 @@ export function appendTurn({ dir, turn = {}, fsImpl, clock = Date.now, cap = HIS
     kind: turn.kind ?? null,
     text: String(turn.text ?? ''),
   }
+  if (typeof turn.project === 'string' && turn.project !== '') record.project = turn.project
   if (turn.taskRef) record.taskRef = turn.taskRef
   if (turn.draft) record.draft = turn.draft
   if (turn.decision) record.decision = turn.decision
@@ -845,14 +859,21 @@ export function appendTurn({ dir, turn = {}, fsImpl, clock = Date.now, cap = HIS
 }
 
 /**
- * readHistory({dir, conversationId, limit, fsImpl}) → the tail of the transcript, oldest
- * first. A missing or corrupt book yields fewer turns, never an error. Every returned turn is
- * DATA for rendering; nothing here is ever handed to a shell, a queue or a prompt unfenced.
+ * readHistory({dir, conversationId, project, limit, fsImpl}) → the tail of the transcript,
+ * oldest first. A missing or corrupt book yields fewer turns, never an error. Every returned
+ * turn is DATA for rendering; nothing here is ever handed to a shell, a queue or a prompt
+ * unfenced.
  *
- * @param {{dir:string, conversationId?:string, limit?:number, fsImpl?:object}} args
+ * `project` СУЖАЕТ чтение до бесед этого проекта: экран, открытый на проекте, видит только
+ * его разговоры. Сужение — равенство, а не «или пусто»: ход БЕЗ проекта (записанный до того,
+ * как поле появилось, или при невыбранном проекте) в нить проекта не подмешивается. Не сужать
+ * нечем — чтение без `project` возвращает книгу целиком, поэтому старые ходы никуда не
+ * деваются: они просто читаются как «без проекта».
+ *
+ * @param {{dir:string, conversationId?:string, project?:string, limit?:number, fsImpl?:object}} args
  * @returns {object[]}
  */
-export function readHistory({ dir, conversationId, limit = 50, fsImpl } = {}) {
+export function readHistory({ dir, conversationId, project, limit = 50, fsImpl } = {}) {
   const readFileSync = fsImpl?.readFileSync ?? fsReadFileSync
   let text = ''
   try {
@@ -870,6 +891,7 @@ export function readHistory({ dir, conversationId, limit = 50, fsImpl } = {}) {
       continue // a torn line is skipped, never fatal
     }
     if (conversationId && r.conversationId !== conversationId) continue
+    if (project && r.project !== project) continue
     out.push(r)
   }
   return out.slice(Math.max(0, out.length - limit))
@@ -889,8 +911,14 @@ function newConversationId(clock) {
  * the free branch), record both turns, return. Reading the park happens here so the fact
  * models stay pure functions a test can call directly.
  *
- * deps: { adapter (list only), readUsageRows|dataDir, config, historyDir, clock, fsImpl,
- *         dispatchFree, ...the free branch's own spawn dependencies }
+ * deps: { adapter (list only), readUsageRows|dataDir, config, historyDir, project, clock,
+ *         fsImpl, dispatchFree, ...the free branch's own spawn dependencies }
+ *
+ * `deps.project` — проект, при котором ход сказан. Его подаёт дверь (тем же `doorProject`,
+ * которым штампуется задача), а не вызывающий: беседа принадлежит тому проекту, на который
+ * смотрел человек. Он уходит в запись обоих ходов И в нить, которую читает свободная ветка,
+ * поэтому разговор про один проект не тянется в другой даже тогда, когда прислано чужое имя
+ * беседы.
  *
  * @param {{text:string, conversationId?:string, deps?:object}} args
  * @returns {Promise<{conversationId:string, kind:string, answer:object}>}
@@ -899,6 +927,9 @@ export async function handleChatTurn({ text, conversationId, turnId, deps = {} }
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   const convId = conversationId || newConversationId(clock)
   const kind = classifyTurn(text)
+  // Проект хода — один на обе записи и на нить: читается один раз, чтобы обе половины хода
+  // не смогли разойтись, если выбор сменится посреди ответа.
+  const project = typeof deps.project === 'string' && deps.project !== '' ? deps.project : null
 
   // a sentence that already names its own lane (or its stage) is answered by dictionary:
   // no session, no cost, and — since a draft is inert — no reach toward anything either
@@ -915,7 +946,7 @@ export async function handleChatTurn({ text, conversationId, turnId, deps = {} }
     // НИТЬ БЕСЕДЫ читается ИЗ КНИГИ, здесь и только для этой беседы: у окна нет способа
     // прислать её честно (присланная переписка — недоверенный текст о том, что якобы было
     // сказано), а у двери нет причины хранить вторую копию того, что уже записано.
-    const memory = deps.memory ?? conversationMemory(convId, deps)
+    const memory = deps.memory ?? conversationMemory(convId, deps, project)
     answer = await dispatch({ text, conversationId: convId, turnId, deps: { ...deps, memory } })
   } else if (kind === 'spend') {
     answer = answerSpend({ rows: await spendRows(deps), workers: (deps.config && deps.config.workers) || [] })
@@ -932,13 +963,19 @@ export async function handleChatTurn({ text, conversationId, turnId, deps = {} }
 
   const dir = deps.historyDir
   if (dir) {
-    appendTurn({ dir, clock, fsImpl: deps.fsImpl, turn: { conversationId: convId, role: 'user', kind, text } })
+    appendTurn({
+      dir,
+      clock,
+      fsImpl: deps.fsImpl,
+      turn: { conversationId: convId, ...(project ? { project } : {}), role: 'user', kind, text },
+    })
     appendTurn({
       dir,
       clock,
       fsImpl: deps.fsImpl,
       turn: {
         conversationId: convId,
+        ...(project ? { project } : {}),
         role: 'assistant',
         kind: answer.kind,
         text: answer.text ?? '',
@@ -955,17 +992,22 @@ export async function handleChatTurn({ text, conversationId, turnId, deps = {} }
 }
 
 /**
- * conversationMemory(conversationId, deps) → последние ходы ЭТОЙ беседы, или пустой список.
+ * conversationMemory(conversationId, deps, project) → последние ходы ЭТОЙ беседы ЭТОГО
+ * проекта, или пустой список.
  *
  * Нечитаемая книга — это разговор без нити, а не упавший ход: первый ход беседы и сломанный
  * файл выглядят отсюда одинаково, и оба означают «рассказывать не о чем».
+ *
+ * Сужение по проекту здесь — не повтор фильтра двери, а последняя застава: имя беседы приходит
+ * от клиента, и присланное имя ЧУЖОЙ беседы иначе притащило бы её нить в промпт этого проекта.
  */
-function conversationMemory(conversationId, deps) {
+function conversationMemory(conversationId, deps, project) {
   if (!deps.historyDir || !conversationId) return []
   try {
     return readHistory({
       dir: deps.historyDir,
       conversationId,
+      ...(project ? { project } : {}),
       limit: CHAT_MEMORY_TURNS,
       fsImpl: deps.fsImpl,
     })
@@ -1000,17 +1042,37 @@ async function spendRows(deps) {
 // to stop turns that died with the daemon anyway.
 
 /**
- * createTurnRegistry() → { register, stop, wasStopped, done, size }.
+ * createTurnRegistry() → { register, stop, alive, wasStopped, done, size }.
  *
  * `stop` marks BEFORE it kills: the dying child resolves the turn through its exit path,
  * and the dispatcher then asks `wasStopped` to tell a founder's Стоп apart from a crash —
  * a stopped turn answers «остановлено», never the fallback apology.
+ *
+ * `alive` IS THE SECOND QUESTION THE HANDLE CAN ANSWER, and the one that keeps honest silence
+ * alive. A registered handle knows whether its child is still running; the liveness watchdog,
+ * which knows only clocks, has no other way to tell a worker thinking quietly from a process
+ * that died. Three answers, not two: `true` / `false` / `null` — and `null` is «этому демону
+ * нечего сказать», never «мёртв». A turn registered without a probe (the chat lane registers
+ * only a kill) answers `null`, exactly as a handle that belongs to another daemon does.
  */
 export function createTurnRegistry() {
-  const live = new Map() // turnId -> { kill, stopped } — live handles ONLY, never truth
+  const live = new Map() // turnId -> { kill, alive, stopped } — live handles ONLY, never truth
   return {
-    register(turnId, kill) {
-      if (turnId) live.set(String(turnId), { kill, stopped: false })
+    register(turnId, kill, alive) {
+      if (turnId) live.set(String(turnId), { kill, alive: typeof alive === 'function' ? alive : null, stopped: false })
+    },
+    /**
+     * alive(turnId) → true (процесс жив) | false (процесс завершился) | null (не знаем).
+     * Сломанный или отсутствующий пробник — это `null`: выдуманное «мёртв» стоит чужой работы.
+     */
+    alive(turnId) {
+      const t = live.get(String(turnId))
+      if (!t || typeof t.alive !== 'function') return null
+      try {
+        return t.alive() === true
+      } catch {
+        return null
+      }
     },
     /** stop(turnId) → true if a live turn was told to die; false is «nothing to stop». */
     stop(turnId) {

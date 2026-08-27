@@ -222,9 +222,9 @@ fi
 
 Error:
 ```
-No REVIEWS.md found for Phase {N}. Run reviews first:
-
-/sma-review --phase {N}
+No REVIEWS.md found for Phase {N}. Run the cross-AI peer review first —
+ask for it by name ("run cross-AI review for phase {N}"); it is a workflow
+(sma-core/workflows/review.md), not a slash command.
 
 Then re-run /sma-plan-phase {N} --reviews
 ```
@@ -1726,7 +1726,7 @@ Verification: {Passed | Passed with override | Skipped}
 **Also available:**
 - cat .planning/phases/{phase-dir}/*-PLAN.md — review plans
 - /sma-plan-phase {X} --research — re-research first
-- /sma-review --phase {X} --all — peer review plans with external AIs
+- ask for the cross-AI peer review by name — peer review plans with external AIs
 - /sma-plan-phase {X} --reviews — replan incorporating review feedback
 
 ───────────────────────────────────────────────────────────────

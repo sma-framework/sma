@@ -1,10 +1,12 @@
 /**
- * client.mjs — the minimal Telegram Bot API client: `sendMessage`, `getUpdates`, nothing else.
+ * client.mjs — the minimal Telegram Bot API client: `getUpdates`, `sendMessage`,
+ * `sendChatAction`, nothing else.
  *
- * WHAT IT IS. The owner creates his OWN bot in Telegram and connects it inside SMA; this
+ * WHAT IT IS. The owner creates their OWN bot in Telegram and connects it inside SMA; this
  * module is the one place in the product that speaks to `api.telegram.org`. It is deliberately
- * two methods wide — a link needs to receive a message and answer it, and step one of the
- * bridge needs nothing more than that.
+ * three methods wide — a link needs to receive a message, answer it, and say «печатает…» while
+ * the answer is being thought of. Nothing else is added: every method here is a capability the
+ * bridge can reach, and a bridge that cannot press a button cannot press one by accident.
  *
  * ═══════════════ THE TOKEN IS READ AT THE MOMENT OF THE CALL ════════════════════════
  * Nothing here captures the token at construction. `config.telegram.botToken` is read INSIDE
@@ -187,9 +189,23 @@ export function createTelegramClient({ config, fetchImpl, apiBase = TELEGRAM_API
   }
 
   return {
-    /** sendMessage — plain text, always. Step one of the bridge sends nothing else. */
+    /**
+     * sendMessage — PLAIN TEXT, always. No `parse_mode` is sent and none may be added: an
+     * answer written by a model carries underscores, asterisks and square brackets as ordinary
+     * punctuation, and asking Telegram to read them as markup turns an honest sentence into an
+     * HTTP 400 («can't parse entities») — which is to say, into silence. Plain text cannot fail
+     * that way, and the words arrive exactly as the window shows them.
+     */
     async sendMessage({ chatId, text, signal } = {}) {
       return call('sendMessage', { chat_id: chatId, text: String(text ?? '') }, { signal })
+    },
+    /**
+     * sendChatAction — the «…печатает» line in the chat. It is a COURTESY, never a step: the
+     * caller ignores its result and its refusals, because an answer that arrives is worth more
+     * than a status line that did not.
+     */
+    async sendChatAction({ chatId, action = 'typing', signal } = {}) {
+      return call('sendChatAction', { chat_id: chatId, action: String(action) }, { signal })
     },
     /**
      * getUpdates — long polling. `timeout` is the SERVER's hold, in seconds; the client's own

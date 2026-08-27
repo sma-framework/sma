@@ -243,7 +243,7 @@
     <div class="heromea">
       <!-- sma:num-hero:start -->
       <span class="pill">v5.6.1</span>
-      <span class="stat">4782 tests · 211 files</span>
+      <span class="stat">4871 tests · 218 files</span>
       <!-- sma:num-hero:end -->
       <span class="stat">p95 hook 155 ms</span>
       <span class="stat">zero LLM in the hot path</span>
@@ -409,10 +409,33 @@
 
     <div class="charts">
 
+      <!--
+        TWO KINDS OF POINT LIVE IN THIS CHART, AND THEY ARE GOVERNED DIFFERENTLY.
+
+        The first five are HISTORY: suites measured at releases that have already happened,
+        facts of their own day. The numbers gate never reads them and
+        `sma doc-audit --target numbers --write` never rewrites them. If one of them is ever
+        wrong it is wrong about the past, and a human corrects it by hand.
+
+        The sixth — everything carrying class="tip" — is NOT history. It names the CURRENT run
+        receipt (test-receipt.json): its test count, its file count, the day it was measured
+        (DD.MM.YYYY, UTC, because the receipt records an instant and a day needs a zone) and
+        the commit it was measured at. The same figures are repeated in the svg's aria-label
+        and in the figcaption, and all of it — including the height the dot is drawn at — is
+        under the numbers gate (GRAPH_TIP_PLACES / GRAPH_TIP_GEOMETRY in
+        scripts/sma/lib/doc-audit.mjs). So do not hand-edit the tip: re-measure and let
+        `--write` place it. A figure typed here by hand is the exact failure that gate exists
+        to catch.
+
+        The value axis stops at 5000 tests. When the suite outgrows it, the gate says so by
+        name (graph-axis-outgrown) and asks for a rescale instead of plotting the point off
+        the top of the picture — and a rescale means moving the gridlines, their labels, the
+        five historical points, and GROWTH_AXIS in doc-audit.mjs together.
+      -->
       <figure>
         <h3>Test-suite growth <small>· measured points</small></h3>
         <div class="chart-scroll">
-        <svg viewBox="0 0 460 212" role="img" aria-label="Test suite growth from 532 tests at v3.0.0 to 744 tests at v3.5.0 to 792 tests at v3.6.0 to 876 tests at v4.0.0 to 1145 tests across 96 files at v5.0.1, and 4618 tests across 197 files on the working tree, 24.08.2026. Six measured points only; the sixth is a working-tree measurement, not a release.">
+        <svg viewBox="0 0 460 212" role="img" aria-label="Test suite growth from 532 tests at v3.0.0 to 744 tests at v3.5.0 to 792 tests at v3.6.0 to 876 tests at v4.0.0 to 1145 tests across 96 files at v5.0.1, and 4871 tests across 218 files on the working tree, 27.08.2026. Six measured points only; the sixth is a working-tree measurement, not a release.">
           <g>
             <line class="gridl" x1="44" y1="170" x2="430" y2="170"/>
             <line class="gridl" x1="44" y1="132.5" x2="430" y2="132.5"/>
@@ -429,21 +452,21 @@
           <line x1="138" y1="147.68" x2="206" y2="146.24" stroke="#8B5CF6" stroke-width="2"/>
           <line x1="206" y1="146.24" x2="274" y2="143.72" stroke="#8B5CF6" stroke-width="2"/>
           <line x1="274" y1="143.72" x2="342" y2="135.65" stroke="#8B5CF6" stroke-width="2"/>
-          <line x1="342" y1="135.65" x2="410" y2="31.46" stroke="#8B5CF6" stroke-width="2"/>
+          <line class="tip" x1="342" y1="135.65" x2="410" y2="23.87" stroke="#8B5CF6" stroke-width="2"/>
           <circle cx="70" cy="154.04" r="5" fill="#8B5CF6" stroke="#14101F" stroke-width="2"><title>v3.0.0 — 532 tests</title></circle>
           <circle cx="138" cy="147.68" r="5" fill="#8B5CF6" stroke="#14101F" stroke-width="2"><title>v3.5.0 — 744 tests, 70 files</title></circle>
           <circle cx="206" cy="146.24" r="5" fill="#8B5CF6" stroke="#14101F" stroke-width="2"><title>v3.6.0 — 792 tests, 74 files</title></circle>
           <circle cx="274" cy="143.72" r="5" fill="#8B5CF6" stroke="#14101F" stroke-width="2"><title>v4.0.0 — 876 tests, 78 files</title></circle>
           <circle cx="342" cy="135.65" r="5" fill="#8B5CF6" stroke="#14101F" stroke-width="2"><title>v5.0.1 — 1145 tests, 96 files (measured on main, 21.07.2026)</title></circle>
-          <circle cx="410" cy="31.46" r="5" fill="#A78BFA" stroke="#14101F" stroke-width="2" stroke-dasharray="3 2"><title>main — 4618 tests, 197 files. NOT a release point: this is a working-tree measurement — the run receipt of 24.08.2026 at commit f7358df.</title></circle>
+          <circle class="tip" cx="410" cy="23.87" r="5" fill="#A78BFA" stroke="#14101F" stroke-width="2" stroke-dasharray="3 2"><title>main — 4871 tests, 218 files. NOT a release point: this is a working-tree measurement — the run receipt of 27.08.2026 at commit 7d5029c.</title></circle>
           <text class="val" x="70" y="144.04" text-anchor="middle">532</text>
           <text class="val" x="138" y="137.68" text-anchor="middle">744</text>
           <text class="val" x="206" y="136.24" text-anchor="middle">792</text>
           <text class="val" x="274" y="133.72" text-anchor="middle">876</text>
           <text class="val" x="342" y="125.65" text-anchor="middle">1145</text>
-          <text class="val" x="410" y="21.46" text-anchor="middle">4618</text>
+          <text class="val tip" x="410" y="13.87" text-anchor="middle">4871</text>
           <text class="ax" x="342" y="151.65" text-anchor="middle">96 files</text>
-          <text class="ax" x="410" y="47.46" text-anchor="middle">197 files</text>
+          <text class="ax tip" x="410" y="39.87" text-anchor="middle">218 files</text>
           <text class="axm" x="70" y="192" text-anchor="middle">v3.0.0</text>
           <text class="axm" x="138" y="192" text-anchor="middle">v3.5.0</text>
           <text class="axm" x="206" y="192" text-anchor="middle">v3.6.0</text>
@@ -452,7 +475,7 @@
           <text class="axm" x="410" y="192" text-anchor="middle">main*</text>
         </svg>
         </div>
-        <figcaption>Tests in the suite at the six measured points — four verified release tags, v5.0.1 measured on main, 21.07.2026, and the working-tree point marked with an asterisk: it is NOT a release measurement, it is the run receipt of the suite on main, 24.08.2026 (4618 tests / 197 files). The lines are connectors, not a trend claim.</figcaption>
+        <figcaption>Tests in the suite at the six measured points — four verified release tags, v5.0.1 measured on main, 21.07.2026, and the working-tree point marked with an asterisk: it is NOT a release measurement, it is the run receipt of the suite on main, 27.08.2026 (4871 tests / 218 files). The five release points are history and are never rewritten; the sixth is today's claim, so its counts, its stamp and the height it is drawn at are all re-derived from the run receipt by the numbers gate — a divergence turns <code>npm test</code> red. The lines are connectors, not a trend claim.</figcaption>
       </figure>
 
       <figure>

@@ -370,7 +370,7 @@ Next steps:
 <offer_next>
 After triage:
 
-- /sma-review — Run cross-AI peer review on a specific phase plan
+- /sma-help review — Cross-AI peer review on a specific phase plan
 - /sma-help ship — The release ritual: create a PR from completed work
 - /sma-progress — See overall project state
 - /sma-inbox --label — Re-run with auto-labeling enabled

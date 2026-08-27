@@ -76,7 +76,7 @@ zero dependencies).
 | Engine (workflows, agents, bin, references, templates) | `<project>/.claude/sma-core/` | `~/.claude/sma-core/` |
 | Coordination runtime (cli.mjs + lib) | `<project>/scripts/sma/` | `<project>/scripts/sma/` (always project-level, path parity with hooks) |
 | Subagent definitions (`sma-*.md`) | `<project>/.claude/agents/` | `~/.claude/agents/` |
-| Command skills (`/sma-*`, 14 commands) | `<project>/.claude/skills/` | `~/.claude/skills/` |
+| Command skills (`/sma-*`, 15 commands) | `<project>/.claude/skills/` | `~/.claude/skills/` |
 | Transitional `/gsd-*` aliases (flag-gated) | `<project>/.claude/skills/` | `~/.claude/skills/` |
 | Hooks — eight entries across seven agent events (spelled out under the table) | `<project>/.claude/settings.json` | `~/.claude/settings.json` |
 | Status-line segment (the `statusLine` entry, installed by default) | `<project>/.claude/settings.json` | `<project>/.claude/settings.json` (always project-level — reason under the table) |

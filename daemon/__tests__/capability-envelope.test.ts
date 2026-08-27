@@ -310,7 +310,7 @@ describe('the module keeps its stated disciplines', () => {
     expect(imports).toEqual(['node:crypto'])
   })
 
-  it('never writes the reserved push literal (SMA-3 comment discipline is not the point — the code is)', () => {
+  it('never writes the reserved push literal (a comment discipline is not the point — the code is)', () => {
     expect(src).not.toMatch(/execSync|spawnSync|child_process/)
   })
 })

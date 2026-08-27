@@ -45,7 +45,7 @@ of ROADMAP.md:
 **Plans:** 0 plans
 
 Plans:
-- [ ] TBD (promote with /sma-review-backlog when ready)
+- [ ] TBD (promote out of the Backlog section when ready)
 ```
 
 ## Step 4: Create the phase directory
@@ -77,7 +77,7 @@ Directory: {PHASE_DIR}/
 
 This item lives in the backlog parking lot.
 Use /sma-discuss-phase {NEXT} to explore it further.
-Use /sma-review-backlog to promote items to active milestone.
+To promote it, move its entry out of the `## Backlog` section of ROADMAP.md into the active milestone.
 ```
 
 </process>
@@ -87,5 +87,5 @@ Use /sma-review-backlog to promote items to active milestone.
 - Phase directories are created immediately so /sma-discuss-phase and /sma-plan-phase work on them
 - No `Depends on:` field — backlog items are unsequenced by definition
 - Sparse numbering is fine (999.1, 999.3) — always uses next-decimal
-- Promote backlog items to the active milestone with /sma-review-backlog
+- Promoting a backlog item is a ROADMAP.md edit: move its entry out of `## Backlog` into the active milestone
 </notes>

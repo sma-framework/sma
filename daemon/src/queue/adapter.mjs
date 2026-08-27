@@ -140,7 +140,17 @@
  *   setWords(taskId, words)       → replace `description` / `acceptance` on a task whose work
  *                                   is not over yet; false on an unknown or finished task
  *   complete(taskId, result)      → result MUST carry `receiptRef` else NoReceiptError
- *   fail(taskId, reason)          → reason ∈ FAIL_REASONS else InvalidFailReasonError
+ *   fail(taskId, reason)          → reason ∈ FAIL_REASONS else InvalidFailReasonError. This is
+ *                                   the RETRYABLE ending: the row may be handed out again,
+ *                                   within the border retryLimitOf gives it
+ *   parkForPerson(taskId, reason) → THE OTHER ENDING, and the only one that is not retryable.
+ *                                   The attempt failed for a cause a repetition cannot touch,
+ *                                   so the row is closed TERMINALLY with that cause on it and
+ *                                   waits for a PERSON, exactly as a stopped row does — except
+ *                                   the word on the card is the true one and not `manual`.
+ *                                   Which causes take this ending is named ONCE, in
+ *                                   AWAITS_A_PERSON below; the caller asks and never guesses.
+ *                                   Returns true when a live attempt was found and parked.
  *   cancelTask(taskId)            → A PERSON STOPPED THIS WORK. The row is closed TERMINALLY
  *                                   with the reason `manual`, and no worker is ever handed it
  *                                   again — not on the next tick, not on any later one. Returns
@@ -254,6 +264,17 @@ export const TASK_STATUSES = Object.freeze([
  *                     sends a person to check a machine that was never broken. Apart from
  *                     timeout too: that one is a run reporting its own clock ran out, this one
  *                     is somebody ELSE's judgement passed over its silence
+ *   worker_process_gone — the sweep asked the handle and the handle SAW the child end. Named
+ *                     apart from liveness_killed because that word means «we judged it by the
+ *                     clock and it stayed quiet too long»: this one is not a judgement at all
+ *                     but an observed fact, and it sends the reader to the worker's own log
+ *                     instead of to a hunt for a wedge that never happened
+ *   attempt_lifetime_exceeded — the process is ALIVE and was stopped anyway: the attempt outgrew
+ *                     MAX_ATTEMPT_LIFETIME_MS (liveness.mjs), the single ceiling that keeps
+ *                     «silence is not death» from becoming «silence is forever». The only reason
+ *                     in this list that closes work which was still running, so it must never
+ *                     read as silence or as a crash — the remedy is a bigger ceiling or a
+ *                     smaller task, exactly as with turns_exhausted
  *   timeout / runtime_offline / window_exhausted — infra causes
  *   wait_for_window / budget_stop / api_cap_unset / day_priority_protected — ROUTE AND MONEY
  *                     causes: the dispatcher decided, before any process existed, that this
@@ -311,6 +332,19 @@ export const FAIL_REASONS = Object.freeze([
   // harm every division in this list exists to prevent. runtime_offline now means only what it
   // says: the environment really was unreachable.
   'liveness_killed',
+  // ДВА СЛОВА, ВЫДЕЛЕННЫЕ ИЗ liveness_killed, КОГДА У СТОРОЖА ПОЯВИЛСЯ ПРОБНИК ЖИВОСТИ. Пока он
+  // умел спрашивать только часы, всякая тишина была одним событием и уезжала одним словом. Теперь
+  // он спрашивает ручку, и различает три РАЗНЫХ случая, каждый со своей починкой:
+  //   worker_process_gone — ручка этого демона ВИДЕЛА конец процесса. Это факт, а не догадка по
+  //     тишине. Человеку он говорит «работник упал» — смотреть логи работника; «молчала дольше
+  //     срока» отправляло его искать зависание там, где был вылет.
+  //   attempt_lifetime_exceeded — процесс ЖИВ, но попытка переросла MAX_ATTEMPT_LIFETIME_MS. Ни
+  //     смерти, ни молчания: единственный случай, где работника останавливают, ХОТЯ он работает,
+  //     и починка у него своя — поднять потолок или разрезать задачу, как у turns_exhausted.
+  // liveness_killed остаётся ровно тем, чем был: про процесс сказать нечего (чужая машина,
+  // переживший рестарт демон), судим по часам.
+  'worker_process_gone',
+  'attempt_lifetime_exceeded',
   'window_exhausted',
   // THE FOUR THE DISPATCHER DECIDES BEFORE A PROCESS EXISTS. `fail()` throws on a word it
   // does not carry, so a tick that finally tells the truth about a route would take the
@@ -327,6 +361,45 @@ export const FAIL_REASONS = Object.freeze([
   'manual',
 ])
 
+/**
+ * ═══════ КАКОЙ ПРОВАЛ ПОВТОРЯТЬ БЕССМЫСЛЕННО — РАЗВИЛКА, НАЗВАННАЯ ОДИН РАЗ ═══════
+ *
+ * A failed attempt has exactly two endings, and until now the queue knew only one of them:
+ * every reason went through `fail`, which is the RETRYABLE ending — the durable queue hands
+ * the row back and the daemon runs it again, twice, on the same subscription.
+ *
+ * For one reason in the whole taxonomy that repetition is DOOMED BY CONSTRUCTION.
+ * `turns_exhausted` says the run reached the turn ceiling THIS DAEMON put on its own command
+ * line: the re-issue carries the very same ceiling, so attempts two and three walk into the
+ * same wall at the same step and stop there — two paid attempts whose outcome is known before
+ * they start. Nothing about the work is wrong and nothing about the environment is broken, so
+ * there is nothing for a repetition to catch. What is needed is a DECISION only a person can
+ * take: raise the ceiling, cut the task into pieces, or drop it. So the row is parked and the
+ * person is asked, in his own language, by REASON_LABELS below.
+ *
+ * EVERY OTHER REASON KEEPS ITS RETRY, deliberately and by omission: a provider that refused
+ * mid-word, a lease the watchdog took back, an environment that was down — those are exactly
+ * the causes a second attempt can outlive, and a list that grew by convenience would quietly
+ * stop retrying work that a retry would have finished. Adding a word here is a policy
+ * decision about somebody's subscription, which is why it costs an edit in this one place.
+ *
+ * The list is the ONLY answer to «is this ending retryable»: loop.mjs asks it and picks the
+ * door, and no caller re-derives it from the reason string.
+ */
+export const AWAITS_A_PERSON = Object.freeze(['turns_exhausted'])
+
+/**
+ * failureAwaitsAPerson(reason) → does this ending need a PERSON rather than another attempt.
+ * PURE, and total: an unknown word is not in the list, so it keeps the retryable ending it
+ * has always had — a new reason can never lose its retry by being forgotten here.
+ *
+ * @param {string} reason
+ * @returns {boolean}
+ */
+export function failureAwaitsAPerson(reason) {
+  return AWAITS_A_PERSON.includes(reason)
+}
+
 /** RU подписи для красной карточки ростера — единственный источник: сервер передаёт, экран рендерит. */
 export const REASON_LABELS = Object.freeze({
   no_receipt: 'нет квитанции — работа не подтверждена',
@@ -335,13 +408,20 @@ export const REASON_LABELS = Object.freeze({
   no_artifact: 'нет документа — стадия не оставила своего файла',
   agent_error: 'ошибка работника',
   provider_error: 'оборвал провайдер — работник тут ни при чём, попробуйте ещё раз',
-  turns_exhausted: 'упёрся в потолок ходов — работа не доделана, поднимите потолок или разбейте задачу',
+  // ЕДИНСТВЕННАЯ ПОДПИСЬ, КОТОРАЯ ПРОСИТ РЕШЕНИЯ, А НЕ ОБЪЯСНЯЕТ ПРОШЛОЕ. Повтора за этой
+  // строкой не будет (см. AWAITS_A_PERSON), поэтому она обязана назвать человеку его выбор
+  // целиком: пока карточка говорила «поднимите потолок или разбейте задачу», очередь всё
+  // равно перезапускала задачу с тем же потолком — слова и поведение противоречили друг другу.
+  turns_exhausted:
+    'работа не поместилась в отведённые ходы — ждёт человека: поднять потолок ходов, разбить задачу на части или отменить',
   tests_red: 'тесты красные',
   needs_decision: 'нужно решение человека',
   missing_access: 'нужен человек: не хватает доступа',
   timeout: 'истекло время',
   runtime_offline: 'среда исполнения недоступна',
   liveness_killed: 'убита сторожем живости: молчала дольше срока',
+  worker_process_gone: 'процесс работника завершился — задача перевыдана',
+  attempt_lifetime_exceeded: 'попытка переросла предел жизни (4 ч) — перевыдана',
   window_exhausted: 'окно подписки исчерпано',
   wait_for_window: 'нет свободного окна — ждёт окна подписки, платный канал не задействован',
   budget_stop: 'остановлено бюджетом: месячный лимит платного канала выбран',
@@ -1576,6 +1656,42 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
   }
 
   /**
+   * parkForPerson(taskId, reason) — THE ENDING THAT IS NOT RETRYABLE, and the reason it is a
+   * door of its own rather than a flag inside `fail`.
+   *
+   * `fail` is the RETRYABLE outcome of this contract: the durable queue's own plan hands the
+   * row back for another try, and that is the whole difference between the two words. A cause
+   * a repetition cannot touch — the turn ceiling THIS daemon set — written as a failure is
+   * therefore two more paid attempts into the same wall, decided by a library option nobody
+   * reading loop.mjs could see. Written as this call it is a closed row with the true cause on
+   * it, waiting for the person who can raise the ceiling, split the task or drop it.
+   *
+   * IT IS NOT `cancelTask` EITHER, and that half matters as much: a stop writes `manual`,
+   * which says a human decided something here. Nobody decided anything yet — that is exactly
+   * what the row is waiting for — and a card blaming a person for a machine's ceiling is a
+   * lie a reader cannot see through.
+   *
+   * ONLY LIVE WORK CAN BE PARKED, by the same rule the stop keeps: what is closed stays closed.
+   */
+  async function parkForPerson(taskId, reason, { attemptToken } = {}) {
+    if (!FAIL_REASONS.includes(reason)) {
+      throw new InvalidFailReasonError(`parkForPerson: "${reason}" is not one of ${FAIL_REASONS.join('|')}`)
+    }
+    const rec = records.get(taskId)
+    if (!rec) throw new UnknownTaskError(`parkForPerson: unknown task "${taskId}"`)
+    // A STRANGER MAY NOT PARK SOMEBODY ELSE'S ATTEMPT — the same fence `fail` keeps, and here
+    // it bites harder: this ending is terminal, so a stale worker's word would close work that
+    // is still running under a newer token, with no re-issue to undo it.
+    refuseStaleAttempt('parkForPerson', taskId, rec.attemptToken, attemptToken)
+    if (rec.status !== 'queued' && rec.status !== 'claimed') return false
+    rec.status = 'failed'
+    rec.failure_reason = reason
+    // THE TRY COUNT IS NOT TOUCHED, exactly as it is not touched by a stop: a failure raises it
+    // because a next try stands behind it. Behind this ending stands a person, not a try.
+    return true
+  }
+
+  /**
    * cancelTask(taskId) — A PERSON STOPPED THIS WORK, and stopped means stopped.
    *
    * The body says exactly what the owner's word about an abandoned assembly already says
@@ -1650,7 +1766,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return s
   }
 
-  return { enqueue, claimNext, touch, assignWorker, resolveBatch, setWords, complete, fail, cancelTask, list, stats }
+  return { enqueue, claimNext, touch, assignWorker, resolveBatch, setWords, complete, fail, parkForPerson, cancelTask, list, stats }
 }
 
 // ── the reusable contract suite (executable spec any backend must pass) ──
@@ -1893,6 +2009,56 @@ export function queueAdapterContractSuite(name, makeAdapter) {
 
       const after = (await q.list({})).find((r) => r.id === 'BL-95').attempt
       expect(after).toBe(before)
+    })
+
+    /**
+     * ═══════ ПОТОЛОК ХОДОВ: ЗАДАЧА ВСТАЁТ И ЖДЁТ ЧЕЛОВЕКА, А НЕ ПОВТОРЯЕТСЯ ═══════
+     *
+     * ПОЧЕМУ ЭТО ДЕЛО ЖИВЁТ ЗДЕСЬ. «Больше не выдаётся» — утверждение о ХРАНИЛИЩЕ, а хранилищ
+     * у контракта два, и повтор живёт как раз в долговременном: его собственный план удаляет
+     * строку и вставляет обратно с отложенным стартом. Дело, написанное против одного бэкенда,
+     * доказывало бы ровно то хранилище, в котором повтора и не было.
+     *
+     * И ОНО НЕ СПРАШИВАЕТ «КАК ВЫГЛЯДИТ СТРОКА» — оно ПЫТАЕТСЯ ВЗЯТЬ СЛЕДУЮЩУЮ РАБОТУ, трижды
+     * и с ходом часов между попытками, то есть ровно там, где отложенный повтор успел бы
+     * созреть. Так же устроено дело про остановку выше, и по той же причине.
+     */
+    it('парковка по потолку ходов терминальна: новой попытки нет, а причина названа человеку', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-97' }))
+      const taken = await q.claimNext('w1', {})
+      expect(taken.id).toBe('BL-97')
+
+      expect(await q.parkForPerson('BL-97', 'turns_exhausted', { attemptToken: taken.attemptToken })).toBe(true)
+
+      const handed = []
+      for (let i = 0; i < 3; i += 1) {
+        handed.push(await q.claimNext('w2', {}))
+        c.advance(120000)
+      }
+      expect(handed).toEqual([null, null, null])
+
+      const parked = (await q.list({})).find((r) => r.id === 'BL-97')
+      expect(parked.status).toBe('failed')
+      expect(parked.status).not.toBe('queued')
+      // ПРИЧИНА — НАСТОЯЩАЯ, А НЕ `manual`: человек ничего пока не решал, он как раз и нужен.
+      expect(parked.failure_reason).toBe('turns_exhausted')
+      expect(REASON_LABELS[parked.failure_reason]).toContain('ждёт человека')
+      expect((await q.stats()).claimed).toBe(0)
+    })
+
+    it('парковка уже закрытой задачи ничего не переписывает — что закрыто, то закрыто', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-98' }))
+      await q.claimNext('w1', {})
+      await q.complete('BL-98', { receiptRef: 'reverify:done' })
+
+      expect(await q.parkForPerson('BL-98', 'turns_exhausted')).toBe(false)
+
+      const r = (await q.list({})).find((x) => x.id === 'BL-98')
+      expect(r.status).toBe('awaiting_approval')
     })
 
     /**

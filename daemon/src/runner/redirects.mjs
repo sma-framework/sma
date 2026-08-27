@@ -10,12 +10,19 @@
  * product takes. Consumption is an appended `done` record, never an edit: the file tells
  * the whole story in order, and two processes appending cannot corrupt each other's lines.
  *
- * ═══════════════════ WHAT A REDIRECT IS NOT ══════════════════════════════════════
- * Not a queue row (it belongs to a task that already has one), not a journal layer (the
- * journal's three-layer vocabulary is closed and deserves its own deliberate extension —
- * recorded as follow-up work, not smuggled in at night), and never TRUTH about the task's
- * state — the queue owns that. Losing this file loses only unconsumed corrections, and
- * the founder can see that and repeat themselves; nothing else in the system leans on it.
+ * ═══════════════════ WHAT THIS FILE IS, AND WHAT IT IS NOT ═══════════════════════
+ * It is the DELIVERY QUEUE: what has been said and not yet handed over. It is not a queue row
+ * (the task already has one) and never TRUTH about the task's state — the queue owns that.
+ * Losing this file loses only unconsumed corrections, and the founder can see that and repeat
+ * themselves; nothing else in the system leans on it.
+ *
+ * It is also not the HISTORY of a correction, and for a long time nothing was: the journal's
+ * layer vocabulary was closed, extending it was recorded here as deliberate follow-up work
+ * rather than smuggled in at night, and until that work was done a card could not show that
+ * anybody had steered at all. The layer exists now (`front/journal.mjs`, layer `redirect`) and
+ * the door that accepts a correction writes both — this file so the word gets DELIVERED, the
+ * journal so it is REMEMBERED. Neither is derived from the other: this one is consumed and
+ * marked done, that one is append-only history, and a `done` line here changes nothing there.
  *
  * ═══════════════════ THE THIRD FATE, AND WHY IT NEEDS NO NEW MACHINERY ═══════════
  * A word can also be meant for the turn running RIGHT NOW: not «die and come back carrying
@@ -33,8 +40,11 @@
 import { appendFileSync as fsAppend, readFileSync as fsRead, mkdirSync as fsMkdir, existsSync as fsExists } from 'node:fs'
 import { join, dirname } from 'node:path'
 
+import { REDIRECT_MODES, REDIRECT_TEXT_CAP } from '../front/journal.mjs'
+
 /**
- * The three fates a typed-while-busy text can have. A fourth value is refused at the door.
+ * The three fates a typed-while-busy text can have, and the cap on the text itself. A fourth
+ * value is refused at the door.
  *
  *   interrupt — the live child is told to die, and the same session resumes with the note.
  *   queue     — the turn is left alone; the note travels on the next exit.
@@ -43,11 +53,17 @@ import { join, dirname } from 'node:path'
  *               was holding in its head mid-turn survives. Undelivered, the line stays pending
  *               and the continuation loop picks it up after the exit — the three fates
  *               compose rather than conflict.
+ *
+ * BOTH NAMES ARE RE-EXPORTED, NOT DECLARED. A correction is now also a LAYER of the attempt
+ * journal, and the journal validates every layer against a closed vocabulary of its own. Two
+ * copies of the same three words is two vocabularies: the day one of them grows a fate the
+ * other does not carry, the door accepts a word the history refuses to record — the exact
+ * shape of the defect that once dropped `worker_busy` on the dispatcher's side. So the list
+ * and the cap are declared ONCE, in the journal's import-free vocabulary leaf, and the
+ * delivering module (this one) reads them from there. Every existing importer keeps importing
+ * the same two names from here.
  */
-export const REDIRECT_MODES = Object.freeze(['interrupt', 'queue', 'steer'])
-
-/** A correction is a paragraph, not a document. The cap is the door's, stated once. */
-export const REDIRECT_TEXT_CAP = 4000
+export { REDIRECT_MODES, REDIRECT_TEXT_CAP }
 
 /** How many continuation hops one attempt may take before the loop must end (endable-loop law). */
 export const REDIRECT_HOP_CAP = 5

@@ -101,6 +101,7 @@ import {
 import { readWaveHolds } from '../queue/wave-holds.mjs'
 import { readAttempts, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { attemptIdFor } from './journal.mjs'
+import { readTaskChanges, taskBranch } from './task-changes.mjs'
 import { runsDirOf, sumRunTokens, zeroTokens, TOKEN_FIELDS, RUN_DIRS_KEEP } from '../queue/run-dir.mjs'
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../../scripts/sma/lib/write-pipeline.mjs'
@@ -2754,7 +2755,7 @@ function doneGitFacts(taskId, execGit, gitOpts) {
   const hit = DONE_GIT_CACHE.get(key)
   if (hit && (hit.emptyAt === null || Date.now() - hit.emptyAt < DONE_GIT_EMPTY_RETRY_MS)) return hit
 
-  const branch = `wt/${taskId}`
+  const branch = taskBranch(taskId)
   let commits = []
   let diffStat = null
   try {
@@ -2767,12 +2768,12 @@ function doneGitFacts(taskId, execGit, gitOpts) {
     commits = []
   }
   try {
-    // WHAT THIS TASK CHANGED, measured from the point its branch left the project's own
-    // history. The name `main` used to be written here in full, and a project whose trunk is
-    // called anything else («master», a release line, a detached checkout) made this an
-    // exception on every single card. `HEAD...<branch>` asks git for the merge-base itself,
-    // so the comparison point is the tree's own position and no branch name is assumed.
-    diffStat = String(execGit(['diff', '--shortstat', `HEAD...${branch}`], gitOpts) || '').trim() || null
+    // WHAT THIS TASK CHANGED — asked through the ONE seam that owns that question
+    // (front/task-changes.mjs). The diff door answers the same question for the same card,
+    // and while each surface built its own range they answered it differently: this one
+    // counted the whole branch, that one showed the last commit. The range lives in one
+    // place now, so the panel and the door cannot tell a person two different stories.
+    diffStat = readTaskChanges(taskId, execGit, { cwd: gitOpts.cwd, shape: 'count' }).trim() || null
   } catch {
     diffStat = null
   }

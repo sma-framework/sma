@@ -22,9 +22,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   parseFrontmatterEntries,
@@ -43,8 +45,12 @@ import {
   receiptPairKey,
   lastReceiptVerdicts,
   recordReceiptRun,
+  unsafeCommandReason,
+  measurementVerdict,
 } from '../lib/predict.mjs'
 import { buildIndex, buildAreaIndexes } from '../lib/generator.mjs'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 let dir: string
 
@@ -1134,5 +1140,140 @@ describe('parseFrontmatterEntries — общий читатель списков
 
     const truths = parseFrontmatterEntries(p, 'must_haves.truths', { scalars: true }).entries
     expect(truths).toEqual(['истина словами — читается человеком, не машиной'])
+  })
+})
+
+// ── «skipped-unsafe» больше не проходит тихо ─────────────────────────────────
+//
+// Было: план, у которого КАЖДОЕ предсказание отвергнуто границей безопасных
+// команд, печатал те же строки, что и здоровый прогон, и выходил с кодом 0.
+// Так закрылись две живые фазы: 8 из 8 и 15 из 15 записей — ни одного
+// измерения, и это выглядело как «всё в порядке». Настоящая причина у обеих
+// одна: хвост «; echo $?» в каждой команде (точка с запятой и доллар не
+// проходят SAFE_COMMAND_CHARSET), хотя для кода выхода давно есть поле
+// «measure: exit-code».
+
+describe('прибор краснеет, когда мерить нечем', () => {
+  it('причина отказа названа словами человека, а не кодом статуса', () => {
+    const reason = unsafeCommandReason('pnpm vitest run src/crm/agent-memory; echo $?')
+    expect(reason).toContain('точка с запятой')
+    expect(reason).toContain('знак доллара')
+    // и сразу говорит, чем это пишется правильно — поле, а не хвост команды
+    expect(reason).toContain('measure: exit-code')
+    expect(reason).not.toContain('skipped-unsafe')
+
+    // «cd X && …» — вторая частая форма, у неё своё поле
+    expect(unsafeCommandReason('cd apps/web && pnpm test')).toContain('cwd')
+
+    // разрешённый набор символов, но неразрешённое начало — тоже словами
+    expect(unsafeCommandReason('curl example.com')).toContain('начинается не с разрешённого начала')
+  })
+
+  it('запись skipped-unsafe несёт причину с собой', () => {
+    const p = writePlan(entryYaml({ check_command: '"pnpm vitest run src/x; echo $?"' }), 'PLAN-UNSAFE-REASON.md')
+    const runner = vi.fn()
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(runner).not.toHaveBeenCalled()
+    expect(records[0].verdict).toBe('skipped-unsafe')
+    expect(records[0].unmeasured_reason).toContain('точка с запятой')
+  })
+
+  it('прогон, в котором не измерено НИЧЕГО, — красный и объясняет почему', () => {
+    const v = measurementVerdict({
+      records: [
+        { id: 'P1', verdict: 'skipped-unsafe', check_command: 'pnpm vitest run src/x; echo $?' },
+        { id: 'P2', verdict: 'skipped-unsafe', unmeasured_reason: 'проверка не запускалась: …' },
+      ],
+    })
+    expect(v.state).toBe('unmeasured')
+    expect(v.red).toBe(true)
+    expect(v.headline).toContain('НЕ ИЗМЕРЕНО')
+    expect(v.lines).toHaveLength(2)
+    expect(v.lines[0].reason).toContain('точка с запятой')
+  })
+
+  it('одно измерение среди отказов не краснеет — но и не молчит', () => {
+    const v = measurementVerdict({
+      records: [
+        { id: 'P1', verdict: 'hit' },
+        { id: 'P2', verdict: 'skipped-unsafe', check_command: 'x | y' },
+      ],
+    })
+    // Гейт не встаёт из-за одной неудачно написанной фразы…
+    expect(v.state).toBe('measured')
+    expect(v.red).toBe(false)
+    // …но отвергнутая запись всё равно предъявлена с причиной.
+    expect(v.headline).toContain('ЧАСТЬ НЕ ИЗМЕРЕНА')
+    expect(v.lines).toHaveLength(1)
+    expect(v.lines[0].id).toBe('P2')
+    expect(v.lines[0].reason).toContain('вертикальная черта')
+  })
+
+  it('полностью измеренный прогон молчит по делу — заголовка нет', () => {
+    const v = measurementVerdict({ records: [{ id: 'P1', verdict: 'hit' }, { id: 'P2', verdict: 'miss' }] })
+    expect(v.state).toBe('measured')
+    expect(v.headline).toBeNull()
+    expect(v.lines).toEqual([])
+  })
+
+  it('неприменимость предсказаний сказана вслух, а не спрятана под тем же статусом', () => {
+    const none = measurementVerdict({})
+    expect(none.state).toBe('not-applicable')
+    expect(none.red).toBe(false)
+    expect(none.headline).toContain('НЕПРИМЕНИМЫ')
+
+    const receiptsOnly = measurementVerdict({ excluded: [{ id: 'R1', reason: 'receipt' }], receiptsSkipped: 3 })
+    expect(receiptsOnly.state).toBe('not-applicable')
+    expect(receiptsOnly.headline).toContain('reverify')
+    // не тот же текст, что у отказа границы: это разные факты о мире
+    expect(receiptsOnly.headline).not.toContain('НЕ ИЗМЕРЕНО:')
+  })
+
+  it('ненаступивший срок — не молчание и не краснота', () => {
+    const v = measurementVerdict({ notDue: [{ id: 'P1', horizon: '2099-01-01' }] })
+    expect(v.state).toBe('registered')
+    expect(v.red).toBe(false)
+    expect(v.headline).toContain('срок ещё не наступил')
+    expect(v.lines[0].reason).toContain('2099-01-01')
+  })
+})
+
+describe('глагол predict-score: тишина стоит кода выхода 1', () => {
+  /** Прогон НАСТОЯЩЕГО глагола настоящим процессом, с изолированным .sma. */
+  function runScore(planPath: string): { stdout: string; status: number } {
+    const smaRoot = join(dir, '.sma')
+    mkdirSync(smaRoot, { recursive: true })
+    try {
+      const stdout = execFileSync('node', [join(__dirname, '..', 'cli.mjs'), 'predict-score', planPath], {
+        encoding: 'utf8',
+        env: { ...process.env, SMA_ROOT_OVERRIDE: smaRoot },
+      })
+      return { stdout, status: 0 }
+    } catch (err: any) {
+      return { stdout: (err.stdout ?? '').toString(), status: typeof err.status === 'number' ? err.status : 1 }
+    }
+  }
+
+  it('план, где отвергнуто каждое предсказание, выходит красным и печатает «не измерено» с причиной', () => {
+    const p = writePlan(
+      entryYaml({ check_command: '"pnpm vitest run src/crm/agent-memory; echo $?"' }) +
+        entryYaml({ id: 'P2', check_command: '"pnpm vitest run src/crm/dossier/__tests__/run.test.ts; echo $?"' }),
+      'PLAN-ALL-UNSAFE.md',
+    )
+    const { stdout, status } = runScore(p)
+    expect(status).toBe(1)
+    expect(stdout).toContain('НЕ ИЗМЕРЕНО')
+    expect(stdout).toContain('не измерено · P1: проверка не запускалась')
+    expect(stdout).toContain('не измерено · P2:')
+    expect(stdout).toContain('точка с запятой')
+    expect(stdout).toContain('measure: exit-code')
+  })
+
+  it('план без предсказаний говорит о своей неприменимости вслух и остаётся зелёным', () => {
+    const p = join(dir, 'PLAN-NOPRED.md')
+    writeFileSync(p, '---\nphase: test\n---\n\nтело плана\n')
+    const { stdout, status } = runScore(p)
+    expect(status).toBe(0)
+    expect(stdout).toContain('НЕПРИМЕНИМЫ')
   })
 })

@@ -84,7 +84,7 @@ If CONTEXT.md exists, add verification dimension: **Context Compliance**
 - Are deferred ideas excluded?
 - Are discretion areas handled appropriately?
 
-**REVIEWS.md** (if included by reviews mode) — Cross-AI review feedback from `/sma-review`
+**REVIEWS.md** (if included by reviews mode) — Cross-AI review feedback from the peer-review workflow
 
 REVIEWS.md is audit trail and feedback input, not a hidden execution contract. /sma-execute-phase primarily consumes PLAN.md plus normal phase context. Add verification dimension: **Review Incorporation**.
 

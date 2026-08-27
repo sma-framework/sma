@@ -428,6 +428,74 @@ describe('history (append-only transcript, capped)', () => {
   })
 })
 
+// ══════════ РАЗГОВОР ПРИНАДЛЕЖИТ ПРОЕКТУ, ПРИ КОТОРОМ ОН СКАЗАН ══════════════════
+//
+// Слово владельца: «разговор по разным проектам тоже разный должен быть». Книга остаётся одна
+// на дом — делится не файл, а НИТЬ: ход записан вместе со своим проектом, чтение по нему
+// сужается, и беседа про один проект не тянется в другой. Проверяется здесь ровно то, что
+// иначе ломается молча: имя проекта попадает в запись, чужая нить не приезжает в чтение, а
+// старые ходы — те, что записаны до появления поля, — не пропадают и никому не приписываются.
+
+describe('ход разговора несёт проект, при котором он сказан', () => {
+  it('записан с именем проекта — и чтение по другому проекту его не возвращает', () => {
+    const dir = tmp()
+    appendTurn({ dir, turn: { conversationId: 'c-a', project: 'alpha', role: 'user', text: 'про альфу' } })
+    appendTurn({ dir, turn: { conversationId: 'c-b', project: 'beta', role: 'user', text: 'про бету' } })
+
+    expect(readHistory({ dir, project: 'alpha' }).map((t: any) => t.text)).toEqual(['про альфу'])
+    expect(readHistory({ dir, project: 'beta' }).map((t: any) => t.text)).toEqual(['про бету'])
+    // и в самой книге имя лежит полем, а не догадывается при чтении
+    const first = JSON.parse(readFileSync(join(dir, 'chat', 'history.ndjson'), 'utf8').trim().split('\n')[0])
+    expect(first.project).toBe('alpha')
+  })
+
+  it('старая запись без проекта не подмешивается в нить проекта и не теряется при чтении', () => {
+    const dir = tmp()
+    appendTurn({ dir, turn: { conversationId: 'c-old', role: 'user', text: 'сказано до проектов' } })
+    appendTurn({ dir, turn: { conversationId: 'c-a', project: 'alpha', role: 'user', text: 'про альфу' } })
+
+    // ни в одну проектную нить она не входит…
+    expect(readHistory({ dir, project: 'alpha' }).map((t: any) => t.text)).toEqual(['про альфу'])
+    expect(readHistory({ dir, project: 'beta' })).toEqual([])
+    // …и при этом остаётся читаемой там, где сужать нечем
+    expect(readHistory({ dir }).map((t: any) => t.text)).toEqual(['сказано до проектов', 'про альфу'])
+    expect(readHistory({ dir, conversationId: 'c-old' })[0].project).toBeUndefined()
+  })
+
+  it('handleChatTurn ставит проект двери ОБОИМ ходам, а без выбранного проекта поля нет', async () => {
+    const dir = tmp()
+    const { deps: d } = deps(dir, { project: 'alpha', dispatchFree: async () => ({ kind: 'text', text: 'Отвечаю.' }) })
+    const res = await handleChatTurn({ text: 'Как лучше подойти к переносу писем?', deps: d })
+
+    const mine = readHistory({ dir, project: 'alpha', conversationId: res.conversationId })
+    expect(mine.map((t: any) => t.role)).toEqual(['user', 'assistant'])
+    expect(readHistory({ dir, project: 'beta' })).toEqual([]) // соседний проект этой беседы не видит
+
+    const bare = tmp()
+    const { deps: nod } = deps(bare, { dispatchFree: async () => ({ kind: 'text', text: 'Отвечаю.' }) })
+    await handleChatTurn({ text: 'Как лучше подойти к переносу писем?', deps: nod })
+    expect(readHistory({ dir: bare })[0].project).toBeUndefined() // выдуманного имени в книге нет
+  })
+
+  it('нить свободной ветки сужена проектом: присланное имя чужой беседы её ходов не приносит', async () => {
+    const dir = tmp()
+    appendTurn({ dir, turn: { conversationId: 'conv-a', project: 'alpha', role: 'user', text: 'первый ход альфы' } })
+    const seen: any[] = []
+    const dispatchFree = async (o: any) => {
+      seen.push(o.deps.memory)
+      return { kind: 'text', text: 'Отвечаю.' }
+    }
+
+    const { deps: beta } = deps(dir, { project: 'beta', dispatchFree })
+    await handleChatTurn({ text: 'А что дальше?', conversationId: 'conv-a', deps: beta })
+    expect(seen[0]).toEqual([]) // чужая нить в промпт не поехала
+
+    const { deps: alpha } = deps(dir, { project: 'alpha', dispatchFree })
+    await handleChatTurn({ text: 'А что дальше?', conversationId: 'conv-a', deps: alpha })
+    expect(seen[1].map((t: any) => t.text)).toEqual(['первый ход альфы']) // своя — поехала
+  })
+})
+
 describe('handleChatTurn (the single door)', () => {
   it('records both turns and hands a free question to the dispatcher', async () => {
     const dir = tmp()
@@ -874,12 +942,12 @@ async function hit(front: any, o: any) {
 }
 
 /** The front wired for the conversation exactly as the composition root wires it. */
-function chatFront(dir: string, extra: any = {}) {
+function chatFront(dir: string, extra: any = {}, configExtra: any = {}) {
   const spawner = spawnerSpy()
   const q = adapterSpy(ROWS)
   const events: any[] = []
   const front = createFrontServer({
-    config: { token: FRONT_TOKEN, workers: WORKERS },
+    config: { token: FRONT_TOKEN, workers: WORKERS, ...configExtra },
     deps: {
       clock: () => 1_700_000_900_000,
       adapter: q.adapter,
@@ -1141,6 +1209,62 @@ describe('GET /api/chat/history — the transcript, read back as data', () => {
     const front = createFrontServer({ config: { token: FRONT_TOKEN }, deps: {} })
     const res = await hit(front, { url: '/api/chat/history', headers: { authorization: `Bearer ${FRONT_TOKEN}` } })
     expect(res.statusCode).toBe(501)
+  })
+})
+
+// ══════════ ДВЕРЬ: ПРОЕКТ СТАВИТСЯ У ДВЕРИ, КНИГА СУЖАЕТСЯ ПАРАМЕТРОМ ═════════════
+//
+// Обе половины провода, а не только их арифметика: имя проекта берётся ТАМ ЖЕ, где его берёт
+// дверь постановки задач (конфиг демона, `activeProject`), и никакое поле запроса его не
+// называет; а чтение сужается тем же `?project=`, каким сужается чтение картины — новой двери
+// в ROUTES не появилось.
+
+describe('проект разговора: у двери он ставится, у двери же и сужается', () => {
+  it('ход, сказанный при выбранном проекте, записан с его именем — а тело запроса его не называет', async () => {
+    const dir = tmp()
+    const { front } = chatFront(dir, {}, { activeProject: 'alpha' })
+    const res = await hit(front, {
+      method: 'POST',
+      url: '/api/chat',
+      headers: chatHeaders(),
+      body: { text: 'Что съело лимит?' },
+    })
+    expect(res.statusCode).toBe(200)
+    const { conversationId } = JSON.parse(res.body)
+
+    expect(readHistory({ dir, project: 'alpha', conversationId })).toHaveLength(2)
+    expect(readHistory({ dir, project: 'beta' })).toEqual([])
+
+    // а назвать проект СВОИМ полем нельзя: у двери закрытый список ключей
+    const refused = await hit(front, {
+      method: 'POST',
+      url: '/api/chat',
+      headers: chatHeaders(),
+      body: { text: 'Что съело лимит?', project: 'beta' },
+    })
+    expect(refused.statusCode).toBe(400)
+  })
+
+  it('книга, прочитанная с ?project=, несёт беседы этого проекта — и ни одной чужой', async () => {
+    const dir = tmp()
+    const { front } = chatFront(dir)
+    appendTurn({ dir, turn: { conversationId: 'c-a', project: 'alpha', role: 'user', text: 'про альфу' } })
+    appendTurn({ dir, turn: { conversationId: 'c-b', project: 'beta', role: 'user', text: 'про бету' } })
+    appendTurn({ dir, turn: { conversationId: 'c-old', role: 'user', text: 'сказано до проектов' } })
+
+    const mine = JSON.parse(
+      (await hit(front, { url: '/api/chat/history?project=alpha', headers: { authorization: `Bearer ${FRONT_TOKEN}` } }))
+        .body,
+    )
+    expect(mine.turns.map((t: any) => t.text)).toEqual(['про альфу'])
+    expect(mine.turns[0].project).toBe('alpha')
+
+    // без сужения книга цела, и ход без проекта уезжает названным «без проекта», а не чужим
+    const all = JSON.parse(
+      (await hit(front, { url: '/api/chat/history', headers: { authorization: `Bearer ${FRONT_TOKEN}` } })).body,
+    )
+    expect(all.turns.map((t: any) => t.text)).toEqual(['про альфу', 'про бету', 'сказано до проектов'])
+    expect(all.turns[2].project).toBeNull()
   })
 })
 

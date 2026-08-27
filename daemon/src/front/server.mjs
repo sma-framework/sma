@@ -102,7 +102,7 @@ import { createQuestions, findPhaseDir, ALL_CHECKPOINT_SUFFIXES } from './questi
 import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
 import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
-import { readJournal, DISPATCH_REASONS, attemptIdFor } from './journal.mjs'
+import { readJournal, DISPATCH_REASONS, REDIRECT_MODE_LABELS, attemptIdFor } from './journal.mjs'
 import {
   runsDirOf,
   attemptRunDir,
@@ -116,6 +116,7 @@ import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
 import { writeWaveHold, WAVE_ACTIONS } from '../queue/wave-holds.mjs'
 import { BATCH_DECISIONS, parseReceiptProof } from './state.mjs'
+import { readTaskChanges } from './task-changes.mjs'
 import { DRAFT_KINDS } from '../forge/forge.mjs'
 import { buildPairingInstruction } from './federation.mjs'
 import { mintPairing, telegramLinkView } from '../telegram/pairing.mjs'
@@ -683,9 +684,10 @@ async function handleDone({ res, query, config, deps }) {
 const JOURNAL_ROW_CAP = 200
 
 /**
- * readTaskJournal(id, deps) → the three layers of ONE task, shaped for the card:
- * `dispatcher[]` (code + its human подпись + when), `memoryTrace` (IDS only, de-duplicated)
- * and the per-attempt approach notes. The ledger is the SAME injected seam the attempts
+ * readTaskJournal(id, deps) → the layers of ONE task, shaped for the card:
+ * `dispatcher[]` (code + its human подпись + when), `memoryTrace` (IDS only, de-duplicated),
+ * `redirects[]` (what a person said to the running work, and when) and the per-attempt
+ * approach notes. The ledger is the SAME injected seam the attempts
  * use (fn-object / ledgerDir), and every failure path yields EMPTY layers — a card must
  * open for a task that predates the journal.
  */
@@ -703,6 +705,10 @@ function readTaskJournal(id, deps) {
 
   const { entries } = readJournal({ taskId: id, entries: rows })
   const dispatcher = []
+  // ЧТО ЧЕЛОВЕК СКАЗАЛ ПО ХОДУ — в том порядке, в каком говорил. Слой не сводится и не
+  // складывается: две поправки — это два разных слова, сказанные в разное время, и лента хода
+  // показывает каждое своей строкой. Текст едет как ДАННЫЕ — экран рисует его текстовым узлом.
+  const redirects = []
   const notes = new Set()
   const reflexes = new Set()
   const approachByAttempt = new Map()
@@ -720,6 +726,16 @@ function readTaskJournal(id, deps) {
         label: DISPATCH_REASONS[payload.code] ?? null, // the code is what is stored; this is its подпись
         ts: row.recordedAt ?? null,
       })
+    } else if (row.layer === 'redirect') {
+      redirects.push({
+        id: payload.redirectId ?? null,
+        mode: payload.mode ?? null,
+        label: REDIRECT_MODE_LABELS[payload.mode] ?? null, // код хранится, подпись рисуется
+        text: String(payload.text ?? ''),
+        truncated: payload.truncated === true,
+        ts: row.recordedAt ?? null,
+        attempt: Number.isFinite(Number(row.attempt)) ? Number(row.attempt) : null,
+      })
     } else if (row.layer === 'memory') {
       for (const n of Array.isArray(payload.notes) ? payload.notes : []) notes.add(n)
       for (const r of Array.isArray(payload.reflexes) ? payload.reflexes : []) reflexes.add(r)
@@ -732,6 +748,7 @@ function readTaskJournal(id, deps) {
 
   return {
     dispatcher,
+    redirects,
     memoryTrace: {
       notes: [...notes],
       reflexes: [...reflexes],
@@ -1225,7 +1242,7 @@ async function handleTask({ res, params, config, deps }) {
     branch,
     commits,
     returnedNotes,
-    journal: { dispatcher: journal.dispatcher, memoryTrace: journal.memoryTrace },
+    journal: { dispatcher: journal.dispatcher, memoryTrace: journal.memoryTrace, redirects: journal.redirects },
   })
 }
 
@@ -1291,14 +1308,22 @@ function lastValue(rows, pick) {
 }
 
 /**
- * GET /api/diff/:id — the plain-text worktree-branch diff, auth'd and capped
+ * GET /api/diff/:id — the plain-text diff of what the task changed, auth'd and capped
  * at DIFF_CAP. The id already passed ID_RE, so it is safe to hand to the injected git.
  *
+ * THE CARD ASKS THIS QUESTION TWICE, AND IT MUST GET ONE ANSWER. The window derives its
+ * «Изменения» counts from the text this door returns, while the roster's own panel counts the
+ * whole branch. This door showed `git show wt/<id>` — the LAST COMMIT and nothing else — so a
+ * task with three commits listed all three beside the changes of one of them, and the two
+ * surfaces disagreed by construction rather than by accident. Both now read the same range
+ * through the same seam (front/task-changes.mjs): base..branch, the work that exists on this
+ * branch and nowhere else. Where the number moved, it moved to the true one.
+ *
  * AND AFTER THE COPY IS GONE, THE WORK IS STILL THERE. Accepting the work removes the copy
- * and its branch on purpose; the commits stay in the project's tree. `git show wt/<id>` then
- * fails, and this door used to answer 404 — which the card asks for on every open, so a
- * correctly merged task greeted its owner with a red transport error. The removal record kept
- * the branch tip and the attempt row kept the base it was cut from: two commit names are
+ * and its branch on purpose; the commits stay in the project's tree. Git then fails on an
+ * unknown revision, and this door used to answer 404 — which the card asks for on every open,
+ * so a correctly merged task greeted its owner with a red transport error. The removal record
+ * kept the branch tip and the attempt row kept the base it was cut from: two commit names are
  * enough to show exactly what the worker changed, long after the branch is gone.
  *
  * A missing diff is not an error, it is a sentence. Whatever happens below, the answer is 200
@@ -1307,14 +1332,13 @@ function lastValue(rows, pick) {
 async function handleDiff({ res, params, config, deps }) {
   const id = params.id
   if (typeof deps.execGit !== 'function') return send501(res)
-  const branch = `wt/${id}`
   const cwd = phaseCycleDir(deps) ?? config.repoDir
   let text = ''
   try {
     // IN THE TREE THAT HOLDS THE BRANCH — the connected project, not the daemon's launch
-    // directory. Reading the wrong tree made `git show wt/<id>` fail on an unknown revision,
-    // and this door answered 404 for work that was sitting on a branch one directory away.
-    text = String(deps.execGit(['show', '--stat', '-p', branch], { cwd }) || '')
+    // directory. Reading the wrong tree made git fail on an unknown revision, and this door
+    // answered 404 for work that was sitting on a branch one directory away.
+    text = readTaskChanges(id, deps.execGit, { cwd, shape: 'patch' })
   } catch {
     text = diffOfKeptCommits(id, cwd, deps)
   }
@@ -2528,10 +2552,19 @@ const CONVERSATION_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 const CHAT_HISTORY_LIMIT = 50
 const CHAT_HISTORY_MAX = 200
 
-/** The collaborator set the chat engine takes — the chat analogue of stateDeps. */
+/**
+ * The collaborator set the chat engine takes — the chat analogue of stateDeps.
+ *
+ * ПРОЕКТ ХОДА БЕРЁТСЯ ТАМ ЖЕ, ГДЕ ЕГО БЕРЁТ ДВЕРЬ ПОСТАНОВКИ ЗАДАЧ — `doorProject`, то есть
+ * из конфига этого демона, а не из тела запроса. Причина та же, слово в слово: беседа
+ * принадлежит проекту, на который смотрел человек, когда говорил, и ни один вызывающий не
+ * вправе назвать его сам. Проекта не выбрано — поля нет, и ход честно записан «без проекта».
+ * Мост телеграма зовёт эту же сборку, поэтому у бота и у окна проект хода один и тот же.
+ */
 function chatDeps(config, deps, extra = {}) {
   return {
     ...extra,
+    ...doorProject(config),
     adapter: deps.adapter,
     config,
     clock: deps.clock,
@@ -2600,12 +2633,18 @@ function pickAttachments(r) {
   return list.length ? { attachments: list } : {}
 }
 
-/** A stored turn as it leaves the process — the same picking, plus who said it and when. */
+/**
+ * A stored turn as it leaves the process — the same picking, plus who said it and when.
+ *
+ * `project` уезжает НАЗВАННЫМ, включая `null`: ход без проекта — это ход «без проекта», а не
+ * ход неизвестно чей, и читателю на той стороне это должно быть видно так же, как здесь.
+ */
 function pickTurn(t) {
   const r = t && typeof t === 'object' ? t : {}
   return {
     ts: r.ts ?? null,
     conversationId: r.conversationId ?? null,
+    project: typeof r.project === 'string' && r.project !== '' ? r.project : null,
     role: r.role ?? 'user',
     kind: r.kind ?? null,
     text: typeof r.text === 'string' ? r.text : '',
@@ -2748,6 +2787,41 @@ function stageTeller(turnId, deps) {
 }
 
 /**
+ * runChatTurn({config, deps, text, …}) — ОДИН ход разговора со ВСЕМ, что дверь чата собирает.
+ *
+ * ПОЧЕМУ ЭТО ОТДЕЛЬНОЕ ИМЯ, А НЕ ТЕЛО ОБРАБОТЧИКА. Разговор идёт теперь из двух мест: из окна
+ * (через дверь ниже) и из телеграма (через мост, которому дверей не добавляли). Слово владельца
+ * о втором — «мозг должен быть идентичным, один в один как бы я писал в фронте», а идентичность
+ * мозга — это не одинаковый вызов `handleChatTurn`, а ОДИН И ТОТ ЖЕ набор сотрудников: снимок
+ * доски, снимок карточки, стенограмма, полоса свободной ветки. Собранный дважды, он однажды
+ * разойдётся — и бот ответит «одобрять нечего» задаче, которая стоит и ждёт решения, ровно как
+ * это уже случилось у окна 25.08. Поэтому сборка живёт здесь, в одном экземпляре, и обе стороны
+ * зовут её, а не повторяют.
+ *
+ * Новой двери при этом не появляется: `ROUTES` не изменилась ни на строку — мост зовёт функцию
+ * в этом же процессе, тем же способом, каким её зовёт обработчик ниже.
+ *
+ * @param {{config:object, deps:object, text:string, conversationId?:string, turnId?:string, taskId?:string, tellStage?:Function}} o
+ * @returns {Promise<{conversationId:string, kind:string, answer:object}>}
+ */
+export async function runChatTurn({ config, deps, text, conversationId, turnId, taskId, tellStage } = {}) {
+  const snapshot = taskId ? await chatTaskSnapshot(taskId, deps) : null
+  // Доска едет с КАЖДЫМ ходом, не только с открытым с карточки: вопрос «что у нас
+  // происходит?» — это вопрос свободной ветки, и отвечать на него она должна по данным.
+  const board = await chatBoardSnapshot(config, deps)
+  return deps.handleChatTurn({
+    text,
+    ...(conversationId ? { conversationId } : {}),
+    ...(turnId ? { turnId } : {}),
+    deps: chatDeps(config, deps, {
+      ...(snapshot ? { snapshot } : {}),
+      ...(board ? { board } : {}),
+      ...(tellStage ? { onStage: tellStage } : {}),
+    }),
+  })
+}
+
+/**
  * POST /api/chat — one conversation turn. Body {text, conversationId?, turnId?, taskId?}.
  *
  * The `chat.reply` hint fires AFTER the engine has returned, which is after both turns are
@@ -2790,20 +2864,15 @@ async function handleChat({ req, res, config, deps }) {
   // «Принято» уходит ДО движка: человек, который смотрит на своё сообщение, узнаёт, что оно
   // дошло, а не что оно когда-нибудь получит ответ.
   if (tellStage) tellStage('accepted')
-  const snapshot = b.taskId ? await chatTaskSnapshot(b.taskId, deps) : null
-  // Доска едет с КАЖДЫМ ходом, не только с открытым с карточки: вопрос «что у нас
-  // происходит?» — это вопрос свободной ветки, и отвечать на него она должна по данным.
-  const board = await chatBoardSnapshot(config, deps)
 
-  const turn = await deps.handleChatTurn({
+  const turn = await runChatTurn({
+    config,
+    deps,
     text: b.text,
-    ...(b.conversationId ? { conversationId: b.conversationId } : {}),
-    ...(b.turnId ? { turnId: b.turnId } : {}),
-    deps: chatDeps(config, deps, {
-      ...(snapshot ? { snapshot } : {}),
-      ...(board ? { board } : {}),
-      ...(tellStage ? { onStage: tellStage } : {}),
-    }),
+    conversationId: b.conversationId,
+    turnId: b.turnId,
+    taskId: b.taskId,
+    tellStage,
   })
   const answer = pickAnswer(turn && turn.answer)
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
@@ -2840,6 +2909,12 @@ const LIVE_CHANNEL_PROVIDERS = Object.freeze(['claude', 'api'])
  * fail this door, which is the posture every other reader in this file already takes.
  */
 function hasLiveChannel(taskId, deps) {
+  const provider = lastValue(foldAttemptRows(attemptRowsOf(taskId, deps)), (a) => a && a.provider)
+  return provider === null || LIVE_CHANNEL_PROVIDERS.includes(provider)
+}
+
+/** This task's attempt rows through whichever ledger seam was injected; unreadable → []. */
+function attemptRowsOf(taskId, deps) {
   let rows = []
   try {
     if (typeof deps.ledger === 'function') rows = deps.ledger(taskId) || []
@@ -2848,8 +2923,52 @@ function hasLiveChannel(taskId, deps) {
   } catch {
     rows = []
   }
-  const provider = lastValue(foldAttemptRows(Array.isArray(rows) ? rows : []), (a) => a && a.provider)
-  return provider === null || LIVE_CHANNEL_PROVIDERS.includes(provider)
+  return Array.isArray(rows) ? rows : []
+}
+
+/**
+ * journalRedirect(body, redirectId, deps) — the correction, written into the HISTORY of the
+ * attempt it was said to.
+ *
+ * ═══════ WHY THE DOOR WRITES TWICE, AND WHY THAT IS NOT A SECOND STORE ═══════
+ * `data/redirects/<task>.ndjson` is a DELIVERY QUEUE: lines are consumed and marked done, and
+ * the file answers «what has not been handed over yet». That is a different question from «what
+ * did this person say to this attempt, and when» — and the card asks the second one. For as long
+ * as only the queue existed, the card could not show that anybody had steered the work at all:
+ * the founder's word reached the worker and vanished from the story of the task. So the same
+ * door that accepts the word records it as one journal row, in the layer the vocabulary now
+ * carries, beside the dispatcher's reason and the worker's note.
+ *
+ * ═══════ WHICH ATTEMPT IT IS FILED UNDER ═══════
+ * The one that was running when the word was said — the last one the ledger knows. A task with
+ * no attempts yet files under 1: the line is durable, it waits, and the first turn collects it.
+ * That is «when it was said», which is what a card shows; it is not a claim about which turn
+ * eventually received it — the delivery file owns that fact and is not touched here.
+ *
+ * FAIL-OPEN, LOUDLY. The correction is already DURABLE by the time this runs. A journal that
+ * cannot be written costs the story a line; it must never cost the founder his steering, so the
+ * failure is logged and the door answers 200 exactly as it did before.
+ */
+function journalRedirect(body, redirectId, deps) {
+  const append = deps.ledger && typeof deps.ledger.appendJournal === 'function' ? deps.ledger.appendJournal : null
+  if (!append) return
+  // ПОСЛЕДНИЙ ПОДХОД — по НОМЕРУ, а не по месту в файле: строки реестра дописываются с двух
+  // сторон, и «последняя прочитанная» не значит «самая новая».
+  let attempt = 0
+  for (const row of foldAttemptRows(attemptRowsOf(body.taskId, deps))) {
+    const n = Number(row && row.attempt)
+    if (Number.isFinite(n) && n > attempt) attempt = n
+  }
+  try {
+    append({
+      taskId: body.taskId,
+      attempt: attempt || 1,
+      layer: 'redirect',
+      payload: { mode: body.mode, text: body.text, redirectId },
+    })
+  } catch (err) {
+    console.error(`[SmaFront] redirect not journaled for ${body.taskId}: ${String((err && err.message) || err)}`)
+  }
 }
 
 /**
@@ -2899,6 +3018,7 @@ async function handleRedirect({ req, res, config, deps }) {
     fsImpl: deps.fsImpl,
   })
   if (!wrote.ok) return send400(res, wrote.error === 'text too long' ? `text exceeds ${REDIRECT_TEXT_CAP} chars` : 'text required')
+  journalRedirect(b, wrote.id, deps)
   let live = false
   if (b.mode === 'interrupt' && deps.attemptTurns && typeof deps.attemptTurns.stop === 'function') {
     live = deps.attemptTurns.stop(b.taskId)
@@ -3009,6 +3129,13 @@ async function handleTaskCancel({ req, res, deps }) {
  * narrows it; `?limit=` is clamped between one turn and CHAT_HISTORY_MAX, so no query can
  * ask for the whole book. The turns are DATA on the way out exactly as they were on the way
  * in: explicit-picked, never interpreted.
+ *
+ * `?project=` СУЖАЕТ книгу до бесед одного проекта — тем же параметром и тем же разбором
+ * (`projectFilter`), которым сужается чтение картины, и по той же причине: экран, открытый на
+ * проекте, должен видеть его разговоры и только их. Новой двери для этого не появилось — эта
+ * принимала параметры с рождения. Не назвали проект — книга не сужается вовсе: ходы, у которых
+ * проекта нет (сказанные до появления поля или при невыбранном проекте), так и остаются
+ * читаемыми, не подмешиваясь при этом ни в одну проектную нить.
  */
 function handleChatHistory({ res, query, deps }) {
   if (typeof deps.readChatHistory !== 'function') return send501(res)
@@ -3016,12 +3143,14 @@ function handleChatHistory({ res, query, deps }) {
   const limit = Number.isFinite(asked) && asked > 0 ? Math.min(Math.floor(asked), CHAT_HISTORY_MAX) : CHAT_HISTORY_LIMIT
   const asObj = query && typeof query.conversationId === 'string' ? query.conversationId : ''
   const conversationId = CONVERSATION_ID_RE.test(asObj) ? asObj : undefined
+  const project = projectFilter(query)
   let turns = []
   try {
     turns =
       deps.readChatHistory({
         dir: deps.chatDir,
         ...(conversationId ? { conversationId } : {}),
+        ...(project ? { project } : {}),
         limit,
         fsImpl: deps.fsImpl,
       }) || []

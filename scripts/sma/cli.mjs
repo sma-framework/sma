@@ -6196,8 +6196,14 @@ function resolveCurrentVersion(flags, repoRoot) {
  * DETERMINISTICALLY: allowlist check -> run check_command ->
  * numeric compare -> append every verdict to the per-domain calibration
  * ledger. Zero LLM anywhere in scoring. NOT hook-facing: exits 1 when any
- * 'error' verdict occurs (callers decide); a miss is a valid scoring outcome
- * -> exit 0.
+ * 'error' verdict occurs (callers decide), and when the run MEASURED NOTHING
+ * while entries stood there that could have been measured (measurementVerdict
+ * -> 'unmeasured'); a miss is a valid scoring outcome -> exit 0.
+ *
+ * One refused command among measured ones still exits 0 — but it never leaves
+ * as a bare status code: every skipped entry prints «не измерено» with the
+ * cause in words. A plan predictions do not apply to says so in its own words
+ * too, instead of borrowing the refusal's silence.
  *
  * Scores `predictions:` ONLY. A `receipts:` block (SUMMARY build-time claims)
  * is `sma reverify` territory — never scored here, only reported as
@@ -6277,9 +6283,15 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   const drafts = predict.draftLessonsForRecords({ records, planId, dirs: { draftsDir } })
 
   const hasError = records.some((r) => r.verdict === 'error')
-  // The exit code is unchanged in substance: a refused command and an un-arrived
-  // horizon are NOT failures (locked decision); an 'error' still is.
-  const exitCode = hasError ? 1 : 0
+  // What this run actually measured, decided ONCE by a pure function.
+  const measurement = predict.measurementVerdict({ records, invalid, excluded, notDue, receiptsSkipped })
+  // A refused command and an un-arrived horizon are still NOT failures on their
+  // own (locked decision — a gate that jams on one badly written sentence is a
+  // gate somebody removes). What IS a failure is a run that measured NOTHING
+  // while entries stood there that could have been measured: that shape used to
+  // exit 0 and look exactly like a healthy scoring, and two phases of
+  // predictions passed through it saying nothing at all.
+  const exitCode = hasError || measurement.red ? 1 : 0
   // The closing line is COMPUTED by one pure function, never counted on screen.
   const tally = predict.scoringTally({ records, invalid, excluded, notDue, receiptsSkipped })
   const tallyLine =
@@ -6288,18 +6300,20 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
     '.'
 
   if (wantsJson(flags)) {
-    printJson({ plan: planPath, records, invalid, excluded, notDue, currentVersion, receiptsSkipped, drafts, appended: records.length, tally, exitCode })
+    printJson({ plan: planPath, records, invalid, excluded, notDue, currentVersion, receiptsSkipped, drafts, appended: records.length, tally, measurement, exitCode })
     return exitCode
   }
 
   if (!records.length && !invalid.length && !excluded.length && !notDue.length) {
-    process.stdout.write(`SMA: в ${planPath} нет блока predictions — оценивать нечего.\n`)
+    // Said aloud, not swallowed: «there is nothing to measure here» is a
+    // statement about the plan, not a passed measurement.
+    process.stdout.write(`SMA predict-score: ${planPath}\n${measurement.headline}\n`)
     if (receiptsSkipped) {
       process.stdout.write(
         `  (receipts: ${receiptsSkipped} — территория sma reverify; predict-score их не оценивает)\n`,
       )
     }
-    return 0
+    return exitCode
   }
   process.stdout.write(`SMA predict-score: ${planPath}\n`)
   for (const r of records) {
@@ -6336,6 +6350,13 @@ async function cmdPredictScore({ positionals, flags, dirs }) {
   }
   process.stdout.write(`Вердиктов записано в леджер: ${records.length}\n`)
   process.stdout.write(`${tallyLine}\n`)
+  // The closing state of the run, said out loud whenever ANY entry walked away
+  // without a verdict — the ONE place a refusal is named, last, where a reader
+  // who scrolled to the end still sees it.
+  if (measurement.headline) {
+    process.stdout.write(`${measurement.headline}\n`)
+    for (const l of measurement.lines) process.stdout.write(`  не измерено · ${l.id}: ${l.reason}\n`)
+  }
   return exitCode
 }
 
