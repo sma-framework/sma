@@ -66,6 +66,8 @@ import {
   CHAT_MAX_TURNS,
   CHAT_TASK_ID_PREFIX,
   CHAT_FALLBACK_TEXT,
+  CHAT_LIMIT_TEXT,
+  CHAT_TIMEOUT_TEXT,
   createTurnRegistry,
   dispatchFreeTurn,
   validateDecision,
@@ -744,6 +746,38 @@ describe('the free branch (outside the queue)', () => {
     ).not.toContain('Если человек ведёт приёмку')
   })
 
+  it('a silent turn says WHICH silence it was — out of steps, out of time, or empty', async () => {
+    // 1. предел шагов: поток сам называет подвид итога, и человек читает про шаги
+    const capped = fakeSession([
+      JSON.stringify({ type: 'result', subtype: 'error_max_turns', num_turns: CHAT_MAX_TURNS, result: '' }),
+    ])
+    const { deps: dCap } = freeDeps(tmp(), capped)
+    const outOfTurns = await handleChatTurn({ text: 'Расскажи про эту задачу подробно', deps: dCap })
+    expect(outOfTurns.answer.error).toBe('max-turns')
+    expect(outOfTurns.answer.text).toBe(CHAT_LIMIT_TEXT)
+    expect(outOfTurns.answer.text).not.toBe(CHAT_FALLBACK_TEXT) // разные новости — разные слова
+
+    // 2. срок: тот же пустой исход, но причина другая, и слова другие
+    const hung = fakeSession([], { hang: true })
+    const { deps: dHung } = freeDeps(tmp(), hung, {
+      setTimeoutFn: (fn: any) => {
+        fn()
+        return 1
+      },
+      clearTimeoutFn: () => {},
+    })
+    const timedOut = await handleChatTurn({ text: 'Долгий вопрос', deps: dHung })
+    expect(timedOut.answer.error).toBe('timeout')
+    expect(timedOut.answer.text).toBe(CHAT_TIMEOUT_TEXT)
+
+    // 3. просто пусто — прежняя честная фраза остаётся для случая без объяснения
+    const mute = fakeSession([JSON.stringify({ type: 'result', subtype: 'success', result: '   ' })])
+    const { deps: dMute } = freeDeps(tmp(), mute)
+    const empty = await handleChatTurn({ text: 'Вопрос', deps: dMute })
+    expect(empty.answer.error).toBe('empty-answer')
+    expect(empty.answer.text).toBe(CHAT_FALLBACK_TEXT)
+  })
+
   it('a turn that never returns is answered honestly, and the child is stopped', async () => {
     const dir = tmp()
     const session = fakeSession([], { hang: true })
@@ -756,7 +790,8 @@ describe('the free branch (outside the queue)', () => {
     })
     const res = await handleChatTurn({ text: 'Расскажи, как ты видишь эту работу?', deps: d })
 
-    expect(res.answer).toMatchObject({ kind: 'text', text: CHAT_FALLBACK_TEXT, error: 'timeout' })
+    // Слова — про СРОК, а не общая формула отказа: молчание называет себя (см. соседний тест).
+    expect(res.answer).toMatchObject({ kind: 'text', text: CHAT_TIMEOUT_TEXT, error: 'timeout' })
     expect(session.killed).toHaveLength(1)
     const turns = readHistory({ dir, conversationId: res.conversationId })
     expect(turns[1].error).toBe('timeout') // the transcript says what happened, it does not pretend

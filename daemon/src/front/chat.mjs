@@ -1046,8 +1046,17 @@ export function createTurnRegistry() {
 // would show among the tasks. A conversation builds nothing; it should cost the park nothing
 // but window time, and that time is booked in public under a reserved id.
 
-/** A conversation turn is short by construction — an open question, not a job. */
-export const CHAT_MAX_TURNS = 4
+/**
+ * A conversation turn is short by construction — an open question, not a job.
+ *
+ * Было 4, и этого хватало ровно до того дня, когда ходу стало что смотреть. На живом
+ * проходе 27.08 вопрос «расскажи про эту задачу — что сделано и на что смотреть» дважды
+ * вернулся отказом: сессия тратила все четыре шага на чтение и заканчивалась, НЕ СКАЗАВ НИ
+ * СЛОВА, — а окно показывало «не получилось ответить», то есть поломку вместо предела.
+ * Потолок поднят до числа, на котором посмотреть и ответить помещаются вместе; предел
+ * остаётся пределом, но теперь он называет себя (см. CHAT_LIMIT_TEXT).
+ */
+export const CHAT_MAX_TURNS = 12
 
 // ══════════════════ ЧТО ВИДНО, ПОКА ОТВЕТ ЕЩЁ ПИШЕТСЯ ═════════════════════════
 //
@@ -1088,6 +1097,19 @@ export const CHAT_TURN_TIMEOUT_MS = 240_000
 
 /** What the человек reads when the lane could not answer. No apology theatre, no fake answer. */
 export const CHAT_FALLBACK_TEXT = 'Не получилось ответить — попробуйте ещё раз.'
+
+/**
+ * ТИШИНА ТОЖЕ ДОЛЖНА НАЗЫВАТЬ СЕБЯ.
+ *
+ * Три разные вещи выглядели для человека одинаково — «Не получилось ответить»: ход упёрся в
+ * предел шагов, ход не уложился в срок, ход вернулся пустым. Это разные новости, и с каждой
+ * человек делает разное: предел шагов — спросить уже, срок — подождать или спросить короче,
+ * пустота — повторить. Одна фраза на три случая учит только одному: переспрашивать в пустоту.
+ */
+export const CHAT_LIMIT_TEXT =
+  'Не хватило шагов: я смотрел материалы и не успел собрать ответ. Спросите об одной вещи — так помещусь.'
+export const CHAT_TIMEOUT_TEXT =
+  'Ход шёл слишком долго и был остановлен. Спросите короче — или задайте тот же вопрос про одну задачу.'
 
 /** The owner's distilled voice, when «Мой стиль» has produced one, lives under this name. */
 export const DISTILLED_POLICY_FILE = 'distilled-policy.md'
@@ -1648,7 +1670,15 @@ export async function dispatchFreeTurn({ text, turnId, deps = {} } = {}) {
   const spoken = lines.map((l) => textOfLine(l)).filter(Boolean)
   const answerText = spoken.length ? spoken[spoken.length - 1] : ''
   if (timedOut || error || !answerText.trim()) {
-    return { kind: 'text', text: CHAT_FALLBACK_TEXT, error: error ?? (timedOut ? 'timeout' : 'empty-answer') }
+    // Пустой ход — это НЕ одна новость. Поток сам сказал, чем всё кончилось: движок помечает
+    // исчерпанный потолок отдельным подвидом итога, и человеку это говорится его словами.
+    const outOfTurns = resultEvent && resultEvent.subtype === 'error_max_turns'
+    const said = timedOut ? CHAT_TIMEOUT_TEXT : outOfTurns ? CHAT_LIMIT_TEXT : CHAT_FALLBACK_TEXT
+    return {
+      kind: 'text',
+      text: said,
+      error: error ?? (timedOut ? 'timeout' : outOfTurns ? 'max-turns' : 'empty-answer'),
+    }
   }
 
   const { text: prose, draft: rawDraft } = extractDraft(answerText)
