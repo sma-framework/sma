@@ -110,6 +110,49 @@ function countNoProgress(attempts) {
 }
 
 /**
+ * probeProcess(attemptTurns, taskId) → true | false | null — ЖИВ ЛИ ПРОЦЕСС ПОПЫТКИ.
+ *
+ * Вопрос задаётся ручке, и только ручке: своего реестра сторож не заводит (см. шапку), а по
+ * часам живость не выводится — именно эта подмена и хоронила молчащих работников.
+ *
+ * `null` — ЭТО НЕ «МЁРТВ», и ни одна ветка обхода не смеет прочесть его так. Так отвечают три
+ * разных случая, и все три означают одно: сказать нечего. Реестра не подали вовсе; ручка
+ * принадлежит другому демону (или демон пережил рестарт, и ручек у него не осталось); пробник
+ * бросил. Демон, собранный без реестра, получает `null` на каждую попытку и подметает в
+ * точности как до этой правки — по часам.
+ */
+function probeProcess(attemptTurns, taskId) {
+  if (!attemptTurns || typeof attemptTurns.alive !== 'function') return null
+  try {
+    const v = attemptTurns.alive(taskId)
+    return v === true ? true : v === false ? false : null
+  } catch {
+    return null // сломанный пробник — это «не знаю»; выдуманное «мёртв» стоит человеку работы
+  }
+}
+
+/**
+ * failReasonFor(processAlive) — ПРИГОВОР НАЗЫВАЕТСЯ СВОИМ ИМЕНЕМ, а не общим ярлыком.
+ *
+ * До этой правки все случаи уезжали в карточку одним словом `liveness_killed` («молчала дольше
+ * срока»), и человек не мог отличить упавший процесс от работника, который честно думал молча.
+ * Теперь слово отвечает на вопрос «что именно случилось»:
+ *
+ *   - `false` → `worker_process_gone`: ручка ЭТОГО демона видела конец процесса. Это факт, а не
+ *     догадка по тишине, и человеку он говорит «работник упал», а не «работник молчал».
+ *   - `true`  → `attempt_lifetime_exceeded`: живой доходит сюда ЕДИНСТВЕННЫМ путём — он перерос
+ *     MAX_ATTEMPT_LIFETIME_MS (ветка продления выше забирает всех остальных живых). Его не «убил
+ *     сторож за молчание»: он упёрся в потолок, а это другая починка — потолок или размер задачи.
+ *   - `null`  → `liveness_killed`: про процесс сказать нечего, судим по часам — ровно тот
+ *     случай, которым это слово и было; подпись у него не меняется.
+ */
+function failReasonFor(processAlive) {
+  if (processAlive === false) return 'worker_process_gone'
+  if (processAlive === true) return 'attempt_lifetime_exceeded'
+  return 'liveness_killed'
+}
+
+/**
  * livenessSweep({adapter, ledger, clock, expireMs, journal, attemptTurns}) — audit every non-terminal task
  * for a durable live path; requeue the ones that lost it. Returns a summary.
  *
@@ -154,6 +197,9 @@ export async function livenessSweep({ adapter, ledger, clock = Date.now, expireM
   let audited = 0
   let requeued = 0
   let throttled = 0
+  // Продления по ЖИВОМУ процессу — отдельным числом: это единственное место, где видно, сколько
+  // раз молчание было признано работой, а не смертью.
+  let renewed = 0
 
   for (const r of rows) {
     if (r.status === 'completed' || r.status === 'failed') continue
@@ -310,14 +356,20 @@ export async function livenessSweep({ adapter, ledger, clock = Date.now, expireM
     // осталась бы висеть навсегда, а именно её перевыдача — весь смысл этого обхода.
     // Очередь такой вызов принимает намеренно: непредъявленный жетон у неё — не отказ.
     //
-    // И ПРИГОВОР НАЗЫВАЕТСЯ СВОИМ ИМЕНЕМ. `liveness_killed`, а не `runtime_offline`: среда была
-    // жива — молчал работник, и карточка «среда исполнения недоступна» отправляла человека
-    // чинить машину, с которой ничего не случилось. `runtime_offline` остаётся за настоящей
-    // недоступностью среды (её называет тик, когда процесс не удалось даже запустить).
-    await adapter.fail(r.id, 'liveness_killed') // → attempt row (adapter) + pg-boss auto-retry
+    // И ПРИГОВОР НАЗЫВАЕТСЯ СВОИМ ИМЕНЕМ — ТЕМ, КОТОРОЕ ВЫБРАЛ `failReasonFor`, а не зашитым
+    // здесь одним на все случаи. Раньше в очередь уезжало `liveness_killed` независимо от того,
+    // что стало с процессом, и «работник упал» было для человека неотличимо от «работник молчал».
+    // Слово ТО ЖЕ, что ушло в строку журнала выше: одна свёртка — один приговор, и карточка не
+    // может разойтись с логом.
+    //
+    // `runtime_offline` не участвует ни в одной из трёх веток: среда была жива, молчал работник,
+    // и карточка «среда исполнения недоступна» отправляла человека чинить машину, с которой
+    // ничего не случилось. Это слово остаётся за настоящей недоступностью среды — её называет
+    // тик, когда процесс не удалось даже запустить.
+    await adapter.fail(r.id, reason) // → attempt row (adapter) + pg-boss auto-retry
     requeued += 1
     if (cooldownMs > 0) throttled += 1
   }
 
-  return { audited, requeued, throttled }
+  return { audited, requeued, throttled, renewed }
 }
