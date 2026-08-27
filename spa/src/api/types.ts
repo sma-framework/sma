@@ -1494,6 +1494,11 @@ export interface ChatReply {
 export interface ChatTurn {
   ts: string | null
   conversationId: string | null
+  /**
+   * Проект, при котором ход сказан. `null` — ход «без проекта»: он сказан до появления поля
+   * или при невыбранном проекте, и ни в одну проектную нить не подмешивается.
+   */
+  project: string | null
   role: 'user' | 'assistant'
   kind: string | null
   text: string
