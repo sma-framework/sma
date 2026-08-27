@@ -62,7 +62,12 @@ if (-not $SmaHome) { throw 'start-daemon-windows.ps1: could not work out SmaHome
 
 $logDir = Join-Path $HOME '.sma-daemon\logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-$logFile = Join-Path $logDir ("daemon-{0}.log" -f (Get-Date -Format 'yyyyMMdd'))
+
+# WHICH DAY A LINE BELONGS TO IS DECIDED IN ONE PLACE, and that place is a file of its own so
+# a drill can drive it across a midnight without starting Postgres or a daemon — see
+# daemon-log-day.ps1 and log-rotation-drill.ps1. Dot-sourced, so the two functions it defines
+# are ours; it starts nothing.
+. (Join-Path $PSScriptRoot 'daemon-log-day.ps1')
 
 function Write-Log([string]$msg) {
   $line = "{0} {1}" -f (Get-Date -Format 's'), $msg
@@ -71,7 +76,10 @@ function Write-Log([string]$msg) {
   # serving, which is the normal case — cannot append to it. With $ErrorActionPreference =
   # 'Stop' that write is fatal, and the script dies before it can even report that it had
   # nothing to do. Saying something is the job; saying it in the file is a preference.
-  try { Add-Content -Path $logFile -Value $line -ErrorAction Stop } catch { }
+  #
+  # The day is resolved here too, not once above: this wrapper can wait a minute and a half
+  # for the queue to answer, so even its own start-up lines can straddle a midnight.
+  try { Write-SmaDaemonLogLine -LogDir $logDir -Text ($line + [Environment]::NewLine) | Out-Null } catch { }
   Write-Host $line
 }
 
@@ -232,18 +240,14 @@ $ErrorActionPreference = 'Continue'
 # the rest of this script has been writing as UTF-8, so the daemon's own lines came out as
 # «[ S m a D a e m o n ]» and every Cyrillic sentence it prints — which is most of what it
 # says to an operator — became unreadable. Measured on a cold start. Merging the streams and
-# appending through Add-Content with an explicit encoding keeps ONE readable file.
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+# appending with an explicit encoding, one short-lived handle per line, keeps ONE readable
+# file that stays readable while the daemon it describes is still running.
 & node $mainMjs *>&1 | ForEach-Object {
-  # One SHORT-LIVED handle per line. Add-Content or Out-File would hold the file open for the
-  # daemon's whole life, and then nobody — not the founder, not a support command — could so
-  # much as read the log while the thing they are debugging is running. Measured: `Get-Content`
-  # answered «being used by another process» for as long as the daemon lived.
-  #
   # THE DATE IS RESOLVED PER LINE, NOT PER LAUNCH. This wrapper lives as long as the daemon
   # does, so a name computed once above pins every later day to the launch day's file.
   # Measured 26.08.2026: "daemon-20260826.log" never existed - 1134 lines of the 26th, and
   # the crash dump that ended the process, all sat in daemon-20260825.log where nobody looked.
-  $lineFile = Join-Path $logDir ("daemon-{0}.log" -f (Get-Date -Format 'yyyyMMdd'))
-  [System.IO.File]::AppendAllText($lineFile, ($_ | Out-String), $utf8NoBom)
+  # Write-SmaDaemonLogLine is the ONE place that decides the day; log-rotation-drill.ps1
+  # drives that same function across a fake midnight, which is how this line is proved.
+  Write-SmaDaemonLogLine -LogDir $logDir -Text ($_ | Out-String) | Out-Null
 }

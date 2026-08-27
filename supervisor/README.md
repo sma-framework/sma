@@ -10,6 +10,13 @@ host-agnostic by design; the OS binding is a thin supervisor layer only).
 - **Windows:** Task Scheduler harness (`sma-daemon-windows.task.xml`,
   `start-daemon-windows.ps1`), setup checklist (`setup-windows.md`, Russian twin
   `setup-windows.ru.md`), and the live contour smoke (`live-smoke-windows.mjs`).
+- **The daily log, and the proof that it rotates:** the wrapper lives as long as the
+  daemon does, so which day a line belongs to is decided PER LINE, in one place —
+  `daemon-log-day.ps1`. `log-rotation-drill.ps1` drives that same writer across a
+  midnight in a second (it moves the clock the writer reads instead of waiting for one)
+  and prints a JSON verdict naming both day files, so the rotation is confirmed by a run
+  rather than by reading the source:
+  `powershell -NoProfile -ExecutionPolicy Bypass -File supervisor/log-rotation-drill.ps1`.
 - **Linux (deferred):** systemd unit — the daemon core is already host-neutral, so
   this is add-only.
 - **Host-neutral, both ways:** `daemon-control.mjs` — the STOP and the RESTART that
