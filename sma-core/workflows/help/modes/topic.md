@@ -26,7 +26,7 @@ Emit a section from the full reference for the topic in `$ARGUMENTS`. Read `work
 | `capture`, `notes`, `todos` | `### Capturing Ideas, Notes, and Todos` |
 | `verify`, `verify-work`, `uat` | `### User Acceptance Testing` plus the `/sma-audit-uat` block |
 | `ship`, `pr` | `### Ship Work` plus the `/sma-pr-branch` block |
-| `review`, `peer-review` | The `/sma-review` block under `### Ship Work` |
+| `review`, `peer-review` | The **Cross-AI peer review** block under `### Ship Work` |
 | `audit`, `auditing`, `audit-milestone` | `### Milestone Auditing` |
 | `config`, `settings`, `configuration` | `### Configuration` |
 | `cleanup` | The `/sma-cleanup` block under `### Utility Commands` |

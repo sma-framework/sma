@@ -448,8 +448,8 @@ Usage: ask for it by name — "run the release ritual for phase 4", or "… as a
 
 ---
 
-**`/sma-review --phase N [--gemini] [--claude] [--codex] [--coderabbit] [--opencode] [--qwen] [--cursor] [--agy] [--all]`**
-Cross-AI peer review — invoke external AI CLIs to independently review phase plans.
+**Cross-AI peer review** — a workflow, not a slash command.
+Invokes external AI CLIs to independently review phase plans.
 
 - Detects available CLIs (gemini, claude, codex, coderabbit, agy)
 - Each CLI reviews plans independently with the same structured prompt
@@ -457,7 +457,7 @@ Cross-AI peer review — invoke external AI CLIs to independently review phase p
 - Produces REVIEWS.md with per-reviewer feedback and consensus summary
 - Feed reviews back into planning: `/sma-plan-phase N --reviews`
 
-Usage: `/sma-review --phase 3 --all`
+Usage: ask for it by name — "run cross-AI review for phase 3 with all reviewers", or name the reviewers you want ("… with codex only").
 
 ---
 
@@ -486,7 +486,7 @@ Add an idea to the backlog parking lot for future milestones.
 
 - Creates a backlog item under 999.x numbering in ROADMAP.md
 - Reserves ideas without committing to the current milestone
-- Surface and promote later via `/sma-review-backlog`
+- Surface and promote later by moving the item out of the `## Backlog` section of ROADMAP.md into the active milestone
 
 Usage: `/sma-capture --backlog "real-time notifications when events ship"`
 
@@ -647,7 +647,6 @@ The commands above cover the most common day-to-day flows. Every command listed 
 - **`/sma-manager [--analyze-deps]`** — Interactive command center for managing multiple phases from one terminal. `--analyze-deps` scans ROADMAP phases for dependency relationships before parallel execution.
 - **`/sma-workspace [--new | --list | --remove] [name]`** — Manage SMA workspaces: create, list, or remove isolated workspace environments.
 - **`/sma-workstreams`** — Manage parallel workstreams: list, create, switch, status, progress, complete, and resume.
-- **`/sma-review-backlog`** — Review and promote backlog items to active milestone.
 - **`/sma-milestone-summary [version]`** — Generate a comprehensive project summary from milestone artifacts for team onboarding and review.
 
 ### Repository Integration
