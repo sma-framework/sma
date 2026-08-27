@@ -824,6 +824,7 @@ export function appendTurn({ dir, turn = {}, fsImpl, clock = Date.now, cap = HIS
   }
   if (turn.taskRef) record.taskRef = turn.taskRef
   if (turn.draft) record.draft = turn.draft
+  if (turn.decision) record.decision = turn.decision
   if (Array.isArray(turn.attachments) && turn.attachments.length) record.attachments = turn.attachments
   if (turn.error) record.error = String(turn.error)
 
@@ -939,6 +940,7 @@ export async function handleChatTurn({ text, conversationId, turnId, deps = {} }
         text: answer.text ?? '',
         taskRef: answer.taskRef,
         draft: answer.draft,
+        decision: answer.decision,
         attachments,
         error: answer.error,
       },
@@ -1068,6 +1070,12 @@ export const CHAT_DRAFT_MODES = Object.freeze(['обычный', 'тщатель
 /** How a session hands back a proposed task: one line, a marker, then JSON. */
 const DRAFT_MARKER_RE = /^DRAFT:\s*(\{[\s\S]*?\})\s*$/gm
 
+/** How a session says «этой задаче пора решиться»: same mechanic, its own marker. */
+const DECISION_MARKER_RE = /^DECISION:\s*(\{[\s\S]*?\})\s*$/gm
+
+/** The longest подсказка к возврату a decision proposal may carry. */
+export const CHAT_DECISION_NOTE_CAP = 500
+
 /**
  * resolvePolicyVoice({policyDir, fsImpl}) → {source, text}.
  *
@@ -1167,6 +1175,39 @@ function boardBlock(board) {
 }
 
 /**
+ * decisionBlock(board, snapshot) → строки раздела «Если человек ведёт приёмку», или пустой
+ * список, когда решать нечего.
+ *
+ * Тот же механизм, что у черновика задачи: сессия предлагает СТРОКУ, ворота проверяют её
+ * структуру против реестра, окно рисует КНОПКИ, нажимает человек. Разговор по-прежнему
+ * ничего не запускает — «одобрить» здесь означает «предложить человеку кнопку одобрения»,
+ * и худшее, чего добьётся успешная инъекция, — кнопка, которую человек не нажмёт.
+ * Раздел печатается только когда в снимках есть, что решать: инструкция о приёмке при
+ * пустой очереди одобрений — это строка промпта, за которую заплачено зря.
+ */
+function decisionBlock(board, snapshot) {
+  const hasAwaiting =
+    (board && Array.isArray(board.awaiting) && board.awaiting.length > 0) ||
+    (snapshot && snapshot.awaitingDecision === true)
+  if (!hasAwaiting) return []
+  return [
+    '',
+    '## Если человек ведёт приёмку',
+    '',
+    'Задачи, ждущие одобрения, перечислены в снимке. Ведите приёмку разговором: рассказывайте',
+    'о задачах по одной — что это, сколько было попыток, чем они кончились, — и отвечайте на',
+    'вопросы. Когда человек готов решать по КОНКРЕТНОЙ задаче, последней строкой выведите:',
+    '',
+    'DECISION: {"taskId":"...","note":"..."}',
+    '',
+    'Окно нарисует под Вашим ответом кнопки «Одобрить» и «Вернуть» — решение принимает человек',
+    'своей рукой, строка лишь подставляет кнопки. Поле note — Ваша подсказка к возврату (что',
+    'доделать); если подсказки нет, поля тоже нет. Одна DECISION-строка на ответ: приёмка идёт',
+    'по одной задаче, а не скопом.',
+  ]
+}
+
+/**
  * buildChatPrompt({voice, text, workers, board, snapshot}) → the prompt for one conversation turn.
  *
  * Five layers, in this order: the VOICE (whichever the resolution chose), the FRAME of this
@@ -1212,6 +1253,7 @@ export function buildChatPrompt({ voice, text, workers, board, snapshot } = {}) 
     '## Команда',
     '',
     roster || '- (список работников пуст)',
+    ...decisionBlock(board, snapshot),
     ...boardBlock(board),
     ...snapshotBlock(snapshot),
     '',
@@ -1256,6 +1298,53 @@ export function validateDraft(draft, { workers } = {}) {
   const description = String(draft.description ?? '').trim()
   if (description) out.description = description.slice(0, CHAT_WORDS_TEXT_CAP)
   return out
+}
+
+/**
+ * validateDecision(decision, {board, snapshot}) → a checked proposal, or null.
+ *
+ * THE STRUCTURAL GATE before the «Одобрить»/«Вернуть» buttons — the decision twin of
+ * validateDraft. A task id the session named must REALLY be awaiting a decision: present in
+ * the board snapshot's awaiting list, or be the very card this conversation was opened from
+ * while it awaits. The TITLE is taken from OUR registry data, never from the session's prose —
+ * a button must name the task the daemon knows, not the task a payload invented. A proposal
+ * that fails goes nowhere: the human sees the text answer and no buttons.
+ *
+ * @param {object} decision
+ * @param {{board?:object, snapshot?:object}} [ctx]
+ * @returns {object|null}
+ */
+export function validateDecision(decision, { board, snapshot } = {}) {
+  if (!decision || typeof decision !== 'object') return null
+  const taskId = String(decision.taskId ?? '').trim()
+  if (!taskId) return null
+  const awaiting = board && Array.isArray(board.awaiting) ? board.awaiting : []
+  const fromBoard = awaiting.find((t) => t && t.id === taskId)
+  const fromCard = snapshot && snapshot.id === taskId && snapshot.awaitingDecision === true ? snapshot : null
+  if (!fromBoard && !fromCard) return null
+  const out = { taskId, title: (fromBoard && fromBoard.title) ?? (fromCard && fromCard.title) ?? null }
+  const note = String(decision.note ?? '').trim()
+  if (note) out.note = note.slice(0, CHAT_DECISION_NOTE_CAP)
+  return out
+}
+
+/** extractDecision(text) → {text, decision} — same mechanic as extractDraft, its own marker. */
+function extractDecision(text) {
+  const s = String(text ?? '')
+  let raw = null
+  let stripped = s
+  for (const m of s.matchAll(DECISION_MARKER_RE)) {
+    raw = m[1]
+    stripped = stripped.replace(m[0], '')
+  }
+  if (!raw) return { text: s, decision: null }
+  let parsed = null
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    parsed = null // a torn decision line is simply not a proposal
+  }
+  return { text: stripped.trim(), decision: parsed }
 }
 
 /** extractDraft(text) → {text, draft} — the LAST draft line wins; the marker leaves the prose. */
@@ -1476,5 +1565,11 @@ export async function dispatchFreeTurn({ text, turnId, deps = {} } = {}) {
   const { text: prose, draft: rawDraft } = extractDraft(answerText)
   const draft = rawDraft ? validateDraft(rawDraft, { workers }) : null
   if (draft) return { kind: 'draft', text: prose, draft }
-  return { kind: 'text', text: prose || answerText }
+  // the decision proposal rides the same lane: a marker line, a gate, and buttons a HUMAN presses
+  const { text: settled, decision: rawDecision } = extractDecision(prose || answerText)
+  const decision = rawDecision
+    ? validateDecision(rawDecision, { board: deps.board, snapshot: deps.snapshot })
+    : null
+  if (decision) return { kind: 'decision', text: settled, decision }
+  return { kind: 'text', text: settled || answerText }
 }

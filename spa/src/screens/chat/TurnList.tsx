@@ -1,5 +1,6 @@
-import type { ChatAnswerLink, ChatAttachment, ChatDraft, ChatSpendShare, ChatTaskRef } from '../../api/types'
+import type { ChatAnswerLink, ChatAttachment, ChatDecision, ChatDraft, ChatSpendShare, ChatTaskRef } from '../../api/types'
 import { statusTone, statusWord } from '../../shell/format'
+import { DecisionProposal } from './DecisionProposal'
 import { DraftCard } from './DraftCard'
 
 /**
@@ -28,6 +29,8 @@ export interface ChatEntry {
   ts: string | null
   taskRef?: ChatTaskRef
   draft?: ChatDraft
+  /** A task the reply says is ready to be decided — the buttons are the person's. */
+  decision?: ChatDecision
   /** Present only on the live answer — the transcript keeps figures nowhere. */
   spend?: ChatSpendShare[]
   link?: ChatAnswerLink
@@ -189,19 +192,29 @@ function LeadTurn({
   entry,
   createdTaskId,
   creating,
+  decidedOutcome,
+  deciding,
+  returning,
   onOpenTask,
   onFollowLink,
   onCreateDraft,
   onAmendDraft,
+  onApproveDecision,
+  onReturnDecision,
   onOpenAttachment,
 }: {
   entry: ChatEntry
   createdTaskId?: string
   creating: boolean
+  decidedOutcome?: 'approved' | 'returned'
+  deciding: boolean
+  returning: boolean
   onOpenTask: (taskId: string) => void
   onFollowLink: (screen: string) => void
   onCreateDraft: (entry: ChatEntry) => void
   onAmendDraft: (entry: ChatEntry) => void
+  onApproveDecision: (entry: ChatEntry) => void
+  onReturnDecision: (entry: ChatEntry, note: string) => void
   onOpenAttachment: (rel: string) => void
 }) {
   return (
@@ -232,6 +245,17 @@ function LeadTurn({
             onOpenTask={onOpenTask}
           />
         ) : null}
+        {entry.decision ? (
+          <DecisionProposal
+            decision={entry.decision}
+            outcome={decidedOutcome}
+            busy={deciding}
+            returning={returning}
+            onApprove={() => onApproveDecision(entry)}
+            onReturn={(note) => onReturnDecision(entry, note)}
+            onOpenTask={onOpenTask}
+          />
+        ) : null}
       </div>
     </div>
   )
@@ -241,12 +265,17 @@ export function TurnList({
   entries,
   createdTasks,
   creatingKey,
+  decided,
+  decidingKey,
+  decidingReturn = false,
   thinking,
   thinkingSec = 0,
   onOpenTask,
   onFollowLink,
   onCreateDraft,
   onAmendDraft,
+  onApproveDecision,
+  onReturnDecision,
   onOpenAttachment,
 }: {
   entries: ChatEntry[]
@@ -254,6 +283,12 @@ export function TurnList({
   createdTasks: Record<string, string>
   /** The draft whose «Создать» is in flight, if any. */
   creatingKey: string | null
+  /** Which decision proposals the person has decided, and how each one ended. */
+  decided: Record<string, 'approved' | 'returned'>
+  /** The decision whose button is in flight, if any. */
+  decidingKey: string | null
+  /** Whether the in-flight decision is a return — so the pressed button speaks, not both. */
+  decidingReturn?: boolean
   thinking: boolean
   /** Секунды текущего хода — цифра тикает в самом статусе: живую систему видно по движению
    *  (разведка 11.08, урок Multica «Thinking · 40s»). */
@@ -262,6 +297,8 @@ export function TurnList({
   onFollowLink: (screen: string) => void
   onCreateDraft: (entry: ChatEntry) => void
   onAmendDraft: (entry: ChatEntry) => void
+  onApproveDecision: (entry: ChatEntry) => void
+  onReturnDecision: (entry: ChatEntry, note: string) => void
   onOpenAttachment: (rel: string) => void
 }) {
   return (
@@ -275,10 +312,15 @@ export function TurnList({
             entry={entry}
             createdTaskId={createdTasks[entry.key]}
             creating={creatingKey === entry.key}
+            decidedOutcome={decided[entry.key]}
+            deciding={decidingKey === entry.key}
+            returning={decidingKey === entry.key && decidingReturn}
             onOpenTask={onOpenTask}
             onFollowLink={onFollowLink}
             onCreateDraft={onCreateDraft}
             onAmendDraft={onAmendDraft}
+            onApproveDecision={onApproveDecision}
+            onReturnDecision={onReturnDecision}
             onOpenAttachment={onOpenAttachment}
           />
         ),

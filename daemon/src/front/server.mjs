@@ -2564,9 +2564,24 @@ function pickAnswer(answer) {
     text: typeof a.text === 'string' ? a.text : '',
     ...(a.taskRef ? { taskRef: a.taskRef } : {}),
     ...(a.draft ? { draft: a.draft } : {}),
+    ...(a.decision ? { decision: pickDecision(a.decision) } : {}),
     ...(Array.isArray(a.spend) ? { spend: a.spend } : {}),
     ...(a.link ? { link: a.link } : {}),
     ...pickAttachments(a),
+  }
+}
+
+/**
+ * A decision proposal as it leaves the process: the task the daemon knows and the optional
+ * подсказка, field by field. The buttons the screen builds out of this press the ORDINARY
+ * approve/return doors — the proposal itself can do nothing.
+ */
+function pickDecision(d) {
+  const r = d && typeof d === 'object' ? d : {}
+  return {
+    taskId: r.taskId ?? null,
+    title: r.title ?? null,
+    ...(typeof r.note === 'string' && r.note !== '' ? { note: r.note } : {}),
   }
 }
 
@@ -2590,6 +2605,7 @@ function pickTurn(t) {
     text: typeof r.text === 'string' ? r.text : '',
     ...(r.taskRef ? { taskRef: r.taskRef } : {}),
     ...(r.draft ? { draft: r.draft } : {}),
+    ...(r.decision ? { decision: pickDecision(r.decision) } : {}),
     ...pickAttachments(r),
   }
 }

@@ -1387,7 +1387,7 @@ export type ChatTurnKind =
  * they sent comes back to the composer, never an apology for a "failure" they ordered).
  * Only the draft grows a button, and that button is a person's.
  */
-export type ChatAnswerKind = 'fact' | 'text' | 'draft' | 'stopped'
+export type ChatAnswerKind = 'fact' | 'text' | 'draft' | 'decision' | 'stopped'
 
 /** The grey link-card an answer carries beside its sentence. */
 export interface ChatTaskRef {
@@ -1455,11 +1455,24 @@ export interface ChatAnswerLink {
   label: string
 }
 
+/**
+ * A task the answer says is READY TO BE DECIDED. A proposal and nothing else: the buttons the
+ * screen builds out of it press the ordinary approve/return doors, and the title is the
+ * daemon's own registry word for the task — never the model's prose.
+ */
+export interface ChatDecision {
+  taskId: string | null
+  title: string | null
+  /** Подсказка к возврату — что доделать, если человек решит вернуть. */
+  note?: string
+}
+
 export interface ChatAnswer {
   kind: ChatAnswerKind
   text: string
   taskRef?: ChatTaskRef
   draft?: ChatDraft
+  decision?: ChatDecision
   spend?: ChatSpendShare[]
   link?: ChatAnswerLink
   /** Documents this reply named — at most five, and only ever the reply's own. */
@@ -1486,6 +1499,7 @@ export interface ChatTurn {
   text: string
   taskRef?: ChatTaskRef
   draft?: ChatDraft
+  decision?: ChatDecision
   /** The documents that reply named. Kept, because a stored reply still points at them. */
   attachments?: ChatAttachment[]
 }

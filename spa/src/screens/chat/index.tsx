@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { isNotReady } from '../../api/client'
-import { useChatHistoryQuery, useEnqueue, usePhaseStage, useSendChat, useStateQuery, useStopChat } from '../../api/queries'
+import { useApprove, useChatHistoryQuery, useEnqueue, usePhaseStage, useReturnTask, useSendChat, useStateQuery, useStopChat } from '../../api/queries'
 import type { ChatTurn } from '../../api/types'
-import { refusalWords } from '../../shell/format'
+import { approvalRefusal, refusalWords } from '../../shell/format'
 import { openScreen } from '../../shell/navigation'
 import { TaskPanel } from '../../shell/TaskPanel'
 import { useComposerDraft } from '../../shell/useComposerDraft'
@@ -65,6 +65,7 @@ function entryOf(turn: ChatTurn, index: number): ChatEntry {
     ts: turn.ts,
     ...(turn.taskRef ? { taskRef: turn.taskRef } : {}),
     ...(turn.draft ? { draft: turn.draft } : {}),
+    ...(turn.decision ? { decision: turn.decision } : {}),
     ...(turn.attachments ? { attachments: turn.attachments } : {}),
   }
 }
@@ -96,6 +97,9 @@ export function Screen() {
   const [reading, setReading] = useState<string | null>(null)
   const [createdTasks, setCreatedTasks] = useState<Record<string, string>>({})
   const [creatingKey, setCreatingKey] = useState<string | null>(null)
+  const [decided, setDecided] = useState<Record<string, 'approved' | 'returned'>>({})
+  const [decidingKey, setDecidingKey] = useState<string | null>(null)
+  const [decidingReturn, setDecidingReturn] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
 
   const seeded = useRef(false)
@@ -164,6 +168,7 @@ export function Screen() {
             ts: new Date().toISOString(),
             ...(answer.taskRef ? { taskRef: answer.taskRef } : {}),
             ...(answer.draft ? { draft: answer.draft } : {}),
+            ...(answer.decision ? { decision: answer.decision } : {}),
             ...(answer.spend ? { spend: answer.spend } : {}),
             ...(answer.link ? { link: answer.link } : {}),
             ...(answer.attachments ? { attachments: answer.attachments } : {}),
@@ -254,6 +259,68 @@ export function Screen() {
     setText(entry.draft.title)
   }
 
+  const approve = useApprove()
+  const returnTask = useReturnTask()
+
+  /**
+   * The person's hand on a DECISION the conversation proposed. Both handlers press the very
+   * doors the task panel presses — approve with its refusal words kept on screen, return
+   * with its required comment — and mark the entry so the card states the outcome. There is
+   * no effect here that decides: a click, a door, an answer.
+   */
+  const approveDecision = (entry: ChatEntry) => {
+    const taskId = entry.decision?.taskId
+    if (!taskId || decidingKey) return
+    setProblem(null)
+    setDecidingKey(entry.key)
+    setDecidingReturn(false)
+    approve.mutate(
+      { taskId },
+      {
+        // Отказ приёмки — не успех: карточка остаётся с кнопками, слова отказа — на экране.
+        onSuccess: (out) => {
+          setDecidingKey(null)
+          const refused = approvalRefusal(out)
+          if (refused) {
+            setProblem(refused)
+            return
+          }
+          setDecided((prev) => ({ ...prev, [entry.key]: 'approved' }))
+        },
+        onError: (err) => {
+          setDecidingKey(null)
+          setProblem(refusalWords(err))
+        },
+      },
+    )
+  }
+
+  const returnDecision = (entry: ChatEntry, note: string) => {
+    const taskId = entry.decision?.taskId
+    if (!taskId || decidingKey) return
+    const said = note.trim()
+    if (said.length === 0) {
+      setProblem('Напишите, что поправить — работник вернётся именно к этому.')
+      return
+    }
+    setProblem(null)
+    setDecidingKey(entry.key)
+    setDecidingReturn(true)
+    returnTask.mutate(
+      { taskId, note: said },
+      {
+        onSuccess: () => {
+          setDecidingKey(null)
+          setDecided((prev) => ({ ...prev, [entry.key]: 'returned' }))
+        },
+        onError: (err) => {
+          setDecidingKey(null)
+          setProblem(refusalWords(err))
+        },
+      },
+    )
+  }
+
   const followLink = (screen: string) => {
     const known = LINK_SCREENS[screen]
     if (known) openScreen({ screen: known })
@@ -298,12 +365,17 @@ export function Screen() {
               entries={entries}
               createdTasks={createdTasks}
               creatingKey={creatingKey}
+              decided={decided}
+              decidingKey={decidingKey}
+              decidingReturn={decidingReturn}
               thinking={send.isPending}
               thinkingSec={thinkingSec}
               onOpenTask={setOpenTaskId}
               onFollowLink={followLink}
               onCreateDraft={createFromDraft}
               onAmendDraft={amendDraft}
+              onApproveDecision={approveDecision}
+              onReturnDecision={returnDecision}
               onOpenAttachment={setReading}
             />
           )}

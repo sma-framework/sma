@@ -68,6 +68,8 @@ import {
   CHAT_FALLBACK_TEXT,
   createTurnRegistry,
   dispatchFreeTurn,
+  validateDecision,
+  CHAT_DECISION_NOTE_CAP,
 } from '../src/front/chat.mjs'
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'sma-chat-'))
@@ -652,6 +654,68 @@ describe('the free branch (outside the queue)', () => {
     expect(res2.answer.draft).toBeUndefined()
   })
 
+  it('a DECISION line becomes buttons only for a task that REALLY awaits a decision', async () => {
+    const board = {
+      activeProject: 'sma',
+      kpis: { queued: 0, awaitingApproval: 1, workersBusy: 0, workersTotal: 1 },
+      awaiting: [{ id: 'w-7', title: 'Ротация лога супервизора', project: 'sma', status: 'awaiting_approval' }],
+      queue: [],
+    }
+
+    // the structural gate, straight on: the registry's title wins, the payload's words lose
+    expect(validateDecision({ taskId: 'w-7', title: 'враньё из промпта', note: ' доделать тест ' }, { board })).toEqual({
+      taskId: 'w-7',
+      title: 'Ротация лога супервизора',
+      note: 'доделать тест',
+    })
+    expect(validateDecision({ taskId: 'w-999' }, { board })).toBe(null) // nobody by that name awaits
+    expect(validateDecision({ taskId: '' }, { board })).toBe(null)
+    expect(validateDecision({ taskId: 'w-7' }, {})).toBe(null) // no board, no card — no buttons
+    // the card the conversation was opened from vouches on its own
+    expect(
+      validateDecision({ taskId: 'c-3' }, { snapshot: { id: 'c-3', title: 'Карточка', awaitingDecision: true } }),
+    ).toEqual({ taskId: 'c-3', title: 'Карточка' })
+    expect(
+      validateDecision({ taskId: 'c-3' }, { snapshot: { id: 'c-3', title: 'Карточка', awaitingDecision: false } }),
+    ).toBe(null)
+    const long = validateDecision({ taskId: 'w-7', note: 'ц'.repeat(CHAT_DECISION_NOTE_CAP + 50) }, { board })
+    expect(long!.note!.length).toBe(CHAT_DECISION_NOTE_CAP)
+
+    // and through the free branch: the marker leaves the prose, the checked proposal rides
+    const dir = tmp()
+    const good = fakeSession([
+      resultLine('Задача готова к решению.\nDECISION: {"taskId":"w-7","note":"посмотрите дифф ротации"}'),
+    ])
+    const { deps: d } = freeDeps(dir, good, { board })
+    const res = await handleChatTurn({ text: 'Давай решим по ротации', deps: d })
+    expect(res.answer.kind).toBe('decision')
+    expect(res.answer.text).toBe('Задача готова к решению.')
+    expect(res.answer.decision).toEqual({
+      taskId: 'w-7',
+      title: 'Ротация лога супервизора',
+      note: 'посмотрите дифф ротации',
+    })
+    // the transcript keeps the proposal — a reopened screen still shows the buttons
+    const turns = readHistory({ dir, conversationId: res.conversationId })
+    expect(turns[1].decision).toEqual(res.answer.decision)
+
+    // a proposal about a task nobody awaits goes nowhere: prose without the marker, no buttons
+    const bad = fakeSession([resultLine('Решаем.\nDECISION: {"taskId":"w-999"}')])
+    const { deps: d2 } = freeDeps(tmp(), bad, { board })
+    const res2 = await handleChatTurn({ text: 'Одобри что-нибудь', deps: d2 })
+    expect(res2.answer.kind).toBe('text')
+    expect(res2.answer.text).toBe('Решаем.')
+    expect(res2.answer.decision).toBeUndefined()
+
+    // the prompt teaches the line only when there is something to decide
+    const voice = { text: 'v' }
+    expect(buildChatPrompt({ voice, text: 'вопрос', board })).toContain('Если человек ведёт приёмку')
+    expect(buildChatPrompt({ voice, text: 'вопрос' })).not.toContain('Если человек ведёт приёмку')
+    expect(
+      buildChatPrompt({ voice, text: 'вопрос', board: { ...board, awaiting: [] } }),
+    ).not.toContain('Если человек ведёт приёмку')
+  })
+
   it('a turn that never returns is answered honestly, and the child is stopped', async () => {
     const dir = tmp()
     const session = fakeSession([], { hang: true })
@@ -954,6 +1018,24 @@ describe('POST /api/chat — the conversation, reached through the front', () =>
       { rel: '.planning/phases/12-front/12-08-SUMMARY.md' },
     ])
     expect(res.body).not.toContain('секрет')
+  })
+
+  it('a decision proposal leaves the door as an explicit pick — junk stays inside', async () => {
+    const dir = tmp()
+    const { front } = chatFront(dir, {
+      handleChatTurn: async () => ({
+        conversationId: 'conv-41',
+        kind: 'free',
+        answer: {
+          kind: 'decision',
+          text: 'Готова к решению.',
+          decision: { taskId: 'w-7', title: 'Ротация лога', note: 'гляньте дифф', engineScratch: 'не наружу' },
+        },
+      }),
+    })
+    const res = await hit(front, { method: 'POST', url: '/api/chat', headers: chatHeaders(), body: { text: 'Решаем' } })
+    expect(JSON.parse(res.body).answer.decision).toEqual({ taskId: 'w-7', title: 'Ротация лога', note: 'гляньте дифф' })
+    expect(res.body).not.toContain('engineScratch')
   })
 
   it('a draft leaves the engine intact — the card the «Создать» button is built from', async () => {
