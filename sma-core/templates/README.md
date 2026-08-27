@@ -51,7 +51,7 @@ These files live inside a phase directory. They are NOT checked by W019 (which o
 | `NN-SECURITY.md` | `SECURITY.md` | `/sma-secure-phase` | Security threat model |
 | `NN-AI-SPEC.md` | `AI-SPEC.md` | `/sma-ai-integration-phase` | AI integration spec with eval strategy |
 | `NN-DEBUG.md` | `DEBUG.md` | `/sma-debug` | Debug session log |
-| `NN-REVIEWS.md` | *(inline)* | `/sma-review` | Cross-AI review feedback |
+| `NN-REVIEWS.md` | *(inline)* | the cross-AI peer review workflow | Cross-AI review feedback |
 
 ---
 

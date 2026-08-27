@@ -1,6 +1,6 @@
 <purpose>
 Cross-AI plan convergence loop — automates the manual chain:
-sma-plan-phase N → sma-review N --codex → sma-plan-phase N --reviews → sma-review N --codex → ...
+sma-plan-phase N → peer review N --codex → sma-plan-phase N --reviews → peer review N --codex → ...
 Plan-phase runs inline (bare Skill at depth 0) so it can spawn sma-planner/sma-plan-checker at depth 1.
 Review runs inside an isolated Agent (leaf skill — Bash only, no sub-agents needed).
 Orchestrator only does: init, loop control, parse CYCLE_SUMMARY for HIGH and actionable non-HIGH counts, stall detection, escalation.
@@ -134,9 +134,11 @@ Display: `◆ Cycle {cycle}/{MAX_CYCLES} — spawning review agent... (runs in a
 ```text
 Agent(
   description="Cross-AI review Phase {PHASE} cycle {cycle}",
-  prompt="Run /sma-review for Phase {PHASE}.
+  prompt="Run the cross-AI peer review for Phase {PHASE}.
 
-Execute: Skill(skill='sma-review', args='--phase {PHASE} {REVIEWER_FLAGS} {SMA_WS}')
+The peer review is a workflow, not a slash command: read
+sma-core/workflows/review.md and execute it in full with the arguments
+'--phase {PHASE} {REVIEWER_FLAGS} {SMA_WS}'.
 
 Complete the full review workflow. Do NOT return until REVIEWS.md is committed.
 
@@ -353,7 +355,7 @@ After plan-phase completes → go back to **step 5a** (review again).
 <success_criteria>
 - [ ] Config gate checked before running — exits with enable instructions if workflow.plan_review_convergence is false
 - [ ] Initial planning via inline Skill("sma-plan-phase") if no plans exist — NOT wrapped in Agent() (bug #936: depth-1 Agent has no Agent tool)
-- [ ] Review via Agent → Skill("sma-review") — isolated Agent is correct; sma-review is a Bash leaf with no sub-agent spawns; {SMA_WS} forwarded
+- [ ] Review via Agent → the review workflow (sma-core/workflows/review.md) — isolated Agent is correct; the review workflow is a Bash leaf with no sub-agent spawns; {SMA_WS} forwarded
 - [ ] Replan via inline Skill("sma-plan-phase --reviews") — NOT wrapped in Agent(); inline lets plan-phase spawn sma-planner/sma-plan-checker at depth 1
 - [ ] Orchestrator only does: init, config gate, loop control, parse CYCLE_SUMMARY for HIGH and actionable non-HIGH counts, stall detection, escalation
 - [ ] HIGH and actionable non-HIGH counts extracted from review agent's CYCLE_SUMMARY return message (not by grepping REVIEWS.md)
@@ -362,7 +364,7 @@ After plan-phase completes → go back to **step 5a** (review again).
 - [ ] Warn if HIGH_COUNT > 0 but ## Current HIGH Concerns section is absent from return message
 - [ ] Abort with clear error if current_actionable is absent or malformed
 - [ ] Warn if ACTIONABLE_COUNT > 0 but ## Current Actionable Non-HIGH Concerns section is absent from return message
-- [ ] The review Agent fully completes sma-review before returning (plan-phase runs inline — no Agent wrap)
+- [ ] The review Agent fully completes the review workflow before returning (plan-phase runs inline — no Agent wrap)
 - [ ] Loop exits on: no HIGH concerns and no actionable non-HIGH concerns (converged) OR max cycles (escalation)
 - [ ] Stall detection reported when total unresolved review concern count is not decreasing
 - [ ] STATE.md updated on convergence completion

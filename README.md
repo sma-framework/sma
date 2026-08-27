@@ -68,7 +68,7 @@ your-project/
 ├─ src/, package.json…   ← YOUR CODE — untouched
 │
 ├─ .claude/
-│  ├─ skills/            ← the 14 /sma-… commands you can now type
+│  ├─ skills/            ← the 15 /sma-… commands you can now type
 │  ├─ agents/            ← the helpers those commands call on
 │  ├─ sma-core/          ← the engine: the instructions behind each command
 │  ├─ memory/            ← your project's notes — installed EMPTY, the notes stay yours
@@ -636,6 +636,7 @@ The `/sma-*` workflow family (run inside a Claude Code session):
 | `/sma-plan-phase` | Create a detailed phase plan with a verification loop |
 | `/sma-execute-phase` | Execute all plans in a phase with wave-based parallelization |
 | `/sma-verify-work` | Validate built features through conversational UAT |
+| `/sma-qa` | Live QA: run the app, check every success criterion by using it, press the surface, file defects with repro steps |
 | `/sma-quick` | A quick task with SMA guarantees (atomic commits, state tracking), skipping optional agents |
 | `/sma-fast` | A trivial task inline — no subagents, no planning overhead |
 | `/sma-debug` | Systematic debugging with persistent state across context resets |
