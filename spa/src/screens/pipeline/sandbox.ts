@@ -51,9 +51,23 @@ export const SANDBOX_ALLOWANCES = ''
  */
 export const SANDBOX_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
 
+/*
+  РАМКА КРАСИТСЯ ТЕМОЙ ОКНА, А НЕ ТЕМОЙ ОПЕРАЦИОННОЙ СИСТЕМЫ.
+
+  Здесь стояло `color-scheme: light dark`, и это отдавало выбор цвета текста системе
+  человека: у владельца окно было светлым, а система — тёмной, поэтому браузер красил
+  текст внутри рамки БЕЛЫМ, а фон рамка не рисует вовсе (она прозрачна над светлой
+  подложкой окна). Получался белый текст на белом — документ открывался пустым листом
+  (жалоба владельца 27.08: «файлы внутри фазы когда открываю — белый бекграунд»).
+
+  Теперь цвет текста и подложки приезжает СНАРУЖИ, значениями из темы самого окна, и
+  рамка не спрашивает систему ни о чём: `color-scheme: only light` гасит и её
+  самодеятельность с формами и полосами прокрутки.
+*/
 const DOC_STYLE = `
-:root { color-scheme: light dark }
-body { margin: 0; padding: 2px 2px 24px; font: 13px/1.7 system-ui, -apple-system, Segoe UI, Roboto, sans-serif }
+:root { color-scheme: only light }
+body { margin: 0; padding: 2px 2px 24px; font: 13px/1.7 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+       color: var(--doc-tx); background: transparent }
 h1,h2,h3,h4,h5,h6 { margin: 1.4em 0 .5em; line-height: 1.3 }
 h1 { font-size: 1.5em } h2 { font-size: 1.28em } h3 { font-size: 1.12em }
 p, ul, ol, pre { margin: .7em 0 }
@@ -229,11 +243,11 @@ export function markdownToHtml(markdown: string): string {
  * ЦЕЛИКОМ, ничего из него не вырезается и не переписывается — разбор сам справится с тем, что у
  * файла есть собственные `html`/`head`/`body`, а политика к этому моменту уже объявлена.
  */
-export function sandboxDoc(inner: string): string {
+export function sandboxDoc(inner: string, textColor = 'CanvasText'): string {
   return (
     '<!doctype html><html><head><meta charset="utf-8">' +
     `<meta http-equiv="Content-Security-Policy" content="${SANDBOX_CSP}">` +
-    `<style>${DOC_STYLE}</style></head><body>${String(inner ?? '')}</body></html>`
+    `<style>:root{--doc-tx:${textColor}}${DOC_STYLE}</style></head><body>${String(inner ?? '')}</body></html>`
   )
 }
 
@@ -250,10 +264,14 @@ export function renderableAs(path: string): Rendered | null {
  *
  * markdown идёт через конвертер, html — своим текстом целиком; документ вокруг них один и тот же.
  */
-export function artifactSrcDoc(path: string, text: string): string | null {
+export function artifactSrcDoc(path: string, text: string, textColor?: string): string | null {
   const kind = renderableAs(path)
   if (!kind) return null
-  return sandboxDoc(kind === 'markdown' ? markdownToHtml(text) : String(text ?? ''))
+  const body = kind === 'markdown' ? markdownToHtml(text) : String(text ?? '')
+  // Цвет приезжает ЗНАЧЕНИЕМ из темы окна и экранируется, как всё, что попадает в документ:
+  // это строка из чужого места, даже когда чужое место — соседний файл этого же окна.
+  const tx = escapeHtml(String(textColor ?? '').trim()).slice(0, 64) || 'CanvasText'
+  return sandboxDoc(body, tx)
 }
 
 /** Отрисованный вид — по умолчанию там, где он есть; сырой текст — везде и всегда запасным. */

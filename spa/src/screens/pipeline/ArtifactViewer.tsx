@@ -65,7 +65,14 @@ export function ArtifactViewer({
   }, [onClose])
 
   const canRender = renderableAs(artifact.path) !== null
-  const srcDoc = view === 'rendered' && doc.data !== undefined ? artifactSrcDoc(artifact.path, doc.data) : null
+  // Цвет текста берётся из ТЕМЫ ОКНА и уезжает в рамку значением: рамка не спрашивает
+  // систему, какая у человека тема, — иначе документ красится белым по белому.
+  const docTextColor =
+    typeof window === 'undefined'
+      ? ''
+      : window.getComputedStyle(document.documentElement).getPropertyValue('--color-tx').trim()
+  const srcDoc =
+    view === 'rendered' && doc.data !== undefined ? artifactSrcDoc(artifact.path, doc.data, docTextColor) : null
 
   return (
     <>

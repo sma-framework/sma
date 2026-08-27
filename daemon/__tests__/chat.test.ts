@@ -599,6 +599,34 @@ describe('the free branch (outside the queue)', () => {
     expect(buildChatPrompt({ voice: { text: 'v' }, text: 'вопрос' })).not.toContain('Снимок доски')
   })
 
+  it('the thread REMEMBERS: previous turns of this conversation ride into the next prompt as data', async () => {
+    const dir = tmp()
+    const first = fakeSession([resultLine('Начал бы с самой старой задачи.')])
+    const { deps: d } = freeDeps(dir, first)
+    const opened = await handleChatTurn({ text: 'С чего начать разбор?', deps: d })
+
+    const second = fakeSession([resultLine('Да, именно с неё.')])
+    const { deps: d2 } = freeDeps(dir, second) // ТА ЖЕ книга — новая сессия, та же беседа
+    await handleChatTurn({ text: 'А почему именно с неё?', conversationId: opened.conversationId, deps: d2 })
+
+    const prompt = second.calls[0].prompt as string
+    expect(prompt).toContain('## Предыдущий разговор')
+    expect(prompt).toContain('С чего начать разбор?') // человек
+    expect(prompt).toContain('Начал бы с самой старой задачи.') // и ответ
+    expect(prompt).toContain('conversation-so-far') // за забором, как всякие данные
+
+    // первый ход беседы раздела не несёт — вспоминать нечего, и пустой рамки не рисуем
+    expect(first.calls[0].prompt as string).not.toContain('## Предыдущий разговор')
+
+    // ЧУЖАЯ беседа в нить не попадает: имя разговора решает, что вспомнилось. Имя задаётся
+    // здесь явно — часы стенда стоят, поэтому «новая» беседа сама по себе получила бы то же
+    // имя, что и первая, и проверка молча мерила бы не то.
+    const third = fakeSession([resultLine('Другая тема.')])
+    const { deps: d3 } = freeDeps(dir, third)
+    await handleChatTurn({ text: 'Совсем про другое', conversationId: 'conv-соседняя', deps: d3 })
+    expect(third.calls[0].prompt as string).not.toContain('С чего начать разбор?')
+  })
+
   it('a fresh install is not mute: the voice falls back to the neutral base policy', async () => {
     const dir = tmp()
     const session = fakeSession([resultLine('Отвечаю.')])

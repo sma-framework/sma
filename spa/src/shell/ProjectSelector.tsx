@@ -36,9 +36,22 @@ export function ProjectSelector() {
     return () => document.removeEventListener('mousedown', onDocClick)
   }, [open, hint])
 
-  const label = active ? active.name : 'Проект не выбран'
+  /*
+    ПЕРЕКЛЮЧЕНИЕ ВИДНО, ПОКА ОНО ИДЁТ.
+
+    Смена проекта — не мгновенное дело: демон переподписывает наблюдателя на другое дерево,
+    и окно перечитывает всё, что от проекта зависит. Раньше об этом не говорилось ничего:
+    человек нажимал имя, список закрывался, и окно на несколько секунд просто замирало на
+    старых числах (жалоба владельца 27.08 — «переключение занимает время и просто висит, не
+    хочу чтобы окно висело 10 секунд»). Теперь сам переключатель на это время называет, куда
+    он идёт, и не принимает второго нажатия: ожидание с именем — это работа, а без имени —
+    поломка.
+  */
+  const switchingTo = select.isPending ? (projects.find((p) => p.id === select.variables?.id) ?? null) : null
+  const label = switchingTo ? `${switchingTo.name} — открываю…` : active ? active.name : 'Проект не выбран'
 
   const pick = (id: string) => {
+    if (select.isPending) return
     setOpen(false)
     select.mutate(
       { id },
@@ -55,16 +68,21 @@ export function ProjectSelector() {
     <div ref={boxRef} className="relative px-3 pb-3.5">
       <button
         type="button"
-        onClick={() => many && setOpen((v) => !v)}
+        onClick={() => many && !select.isPending && setOpen((v) => !v)}
         aria-haspopup={many ? 'listbox' : undefined}
         aria-expanded={many ? open : undefined}
+        aria-busy={select.isPending || undefined}
         className={`flex h-10 w-full items-center gap-2.5 rounded-[10px] border border-side-bd bg-side-surf px-[11px] text-left ${
-          many ? 'cursor-pointer hover:border-side-tx3' : 'cursor-default'
+          many && !select.isPending ? 'cursor-pointer hover:border-side-tx3' : 'cursor-default'
         }`}
       >
         <span className="text-[10px] font-semibold tracking-[0.09em] text-side-tx3 uppercase">Проект</span>
         <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold text-white">{label}</span>
-        {many ? <span className="text-[9px] text-side-tx2">▼</span> : null}
+        {select.isPending ? (
+          <span aria-hidden className="h-3 w-3 flex-none animate-spin rounded-full border-2 border-side-tx3 border-t-transparent" />
+        ) : many ? (
+          <span className="text-[9px] text-side-tx2">▼</span>
+        ) : null}
       </button>
 
       {open ? (
