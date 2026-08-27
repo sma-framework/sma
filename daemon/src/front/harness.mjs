@@ -61,7 +61,11 @@ import { homedir as osHomedir } from 'node:os'
 import { join } from 'node:path'
 
 import { atomicWriteJson } from '../../../scripts/sma/lib/fs-atomics.mjs'
-import { resolveConfigPath, stripDerivedDirs } from '../config.mjs'
+// The config writer is IMPORTED, never re-implemented: this file used to carry its own
+// private twin of it, and a twin is how a rule ends up living in only one of the two places
+// that write the same file. See config.mjs `writeConfig` — it is read-modify-write, so a key
+// a person put in the file by hand survives a toggle pressed in the window.
+import { resolveConfigPath, writeConfig } from '../config.mjs'
 
 // ── named errors ──
 
@@ -461,28 +465,19 @@ export async function readHarness({ config, registry, adapter, repoDir, fsImpl, 
 // ── the two-step activation appliers (config/registry writes, atomic) ──
 
 /**
- * Write the PERSISTED shape of the config atomically to its resolved path (fsImpl fs
- * overrides). The appliers here receive the object `loadConfig` returned, which carries the
- * three read-time working directories; `stripDerivedDirs` is what keeps a toggle from
- * pinning them into the file — the same law the registry doors obey.
+ * THE APPLIERS BELOW WRITE THROUGH `writeConfig` IMPORTED FROM config.mjs — the one seam,
+ * shared with the registry doors. They receive the object `loadConfig` returned, which carries
+ * the three read-time working directories; the shared writer is what keeps a toggle from
+ * pinning them into the file, and what keeps a toggle from deleting a key the write model
+ * never heard of.
  *
  * THE BASELINE IS `launchDir`, NOT `repoDir`. Every applier in this file needs BOTH: the
  * repoDir to READ from (role files, the skills tree, the installed roster) and the launch
  * directory to decide what counts as derived when it WRITES. Handing the repoDir to the
  * writer is the defect that deleted a pin once already — a toggle then removes the
- * operator's pin from the file. The
- * default is this process's own cwd, so a caller that omits it still compares against a
- * launch directory rather than against a served tree.
+ * operator's pin from the file. The default is this process's own cwd, so a caller that omits
+ * it still compares against a launch directory rather than against a served tree.
  */
-function writeConfig(config, { env, homedir, fsImpl, launchDir = process.cwd() }) {
-  const path = resolveConfigPath({ env, homedir })
-  atomicWriteJson(path, stripDerivedDirs(config, { configPath: path, launchDir }), {
-    mkdirFn: fsImpl && fsImpl.mkdirSync,
-    writeFn: fsImpl && fsImpl.writeFileSync,
-    renameFn: fsImpl && fsImpl.renameSync,
-  })
-  return path
-}
 
 /**
  * Build a new profile from an APPROVED definition file + pool defaults (never request text).

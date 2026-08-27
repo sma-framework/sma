@@ -75,7 +75,7 @@ import { homedir as osHomedir } from 'node:os'
 import { join, basename, dirname } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
-import { atomicWriteJson } from '../../scripts/sma/lib/fs-atomics.mjs'
+import { atomicWriteJson, readJsonSafe } from '../../scripts/sma/lib/fs-atomics.mjs'
 // The ONE list of settings keys a worker profile may state for itself, imported rather
 // than re-typed here: a validator keeping its own copy would start accepting keys the
 // mirror silently drops, and nothing would say the two lists had parted.
@@ -518,19 +518,55 @@ export function stripDerivedDirs(config, args = {}) {
 }
 
 /**
- * writeConfig(config, {env, homedir, fsImpl, launchDir}) — the ONE write path: the persisted
- * shape (stripDerivedDirs) through the existing atomic writer, plus a best-effort re-stamp
- * of the 0600 mode (rename installs the temp file's mode, so re-stamping PRESERVES the
- * permissions rather than changing them).
+ * writeConfig(config, {env, homedir, fsImpl, launchDir}) — the ONE write path for EVERY door
+ * that persists the daemon config, in this module and in the front's harness appliers alike.
+ * It is READ-MODIFY-WRITE, not overwrite, and that is the whole point of it.
+ *
+ * WHY (the live incident of the night of 27.08.2026). A `telegram` block — a bot token and a
+ * paired chat id — was written into `~/.sma-daemon/config.json` BY HAND while the daemon was
+ * already running. Agents were then switched on in the window, the toggle applier wrote the
+ * config it was holding back over the file, and the whole block was gone. The bridge never
+ * came up though its code was in place, and nothing anywhere said a setting had been deleted.
+ *
+ * The cause is not the telegram block and never was: the daemon reads the file ONCE at boot
+ * and every door writes its in-memory copy back whole. Anything a human (or a support answer,
+ * or a future version) put in the file after that read is invisible to the writer and is
+ * erased by the next press of any switch. Tomorrow it is some other key.
+ *
+ * SO THE FILE ON DISK IS THE BASE, not the object in memory. The current file is re-read here,
+ * the caller's config is laid over it at the TOP LEVEL, and every key the write model has
+ * never heard of survives untouched. Key ORDER survives with it: object spread keeps the
+ * existing keys in their existing positions and appends only genuinely new ones, so a file a
+ * person reads with their eyes does not shuffle under them.
+ *
+ * THE BOUNDARY IS THE TOP LEVEL, deliberately. A door that rewrites `workers` or `federation`
+ * replaces that value entirely — it must, because removing an entry has to be able to remove
+ * it, and a deep merge cannot tell «absent» from «deleted». What is preserved is every
+ * top-level key the outgoing config does not carry at all.
+ *
+ * The derived working directories keep their own rule on top of this (stripDerivedDirs): they
+ * are never written down, but a value already in the file is only dropped when the derive
+ * would produce it again — which is why the merged object is stripped a second time rather
+ * than the caller's copy alone. A pin a person put in the file by hand stays a pin.
+ *
+ * An unreadable / non-object file merges onto nothing, which is exactly today's behaviour: the
+ * daemon cannot have loaded from it, so there is no operator state in it left to preserve.
+ *
+ * Plus a best-effort re-stamp of the 0600 mode (rename installs the temp file's mode, so
+ * re-stamping PRESERVES the permissions rather than changing them).
  *
  * `launchDir` defaults to this process's own cwd — the same directory `withDerivedDirs`
  * falls back to — so a caller that forgets it still compares against a launch directory and
  * never against a served repoDir.
  */
-function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl, launchDir = process.cwd() } = {}) {
+export function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl, launchDir = process.cwd() } = {}) {
   const io = fsImpl ?? {}
   const path = resolveConfigPath({ env, homedir })
-  atomicWriteJson(path, stripDerivedDirs(config, { configPath: path, launchDir }), {
+  const onDisk = readJsonSafe(path, { readFn: io.readFileSync ?? fsReadFileSync })
+  const current = onDisk && typeof onDisk === 'object' && !Array.isArray(onDisk) ? onDisk : {}
+  const mine = stripDerivedDirs(config, { configPath: path, launchDir })
+  const merged = stripDerivedDirs({ ...current, ...mine }, { configPath: path, launchDir })
+  atomicWriteJson(path, merged, {
     mkdirFn: io.mkdirSync,
     writeFn: io.writeFileSync,
     renameFn: io.renameSync,

@@ -71,6 +71,7 @@ import {
   UnknownProjectError,
 } from '../src/config.mjs'
 import { createFrontServer, PENDING_ROUTES } from '../src/front/server.mjs'
+import { applyAgentToggle } from '../src/front/harness.mjs'
 import { createDaemon } from '../src/main.mjs'
 
 let home: string
@@ -1322,5 +1323,137 @@ describe('worker profile — plugins, settings overrides and the personal-layer 
     expect(cfg.personalLayer).toBeUndefined()
     expect(cfg.workers[0].plugins).toBeUndefined()
     expect(cfg.workers[0].settingsOverrides).toBeUndefined()
+  })
+})
+
+/**
+ * A KEY THE WRITE MODEL NEVER HEARD OF SURVIVES EVERY CONFIG DOOR
+ * (the live incident of the night of 27.08.2026).
+ *
+ * A `telegram` block — a bot token and a paired chat id — was written into
+ * `~/.sma-daemon/config.json` BY HAND while the daemon was already running. Agents were then
+ * switched on in the window; the toggle applier wrote back the config object the process was
+ * holding, and the block was gone from the file. The bridge never came up though its code was
+ * in place, and nothing said a setting had been deleted.
+ *
+ * The class is general and it is not about telegram: the daemon reads the file ONCE at boot,
+ * so ANY door that persists its in-memory copy erases whatever a person (or a support answer,
+ * or a newer version) put in the file afterwards. Tomorrow it is some other key.
+ *
+ * These cases hold the WIRE, not the intention: each one hand-edits a foreign block into the
+ * file behind a deliberately STALE in-memory config, presses a real door, and then READS THE
+ * FILE BACK. They cover both halves of the (now single) write seam — the harness applier that
+ * fired that night, and a config.mjs registry door — plus the door as the window actually
+ * reaches it, over HTTP.
+ */
+describe('a config key the write model never heard of survives the doors', () => {
+  const readFile = () => JSON.parse(readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8'))
+  const readRaw = () => readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8')
+
+  // The block as a human types it: a secret this daemon has no schema for, and never had.
+  const TELEGRAM = { botToken: '7712345678:AAH-hand-written-by-a-person', chatId: -1001234567890 }
+
+  /**
+   * Boot the file, then hand-edit a foreign block into it behind the daemon's back, and return
+   * the config object the daemon is still holding — which has never seen `telegram`. That gap
+   * between the file and the loaded copy IS the defect's whole habitat.
+   */
+  function seedHandEdit(extra: object = { telegram: TELEGRAM }) {
+    const stale = loadConfig({ env: {}, homedir, repoDir: repo })
+    const path = resolveConfigPath({ env: {}, homedir })
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), ...extra }, null, 2), 'utf8')
+    return stale
+  }
+
+  const io = () => ({ env: {}, homedir, launchDir: repo })
+
+  it('the harness applier that erased it — an agent toggle leaves the hand-written block alone', () => {
+    const stale = seedHandEdit()
+    expect(stale.telegram).toBeUndefined() // the in-memory copy is blind to it, and stays blind
+
+    applyAgentToggle({ config: stale, id: 'max-2', enabled: false, repoDir: repo, ...io() })
+
+    const onDisk = readFile()
+    expect(onDisk.telegram).toEqual(TELEGRAM) // the whole reason for this file
+    // and the toggle itself actually happened — preserving must not mean refusing to write
+    expect(onDisk.workers.find((w: any) => w.id === 'max-2').enabled).toBe(false)
+  })
+
+  it('a config.mjs registry door does the same — one seam, not two behaviours', () => {
+    const stale = seedHandEdit()
+    applyPipelineToggle(stale, { enabled: true }, io())
+    expect(readFile().telegram).toEqual(TELEGRAM)
+    expect(readFile().pipeline.enabled).toBe(true)
+
+    // and a second door over the result of the first: the block does not decay by round trips
+    addProject(loadConfig({ env: {}, homedir, repoDir: repo }), { id: 'second', name: 'Second' }, io())
+    const onDisk = readFile()
+    expect(onDisk.telegram).toEqual(TELEGRAM)
+    expect(onDisk.projects.some((p: any) => p.id === 'second')).toBe(true)
+  })
+
+  it('through the door as the window presses it — POST /api/agent/toggle over HTTP', async () => {
+    const stale = seedHandEdit()
+    const TOKEN = stale.token
+    const front = createFrontServer({
+      config: stale,
+      deps: { applyAgentToggle, env: {}, homedir, repoDir: repo, launchDir: repo },
+    })
+
+    const req: any = Readable.from([Buffer.from(JSON.stringify({ id: 'max-3', enabled: false }), 'utf8')])
+    req.method = 'POST'
+    req.url = '/api/agent/toggle'
+    req.headers = { authorization: 'Bearer ' + TOKEN, 'content-type': 'application/json' }
+    req.socket = { remoteAddress: '127.0.0.1' }
+    const res: any = {
+      statusCode: 0,
+      body: '',
+      headersSent: false,
+      writeHead(code: number) {
+        res.statusCode = code
+        res.headersSent = true
+        return res
+      },
+      end(chunk?: any) {
+        if (chunk != null) res.body += String(chunk)
+        return res
+      },
+    }
+    await front.handle(req, res)
+    expect(res.statusCode).toBe(200)
+
+    const onDisk = readFile()
+    expect(onDisk.telegram).toEqual(TELEGRAM)
+    expect(onDisk.workers.find((w: any) => w.id === 'max-3').enabled).toBe(false)
+  })
+
+  it('the file a person reads with their eyes does not shuffle: key order is preserved', () => {
+    const stale = seedHandEdit()
+    const before = Object.keys(readFile())
+    applyAgentToggle({ config: stale, id: 'max-2', enabled: false, repoDir: repo, ...io() })
+    const after = Object.keys(readFile())
+
+    // every key that was there is still there, in the SAME order; nothing is reshuffled and
+    // nothing new appears in the middle of the file
+    expect(after.slice(0, before.length)).toEqual(before)
+    expect(readRaw()).toContain('\n  "telegram": {') // still two-space JSON, still human-readable
+  })
+
+  it('preserving does not resurrect a derived working directory (both rules hold at once)', () => {
+    const stale = seedHandEdit()
+    applyAgentToggle({ config: stale, id: 'max-2', enabled: false, repoDir: repo, ...io() })
+    const onDisk = readFile()
+    expect(onDisk.telegram).toEqual(TELEGRAM)
+    expect(onDisk.repoDir).toBeUndefined()
+    expect(onDisk.dataDir).toBeUndefined()
+    expect(onDisk.ledgerDir).toBeUndefined()
+  })
+
+  it('a pin a person adds to the file AFTER the load is not deleted by the next toggle', () => {
+    // the same defect wearing the trio's clothes: the stale copy carries the DERIVED repoDir,
+    // so a writer that trusted only its own copy would drop the pin the file just gained.
+    const stale = seedHandEdit({ telegram: TELEGRAM, repoDir: 'D:/pinned-tree' })
+    applyAgentToggle({ config: stale, id: 'max-2', enabled: false, repoDir: repo, ...io() })
+    expect(readFile().repoDir).toBe('D:/pinned-tree')
   })
 })
