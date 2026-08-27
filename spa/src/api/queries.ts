@@ -356,6 +356,21 @@ export function useToggleMcp() {
 }
 
 /**
+ * Connect the owner's own Telegram bot, mint it a fresh pairing code, or disconnect it.
+ *
+ * The picture is re-read after every one of the three, and that is not decoration: the state
+ * a person acts on next — «ждёт код», the code itself, «подключён к чату N» — lives in the
+ * harness payload, so an action that did not refresh it would leave the screen showing the
+ * link as it was BEFORE the press.
+ */
+export function useTelegramLink() {
+  return useAction<{ action: api.TelegramAction; botToken?: string }, Awaited<ReturnType<typeof api.connectTelegram>>>(
+    (input) => api.connectTelegram(input.action, input.botToken),
+    [HARNESS_KEY],
+  )
+}
+
+/**
  * Смена проекта целиком, одной функцией и без React: сказать двери, записать выбор в зеркало
  * (это делает сам вызов двери, и только при её согласии) и заказать перечитывание картины.
  *

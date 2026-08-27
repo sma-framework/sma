@@ -62,6 +62,7 @@ import { join } from 'node:path'
 
 import { atomicWriteJson } from '../../../scripts/sma/lib/fs-atomics.mjs'
 import { resolveConfigPath, stripDerivedDirs } from '../config.mjs'
+import { telegramLinkView } from '../telegram/pairing.mjs'
 
 // ── named errors ──
 
@@ -416,20 +417,24 @@ function mcpEntry(server, env) {
 }
 
 /**
- * readHarness({config, registry, adapter, repoDir, fsImpl, env, homedir}) → ONE explicit-pick
- * payload {agents, skills, mcp, drafts, stockTeam} for the 9.6 modules. Agents join profile +
+ * readHarness({config, registry, adapter, repoDir, fsImpl, env, homedir, clock}) → ONE
+ * explicit-pick payload {agents, skills, mcp, drafts, stockTeam, telegram}. Agents join profile +
  * roleFile frontmatter; skills scan the tree + per-profile assignment; mcp exposes env-var
  * NAMES with '[set]'/'[unset]' only (values NEVER appear); drafts are the forge tasks awaiting
  * approval (kind + draftPath); stockTeam is the installed roster (readStockTeam). No field
  * carries tokens, commands, or file bodies.
  *
  * `stockTeam` is ADDITIVE: the four keys the existing screens already read keep
- * their shape exactly, the way the queue side's `project` field was added.
+ * their shape exactly, the way the queue side's `project` field was added. `telegram` is
+ * additive in the SAME way and is the state of the owner's own bot — not connected, waiting
+ * for its pairing code, or linked to a named chat. It carries FOUR CHARACTERS of the token
+ * and nothing else of it: the read model that the «Подключения» screen renders may never be
+ * a way to read a credential back out (telegramLinkView owns that promise).
  *
- * @param {{config:object, registry?:object, adapter?:object, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function}} args
- * @returns {Promise<{agents:Array, skills:Array, mcp:Array, drafts:Array, stockTeam:Array}>}
+ * @param {{config:object, registry?:object, adapter?:object, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function, clock?:Function}} args
+ * @returns {Promise<{agents:Array, skills:Array, mcp:Array, drafts:Array, stockTeam:Array, telegram:object}>}
  */
-export async function readHarness({ config, registry, adapter, repoDir, fsImpl, env = process.env, homedir = osHomedir } = {}) {
+export async function readHarness({ config, registry, adapter, repoDir, fsImpl, env = process.env, homedir = osHomedir, clock } = {}) {
   const cfg = config ?? {}
   const agents = (cfg.workers ?? []).map((w) => agentEntry(w, repoDir, fsImpl))
   const skills = scanSkills(cfg, repoDir, fsImpl)
@@ -455,7 +460,7 @@ export async function readHarness({ config, registry, adapter, repoDir, fsImpl, 
       }))
   }
 
-  return { agents, skills, mcp, drafts, stockTeam }
+  return { agents, skills, mcp, drafts, stockTeam, telegram: telegramLinkView(cfg, { now: (clock ?? Date.now)() }) }
 }
 
 // ── the two-step activation appliers (config/registry writes, atomic) ──

@@ -2676,14 +2676,14 @@ describe('deriveState — idleReason on queued rows', () => {
 })
 
 describe('POST /api/approve — a per-file migration yes rides the EXISTING door', () => {
-  it('the route table is still exactly sixty-three entries and carries no migration route', () => {
+  it('the route table is still exactly sixty-four entries and carries no migration route', () => {
     // V5.4 freeze (53) + chat/stop + redirect (phase «Двигатель» re-freeze) + the batch request
     // + the word its owner answers a stopped batch with + the two doors of a task's words
     // + the composition a phrase could have, proposed for confirmation
     // + the order that stops one echelon of one phase and starts it again
     // + the door a person cancels a task through
     // + the door that reads the folder of one phase (its tree, and one file of it as text).
-    expect(Object.keys(ROUTES)).toHaveLength(63)
+    expect(Object.keys(ROUTES)).toHaveLength(64)
     expect(Object.keys(ROUTES).filter((k) => /migrat/i.test(k))).toEqual([])
   })
 

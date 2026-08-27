@@ -55,6 +55,9 @@ import {
   addAccount,
   applyPipelineToggle,
   applyBudgetStop,
+  applyTelegramConnect,
+  applyTelegramPair,
+  applyTelegramDisconnect,
   pipelineEnabled,
 } from './config.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
@@ -751,7 +754,47 @@ export function createDaemon(o = {}) {
   // a daemon without one runs byte-for-byte the way it ran before the bridge existed. The
   // decision lives in the factory rather than in a condition here for the usual reason — a
   // predicate written twice is a predicate that will one day disagree with itself.
-  const telegram = o.telegram ?? createTelegramBridge({ config, log: (line) => console.log(`[SmaDaemon] ${line}`) })
+  //
+  // ─ AND IT IS REBUILT WHEN THE OWNER CONNECTS ONE FROM THE WINDOW ─────────────────────
+  // The token now arrives at a RUNNING daemon: a person types it on the «Подключения»
+  // screen, the door writes it into the config, and the loop that has to receive the pairing
+  // code did not exist a second ago. Without the rebuild below, connecting a bot would work
+  // and then wait for a restart nobody knows to perform — the code would go into a chat no
+  // process was listening to. So the bridge is held in a variable, and `telegramRestart`
+  // stops the old one and constructs a new one from the config as it is NOW; the factory
+  // still owns the decision, so a disconnect (no token) rebuilds to null and the loop stops.
+  let telegram = null
+  let telegramRunning = false
+  const telegramLog = (line) => console.log(`[SmaDaemon] ${line}`)
+  const buildTelegram = () =>
+    createTelegramBridge({
+      config,
+      log: telegramLog,
+      // WHO WRITES THE PAIR DOWN. The loop learns a chat id and hands it here; this is the
+      // only path from a Telegram message to the config file, and it goes through the same
+      // applier the door uses. The in-process config is refreshed in the same breath (the
+      // one-config rule the front's appliers obey — a write nobody sees is a write that
+      // did not happen as far as the next request is concerned).
+      onPaired: ({ chatId, chatTitle }) => {
+        const next = applyTelegramPair(config, { chatId, chatTitle }, { launchDir })
+        if (next && next.telegram) config.telegram = next.telegram
+        return true
+      },
+      now: clock,
+    })
+  const telegramRestart = () => {
+    if (telegram) {
+      try {
+        telegram.stop()
+      } catch {
+        /* a link that refuses to stop never blocks the next one */
+      }
+    }
+    telegram = o.telegram ?? buildTelegram()
+    if (telegramRunning && telegram) void telegram.start()
+    return telegram
+  }
+  telegram = o.telegram ?? buildTelegram()
 
   // (4b) THE CONNECTED PROJECT. The window shows a project the daemon does
   // not own — read-only, live while the watcher holds, and honest about it when it does not.
@@ -1104,6 +1147,15 @@ export function createDaemon(o = {}) {
         // decision any worker, workflow or verb gets a path to.
         applyPipelineToggle,
         applyBudgetStop,
+        // THE TELEGRAM LINK, FROM THE WINDOW. Two appliers and one restart, wired exactly
+        // like every other config write: the door owns the shape of the request, the applier
+        // owns the file, and `telegramRestart` is what makes the loop match the config it was
+        // just given — the bot a person connects starts listening without a restart. The
+        // THIRD applier — the one that writes the paired chat — is deliberately NOT here: it
+        // is wired to the loop and to nothing else, so no request can name a chat id.
+        applyTelegramConnect,
+        applyTelegramDisconnect,
+        telegramRestart,
         federation, // the action-proxy engine + the pairing book
         aggregator,
         // the «Разговор» engine — INJECTED, because its free branch spawns a child: a
@@ -1411,7 +1463,14 @@ export function createDaemon(o = {}) {
     federation,
     // NULL unless a bot is connected — returned so the suite can assert the ABSENCE of the
     // loop on a daemon nobody asked to have one, which is the only way to check an absence.
-    telegram,
+    //
+    // A GETTER, because the link is no longer decided once at boot: connecting a bot from the
+    // window rebuilds it, and a value copied onto this object at construction would keep
+    // answering with the loop that used to be there — the exact «write nobody sees» defect the
+    // in-process config refresh exists to prevent, one level up.
+    get telegram() {
+      return telegram
+    },
     front,
     daemon,
     // WHAT THE ROOT ACTUALLY WIRED, returned so it can be asserted rather than assumed. This
@@ -1455,6 +1514,9 @@ export function createDaemon(o = {}) {
       daemon.start()
       // The link, when there is one. Not awaited: its promise is the loop's whole life, and
       // the loop swallows every refusal of its own, so nothing here can be left unhandled.
+      // The flag is what a bot connected LATER inherits: `telegramRestart` starts the loop it
+      // builds only for a daemon that is itself running.
+      telegramRunning = true
       if (telegram) void telegram.start()
       // SAY IT OUT LOUD. The conveyor ships off, so a daemon that starts and then does
       // nothing is the NORMAL state — and it is indistinguishable from a broken one unless
@@ -1468,6 +1530,7 @@ export function createDaemon(o = {}) {
     async stop() {
       stopWatch(projectWatch)
       projectWatch = null
+      telegramRunning = false
       if (telegram) telegram.stop()
       daemon.stop()
       if (front.server && typeof front.server.close === 'function') front.server.close()

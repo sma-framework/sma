@@ -1271,12 +1271,38 @@ export interface StockTeamCard {
   problem: string | null
 }
 
+/**
+ * The three states of the owner's own Telegram bot, and the whole vocabulary this screen
+ * renders. 'off' — nothing connected. 'awaiting_code' — a token is stored and the chat has
+ * not proved itself yet. 'linked' — a chat sent the pairing code back and was written down.
+ */
+export type TelegramLinkStatus = 'off' | 'awaiting_code' | 'linked'
+
+/**
+ * What the window is told about the link — and note what is NOT here: the bot token.
+ *
+ * `tokenTail` is four characters, enough to recognise WHICH bot is connected and useless for
+ * anything else; the daemon's read model never puts the whole value in this object, so there
+ * is no field on this screen that could leak it into a screenshot or a console. `code` is the
+ * pairing code the owner is looking at right now — short-lived by construction, and null once
+ * its ten minutes are over (a dead code shown as if it worked is worse than none).
+ */
+export interface TelegramLink {
+  status: TelegramLinkStatus
+  tokenTail: string | null
+  code: string | null
+  expiresAt: number | null
+  codeExpired: boolean
+  chat: { id: string; title: string | null } | null
+}
+
 export interface HarnessPayload {
   agents: AgentCard[]
   skills: SkillCard[]
   mcp: McpCard[]
   drafts: DraftCard[]
   stockTeam: StockTeamCard[]
+  telegram: TelegramLink
 }
 
 export type DraftKind = 'agent' | 'skill' | 'mcp'

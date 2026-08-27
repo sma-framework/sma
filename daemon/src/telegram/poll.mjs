@@ -23,6 +23,23 @@
  * BEFORE the content is looked at, so a photo from a stranger cannot even reach the
  * «text only» branch.
  *
+ * ═══════════════ STEP TWO: THE CHAT PROVES ITSELF, AND NOBODY OPENS A FILE ══════════
+ * There is now exactly ONE thing an unpaired chat may do, and it lives inside the stranger
+ * branch rather than beside it: send back the PAIRING CODE the owner is looking at in the
+ * window. The order is what makes that safe — the code is only ever considered for a daemon
+ * whose config carries NO pair yet (`paired === null`), so a bot that already belongs to a
+ * chat cannot be taken over by anybody who guesses a code, and a chat that gets the code
+ * wrong is refused with the same sentence every other stranger gets.
+ *
+ * WRITING THE PAIR DOWN IS SOMEBODY ELSE'S JOB. This loop calls `onPaired` — the collaborator
+ * the composition root wires to the config applier — and believes nothing until it answers.
+ * A refusal is told to the chat as a refusal: a «готово» over a link that was not persisted
+ * is the one outcome worse than a failed pairing, because the person stops trying.
+ *
+ * The code is one-time and time-limited, and NEITHER property is enforced here: both live in
+ * pairing.mjs and in the applier that spends the code by removing it. A loop that also kept a
+ * «used» flag would be a second opinion about the same fact.
+ *
  * VOICE, PHOTOS AND DOCUMENTS ARE ANSWERED POLITELY AND DROPPED. Step one understands text.
  * Saying so is better than silence: the owner learns the bot is alive and that this particular
  * thing is not built yet.
@@ -40,15 +57,23 @@ import {
   telegramChatId,
   telegramConfigured,
 } from './client.mjs'
+import { matchesPairingCode } from './pairing.mjs'
 
 /** The paired owner's answer at step one — the link, said plainly, with the next step named. */
 export const LINK_REPLY = 'Связь есть. Мозг подключается следующим шагом — пока решения и разговор в окне.'
+
+/** The one message a chat gets when its code was right: the pair is made, and it is named. */
+export const PAIRED_REPLY = 'Готово — этот чат подключён к SMA. Дальше пишите сюда, окно покажет то же самое.'
 
 /** Anybody else. One sentence, and nothing behind it. */
 export const STRANGER_REPLY = 'Этот бот принадлежит владельцу SMA.'
 
 /** The owner sent something that is not text. */
 export const NON_TEXT_REPLY = 'Пока только текст — голос, фото и документы этот шаг ещё не понимает.'
+
+/** The code was right and the daemon could not write the pair down. Said, never swallowed. */
+export const PAIRING_FAILED_REPLY =
+  'Код принят, но записать пару не удалось — повторите отправку кода, он ещё действует.'
 
 /** How long the Bot API holds one poll open, in seconds. */
 export const POLL_TIMEOUT_SECONDS = 25
@@ -71,7 +96,15 @@ const defaultSleep = (ms) =>
  * @param {{config:object, client?:object, fetchImpl?:Function, log?:Function, sleep?:Function}} o
  * @returns {null|{start:Function, stop:Function, pollOnce:Function, handleUpdate:Function, running:Function, offset:Function}}
  */
-export function createTelegramBridge({ config, client, fetchImpl, log = () => {}, sleep = defaultSleep } = {}) {
+export function createTelegramBridge({
+  config,
+  client,
+  fetchImpl,
+  log = () => {},
+  sleep = defaultSleep,
+  onPaired,
+  now = Date.now,
+} = {}) {
   if (!telegramConfigured(config)) return null
 
   const api = client ?? createTelegramClient({ config, fetchImpl })
@@ -86,6 +119,46 @@ export function createTelegramBridge({ config, client, fetchImpl, log = () => {}
       log(redactBotToken(line, telegramBotToken(config)))
     } catch {
       /* a log that refuses never stops the link */
+    }
+  }
+
+  /**
+   * chatName(chat) — what to CALL this chat on the screen, or ''.
+   *
+   * A person recognises «Мария» and «Стройка — прораб»; nobody recognises `-1001234567890`.
+   * Telegram names a group with `title` and a private chat with a first/last name or a
+   * @username, so all three are read here and the first one that exists wins. A chat Telegram
+   * named nothing gets no name at all — the window then shows the number, which is honest,
+   * rather than a word this module invented.
+   */
+  function chatName(chat) {
+    if (!chat || typeof chat !== 'object') return ''
+    const first = [chat.first_name, chat.last_name].filter((p) => typeof p === 'string' && p.trim() !== '').join(' ')
+    for (const candidate of [chat.title, first, chat.username]) {
+      if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim()
+    }
+    return ''
+  }
+
+  /**
+   * claimPair(chatId, chat) → did the pair get WRITTEN DOWN?
+   *
+   * The loop does not touch the config file itself: it hands the fact to the collaborator the
+   * composition root wired (`onPaired`), which is the one place that persists and refreshes
+   * the in-process config. A bridge built with no such collaborator — every unit test of the
+   * loop — cannot pair at all, which is the correct answer for a loop nobody gave a writer to.
+   *
+   * A refusal is REPORTED, never swallowed into a false «готово»: the caller keeps the chat a
+   * stranger and the code unspent.
+   */
+  async function claimPair(chatId, chat) {
+    if (typeof onPaired !== 'function') return false
+    try {
+      const written = await onPaired({ chatId: String(chatId), chatTitle: chatName(chat) })
+      return written !== false
+    } catch (err) {
+      say(`telegram: пару записать не удалось — ${(err && err.message) || err}`)
+      return false
     }
   }
 
@@ -116,7 +189,20 @@ export function createTelegramBridge({ config, client, fetchImpl, log = () => {}
     const paired = telegramChatId(config)
     if (paired === null || String(chatId) !== paired) {
       // THE STRANGER BRANCH, and it is the first one on purpose: nothing below this line may
-      // run for a chat the owner has not paired.
+      // run for a chat the owner has not paired. The ONE thing an unpaired chat may do is
+      // prove itself with the code the owner is looking at in the window right now.
+      const sent = typeof message.text === 'string' ? message.text.trim() : ''
+      if (paired === null && sent !== '' && matchesPairingCode(config, sent, now())) {
+        if (await claimPair(chatId, message.chat)) {
+          await reply(chatId, PAIRED_REPLY)
+          return { action: 'paired' }
+        }
+        // The code was right and the pair could NOT be written down. Saying «готово» here
+        // would promise a link this daemon does not have, so the chat is told the truth and
+        // stays a stranger — the code is untouched and the next message can pair for real.
+        await reply(chatId, PAIRING_FAILED_REPLY)
+        return { action: 'refused' }
+      }
       await reply(chatId, STRANGER_REPLY)
       return { action: 'refused' }
     }
