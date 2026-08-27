@@ -4,7 +4,7 @@
  *
  * WHY THIS FILE EXISTS. A task has TWO recovery paths and until now only one of them left
  * evidence. When the liveness sweep notices a silent worker first, it calls
- * `adapter.fail(id, 'runtime_offline')` and the adapter appends an attempt row. When the
+ * `adapter.fail(id, 'liveness_killed')` and the adapter appends an attempt row. When the
  * DAEMON is down while a worker dies, nobody calls anything: pg-boss's own lease expiry
  * returns the job from `active` to `created` with `retry_count + 1`, and the ledger holds
  * NOTHING — a worker ran, may have touched the world, and left no trace. That was recorded
@@ -23,11 +23,15 @@
  * row says «an attempt existed», not «here is what happened in it». So it carries no
  * workerId, no provider and no receipt — nobody observed those — and its `recordedAt` is
  * the moment of RECONCILIATION, not the moment of the attempt, which is unknowable from a
- * retry counter. `outcome: 'failed'` and `failureReason: 'runtime_offline'` are the two
+ * retry counter. `outcome: 'failed'` and `failureReason: 'liveness_killed'` are the two
  * facts the counter really does carry: pg-boss increments `retry_count` only when an
  * attempt did NOT complete, and the sweep already names that exact event
- * 'runtime_offline' when it is the one that notices. The two paths therefore say the same
- * thing about the same event instead of two dialects of it.
+ * 'liveness_killed' when it is the one that notices. The two paths therefore say the same
+ * thing about the same event instead of two dialects of it — which is also why this word
+ * moved the day the sweep's did. Both were `runtime_offline` until then, and both were
+ * telling a reader that the environment had gone away when what had gone away was a
+ * worker's voice; a reconstructed row states the same silence, merely noticed by the
+ * queue's own expiry instead of by the sweep.
  *
  * ═══════════ IT COMPARES NUMBERS, NOT COUNTS — AND THAT IS THE WHOLE FIX ═══════════
  * The obvious comparison — «does the ledger hold as many rows as the queue implies» — is
@@ -71,9 +75,10 @@ const MIN_RETRIED_ATTEMPT = 2
 /**
  * The outcome a retry counter really does carry. pg-boss advances `retry_count` only for
  * an attempt that did not complete; the liveness sweep names that same event
- * 'runtime_offline' when it is the one that notices first.
+ * 'liveness_killed' when it is the one that notices first, and this pass says it the same
+ * way. Not 'runtime_offline': nothing here observed an environment, only a silence.
  */
-const RECONSTRUCTED_OUTCOME = Object.freeze({ outcome: 'failed', failureReason: 'runtime_offline' })
+const RECONSTRUCTED_OUTCOME = Object.freeze({ outcome: 'failed', failureReason: 'liveness_killed' })
 
 /** Terminal queue statuses — for these the CURRENT attempt has concluded as well. */
 const TERMINAL_STATUSES = Object.freeze(['completed', 'failed'])

@@ -351,7 +351,8 @@ describe('kill drill — a worker stops refreshing its lease', () => {
     const rows = readAttempts(ledgerDir, 'BL-K1')
     expect(rows).toHaveLength(1)
     expect(rows[0].outcome).toBe('failed')
-    expect(rows[0].failureReason).toBe('runtime_offline')
+    // The SWEEP's own word: the runtime was fine, a worker went silent past its lease.
+    expect(rows[0].failureReason).toBe('liveness_killed')
 
     const after = await census(adapter, store)
     expect(after, 'kill drill: the number of tasks accounted for after the kill must equal the number before').toBe(before)
@@ -408,7 +409,9 @@ describe('kill drill — a worker stops refreshing its lease', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].attempt).toBe(1)
     expect(rows[0].outcome).toBe('failed')
-    expect(rows[0].failureReason).toBe('runtime_offline')
+    // The same word the sweep writes: both recovery paths name the same silence, and neither
+    // of them claims the environment went away.
+    expect(rows[0].failureReason).toBe('liveness_killed')
 
     // And it says so about itself. A reconstructed row is EVIDENCE THAT AN ATTEMPT EXISTED
     // and nothing more, so it never carries a worker, a provider or a receipt — the three

@@ -442,7 +442,7 @@ describe("taskContext — the human's snapshot of what this task is about, livin
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 20-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 21-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -469,6 +469,12 @@ describe('constants — taxonomy', () => {
       'missing_access',
       'timeout',
       'runtime_offline',
+      // the watchdog's own verdict on a silent attempt: the lease went unrenewed past the
+      // deadline, the sweep stopped the child and handed the task back. Named apart from
+      // runtime_offline because that word used to be written over this burial too — «среда
+      // исполнения недоступна» about an environment that was alive the whole time, sending a
+      // person to check a machine instead of a wedged attempt
+      'liveness_killed',
       'window_exhausted',
       // THE FOUR THE DISPATCHER DECIDES BEFORE ANY PROCESS EXISTS. They are named apart from
       // window_exhausted because that one word used to be written over all of them: a person
