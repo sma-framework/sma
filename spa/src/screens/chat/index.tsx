@@ -379,7 +379,9 @@ export function Screen() {
               onOpenAttachment={setReading}
             />
           )}
-          <div ref={bottom} />
+          {/* Запас под прилипшим полем ввода: прокрутка к концу ленты останавливается так,
+              чтобы последняя реплика осталась НАД ним, а не спряталась под ним. */}
+          <div ref={bottom} className="scroll-mb-[92px]" />
         </div>
 
         <Composer value={text} onChange={setText} onSend={onSend} onStop={onStop} busy={send.isPending} />

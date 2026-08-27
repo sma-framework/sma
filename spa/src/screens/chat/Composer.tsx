@@ -47,7 +47,16 @@ export function Composer({
   }
 
   return (
-    <div className="flex-none border-t border-bd bg-card">
+    /*
+      ПОЛЕ ВВОДА ПРИЛИПАЕТ К НИЗУ ВИДИМОГО ОКНА, а не стоит в конце страницы.
+      Рама окна растёт по содержимому (`min-h-full` в Shell — осознанно, ради узкой работы),
+      поэтому длинная лента разговора делает страницу выше экрана и уносит композер за нижний
+      край: чтобы ответить, приходилось прокручивать вниз ПОСЛЕ каждого ответа (жалоба
+      владельца 27.08 — «чат немного смещается и мне нужно проскроллить вниз, чтобы написать
+      сообщение»). `sticky bottom-0` держит его на месте при любой высоте ленты и при любой
+      раме — чинит причину там, где она видна, не переписывая высоту всего окна.
+    */
+    <div className="sticky bottom-0 z-20 flex-none border-t border-bd bg-card">
       <div className="mx-auto w-full max-w-[800px] px-7 pt-3.5 pb-4">
         <div className="flex items-center gap-2.5 rounded-[12px] border border-bd2 bg-surf py-[7px] pr-2 pl-3">
           <input
