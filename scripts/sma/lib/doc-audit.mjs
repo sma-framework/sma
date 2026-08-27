@@ -29,8 +29,10 @@
  *   - version     → package.json, the single source; every other place is a projection.
  * A missing anchor is always its OWN violation (parse-failed / pattern-missing /
  * region-missing), so a check can never quietly become an empty check that passes.
- * History is NOT policed: past release figures and the historical growth points of the
- * map are measured facts of their own day, not claims about the product today.
+ * History is NOT policed: past release figures and the five RELEASE points of the map's
+ * growth chart are measured facts of their own day, not claims about the product today.
+ * The SIXTH point of that chart is not history at all — it names the current run receipt,
+ * so it is watched here exactly like the hero span it stands under (GRAPH_TIP_PLACES).
  *
  * SUBSTRATE LAW: Node built-ins only; every file read flows through an injected `readFile`
  * and every write through an injected `writeFile`, so tests never touch the real tree.
@@ -344,7 +346,12 @@ const CAPABILITY_FILE = 'sma-core/capabilities/sma/capability.json'
 const VERSION_MARKER = 'sma-core/VERSION'
 const INSTALLER_FILE = 'bin/init.mjs'
 
-/** The three marked spans of the map that carry TODAY's numbers (the graph is not one). */
+/**
+ * The three marked spans of the map that carry TODAY's numbers. The growth chart is not a
+ * span — it cannot be one, because the same numbers appear in the svg's own `aria-label`
+ * and in the figcaption around it — so its working-tree point is watched by anchored
+ * sentences instead (GRAPH_TIP_PLACES / GRAPH_TIP_GEOMETRY below).
+ */
 export const NUMBER_REGIONS = ['sma:num-meta', 'sma:num-hero', 'sma:num-footer']
 
 /** The four source roots a template's promised writer must actually exist in. */
@@ -492,6 +499,120 @@ const VERB_COUNT_PLACES = [
 ]
 /** «N tests · M files» — the measured pair, wherever the map shows it. */
 const STAT_RE = /(\d+) tests · (\d+) files/g
+
+// ── the working-tree point of the growth chart ────────────────────────────────
+//
+// The chart draws six points. Five are HISTORY — suites measured at releases that already
+// happened — and nothing below reads or rewrites them. The sixth is not history: it says
+// «this is the run receipt of the suite right now», which is the SAME claim the hero span
+// two screens above it makes, and it drifted for the reason an unwatched claim always
+// drifts. The spans around it were rewritten at every remint by `--write` while it sat
+// outside every one of them, so it kept naming a suite that had been gone for weeks and
+// the audit went on printing zero. A number that only agrees with the truth on the day it
+// was typed is not a fact the docs hold, it is a fact the docs used to hold.
+//
+// It cannot simply be wrapped in a marked span like the hero: the same figures appear in
+// the svg's `aria-label` — an attribute, which no HTML comment can reach inside — and in
+// the figcaption that surrounds the drawing. So it is watched the way the verb total is
+// watched: one entry per PLACE that names it, each anchored to its own sentence so the
+// five historical points can never be dragged in, each place naming ITSELF in its
+// violation, and a place that stops naming its number scoring `graph-tip-missing` rather
+// than turning into an empty rule that passes forever.
+
+/**
+ * GRAPH_TIP_PLACES — every place in the map that repeats the working-tree measurement,
+ * with what each capture group of its pattern must equal, in order. The fields are read
+ * from the receipt: `tests`/`files` are the counts, `date` is the measurement day as
+ * DD.MM.YYYY and `commit` the seven-character tree it was taken on. Provenance is on the
+ * list because a stale stamp under a fresh number is its own quiet lie: it tells the
+ * reader the count was taken on a tree that never produced it.
+ */
+const GRAPH_TIP_PLACES = [
+  {
+    what: 'the alternative text of the growth chart',
+    fields: ['tests', 'files', 'date'],
+    re: /and (\d+) tests across (\d+) files on the working tree, ([\d.]{10})\./g,
+  },
+  {
+    what: 'the tooltip of the working-tree point',
+    fields: ['tests', 'files', 'date', 'commit'],
+    re: /main — (\d+) tests, (\d+) files\.[^<]*?the run receipt of ([\d.]{10}) at commit ([0-9a-f]{7})\./g,
+  },
+  {
+    what: 'the value drawn over the working-tree point',
+    fields: ['tests'],
+    re: /<text class="val tip"[^>]*>(\d+)<\/text>/g,
+  },
+  {
+    what: 'the file count drawn under the working-tree point',
+    fields: ['files'],
+    re: /<text class="ax tip"[^>]*>(\d+) files<\/text>/g,
+  },
+  {
+    what: 'the caption under the growth chart',
+    fields: ['date', 'tests', 'files'],
+    re: /the run receipt of the suite on main, ([\d.]{10}) \((\d+) tests \/ (\d+) files\)/g,
+  },
+]
+
+/**
+ * GROWTH_AXIS — the value axis of the growth chart in the chart's own coordinates: zero
+ * tests on the baseline at y=170, the top gridline at y=20 labelled 5000. A point of N
+ * tests therefore stands at y = 170 − N × 0.03, which is how every point already in the
+ * map is drawn (532 → 154.04, 1145 → 135.65). That is what pins these numbers to the
+ * drawing: rescaling the axis moves the historical points too, and the position rule then
+ * says the tip is in the wrong place instead of the picture quietly contradicting its own
+ * label. `topValue` is a hard edge — a suite bigger than the axis cannot be plotted
+ * honestly, and `graph-axis-outgrown` asks a human to rescale rather than guessing.
+ */
+export const GROWTH_AXIS = Object.freeze({ baselineY: 170, topY: 20, topValue: 5000 })
+
+/**
+ * GRAPH_TIP_GEOMETRY — the drawn heights that are DERIVED from the measured count: the
+ * connector reaching the point, the point itself, and the two labels that ride with it at
+ * their fixed offsets. Without this the number could be rewritten while the dot stayed
+ * where the old number put it, and the chart would contradict its own caption in the one
+ * way a reader never checks.
+ */
+const GRAPH_TIP_GEOMETRY = [
+  { what: 'the connector reaching the working-tree point', dy: 0, re: /<line class="tip"[^>]*\by2="([-\d.]+)"/g },
+  { what: 'the working-tree point itself', dy: 0, re: /<circle class="tip"[^>]*\bcy="([-\d.]+)"/g },
+  { what: 'the value drawn over the working-tree point', dy: -10, re: /<text class="val tip"[^>]*\by="([-\d.]+)"/g },
+  { what: 'the file count drawn under the working-tree point', dy: 16, re: /<text class="ax tip"[^>]*\by="([-\d.]+)"/g },
+]
+
+/** growthTipY(tests, dy) — the chart-coordinate height of a point of `tests`, as written. */
+export function growthTipY(tests, dy = 0) {
+  const { baselineY, topY, topValue } = GROWTH_AXIS
+  return (baselineY - (Number(tests) * (baselineY - topY)) / topValue + dy).toFixed(2)
+}
+
+/**
+ * The measurement day the map stamps, DD.MM.YYYY in UTC. The receipt records an INSTANT,
+ * and an instant only becomes a day once a zone is named; UTC is named here and in the map
+ * so the two can never disagree about which day it was. null when the receipt carries no
+ * usable stamp — then the rule says «not measured», never «wrong».
+ */
+function receiptStampDate(receipt) {
+  const m = String(receipt?.measuredAt ?? '').match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : null
+}
+
+/** The seven-character commit the receipt was measured on, or null if it names none. */
+function receiptStampCommit(receipt) {
+  const c = String(receipt?.commit ?? '').trim()
+  return /^[0-9a-f]{7,}$/i.test(c) ? c.slice(0, 7) : null
+}
+
+/** What every tip place must say, keyed by the field names of GRAPH_TIP_PLACES. */
+function graphTipWants(receipt) {
+  return {
+    tests: String(receipt.tests),
+    files: String(receipt.files),
+    date: receiptStampDate(receipt),
+    commit: receiptStampCommit(receipt),
+  }
+}
 /** A version token of the map: v-major-minor-patch. */
 const VERSION_TOKEN_RE = /v\d+\.\d+\.\d+/g
 /** The shields.io version badge and its per-language alt text. */
@@ -726,7 +847,8 @@ export function auditNumbers({
     }
   }
 
-  // ── rules over the map: only the marked spans, never the growth history ──
+  // ── rules over the map: the marked spans and the working-tree growth point,
+  //    never the five historical release points ──
   const graph = safeRead(readFile, p(...GRAPH_FILE.split('/')))
   if (graph == null) {
     violations.push({ file: GRAPH_FILE, rule: 'file-missing', detail: GRAPH_FILE })
@@ -748,6 +870,71 @@ export function auditNumbers({
         for (const m of region.content.matchAll(STAT_RE)) {
           if (Number(m[1]) !== Number(receipt.tests) || Number(m[2]) !== Number(receipt.files)) {
             violations.push({ file: GRAPH_FILE, rule: 'graph-region-stats', detail: `${name}: «${m[0]}» is not the measured ${receipt.tests} tests · ${receipt.files} files` })
+          }
+        }
+      }
+    }
+
+    // ── rule: the working-tree point of the growth chart repeats the receipt ──
+    //    Only the sixth point. The five release points above it are history and are read
+    //    by nothing here — see the comment over GRAPH_TIP_PLACES.
+    if (haveReceipt) {
+      const want = graphTipWants(receipt)
+      if (want.date == null) notes.push('the receipt records no measurement day — the stamp under the growth chart is unchecked')
+      if (want.commit == null) notes.push('the receipt names no commit — the tree stamped under the growth chart is unchecked')
+      for (const place of GRAPH_TIP_PLACES) {
+        const found = [...graph.matchAll(place.re)]
+        if (found.length === 0) {
+          violations.push({
+            file: GRAPH_FILE,
+            rule: 'graph-tip-missing',
+            detail: `${place.what} no longer names the measured run — the sentence this rule watches is gone`,
+          })
+          continue
+        }
+        for (const m of found) {
+          place.fields.forEach((field, i) => {
+            const wanted = want[field]
+            if (wanted == null) return // said out loud above; «not measured» is not «wrong»
+            if (m[i + 1] !== wanted) {
+              violations.push({
+                file: GRAPH_FILE,
+                rule: 'graph-tip',
+                detail: `${place.what}: ${field} says ${m[i + 1]}, the receipt measured ${wanted}`,
+              })
+            }
+          })
+        }
+      }
+
+      // ── rule: and the point is DRAWN where that count puts it ──
+      const tests = Number(receipt.tests)
+      if (tests > GROWTH_AXIS.topValue) {
+        violations.push({
+          file: GRAPH_FILE,
+          rule: 'graph-axis-outgrown',
+          detail: `the measured ${tests} tests stand above the ${GROWTH_AXIS.topValue}-test top of the growth axis — the point cannot be drawn honestly until the axis is rescaled by hand`,
+        })
+      } else {
+        for (const g of GRAPH_TIP_GEOMETRY) {
+          const found = [...graph.matchAll(g.re)]
+          if (found.length === 0) {
+            violations.push({
+              file: GRAPH_FILE,
+              rule: 'graph-tip-missing',
+              detail: `${g.what} carries no drawn height any more — the rule watching it has nothing to match`,
+            })
+            continue
+          }
+          const wantY = growthTipY(tests, g.dy)
+          for (const m of found) {
+            if (m[1] !== wantY) {
+              violations.push({
+                file: GRAPH_FILE,
+                rule: 'graph-tip-position',
+                detail: `${g.what} is drawn at y=${m[1]}, the measured ${tests} tests put it at y=${wantY}`,
+              })
+            }
           }
         }
       }
@@ -856,10 +1043,48 @@ export function auditNumbers({
 }
 
 /**
+ * writeGraphTip(html, receipt) — the map with EVERY place that repeats the working-tree
+ * measurement brought back to the receipt: its counts, its stamp, and the heights that the
+ * count decides. Exactly the places the audit reads, from exactly the same table, so the
+ * gate and its writer cannot drift apart.
+ *
+ * The edits are placed by CAPTURE OFFSET (the `d` flag), not by searching the match for the
+ * old text: a count that happens to equal a coordinate already in the same tag would
+ * otherwise be replaced in the wrong spot. They are applied back-to-front so an earlier
+ * edit never moves a later one's offsets. Nothing outside a captured group is touched, and
+ * a field the receipt does not carry is left exactly as it is.
+ */
+function writeGraphTip(html, receipt) {
+  const want = graphTipWants(receipt)
+  const tests = Number(receipt.tests)
+  const specs = GRAPH_TIP_PLACES.map((place) => ({ re: place.re, values: place.fields.map((f) => want[f]) }))
+  // A suite past the top of the axis has no honest height to be written to; the audit says
+  // so by name and a human rescales. Guessing a coordinate here would hide that.
+  if (Number.isFinite(tests) && tests <= GROWTH_AXIS.topValue) {
+    for (const g of GRAPH_TIP_GEOMETRY) specs.push({ re: g.re, values: [growthTipY(tests, g.dy)] })
+  }
+  let out = String(html)
+  for (const spec of specs) {
+    const withIndices = new RegExp(spec.re.source, spec.re.flags.includes('d') ? spec.re.flags : `${spec.re.flags}d`)
+    const edits = []
+    for (const m of out.matchAll(withIndices)) {
+      spec.values.forEach((value, i) => {
+        const at = m.indices?.[i + 1]
+        if (value != null && at && m[i + 1] !== value) edits.push({ start: at[0], end: at[1], value })
+      })
+    }
+    edits.sort((a, b) => b.start - a.start)
+    for (const e of edits) out = out.slice(0, e.start) + e.value + out.slice(e.end)
+  }
+  return out
+}
+
+/**
  * writeNumbers({readFile, writeFile, rootDir}) — {written, notes}. Rewrites EXACTLY the
- * marked spans of the map and the install marker, from the same sources the audit reads.
- * Nothing outside a marked span is touched, the growth history is never touched, and a
- * second run writes the same bytes. Without a measured receipt the statistics span is
+ * marked spans of the map, its working-tree growth point, and the install marker, from the
+ * same sources the audit reads. The five historical release points of the growth chart are
+ * never touched, nothing else outside a marked span is touched, and a second run writes the
+ * same bytes. Without a measured receipt the statistics span and the growth point are
  * left alone and said out loud — a hand-typed count is the failure this whole file exists
  * to prevent.
  */
@@ -881,7 +1106,7 @@ export function writeNumbers({
 
   const receipt = safeReadJson(readFile, p(RECEIPT))
   const haveReceipt = receipt != null && Number.isFinite(Number(receipt.tests)) && Number.isFinite(Number(receipt.files))
-  if (!haveReceipt) notes.push('the statistics spans were left as they are — no measured receipt to write from')
+  if (!haveReceipt) notes.push('the statistics spans and the working-tree growth point were left as they are — no measured receipt to write from')
 
   const graphPath = p(...GRAPH_FILE.split('/'))
   const graph = safeRead(readFile, graphPath)
@@ -907,6 +1132,13 @@ export function writeNumbers({
       }
       if (rewritten !== inner) {
         next = next.slice(0, from) + rewritten + next.slice(ei)
+        touched = true
+      }
+    }
+    if (haveReceipt) {
+      const after = writeGraphTip(next, receipt)
+      if (after !== next) {
+        next = after
         touched = true
       }
     }

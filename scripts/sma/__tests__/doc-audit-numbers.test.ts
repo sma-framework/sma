@@ -26,6 +26,7 @@ import {
   writeNumbers,
   parseRouteCount,
   parseHandlerKeys,
+  growthTipY,
   NUMBER_REGIONS,
 } from '../lib/doc-audit.mjs'
 
@@ -91,8 +92,75 @@ function cliMjs(opts: { dropFromList?: string; extraInList?: string; otherVerbs?
   ].join('\n')
 }
 
-/** The map page: three marked spans carrying today's numbers, plus untouched history. */
-function graphHtml(opts: { version?: string; tests?: number; files?: number; dropRegion?: string } = {}) {
+/** The day the fixture receipt was measured, and the DD.MM.YYYY the map must stamp for it. */
+const MEASURED_AT = '2026-08-27T20:57:22.314Z'
+const STAMP_DATE = '27.08.2026'
+
+/** A y coordinate shifted by an offset, kept to the two decimals the map is written in. */
+const shiftY = (y: string, dy: number) => (Number(y) + dy).toFixed(2)
+
+/**
+ * The growth chart, the one drawing that mixes the two kinds of number the audit treats
+ * differently. Its FIVE historical points are facts of their own day and must stay
+ * invisible to every rule; its sixth — the working-tree point, marked class="tip" — repeats
+ * the current receipt in five separate places and is drawn at the height that count gives
+ * it, so all of it is watched. Every divergence below is planted on exactly one of those.
+ */
+function growthSvg(
+  opts: {
+    tests?: number
+    files?: number
+    date?: string
+    commit?: string
+    tipY?: string
+    history?: number
+    drop?: 'aria' | 'title' | 'val' | 'ax' | 'caption' | 'line' | 'circle'
+  } = {},
+) {
+  const t = opts.tests ?? TESTS
+  const f = opts.files ?? FILES
+  const d = opts.date ?? STAMP_DATE
+  const c = opts.commit ?? FIXTURE_HEAD
+  const y = opts.tipY ?? (170 - (t * 150) / 5000).toFixed(2)
+  const h = opts.history ?? 1145
+  const drop = opts.drop
+  const aria =
+    drop === 'aria'
+      ? 'Test suite growth over six measured points.'
+      : `Test suite growth from 532 tests at v3.0.0 to ${h} tests across 96 files at v5.0.1, and ${t} tests across ${f} files on the working tree, ${d}. Six measured points only.`
+  const title =
+    drop === 'title'
+      ? 'main — the working tree'
+      : `main — ${t} tests, ${f} files. NOT a release point: this is a working-tree measurement, the run receipt of ${d} at commit ${c}.`
+  const caption =
+    drop === 'caption'
+      ? 'The six measured points. The lines are connectors, not a trend claim.'
+      : `The working-tree point is the run receipt of the suite on main, ${d} (${t} tests / ${f} files).`
+  return [
+    `<figure><svg role="img" aria-label="${aria}">`,
+    // ── history: outside every marked span, carrying no class="tip", read by nothing ──
+    `<circle cx="70" cy="154.04"><title>v3.0.0 · 532 tests</title></circle>`,
+    `<circle cx="342" cy="135.65"><title>v5.0.1 · ${h} tests</title></circle>`,
+    `<text class="val" x="342" y="125.65">${h}</text>`,
+    // ── the working-tree point: today's claim, in five places and one position ──
+    drop === 'line' ? '<line x1="342" y1="135.65" x2="410"/>' : `<line class="tip" x1="342" y1="135.65" x2="410" y2="${y}"/>`,
+    drop === 'circle'
+      ? `<circle cx="410" cy="${y}"><title>${title}</title></circle>`
+      : `<circle class="tip" cx="410" cy="${y}"><title>${title}</title></circle>`,
+    drop === 'val'
+      ? `<text class="val tip" x="410" y="${shiftY(y, -10)}">the tip</text>`
+      : `<text class="val tip" x="410" y="${shiftY(y, -10)}">${t}</text>`,
+    drop === 'ax'
+      ? `<text class="ax tip" x="410" y="${shiftY(y, 16)}">files</text>`
+      : `<text class="ax tip" x="410" y="${shiftY(y, 16)}">${f} files</text>`,
+    `</svg><figcaption>${caption}</figcaption></figure>`,
+  ].join('\n')
+}
+
+/** The map page: three marked spans carrying today's numbers, plus the growth chart. */
+function graphHtml(
+  opts: { version?: string; tests?: number; files?: number; dropRegion?: string; growth?: Parameters<typeof growthSvg>[0] } = {},
+) {
   const v = opts.version ?? VERSION
   const t = opts.tests ?? TESTS
   const f = opts.files ?? FILES
@@ -105,6 +173,7 @@ function graphHtml(opts: { version?: string; tests?: number; files?: number; dro
     span('sma:num-hero', `<span class="pill">v${v}</span><span class="stat">${t} tests · ${f} files</span>`),
     // history lives OUTSIDE every marked span and is never policed or rewritten
     '<svg><text>v3.0.0 · 532 tests</text><text>v5.0.1 · 1145 tests</text></svg>',
+    growthSvg({ tests: opts.tests, files: opts.files, ...opts.growth }),
     span('sma:num-footer', `<p><strong>SMA v${v}</strong></p>`),
     '</body></html>',
   ].join('\n')
@@ -189,6 +258,11 @@ type FixtureOpts = {
   verbCounts?: Partial<Record<VerbCountFile, number | null>>
   testScript?: string
   noReceipt?: boolean
+  /** The measured pair, moved in the RECEIPT and in the map together (the axis cases). */
+  tests?: number
+  files?: number
+  /** What the receipt records as the instant of the measurement; null means it records none. */
+  receiptMeasuredAt?: string | null
   /** What the receipt says it was measured on. `null` means it names no commit at all. */
   receiptCommit?: string | null
   /**
@@ -215,7 +289,7 @@ function fixtureFiles(o: FixtureOpts = {}): Record<string, string> {
     'scripts/sma/cli.mjs': cliMjs(o.cli),
     'scripts/sma/README.md':
       cliReadme === null ? 'The verbs, grouped by what they are for.' : `All ${cliReadme}, grouped by what they are for.`,
-    'docs/master-graph.html': graphHtml(o.graph),
+    'docs/master-graph.html': graphHtml({ tests: o.tests, files: o.files, ...o.graph }),
     'README.md': readmeMd('en', { version, verbs: vc('README.md') }),
     'README.ru.md': readmeMd('ru', { version, verbs: vc('README.ru.md') }),
     'docs/DETAILS.md': detailsMd('en', vc('docs/DETAILS.md')),
@@ -228,9 +302,11 @@ function fixtureFiles(o: FixtureOpts = {}): Record<string, string> {
     'scripts/sma/lib/state.mjs': `export function ${o.sourceDefines ?? 'writeStateHeader'}() {}`,
   }
   if (!o.noReceipt) {
-    const receipt: Record<string, unknown> = { tests: TESTS, files: FILES, dirty: false }
+    const receipt: Record<string, unknown> = { tests: o.tests ?? TESTS, files: o.files ?? FILES, dirty: false }
     const commit = o.receiptCommit === undefined ? FIXTURE_HEAD : o.receiptCommit
     if (commit !== null) receipt.commit = commit
+    const at = o.receiptMeasuredAt === undefined ? MEASURED_AT : o.receiptMeasuredAt
+    if (at !== null) receipt.measuredAt = at
     files['test-receipt.json'] = JSON.stringify(receipt)
   }
   return files
@@ -464,6 +540,83 @@ describe('the numbers audit — every rule can go red', () => {
     })
     expect(r.count).toBe(1)
     expect(r.violations[0].rule).toBe('unknown-target')
+  })
+})
+
+/**
+ * The working-tree point of the growth chart. It used to be the one number on the map that
+ * nobody watched: the spans around it were rewritten from the receipt at every remint while
+ * it sat outside all of them, so it went on naming a suite that had been gone for weeks and
+ * the audit went on printing zero. Every place that repeats it, and the height it is drawn
+ * at, now has its own planted divergence below — and the five historical points beside it
+ * have a test proving the gate still cannot see them.
+ */
+describe('the numbers audit — the working-tree point of the growth chart', () => {
+  it('the drawn heights are the ones the map already uses for the points it has', () => {
+    // pinned to two points actually in docs/master-graph.html — the formula and the drawing
+    // are the same fact, so a change to either has to move the other
+    expect(growthTipY(532)).toBe('154.04')
+    expect(growthTipY(1145)).toBe('135.65')
+    expect(growthTipY(1145, -10)).toBe('125.65')
+    expect(growthTipY(1145, 16)).toBe('151.65')
+  })
+
+  it('a tip test count that disagrees with the receipt is named, per place', () => {
+    const { violations } = runFixture({ graph: { growth: { tests: TESTS + 1 } } })
+    const tip = violations.filter((v) => v.rule === 'graph-tip')
+    expect(tip.length).toBeGreaterThan(0)
+    expect(tip.every((v) => v.detail.includes('tests says'))).toBe(true)
+    // every place that names the count says so about ITSELF, not just that something differs
+    expect(new Set(tip.map((v) => v.detail.split(':')[0])).size).toBe(4)
+  })
+
+  it('a tip file count that disagrees with the receipt is named', () => {
+    const { violations } = runFixture({ graph: { growth: { files: FILES + 7 } } })
+    expect(violations.some((v) => v.rule === 'graph-tip' && v.detail.includes('files says'))).toBe(true)
+  })
+
+  it('a stale measurement day under a fresh count is named', () => {
+    const { violations } = runFixture({ graph: { growth: { date: '24.08.2026' } } })
+    expect(violations.some((v) => v.rule === 'graph-tip' && v.detail.includes('date says 24.08.2026'))).toBe(true)
+  })
+
+  it('a stamp naming a tree the receipt was not measured on is named', () => {
+    const { violations } = runFixture({ graph: { growth: { commit: 'f7358df' } } })
+    expect(violations.some((v) => v.rule === 'graph-tip' && v.detail.includes('commit says f7358df'))).toBe(true)
+  })
+
+  it('a point drawn at the wrong height is named, even with the right number beside it', () => {
+    const { violations } = runFixture({ graph: { growth: { tipY: '31.46' } } })
+    const drawn = violations.filter((v) => v.rule === 'graph-tip-position')
+    expect(drawn).toHaveLength(4) // connector, dot, value label, files label
+    expect(violations.some((v) => v.rule === 'graph-tip')).toBe(false) // the words are right
+  })
+
+  it('a suite taller than the axis is refused a coordinate, in words, instead of being plotted off the top', () => {
+    const { violations } = runFixture({ tests: 6000 })
+    expect(violations.some((v) => v.rule === 'graph-axis-outgrown')).toBe(true)
+    // and no coordinate is invented for it
+    expect(violations.some((v) => v.rule === 'graph-tip-position')).toBe(false)
+  })
+
+  it.each(['aria', 'title', 'val', 'ax', 'caption', 'line', 'circle'] as const)(
+    'a place that stops naming the measured run scores its own violation, not a silent pass (%s)',
+    (drop) => {
+      const { violations } = runFixture({ graph: { growth: { drop } } })
+      expect(violations.some((v) => v.rule === 'graph-tip-missing')).toBe(true)
+    },
+  )
+
+  it('the five historical points are invisible to every rule — history is not policed', () => {
+    const { violations } = runFixture({ graph: { growth: { history: 999999 } } })
+    expect(violations.map((v) => `${v.rule}: ${v.detail}`)).toEqual([])
+  })
+
+  it('a receipt with no stamp leaves the stamp unchecked and says so, rather than calling it wrong', () => {
+    const { violations, notes } = runFixture({ receiptMeasuredAt: null, receiptCommit: null })
+    expect(violations.filter((v) => v.rule === 'graph-tip')).toEqual([])
+    expect(notes.join(' ')).toContain('no measurement day')
+    expect(notes.join(' ')).toContain('names no commit')
   })
 })
 
