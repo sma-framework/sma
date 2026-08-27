@@ -1042,17 +1042,37 @@ async function spendRows(deps) {
 // to stop turns that died with the daemon anyway.
 
 /**
- * createTurnRegistry() → { register, stop, wasStopped, done, size }.
+ * createTurnRegistry() → { register, stop, alive, wasStopped, done, size }.
  *
  * `stop` marks BEFORE it kills: the dying child resolves the turn through its exit path,
  * and the dispatcher then asks `wasStopped` to tell a founder's Стоп apart from a crash —
  * a stopped turn answers «остановлено», never the fallback apology.
+ *
+ * `alive` IS THE SECOND QUESTION THE HANDLE CAN ANSWER, and the one that keeps honest silence
+ * alive. A registered handle knows whether its child is still running; the liveness watchdog,
+ * which knows only clocks, has no other way to tell a worker thinking quietly from a process
+ * that died. Three answers, not two: `true` / `false` / `null` — and `null` is «этому демону
+ * нечего сказать», never «мёртв». A turn registered without a probe (the chat lane registers
+ * only a kill) answers `null`, exactly as a handle that belongs to another daemon does.
  */
 export function createTurnRegistry() {
-  const live = new Map() // turnId -> { kill, stopped } — live handles ONLY, never truth
+  const live = new Map() // turnId -> { kill, alive, stopped } — live handles ONLY, never truth
   return {
-    register(turnId, kill) {
-      if (turnId) live.set(String(turnId), { kill, stopped: false })
+    register(turnId, kill, alive) {
+      if (turnId) live.set(String(turnId), { kill, alive: typeof alive === 'function' ? alive : null, stopped: false })
+    },
+    /**
+     * alive(turnId) → true (процесс жив) | false (процесс завершился) | null (не знаем).
+     * Сломанный или отсутствующий пробник — это `null`: выдуманное «мёртв» стоит чужой работы.
+     */
+    alive(turnId) {
+      const t = live.get(String(turnId))
+      if (!t || typeof t.alive !== 'function') return null
+      try {
+        return t.alive() === true
+      } catch {
+        return null
+      }
     },
     /** stop(turnId) → true if a live turn was told to die; false is «nothing to stop». */
     stop(turnId) {

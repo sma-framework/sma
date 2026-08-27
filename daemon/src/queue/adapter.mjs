@@ -254,6 +254,17 @@ export const TASK_STATUSES = Object.freeze([
  *                     sends a person to check a machine that was never broken. Apart from
  *                     timeout too: that one is a run reporting its own clock ran out, this one
  *                     is somebody ELSE's judgement passed over its silence
+ *   worker_process_gone — the sweep asked the handle and the handle SAW the child end. Named
+ *                     apart from liveness_killed because that word means «we judged it by the
+ *                     clock and it stayed quiet too long»: this one is not a judgement at all
+ *                     but an observed fact, and it sends the reader to the worker's own log
+ *                     instead of to a hunt for a wedge that never happened
+ *   attempt_lifetime_exceeded — the process is ALIVE and was stopped anyway: the attempt outgrew
+ *                     MAX_ATTEMPT_LIFETIME_MS (liveness.mjs), the single ceiling that keeps
+ *                     «silence is not death» from becoming «silence is forever». The only reason
+ *                     in this list that closes work which was still running, so it must never
+ *                     read as silence or as a crash — the remedy is a bigger ceiling or a
+ *                     smaller task, exactly as with turns_exhausted
  *   timeout / runtime_offline / window_exhausted — infra causes
  *   wait_for_window / budget_stop / api_cap_unset / day_priority_protected — ROUTE AND MONEY
  *                     causes: the dispatcher decided, before any process existed, that this
@@ -311,6 +322,19 @@ export const FAIL_REASONS = Object.freeze([
   // harm every division in this list exists to prevent. runtime_offline now means only what it
   // says: the environment really was unreachable.
   'liveness_killed',
+  // ДВА СЛОВА, ВЫДЕЛЕННЫЕ ИЗ liveness_killed, КОГДА У СТОРОЖА ПОЯВИЛСЯ ПРОБНИК ЖИВОСТИ. Пока он
+  // умел спрашивать только часы, всякая тишина была одним событием и уезжала одним словом. Теперь
+  // он спрашивает ручку, и различает три РАЗНЫХ случая, каждый со своей починкой:
+  //   worker_process_gone — ручка этого демона ВИДЕЛА конец процесса. Это факт, а не догадка по
+  //     тишине. Человеку он говорит «работник упал» — смотреть логи работника; «молчала дольше
+  //     срока» отправляло его искать зависание там, где был вылет.
+  //   attempt_lifetime_exceeded — процесс ЖИВ, но попытка переросла MAX_ATTEMPT_LIFETIME_MS. Ни
+  //     смерти, ни молчания: единственный случай, где работника останавливают, ХОТЯ он работает,
+  //     и починка у него своя — поднять потолок или разрезать задачу, как у turns_exhausted.
+  // liveness_killed остаётся ровно тем, чем был: про процесс сказать нечего (чужая машина,
+  // переживший рестарт демон), судим по часам.
+  'worker_process_gone',
+  'attempt_lifetime_exceeded',
   'window_exhausted',
   // THE FOUR THE DISPATCHER DECIDES BEFORE A PROCESS EXISTS. `fail()` throws on a word it
   // does not carry, so a tick that finally tells the truth about a route would take the
@@ -342,6 +366,8 @@ export const REASON_LABELS = Object.freeze({
   timeout: 'истекло время',
   runtime_offline: 'среда исполнения недоступна',
   liveness_killed: 'убита сторожем живости: молчала дольше срока',
+  worker_process_gone: 'процесс работника завершился — задача перевыдана',
+  attempt_lifetime_exceeded: 'попытка переросла предел жизни (4 ч) — перевыдана',
   window_exhausted: 'окно подписки исчерпано',
   wait_for_window: 'нет свободного окна — ждёт окна подписки, платный канал не задействован',
   budget_stop: 'остановлено бюджетом: месячный лимит платного канала выбран',

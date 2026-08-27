@@ -362,7 +362,7 @@ describe('сторож смерти пишет строку на каждую о
 
     const res = await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000 })
 
-    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0 })
+    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0, renewed: 0 })
     const [row] = await adapter.list()
     expect(row.status).toBe('queued')
     expect(row.attempt).toBe(2)
@@ -385,7 +385,7 @@ describe('сторож смерти пишет строку на каждую о
       },
     })
 
-    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0 })
+    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0, renewed: 0 })
   })
 
   it('строка пишется ДО объявления провала — иначе бросок объявления снова оставит лог пустым', async () => {
@@ -532,7 +532,7 @@ describe('сторож живости останавливает ребёнка 
 
     const res = await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000, journal: (e: any) => journal.push(e) })
 
-    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0 })
+    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0, renewed: 0 })
     expect(journal.filter((e) => e.type === 'liveness.attempt_killed')).toHaveLength(0)
     expect(journal.filter((e) => e.type === 'liveness.attempt_orphaned')).toHaveLength(0)
     expect(journal.filter((e) => e.type === 'liveness.attempt_dead')).toHaveLength(1)
