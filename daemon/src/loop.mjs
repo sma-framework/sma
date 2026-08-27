@@ -2905,18 +2905,29 @@ function runSpawn(spawnWorker, spec, onLine) {
  * no way to stop it, and the door answered as though it had. Hint plumbing by construction —
  * a daemon assembled without `attemptTurns`, or a child that cannot be killed, spawns exactly
  * as before.
+ *
+ * И ТА ЖЕ РУЧКА ОТВЕЧАЕТ, ЖИВ ЛИ РЕБЁНОК. Аренда продлевалась ТОЛЬКО из потока вывода (см.
+ * TOUCH_THROTTLE_MS), поэтому работник, думавший молча дольше срока аренды, для сторожа
+ * выглядел ровно как повисший процесс — и трижды подряд честное молчание сгорало в failed.
+ * Пробник живости регистрируется ВМЕСТЕ с остановкой, одной строкой и в одном месте: сторож
+ * спрашивает у ручки, а не гадает по тишине. Запускатель без `alive` (или подделка в сьюте)
+ * регистрируется как прежде — тогда ответ будет «не знаю», а не «мёртв».
  */
-function steeredSpawn(deps, taskId, spawnWorker) {
+export function steeredSpawn(deps, taskId, spawnWorker) {
   return (o) => {
     const h = spawnWorker(o)
     if (deps.attemptTurns && h && typeof h.kill === 'function') {
-      deps.attemptTurns.register(taskId, () => {
-        try {
-          h.kill()
-        } catch {
-          /* a child that cannot be killed is still a turn the founder ended */
-        }
-      })
+      deps.attemptTurns.register(
+        taskId,
+        () => {
+          try {
+            h.kill()
+          } catch {
+            /* a child that cannot be killed is still a turn the founder ended */
+          }
+        },
+        typeof h.alive === 'function' ? () => h.alive() === true : undefined,
+      )
     }
     return h
   }
