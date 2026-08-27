@@ -498,6 +498,60 @@ export function isSafeCommand(command) {
   return SAFE_COMMAND_CHARSET.test(cmd) && SAFE_COMMAND_PATTERNS.some((re) => re.test(cmd))
 }
 
+/**
+ * What the charset guard refuses, named the way a person reads a command —
+ * not as the character class that rejected it.
+ */
+const REFUSED_CHARACTERS = [
+  { re: /;/, words: 'точка с запятой — в одной строке стоят две команды' },
+  { re: /&/, words: 'амперсанд — команды сцеплены друг с другом' },
+  { re: /\|/, words: 'вертикальная черта — вывод одной команды уходит в другую' },
+  { re: /\$/, words: 'знак доллара — подстановка оболочки' },
+  { re: /`/, words: 'обратная кавычка — подстановка вывода' },
+  { re: /[<>]/, words: 'перенаправление ввода-вывода' },
+  { re: /["']/, words: 'кавычки внутри команды' },
+  { re: /[()]/, words: 'круглые скобки в пути' },
+  { re: /[[\]]/, words: 'квадратные скобки в пути' },
+  { re: /[\r\n]/, words: 'перевод строки' },
+]
+
+/**
+ * The two shapes that get written most often, each with the FIELD that already
+ * exists for the job — so the reader learns the fix, not just the refusal.
+ * Neither widens the allowlist by a character: both travel to the runner as
+ * parameters.
+ */
+const REWRITE_HINTS = [
+  { re: /;\s*echo\s+\$\?\s*$/, words: 'Код выхода объявляют полем «measure: exit-code», а не хвостом «; echo $?»' },
+  { re: /^\s*cd\s+\S+\s*&&/, words: 'Рабочий каталог объявляют полем «cwd», а не связкой «cd X && …»' },
+]
+
+/**
+ * unsafeCommandReason(command) -> одна фраза человеческими словами.
+ *
+ * The boundary's refusal, said out loud. `skipped-unsafe` names the STATUS; a
+ * reader needs the CAUSE — which fragment of this particular command the
+ * instrument would not run, and what to write instead. Pure, so the wording is
+ * checked by a test rather than by looking at a screen.
+ *
+ * @param {string} command  the entry's check_command, verbatim
+ * @returns {string}
+ */
+export function unsafeCommandReason(command) {
+  const cmd = String(command ?? '')
+  if (cmd.trim() === '') return 'команда проверки пуста — измерять было нечем.'
+
+  const found = REFUSED_CHARACTERS.filter((c) => c.re.test(cmd)).map((c) => c.words)
+  const parts = [
+    found.length
+      ? `проверка не запускалась: в команде ${found.join('; ')}. Такую строку оболочка вольна истолковать как угодно, поэтому граница безопасных команд её не пускает`
+      : 'проверка не запускалась: команда начинается не с разрешённого начала (node scripts/sma/…, pnpm vitest run …, pnpm sma …, npm|pnpm|yarn test|pack|run <скрипт>)',
+  ]
+  const hint = REWRITE_HINTS.find((h) => h.re.test(cmd))
+  if (hint) parts.push(hint.words)
+  return `${parts.join('. ')}.`
+}
+
 /** A calendar horizon: `2026-08-01`, with or without a trailing time part. */
 const DATE_HORIZON_RE = /^(\d{4}-\d{2}-\d{2})(?:[T ].*)?$/
 /** A version horizon in the release-tag spelling: `V3.2`, `v3.2.1`, `3.2`. */
@@ -639,9 +693,18 @@ export function scorePlan({ planPath, runCommand, now, currentVersion }) {
     }
 
     // allowlist BEFORE any run — the runner is never invoked for a
-    // non-matching command.
+    // non-matching command. The refusal travels WITH the record in human
+    // words (`unmeasured_reason`): a bare status code is a silence the reader
+    // has to decode, and a silence is how two whole phases of predictions
+    // once read as «everything is fine» while nothing had been measured.
     if (!isSafeCommand(entry.check_command)) {
-      records.push({ ...base, actual: null, hit: false, verdict: 'skipped-unsafe' })
+      records.push({
+        ...base,
+        actual: null,
+        hit: false,
+        verdict: 'skipped-unsafe',
+        unmeasured_reason: unsafeCommandReason(entry.check_command),
+      })
       continue
     }
 
@@ -814,6 +877,114 @@ export function scoringTally(result = {}) {
 
   const unscored = reasons.reduce((n, r) => n + r.count, 0)
   return { verdicts, unscored, reasons }
+}
+
+/**
+ * measurementVerdict(result) -> {state, red, headline, lines}.
+ *
+ * WHY THIS EXISTS. `skipped-unsafe` used to be a quiet status: a run in which
+ * the instrument refused every single command exited 0 and printed the same
+ * shape as a healthy one. Two whole phases of predictions were scored that way
+ * — every entry refused, nothing measured, and the ledger read as «all fine».
+ * A silent instrument is worse than a missing one: it manufactures calm.
+ *
+ * So the closing state of a run is decided here, once, in words:
+ *   - 'measured'        — at least one verdict about the world was reached.
+ *   - 'registered'      — nothing was measured, and nothing was SUPPOSED to be:
+ *                         every entry is waiting for a horizon that has not come.
+ *   - 'not-applicable'  — this plan has no predictions at all (or only
+ *                         structural receipts, which are reverify's territory).
+ *                         Said ALOUD rather than hidden under the same status:
+ *                         «predictions do not apply here» and «predictions were
+ *                         refused here» are different facts about the world.
+ *   - 'unmeasured'      — entries existed that COULD have produced a verdict and
+ *                         none did. This is the red one.
+ *
+ * The scorer itself is untouched: this reads the result it already returns.
+ * Pure, so both the wording and the redness are checkable by a test.
+ *
+ * @param {{records?:object[], invalid?:object[], excluded?:object[], notDue?:object[], receiptsSkipped?:number}} result
+ * @returns {{state:string, red:boolean, headline:string|null, lines:{id:string,reason:string}[]}}
+ */
+export function measurementVerdict(result = {}) {
+  const records = Array.isArray(result.records) ? result.records : []
+  const invalid = Array.isArray(result.invalid) ? result.invalid : []
+  const excluded = Array.isArray(result.excluded) ? result.excluded : []
+  const notDue = Array.isArray(result.notDue) ? result.notDue : []
+  const receiptsSkipped = Number(result.receiptsSkipped) || 0
+
+  const verdicts = records.filter((r) => r && (r.verdict === 'hit' || r.verdict === 'miss')).length
+
+  // Every entry that walked away without a verdict, with its cause in words —
+  // built FIRST, so a run that measured something still has to say which of its
+  // entries it did not measure. One list, one place it is printed.
+  const lines = []
+  for (const r of records) {
+    if (!r || r.verdict === 'hit' || r.verdict === 'miss') continue
+    const id = String(r.id ?? '<без id>')
+    if (r.verdict === 'skipped-unsafe') {
+      lines.push({ id, reason: r.unmeasured_reason ?? unsafeCommandReason(r.check_command) })
+    } else if (r.not_measured) {
+      lines.push({ id, reason: `запуск не завершился (${r.not_measured}) — числа о мире он не дал.` })
+    } else {
+      lines.push({ id, reason: `запуск не дал факта${r.error ? `: ${r.error}` : ''}.` })
+    }
+  }
+  for (const inv of invalid) {
+    lines.push({
+      id: String((inv && inv.id) ?? '<без id>'),
+      reason: `запись неполна (не заполнено: ${(inv && inv.missing && inv.missing.join(', ')) || '—'}) — измерять по ней нечего.`,
+    })
+  }
+
+  if (verdicts > 0) {
+    return {
+      state: 'measured',
+      red: false,
+      // Not red — a gate that jams on one badly written sentence is a gate
+      // somebody removes — but never silent either.
+      headline: lines.length
+        ? `ЧАСТЬ НЕ ИЗМЕРЕНА: вердикты есть, но по этим записям (${lines.length}) прибор не мерил ничего:`
+        : null,
+      lines,
+    }
+  }
+
+  // Nothing here was ever a prediction: no entry to score, none awaiting a
+  // horizon. Whatever the plan carries, predictions are not its instrument.
+  if (!records.length && !invalid.length && !notDue.length) {
+    const receipts = excluded.length + receiptsSkipped
+    return {
+      state: 'not-applicable',
+      red: false,
+      headline: receipts
+        ? 'ПРЕДСКАЗАНИЯ ЗДЕСЬ НЕПРИМЕНИМЫ: в плане только структурные квитанции (receipts) — их перепроверяет sma reverify, а этот прибор о них не судит. Это не измерение и не его подтверждение.'
+        : 'ПРЕДСКАЗАНИЯ ЗДЕСЬ НЕПРИМЕНИМЫ: в плане нет ни одного предсказания. Измерять нечего — и это не то же самое, что измерение прошло.',
+      lines: [],
+    }
+  }
+
+  // Everything that is left is waiting for its own horizon — registered, not
+  // owed, and not a silence: the plan said WHEN, and the when has not come.
+  if (!records.length && !invalid.length) {
+    return {
+      state: 'registered',
+      red: false,
+      headline: `ПОКА НЕ ИЗМЕРЕНО: все предсказания (${notDue.length}) зарегистрированы, но их срок ещё не наступил — вердиктов нет и не должно быть.`,
+      lines: notDue.map((n) => ({
+        id: String((n && n.id) ?? '<без id>'),
+        reason: `срок «${(n && n.horizon) ?? '—'}» ещё не наступил — запись ждёт своего часа.`,
+      })),
+    }
+  }
+
+  return {
+    state: 'unmeasured',
+    red: true,
+    headline:
+      'НЕ ИЗМЕРЕНО: ни одно предсказание этого плана не дало вердикта — прибор молчал, а не подтверждал. Тишина здесь не «всё в порядке», а «мерить было нечем»:',
+    lines,
+  }
 }
 
 
