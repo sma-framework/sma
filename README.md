@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="version 5.6.1">
-  <img src="https://img.shields.io/badge/tests-4834%2F4834-3CC0A0" alt="tests 4834/4834">
+  <img src="https://img.shields.io/badge/tests-4871%2F4871-3CC0A0" alt="tests 4871/4871">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -378,6 +378,19 @@ http://127.0.0.1:7777/?token=<the token in ~/.sma-daemon/config.json>
 ```
 
 That single visit exchanges the token for an HttpOnly session cookie and every later visit is a plain address. Until it happens the daemon answers `unauthorized` and nothing else — there is no login page to guess at, deliberately. Read the token out of the config file; it is never printed to the log.
+
+**4 · Stopping it, and putting a new version up.** Changing the daemon's code or its config means taking it down and lifting it again — the most ordinary operation there is, and for a long time the only one with no command behind it: you found the process by eye, killed it by hand, and ran the start script. It is one command each now, living beside the lift that was already in `supervisor/`:
+
+```bash
+npm run daemon:stop        # node supervisor/daemon-control.mjs stop
+npm run daemon:restart     # stop, then the SAME lift the supervisor performs
+```
+
+**It stops YOUR daemon and nothing else.** `node` is the most common process on a developer's machine, so nothing here matches a binary by name — no process-table walk, no port-to-owner lookup. Two facts have to agree: the daemon leaves a record (`daemon.pid`, written beside its own data on the boot in which it binds the door) stating the *address it bound*, and the door in your config is asked, over the front's existing state route, whether anything is answering there. A record naming a different door belongs to a different daemon and is never signalled. A door answering with no record behind it is refused **out loud** — «I can see a daemon, I cannot prove which process it is» — instead of resolved by a guess: an honest refusal costs you one restart, a wrong kill costs whatever the other process was doing.
+
+**A machine that is already stopped is not an error.** «Stop» asks for a state, and a machine already in that state exits 0 with one line saying so; a record left behind by a process that died is swept on the way past. **Restart answers about the door, not about the spawn:** it stops, runs the supervisor's own lift — the Scheduled Task's `.ps1` on Windows, the launchd agent's `node daemon/src/main.mjs` elsewhere — then *waits on the door* and says whether it came up and how long it took, because the boot failure worth catching (an unreachable queue) happens after the process starts and before the window opens. Where the supervisor has already relifted the process itself (launchd's `KeepAlive` does), the restart notices and does not start a second one.
+
+**A live attempt is work.** Killing the daemon kills the workers it holds — an attempt in flight loses its turn, its tokens and its unwritten receipt — so the stop looks first, and refuses with the list of who is working on what until you say `--force` in as many words. Where the door answers but will not show its state, the command says it could not ask rather than pretending the machine was idle. The exit codes are a contract: `0` the machine is where you asked it to be, `2` refused over live work (the flag would change it), `1` anything else, with the reason on the line above. Nothing new listens for any of this: these are commands, and the frozen route table gains no door.
 
 **Always-on wiring** — a launchd job on macOS, a Scheduled Task on Windows — is written up in the [supervisor/](supervisor/) checklists, together with the smoke run that proves the loop end to end before you leave it running overnight.
 
