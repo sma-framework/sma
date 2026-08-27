@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { isNotReady } from '../../api/client'
-import { useHarnessQuery, useToggleMcp } from '../../api/queries'
-import type { McpCard } from '../../api/types'
+import { useHarnessQuery, useTelegramLink, useToggleMcp } from '../../api/queries'
+import type { McpCard, TelegramLink } from '../../api/types'
 import { ForgeDialog } from '../agents/ForgeDialog'
 import { OPEN_SCREEN_EVENT } from '../../shell/navigation'
 import type { OpenScreenDetail } from '../../shell/navigation'
@@ -122,6 +122,175 @@ function McpRow({ card, first }: { card: McpCard; first: boolean }) {
   )
 }
 
+/**
+ * «Свой бот Telegram» — the one connection a person makes from the window rather than from a
+ * file, and the three states it can be in.
+ *
+ * ══════════════════ THE TOKEN GOES IN ONCE AND IS NEVER SHOWN BACK ══════════════════
+ *
+ * The field below is the ONLY place the token ever exists in this window, and it is cleared
+ * the moment the door accepts it. Nothing on this screen reads it back: what the daemon
+ * returns is four characters of the tail, which is enough to answer «which bot is this?» and
+ * useless for anything else. So «I forgot my token» is deliberately answered by BotFather and
+ * not by this screen — and «my code ran out» is answered by the «Новый код» button, which
+ * mints a fresh code for the bot already stored WITHOUT asking for the credential again.
+ *
+ * ══════════════════ AND THE CHAT PROVES ITSELF, IT IS NOT TYPED IN ══════════════════
+ *
+ * There is no field here for a chat id, and that is the whole point of step two: a person
+ * cannot be asked for a number they would have to dig out of a file. The window shows a short
+ * code, the person sends it to their own bot, and the bot writes the chat down itself. Until
+ * that happens the state says «ждёт код» and the bot serves nobody.
+ */
+function TelegramCard({ link }: { link: TelegramLink }) {
+  const act = useTelegramLink()
+  const [token, setToken] = useState('')
+  const [problem, setProblem] = useState<string | null>(null)
+
+  const run = (action: 'connect' | 'code' | 'disconnect') => {
+    setProblem(null)
+    act.mutate(
+      { action, ...(action === 'connect' ? { botToken: token.trim() } : {}) },
+      {
+        // The token leaves the window as soon as the door has it — success or not, it does not
+        // stay in a React state where the next render could put it back on the screen.
+        onSuccess: () => setToken(''),
+        onError: (err) => {
+          setToken('')
+          setProblem(
+            isNotReady(err)
+              ? 'Подключение пока не работает — дверь не отвечает.'
+              : action === 'connect'
+                ? 'Подключить не удалось. Проверьте, что вставлен токен целиком — так, как его выдал @BotFather.'
+                : action === 'code'
+                  ? 'Новый код выдать не удалось. Прежний код мог ещё действовать.'
+                  : 'Отключить не удалось. Бот остался подключённым.',
+          )
+        },
+      },
+    )
+  }
+
+  const until =
+    link.expiresAt === null
+      ? null
+      : new Date(link.expiresAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+
+  const dot = link.status === 'linked' ? 'bg-green' : link.status === 'awaiting_code' ? 'bg-warn-tx' : 'bg-tx3'
+  const word = link.status === 'linked' ? 'подключён' : link.status === 'awaiting_code' ? 'ждёт код' : 'не подключён'
+
+  return (
+    <div className="rounded-[14px] border border-bd bg-card px-5 py-[18px] shadow-panel">
+      <div className="mb-3 flex items-center gap-3">
+        <span className="text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">Telegram</span>
+        <span aria-hidden className={`h-2 w-2 flex-none rounded-full ${dot}`} />
+        <span
+          className={`text-[11.5px] ${
+            link.status === 'linked' ? 'text-ok-tx' : link.status === 'awaiting_code' ? 'text-warn-tx' : 'text-tx3'
+          }`}
+        >
+          {word}
+        </span>
+        {link.tokenTail ? <span className="text-[11px] text-tx3">бот …{link.tokenTail}</span> : null}
+      </div>
+
+      {link.status === 'off' ? (
+        <div className="flex flex-col gap-2.5">
+          <p className="m-0 text-[12.5px] leading-[1.55] text-tx2">
+            Заведите своего бота в Telegram — напишите @BotFather, это полминуты — и вставьте сюда токен,
+            который он выдаст. Токен сохраняется у Вас на машине и обратно не показывается.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="Токен бота от @BotFather"
+              aria-label="Токен бота Telegram"
+              autoComplete="off"
+              spellCheck={false}
+              className="min-w-[280px] flex-1 rounded-[8px] border border-bd2 bg-bg px-3 py-1.5 text-[12px] text-tx outline-none placeholder:text-tx3 focus:border-tx3"
+            />
+            <button
+              type="button"
+              disabled={act.isPending || token.trim() === ''}
+              onClick={() => run('connect')}
+              className="flex-none rounded-[8px] border border-bd2 px-3.5 py-1.5 text-[11.5px] text-tx2 hover:text-tx disabled:opacity-60"
+            >
+              Подключить
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {link.status === 'awaiting_code' ? (
+        <div className="flex flex-col gap-2.5">
+          {link.code ? (
+            <>
+              <p className="m-0 text-[12.5px] leading-[1.55] text-tx2">
+                Откройте своего бота в Telegram и отправьте ему этот код одним сообщением. Бот сам запишет
+                чат — номер искать не нужно.
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="rounded-[10px] border border-bd2 bg-bg px-4 py-2 font-mono text-[18px] tracking-[0.18em] text-tx tabular-nums">
+                  {link.code}
+                </span>
+                {until ? <span className="text-[11.5px] text-tx3">действует до {until}</span> : null}
+              </div>
+            </>
+          ) : (
+            <p className="m-0 text-[12.5px] leading-[1.55] text-warn-tx">
+              Код перестал действовать — возьмите новый. Токен на месте, вводить его заново не нужно.
+            </p>
+          )}
+        </div>
+      ) : null}
+
+      {link.status === 'linked' && link.chat ? (
+        <p className="m-0 text-[12.5px] leading-[1.55] text-tx2">
+          Чат подключён:{' '}
+          <span className="text-tx">{link.chat.title ?? `№ ${link.chat.id}`}</span>
+          {link.chat.title ? <span className="text-tx3"> (№ {link.chat.id})</span> : null}. Сообщения из него
+          бот считает Вашими; из любого другого — нет.
+        </p>
+      ) : null}
+
+      {link.status !== 'off' ? (
+        <div className="mt-3.5 flex flex-wrap gap-2 border-t border-bd pt-3.5">
+          <button
+            type="button"
+            disabled={act.isPending}
+            onClick={() => run('code')}
+            className="rounded-[8px] border border-bd2 px-3.5 py-1.5 text-[11.5px] text-tx2 hover:text-tx disabled:opacity-60"
+          >
+            {link.status === 'linked' ? 'Подключить другой чат' : 'Новый код'}
+          </button>
+          <button
+            type="button"
+            disabled={act.isPending}
+            onClick={() => run('disconnect')}
+            className="rounded-[8px] border border-bd2 px-3.5 py-1.5 text-[11.5px] text-tx2 hover:text-tx disabled:opacity-60"
+          >
+            Отключить
+          </button>
+        </div>
+      ) : null}
+
+      {problem ? <p className="m-0 mt-2.5 text-[11.5px] text-err-tx">{problem}</p> : null}
+    </div>
+  )
+}
+
+/** No link in the payload yet (an older daemon, or the picture has not arrived) reads as «off». */
+const NO_LINK: TelegramLink = {
+  status: 'off',
+  tokenTail: null,
+  code: null,
+  expiresAt: null,
+  codeExpired: false,
+  chat: null,
+}
+
 export function Screen() {
   const harness = useHarnessQuery()
   const mcp = harness.data?.mcp ?? []
@@ -168,6 +337,8 @@ export function Screen() {
 
       <div className="min-h-0 flex-1 overflow-y-auto px-7 pt-6 pb-8">
         <div className="flex max-w-[900px] flex-col gap-[22px]">
+          <TelegramCard link={harness.data?.telegram ?? NO_LINK} />
+
           <div className="rounded-[14px] border border-bd bg-card px-5 py-[18px] shadow-panel">
             <div className="mb-3 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">
               Инструменты работников

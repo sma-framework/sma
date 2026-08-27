@@ -57,6 +57,14 @@ import {
   telegramChatId,
   telegramConfigured,
 } from './client.mjs'
+import { matchesPairingCode } from './pairing.mjs'
+
+/** The one message a chat gets when its code was right: the pair is made, and it is named. */
+export const PAIRED_REPLY = 'Готово — этот чат подключён к SMA. Дальше пишите сюда, окно покажет то же самое.'
+
+/** The code was right and the daemon could not write the pair down. Said, never swallowed. */
+export const PAIRING_FAILED_REPLY =
+  'Код принят, но записать пару не удалось — повторите отправку кода, он ещё действует.'
 
 /** Anybody else. One sentence, and nothing behind it. */
 export const STRANGER_REPLY = 'Этот бот принадлежит владельцу SMA.'
@@ -196,7 +204,8 @@ function named(note, title) {
  * answer}`, wired at the composition root to the front door's own `runChatTurn`. Absent, the
  * link still works and says so — it does not invent a smaller brain to stand in.
  *
- * @param {{config:object, chatTurn?:Function, client?:object, fetchImpl?:Function, log?:Function, sleep?:Function}} o
+ * @param {{config:object, chatTurn?:Function, client?:object, fetchImpl?:Function, log?:Function,
+ *          sleep?:Function, onPaired?:Function, now?:Function}} o
  * @returns {null|{start:Function, stop:Function, pollOnce:Function, handleUpdate:Function, running:Function, offset:Function, conversationId:Function}}
  */
 export function createTelegramBridge({
@@ -206,6 +215,11 @@ export function createTelegramBridge({
   fetchImpl,
   log = () => {},
   sleep = defaultSleep,
+  // ПАЙРИНГ ИЗ ОКНА — два сотрудника, а не знание этого цикла: кто записывает пару и по
+  // каким часам живёт код. Одноразовость и срок принадлежат тому, кто код выдал; цикл,
+  // который держал бы о том же второе мнение, однажды разошёлся бы с ним.
+  onPaired,
+  now = Date.now,
 } = {}) {
   if (!telegramConfigured(config)) return null
 
@@ -271,6 +285,38 @@ export function createTelegramBridge({
   }
 
   /**
+   * Как назвать чат в записи пары: имя, которое дал телеграм, а не число. Пусто — это тоже
+   * ответ: чат без имени останется числом, и это честнее выдуманного названия.
+   */
+  function chatName(chat) {
+    if (!chat || typeof chat !== 'object') return ''
+    const first = [chat.first_name, chat.last_name].filter((p) => typeof p === 'string' && p.trim() !== '').join(' ')
+    for (const candidate of [chat.title, first, chat.username]) {
+      if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim()
+    }
+    return ''
+  }
+
+  /**
+   * ЗАПИСАТЬ ПАРУ — и поверить только тому, кто её записал.
+   *
+   * Единственный путь от сообщения в телеграме к файлу конфига, и идёт он через того же
+   * применителя, которым пользуется дверь окна. «Готово» над незаписанной парой — исход хуже
+   * неудачного пайринга: человек перестаёт пробовать, а связи нет. Поэтому отказ говорится
+   * отказом, а код остаётся непотраченным.
+   */
+  async function claimPair(chatId, chat) {
+    if (typeof onPaired !== 'function') return false
+    try {
+      const written = await onPaired({ chatId: String(chatId), chatTitle: chatName(chat) })
+      return written !== false
+    } catch (err) {
+      say(`telegram: пару записать не удалось — ${(err && err.message) || err}`)
+      return false
+    }
+  }
+
+  /**
    * ONE TURN OF THE OWNER'S CONVERSATION — asked of the engine, answered in the owner's chat.
    *
    * The engine is asked with the thread's id (or without one, on the first turn), and whatever
@@ -321,7 +367,20 @@ export function createTelegramBridge({
     const paired = telegramChatId(config)
     if (paired === null || String(chatId) !== paired) {
       // THE STRANGER BRANCH, and it is the first one on purpose: nothing below this line may
-      // run for a chat the owner has not paired.
+      // run for a chat the owner has not paired. Одно-единственное, что незнакомому чату
+      // разрешено, живёт ВНУТРИ этой ветки, а не рядом с ней: доказать себя кодом, который
+      // владелец прямо сейчас видит в окне. Порядок и делает это безопасным — код вообще
+      // рассматривается только у демона, чей конфиг пары ещё НЕ несёт, поэтому бота,
+      // который уже кому-то принадлежит, угадыванием кода не отобрать.
+      const sent = typeof message.text === 'string' ? message.text.trim() : ''
+      if (paired === null && sent !== '' && matchesPairingCode(config, sent, now())) {
+        if (await claimPair(chatId, message.chat)) {
+          await reply(chatId, PAIRED_REPLY)
+          return { action: 'paired' }
+        }
+        await reply(chatId, PAIRING_FAILED_REPLY)
+        return { action: 'refused' }
+      }
       await reply(chatId, STRANGER_REPLY)
       return { action: 'refused' }
     }

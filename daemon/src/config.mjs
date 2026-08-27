@@ -105,6 +105,19 @@ export class InvalidFederationError extends Error {
   }
 }
 
+/**
+ * Named error for a Telegram connection the config refuses — a token that is not shaped like
+ * one, or a pair written with no bot behind it. Its message NEVER quotes the offending value:
+ * the field this error is about is a credential, and an error that repeats it has just written
+ * it into a log.
+ */
+export class InvalidTelegramLinkError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'InvalidTelegramLinkError'
+  }
+}
+
 /** Named error for a reference to a project id that is not in the registry (→ 404 at the door). */
 export class UnknownProjectError extends Error {
   constructor(message) {
@@ -147,6 +160,20 @@ export const PLUGIN_REF_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/
  * for a credential format nobody has invented yet.
  */
 export const ENV_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/
+
+/**
+ * The shape of a Telegram bot token, as @BotFather issues it: `<bot id>:<secret>`.
+ *
+ * It is a SHAPE CHECK and nothing more — the only authority on whether a token works is
+ * Telegram itself. What it buys is that the field which is about to be written into a 0600
+ * file and then put in the PATH of every Bot API call cannot be a url, a path, a shell
+ * fragment or an empty string, and that a person who pasted the wrong line из BotFather finds
+ * out at the door instead of in a poll that fails forever.
+ */
+export const TELEGRAM_BOT_TOKEN_RE = /^\d{5,20}:[A-Za-z0-9_-]{20,200}$/
+
+/** How much of a chat's own name is kept — a title is shown to a person, never parsed. */
+export const TELEGRAM_CHAT_TITLE_CAP = 64
 
 /** The three federation roles. An absent block means `standalone`. */
 export const FEDERATION_ROLES = Object.freeze(['standalone', 'hub', 'peer'])
@@ -882,6 +909,136 @@ export function removePeer(config, { id } = {}, { env = process.env, homedir = o
 }
 
 /**
+ * ═══════════════ THE THREE TELEGRAM DOORS — CONNECT, PAIR, DISCONNECT ═══════════════
+ *
+ * They are the whole write path of the link, and between them they hold one law: A BOT SERVES
+ * NOBODY UNTIL A CHAT HAS PROVED IT IS THE OWNER'S. `applyTelegramConnect` stores the token
+ * and a CODE and deliberately leaves `chatId` absent; `applyTelegramPair` is the only function
+ * in the product that writes `chatId`, and it writes it only from a chat that sent the code
+ * back; `applyTelegramDisconnect` removes the block entirely, so the token and the pair go
+ * together and neither can survive the other.
+ *
+ * The token is written and never read back out: no applier here returns it, `secretsView`
+ * collapses it, and the window is given four characters of it by the read model (pairing.mjs).
+ */
+
+/**
+ * applyTelegramConnect(config, {botToken, pairing}, io) — connect a bot, or mint a fresh code
+ * for the bot already connected, and persist.
+ *
+ * `botToken` ABSENT means «the token that is already stored» — this is the «code has run out,
+ * give me another» press, and it must not require a person to fetch their credential from
+ * BotFather a second time to re-issue a code (they cannot read it back out of this product,
+ * by design). A daemon with no stored token refuses that call rather than minting a code for
+ * a bot that does not exist.
+ *
+ * MINTING A CODE UNPAIRS. Both spellings clear `chatId`/`chatTitle`: issuing a pairing code IS
+ * the act of saying «the chat is not settled», and a live code beside a confirmed pair would
+ * be a second, quieter way to take the link over.
+ *
+ * @returns {object} the updated config
+ * @throws {InvalidTelegramLinkError}
+ */
+export function applyTelegramConnect(
+  config,
+  { botToken, pairing } = {},
+  { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {},
+) {
+  const current = config && typeof config.telegram === 'object' && config.telegram !== null ? config.telegram : {}
+  const stored = typeof current.botToken === 'string' ? current.botToken.trim() : ''
+  const token = botToken === undefined ? stored : String(botToken ?? '').trim()
+  if (token === '') {
+    throw new InvalidTelegramLinkError(
+      'applyTelegramConnect: no bot is connected — send the token of the bot to connect first',
+    )
+  }
+  if (botToken !== undefined && !TELEGRAM_BOT_TOKEN_RE.test(token)) {
+    // The message names the SHAPE and never the value: this branch holds a credential.
+    throw new InvalidTelegramLinkError(
+      `applyTelegramConnect: "botToken" must have the shape BotFather issues (${TELEGRAM_BOT_TOKEN_RE.source})`,
+    )
+  }
+  const code = pairing && typeof pairing.code === 'string' ? pairing.code.trim() : ''
+  const expiresAt = pairing ? Number(pairing.expiresAt) : Number.NaN
+  if (code === '' || !Number.isFinite(expiresAt)) {
+    throw new InvalidTelegramLinkError('applyTelegramConnect: a pairing {code, expiresAt} is required')
+  }
+  const telegram = { ...current, botToken: token, pairing: { code, expiresAt } }
+  delete telegram.chatId
+  delete telegram.chatTitle
+  const next = { ...config, telegram }
+  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  return next
+}
+
+/**
+ * applyTelegramPair(config, {chatId, chatTitle}, io) — write down the chat that proved itself,
+ * and SPEND the code in the same write.
+ *
+ * THE CODE IS REMOVED HERE, and that is what makes it one-time: there is no counter and no
+ * «used» flag to keep in step with anything — the second message carrying the same code
+ * reaches a config with no pairing block at all, and `matchesPairingCode` refuses it because
+ * there is nothing to match against. A pairing that lands on a config with no token is
+ * refused: a pair without a bot is a chat id nobody could ever reach.
+ *
+ * The title is DATA a person reads, so it is trimmed, stripped of control characters and
+ * capped; a chat Telegram gave no name for simply has none, and the window shows the number.
+ *
+ * @returns {object} the updated config
+ * @throws {InvalidTelegramLinkError}
+ */
+export function applyTelegramPair(
+  config,
+  { chatId, chatTitle } = {},
+  { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {},
+) {
+  const current = config && typeof config.telegram === 'object' && config.telegram !== null ? config.telegram : {}
+  if (typeof current.botToken !== 'string' || current.botToken.trim() === '') {
+    throw new InvalidTelegramLinkError('applyTelegramPair: no bot is connected — there is nothing to pair')
+  }
+  const id = typeof chatId === 'number' && Number.isFinite(chatId) ? String(chatId) : String(chatId ?? '').trim()
+  if (!/^-?\d{1,32}$/.test(id)) {
+    throw new InvalidTelegramLinkError('applyTelegramPair: "chatId" must be the numeric id Telegram gave the chat')
+  }
+  const title = String(chatTitle ?? '')
+    // A title arrives from OUTSIDE this process: a control character in it would travel into a
+    // log line and a screen as an escape sequence, so it becomes an ordinary space here. The
+    // class is spelled with ESCAPES rather than with the characters themselves — a literal
+    // control byte in a source file is invisible to whoever reads it next.
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, TELEGRAM_CHAT_TITLE_CAP)
+  const telegram = { ...current, chatId: id, ...(title !== '' ? { chatTitle: title } : {}) }
+  if (title === '') delete telegram.chatTitle
+  delete telegram.pairing
+  const next = { ...config, telegram }
+  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  return next
+}
+
+/**
+ * applyTelegramDisconnect(config, io) — let the bot go: the token, the pair and any live code
+ * leave together, in one write.
+ *
+ * THE WHOLE BLOCK IS REMOVED rather than emptied. A config carrying `telegram: {}` reads as
+ * «somebody was here» to every future reader and, worse, keeps a shape that a later field
+ * could be added to by accident; an absent block is exactly the state a daemon that never
+ * heard of Telegram is in, which is the state «отключено» is supposed to mean.
+ *
+ * @returns {object} the updated config
+ */
+export function applyTelegramDisconnect(
+  config,
+  { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {},
+) {
+  const next = { ...config }
+  delete next.telegram
+  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  return next
+}
+
+/**
  * secretsView(config, {env}) — THE ONLY loggable shape. Deep-copies the config with
  * `token`, every `account.oauthTokenEnv` AND every `federation.peers[].token` collapsed
  * to '[set]'/'[unset]'. The raw token, the env-var NAMES and every peer token never
@@ -910,10 +1067,24 @@ export function secretsView(config, { env = process.env } = {}) {
         peers: (config.federation.peers ?? []).map((p) => ({ ...p, token: p && p.token ? '[set]' : '[unset]' })),
       }
     : undefined
+  // The bot token is a value IN THIS FILE, like a peer's token and unlike an account's env-var
+  // name — so its collapse reflects the stored value, and it is collapsed in the SAME change
+  // that lets a person put it there from the window. The pairing code goes with it: it is
+  // short-lived and it is shown on the owner's own screen, but a code sitting in a log line is
+  // a code somebody who was never shown it can spend.
+  const hasTelegram = config.telegram !== undefined && config.telegram !== null
+  const telegram = hasTelegram
+    ? (() => {
+        const view = { ...config.telegram, botToken: config.telegram.botToken ? '[set]' : '[unset]' }
+        if (view.pairing) view.pairing = { ...view.pairing, code: '[set]' }
+        return view
+      })()
+    : undefined
   return {
     ...config,
     token: config.token ? '[set]' : '[unset]',
     workers,
     ...(hasFederation ? { federation } : {}),
+    ...(hasTelegram ? { telegram } : {}),
   }
 }
