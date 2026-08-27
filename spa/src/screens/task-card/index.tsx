@@ -1197,7 +1197,12 @@ export function Screen() {
             {/* ПРАВЫЙ СТОЛБИК КАРТОЧКИ, в порядке принятого макета: что происходит сейчас,
                 что происходило только что, и во что это обошлось. */}
             <div className="flex w-[320px] flex-none flex-col gap-3.5">
-              <LiveFlow attempts={attempts} status={status} ticket={newest?.ticket ?? null} />
+              <LiveFlow
+                attempts={attempts}
+                status={status}
+                ticket={newest?.ticket ?? null}
+                redirects={detail.data?.journal?.redirects ?? null}
+              />
               <SessionPanel attempt={newest} digest={log.data?.digest} />
               <SpendPanel
                 tokens={detail.data?.task?.tokens}

@@ -1,9 +1,9 @@
 /**
- * journal.mjs — THE DECISION JOURNAL: the read model over the three layers every attempt
+ * journal.mjs — THE DECISION JOURNAL: the read model over the layers every attempt
  * must carry, plus the closed vocabularies those layers are written in.
  *
- * ═══════════════════════ THE LAW OF THREE LAYERS ═════════════════════════════════
- * Every attempt explains ITSELF, at the moment it happens, in three appended layers:
+ * ═══════════════════════ THE LAW OF THE LAYERS ═══════════════════════════════════
+ * Every attempt explains ITSELF, at the moment it happens, in appended layers:
  *   (a) dispatcher — WHY the router chose this lane/worker/window. Written BY the router
  *       at the decision point, as a CODE from the closed DISPATCH_REASONS vocabulary —
  *       never a sentence assembled afterwards. A free-text reason cannot be filtered,
@@ -13,6 +13,21 @@
  *       notes influenced it.
  *   (c) memory    — which corpus notes were loaded and which reflexes fired: IDS ONLY,
  *       never the content of a note.
+ *   (d) redirect  — the word a PERSON said to the work while it was running: when it was
+ *       said, in which of the three fates, and the text itself. Written at the door that
+ *       accepts it. It is the only layer whose text belongs to a human rather than to the
+ *       machine, and it is the reason the history of an attempt used to be incomplete: the
+ *       correction lived in its own file beside the daemon (`data/redirects/<task>.ndjson`,
+ *       the delivery queue) and no card ever learned that anybody had steered.
+ *
+ *       THE FILE IS STILL THE DELIVERY QUEUE and this layer is still the HISTORY — the two
+ *       answer different questions («what has not been handed over yet» / «what was said, and
+ *       when»), so neither replaces the other and nothing here is consumed or marked done.
+ *
+ * ═══════════════════════ A CORRECTION IS DATA, LIKE THE NOTE ═════════════════════
+ * The redirect layer's text is a PERSON'S sentence. It is stored as DATA, capped, flattened
+ * to one line, and travels to the screen as a text node — never as markup, never as an
+ * instruction to anybody reading the card. The same containment the approach note gets.
  *
  * ═══════════════════════ AN ATTEMPT WITHOUT A NOTE IS INCOMPLETE ═════════════════
  * The approach note is mandatory by exactly the law that makes a receipt mandatory: the
@@ -37,8 +52,8 @@
  * multi-terminal coordination journal). Nothing imports both.
  */
 
-/** The three layers of one attempt — a closed set. */
-export const JOURNAL_LAYERS = Object.freeze(['dispatcher', 'approach', 'memory'])
+/** The layers of one attempt — a closed set. */
+export const JOURNAL_LAYERS = Object.freeze(['dispatcher', 'approach', 'memory', 'redirect'])
 
 /**
  * The dispatcher's closed reason vocabulary: code → RU подпись. The router writes the
@@ -83,6 +98,32 @@ export const DISPATCH_REASONS = Object.freeze({
   api_cap_unset: 'отложено: платный канал не настроен — ждёт окна подписки',
   budget_declined: 'отказано по бюджету',
 })
+
+/**
+ * The redirect layer's closed vocabulary: mode → the подпись the button carries on the card.
+ * The THREE FATES a word typed over live work can have — interrupt (kill the turn and resume
+ * the same session carrying the word), queue (let the turn finish; the word rides the next
+ * exit), steer (hand it to the turn in flight, kill nothing). What each one DOES is
+ * `runner/redirects.mjs`'s business; what each one is CALLED is a vocabulary, and vocabularies
+ * of the journal live here.
+ *
+ * WHY THE ONE COPY IS THIS ONE. This module is import-free by construction (see the header), so
+ * it cannot read the fates from the module that delivers them; the delivering module CAN read
+ * them from here, and does — `redirects.mjs` re-exports these two names rather than declaring
+ * a second set. An agreement written down twice is two agreements, and they drift on the first
+ * edit that touches only one of them.
+ */
+export const REDIRECT_MODE_LABELS = Object.freeze({
+  interrupt: 'перебить сейчас',
+  queue: 'после хода',
+  steer: 'сказать сейчас',
+})
+
+/** The three fates, as a closed list — the order they have always been named in. */
+export const REDIRECT_MODES = Object.freeze(Object.keys(REDIRECT_MODE_LABELS))
+
+/** A correction is a paragraph, not a document — the door's cap and the journal's, stated once. */
+export const REDIRECT_TEXT_CAP = 4000
 
 /** The approach note cap — the note is DATA and data is bounded. */
 export const APPROACH_NOTE_CAP = 4096
@@ -282,6 +323,32 @@ export function normalizeJournalPayload(layer, payload = {}) {
     return out
   }
 
+  if (layer === 'redirect') {
+    // The fate is a CODE from the closed list, exactly as the dispatcher's reason is: a card
+    // renders its подпись, and a mode nobody can sign is refused at the door rather than stored
+    // as a word no screen knows how to say.
+    const mode = String(p.mode ?? '')
+    if (!REDIRECT_MODES.includes(mode)) {
+      throw new InvalidJournalEntryError(
+        `redirect mode "${mode}" is not one of ${REDIRECT_MODES.join('|')} — the journal carries the fate as a code`,
+      )
+    }
+    const clip = clipText(p.text, REDIRECT_TEXT_CAP)
+    if (!clip.text) throw new InvalidJournalEntryError('redirect text is empty — a correction nobody said is not a correction')
+    const out = { mode, text: clip.text }
+    // A cut says so out loud, with the length it was cut from: the approach note's own posture,
+    // and doubly required here, where the clipped words are a PERSON'S.
+    if (clip.clipped) {
+      out.truncated = true
+      out.originalLength = clip.originalLength
+    }
+    // The id the delivery file minted for this same line, when the caller has it: the history
+    // row and the queue line are then the same event seen from two sides, provably.
+    const redirectId = boundedText(p.redirectId, STRUCT_FIELD_CAP)
+    if (redirectId) out.redirectId = redirectId
+    return out
+  }
+
   // memory — IDS ONLY. Anything that does not read as an identifier is dropped, so a note
   // body can never travel in the journal.
   const ids = (value) => {
@@ -364,12 +431,12 @@ function chronological(rows) {
 
 /**
  * readJournal({taskId, ledger, entries}) → the whole decision journal of ONE task:
- * every entry in time order plus the same entries grouped per attempt into the three
+ * every entry in time order plus the same entries grouped per attempt into its
  * layers. A task with no journal (anything created before this revision) yields an EMPTY
  * result — never an exception (backward compatibility is a hard requirement).
  *
  * @param {{taskId:string, ledger?:{readJournalEntries?:Function}, entries?:object[]}} args
- * @returns {{taskId:string, entries:object[], attempts:Array<{attemptId:string, attempt:number, dispatcher:object[], approach:object[], memory:object[]}>}}
+ * @returns {{taskId:string, entries:object[], attempts:Array<{attemptId:string, attempt:number, dispatcher:object[], approach:object[], memory:object[], redirect:object[]}>}}
  */
 export function readJournal({ taskId, ledger, entries } = {}) {
   const rows = chronological(entriesFrom({ taskId, ledger, entries }).filter((r) => r && typeof r === 'object'))
@@ -379,7 +446,7 @@ export function readJournal({ taskId, ledger, entries } = {}) {
     const attemptId = row.attemptId || attemptIdFor(row.taskId ?? taskId, attempt)
     let bucket = attempts.find((a) => a.attemptId === attemptId)
     if (!bucket) {
-      bucket = { attemptId, attempt, dispatcher: [], approach: [], memory: [] }
+      bucket = { attemptId, attempt, dispatcher: [], approach: [], memory: [], redirect: [] }
       attempts.push(bucket)
     }
     if (JOURNAL_LAYERS.includes(row.layer)) bucket[row.layer].push(row)

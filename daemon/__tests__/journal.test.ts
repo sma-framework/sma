@@ -106,8 +106,10 @@ const lines = (taskId: string) =>
     .filter((l) => l.trim())
 
 describe('the closed vocabularies (frozen, code + RU подпись)', () => {
-  it('JOURNAL_LAYERS is exactly the three layers and is frozen', () => {
-    expect(JOURNAL_LAYERS).toEqual(['dispatcher', 'approach', 'memory'])
+  it('JOURNAL_LAYERS is exactly the layers an attempt carries, and is frozen', () => {
+    // Четвёртый — слой поправок: слово, которое человек сказал идущей работе. Он появился
+    // тогда же, когда дверь руля начала писать историю, а не только очередь доставки.
+    expect(JOURNAL_LAYERS).toEqual(['dispatcher', 'approach', 'memory', 'redirect'])
     expect(Object.isFrozen(JOURNAL_LAYERS)).toBe(true)
   })
 
