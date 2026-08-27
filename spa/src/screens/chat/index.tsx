@@ -10,6 +10,7 @@ import type { ScreenId } from '../registry'
 import { AttachmentViewer } from './AttachmentViewer'
 import { Awaiting } from './Awaiting'
 import { Composer } from './Composer'
+import { bookOf, threadOf } from './thread'
 import { TurnList } from './TurnList'
 import type { ChatEntry } from './TurnList'
 
@@ -102,7 +103,10 @@ export function Screen() {
   const [decidingReturn, setDecidingReturn] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
 
-  const seeded = useRef(false)
+  // ЧЕЙ РАЗГОВОР СЕЙЧАС НА ЭКРАНЕ. Не «прочитана ли книга», а «книга КАКОГО проекта прочитана»:
+  // после переключения это разные вопросы, и первый из них отвечал «да» на чужую беседу.
+  // `undefined` — не читали ещё ничего; `null` — читали при невыбранном проекте.
+  const seededFor = useRef<string | null | undefined>(undefined)
   const bottom = useRef<HTMLDivElement | null>(null)
 
   // ── the live turn: its client-minted id (for Стоп) and a per-second tick (for the
@@ -118,15 +122,23 @@ export function Screen() {
     return () => window.clearInterval(t)
   }, [send.isPending])
 
-  // The book is read once. Re-reading it during a live conversation would replay turns this
-  // screen already holds — with less in them than it holds.
+  // ── КНИГА ЧИТАЕТСЯ ОДИН РАЗ НА ПРОЕКТ ────────────────────────────────────────────────
+  //
+  // Перечитывание посреди живой беседы повторило бы ходы, которые экран уже держит, — и с
+  // меньшим в них, чем он держит. Но «один раз» означает «один раз на ПРОЕКТ»: переключение
+  // проекта — это другая книга, другая нить и пустая лента, а не продолжение прежнего
+  // разговора под новой доской. Пока новая книга едет, засев не трогается: старые ходы,
+  // положенные в ленту на секунду, — это ровно та чужая беседа, от которой всё затевалось.
+  const project = state.data?.activeProject ?? null
   useEffect(() => {
-    if (seeded.current || !history.data) return
-    seeded.current = true
-    setEntries(history.data.turns.map(entryOf))
-    const last = [...history.data.turns].reverse().find((t) => t.conversationId)
-    if (last?.conversationId) setConversationId(last.conversationId)
-  }, [history.data])
+    if (!history.data || history.isFetching) return
+    if (seededFor.current === project) return
+    seededFor.current = project
+    const book = bookOf(history.data.turns, project)
+    setEntries(book.map(entryOf))
+    // Нити у этого проекта может не быть вовсе — тогда следующий ход начинает новую.
+    setConversationId(threadOf(book))
+  }, [history.data, history.isFetching, project])
 
   // A new turn belongs at the bottom of the eye, like every messenger a person already uses.
   useEffect(() => {
