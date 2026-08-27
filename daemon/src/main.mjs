@@ -57,6 +57,9 @@ import {
   applyBudgetStop,
   pipelineEnabled,
 } from './config.mjs'
+// The calling card this process leaves at the door, and the file the stop command reads to
+// prove which process is ours. Written by start(), removed by stop() — see control.mjs.
+import { writePidRecord, clearPidRecord, PID_RECORD_FILE } from './control.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
 import { resolveExpireMs } from './queue/adapter.mjs'
 import { APPROVAL_TABLE } from './queue/approval-store.mjs'
@@ -1467,7 +1470,22 @@ export function createDaemon(o = {}) {
         console.error(`[SmaDaemon] worktree sweep at boot failed: ${maskSecrets(String((err && err.message) || err))}`)
       }
       retargetProjectWatch()
-      front.listen()
+      // THE RECORD IS WRITTEN WHEN THE DOOR IS BOUND, not before: it is a claim about the
+      // address, and a claim made a second earlier would be a claim about a port this
+      // process may still fail to take. `sma daemon stop` reads it to name THIS process —
+      // the alternative is hunting the process table for a binary called `node`, which is
+      // how a stop command kills somebody else's work (daemon/src/control.mjs).
+      front.listen(() => {
+        try {
+          writePidRecord({ config })
+        } catch (err) {
+          // Fail-soft, and loud: a daemon that could not leave its calling card still serves.
+          // Only the штатная остановка is lost, and the operator is told which.
+          console.error(
+            `[SmaDaemon] не смог записать ${PID_RECORD_FILE}: ${String((err && err.message) || err)} — штатная остановка не сможет назвать этот процесс.`,
+          )
+        }
+      })
       daemon.start()
       // The link, when there is one. Not awaited: its promise is the loop's whole life, and
       // the loop swallows every refusal of its own, so nothing here can be left unhandled.
@@ -1482,6 +1500,10 @@ export function createDaemon(o = {}) {
       )
     },
     async stop() {
+      // The card goes first: from here on this process is no longer the owner of the door,
+      // and a record that outlives the process it names is exactly the claim this module
+      // refuses to act on.
+      clearPidRecord({ config })
       stopWatch(projectWatch)
       projectWatch = null
       if (telegram) telegram.stop()
