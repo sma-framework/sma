@@ -35,6 +35,7 @@ import {
   CANCEL_ATTEMPT_POLL_MS,
 } from '../src/front/server.mjs'
 import { deriveState } from '../src/front/state.mjs'
+import { taskChangeRange } from '../src/front/task-changes.mjs'
 import { QueueEncodingError } from '../src/queue/encoding.mjs'
 import {
   authed,
@@ -2672,7 +2673,7 @@ describe('server.mjs — the daemon own machine id means LOCAL, not «proxy it a
  * A DIFF THAT IS GONE IS NOT AN ERROR — IT IS A SENTENCE.
  *
  * After the work is accepted, the copy and its branch are removed on purpose; the commits
- * themselves stay in the project's tree. `git show wt/<id>` then fails, and this door used to
+ * themselves stay in the project's tree. Git then fails on the branch name, and this door used to
  * answer 404 — which the card asks for on EVERY open, so a finished task showed a red
  * transport error for work that had been merged correctly. The removal record already keeps
  * the branch tip, and the attempt row keeps the base it was cut from: two commits are enough
@@ -2692,20 +2693,23 @@ describe('server.mjs — GET /api/diff/:id after the copy is removed: kept commi
     return { execGit, calls }
   }
 
-  it('with the branch still there the diff is the branch diff, exactly as before', async () => {
+  it('with the branch still there the diff is the WHOLE branch — from where it left the trunk, not its last commit', async () => {
     const git = fakeGit(() => 'diff --git a/x.ts b/x.ts\n+one\n')
     const front = createFrontServer({ config: { token: TOKEN }, deps: { execGit: git.execGit, repoDir: '/repo' } })
     const res = await call(front, { url: '/api/diff/R-1', headers: bearer() })
     expect(res.statusCode).toBe(200)
     expect(res.body).toContain('diff --git a/x.ts')
-    expect(git.calls[0]).toEqual(['show', '--stat', '-p', 'wt/R-1'])
+    // `git show <branch>` used to stand here, and it shows ONE commit — so a task with three
+    // of them was read through the changes of its last one, while the roster panel counted
+    // the whole branch. One range, asked through the seam both surfaces share.
+    expect(git.calls[0]).toEqual(['diff', '--stat', '-p', taskChangeRange('R-1')])
   })
 
   it('the branch is gone but the removal kept its tip: the diff of base..tip, under a note', async () => {
     const base = 'a'.repeat(40)
     const tip = 'b'.repeat(40)
     const git = fakeGit((argv) => {
-      if (argv[0] === 'show') throw new Error('unknown revision')
+      if (argv.includes(taskChangeRange('R-2'))) throw new Error('unknown revision')
       return 'diff --git a/y.ts b/y.ts\n+two\n'
     })
     const front = createFrontServer({
@@ -2729,7 +2733,7 @@ describe('server.mjs — GET /api/diff/:id after the copy is removed: kept commi
 
   it('a branch tip that is not a commit name never reaches git — it answers in words', async () => {
     const git = fakeGit((argv) => {
-      if (argv[0] === 'show') throw new Error('unknown revision')
+      if (argv.includes(taskChangeRange('R-3'))) throw new Error('unknown revision')
       return 'should never be reached'
     })
     const front = createFrontServer({
@@ -2743,7 +2747,7 @@ describe('server.mjs — GET /api/diff/:id after the copy is removed: kept commi
     const res = await call(front, { url: '/api/diff/R-3', headers: bearer() })
     expect(res.statusCode).toBe(200)
     expect(res.body).toContain('# диф недоступен: копия убрана')
-    expect(git.calls).toHaveLength(1) // only the `show` that failed
+    expect(git.calls).toHaveLength(1) // only the branch read that failed
   })
 
   it('nothing left in the ledger either: still 200, still a sentence, never a 404', async () => {

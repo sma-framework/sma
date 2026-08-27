@@ -114,6 +114,7 @@ import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
 import { writeWaveHold, WAVE_ACTIONS } from '../queue/wave-holds.mjs'
 import { BATCH_DECISIONS, parseReceiptProof } from './state.mjs'
+import { readTaskChanges } from './task-changes.mjs'
 import { DRAFT_KINDS } from '../forge/forge.mjs'
 import { buildPairingInstruction } from './federation.mjs'
 import { scanEstate, enrollSelections } from './import-scanner.mjs'
@@ -1286,14 +1287,22 @@ function lastValue(rows, pick) {
 }
 
 /**
- * GET /api/diff/:id — the plain-text worktree-branch diff, auth'd and capped
+ * GET /api/diff/:id — the plain-text diff of what the task changed, auth'd and capped
  * at DIFF_CAP. The id already passed ID_RE, so it is safe to hand to the injected git.
  *
+ * THE CARD ASKS THIS QUESTION TWICE, AND IT MUST GET ONE ANSWER. The window derives its
+ * «Изменения» counts from the text this door returns, while the roster's own panel counts the
+ * whole branch. This door showed `git show wt/<id>` — the LAST COMMIT and nothing else — so a
+ * task with three commits listed all three beside the changes of one of them, and the two
+ * surfaces disagreed by construction rather than by accident. Both now read the same range
+ * through the same seam (front/task-changes.mjs): base..branch, the work that exists on this
+ * branch and nowhere else. Where the number moved, it moved to the true one.
+ *
  * AND AFTER THE COPY IS GONE, THE WORK IS STILL THERE. Accepting the work removes the copy
- * and its branch on purpose; the commits stay in the project's tree. `git show wt/<id>` then
- * fails, and this door used to answer 404 — which the card asks for on every open, so a
- * correctly merged task greeted its owner with a red transport error. The removal record kept
- * the branch tip and the attempt row kept the base it was cut from: two commit names are
+ * and its branch on purpose; the commits stay in the project's tree. Git then fails on an
+ * unknown revision, and this door used to answer 404 — which the card asks for on every open,
+ * so a correctly merged task greeted its owner with a red transport error. The removal record
+ * kept the branch tip and the attempt row kept the base it was cut from: two commit names are
  * enough to show exactly what the worker changed, long after the branch is gone.
  *
  * A missing diff is not an error, it is a sentence. Whatever happens below, the answer is 200
@@ -1302,14 +1311,13 @@ function lastValue(rows, pick) {
 async function handleDiff({ res, params, config, deps }) {
   const id = params.id
   if (typeof deps.execGit !== 'function') return send501(res)
-  const branch = `wt/${id}`
   const cwd = phaseCycleDir(deps) ?? config.repoDir
   let text = ''
   try {
     // IN THE TREE THAT HOLDS THE BRANCH — the connected project, not the daemon's launch
-    // directory. Reading the wrong tree made `git show wt/<id>` fail on an unknown revision,
-    // and this door answered 404 for work that was sitting on a branch one directory away.
-    text = String(deps.execGit(['show', '--stat', '-p', branch], { cwd }) || '')
+    // directory. Reading the wrong tree made git fail on an unknown revision, and this door
+    // answered 404 for work that was sitting on a branch one directory away.
+    text = readTaskChanges(id, deps.execGit, { cwd, shape: 'patch' })
   } catch {
     text = diffOfKeptCommits(id, cwd, deps)
   }

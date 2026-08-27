@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="version 5.6.1">
-  <img src="https://img.shields.io/badge/tests-4832%2F4832-3CC0A0" alt="tests 4832/4832">
+  <img src="https://img.shields.io/badge/tests-4834%2F4834-3CC0A0" alt="tests 4834/4834">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -237,6 +237,8 @@ And it holds a number only where somebody wrote down the place that names it. Th
 **Accepting the work happens in the right tree, and a refusal says why.** The approve door merges in the tree that actually holds the branch — the connected project's, not the daemon's — and when it refuses, it names the reason in words and the card shows that reason instead of a dead button.
 
 **The state door no longer starves the loop with its own answers.** It used to spawn two synchronous git reads for **every finished task ever recorded, on every 3-second poll** — measured on a loaded machine at 26.7 s per answer, with every other door, the approve button included, waiting in line behind it, while the diff door answered the same second in 0.4 s. A finished task's history does not change after it finishes, so its git facts are now computed once and remembered; an empty answer is given a fresh chance once a minute, not every poll. And overlapping polls of a slow derive share **one flight** instead of stacking the loop: one derivation in the air per project filter, its settled answer handed out again for a moment shorter than one poll interval.
+
+**What a task changed is ONE number, computed once.** The card asks that question on two surfaces — the panel that counts the branch, and the diff door whose text the window turns into `+N −M` — and each used to work it out its own way: the panel measured the whole branch from the point it left the trunk, while the door showed `git show wt/<id>`, the **last commit and nothing else**. On a task with one commit the two agreed and the split was invisible; on a task with three, the card listed three commits beside the changes of one of them. Both surfaces now read one range through one seam, so a task's diff is the whole of its work rather than its final commit — and where the number moved, it moved to the true one. The wire is held by a test that asserts the **call** rather than the arithmetic: two numbers that happen to match would stay green on the day somebody grows a second computation beside the first.
 
 **Accepting work no longer freezes everything else.** The acceptance ritual has awaited its test runner since the day it was written — but the runner it was handed was synchronous, so the smoke run behind «Одобрить» held the daemon's one event loop for up to two minutes while every other door queued behind it. The door now gets an asynchronous runner — the same three-valued verdict (green, red, or honestly «there was no run»), spoken by a spawned child instead of a frozen process — and the wire is held by a test: a runner that hands back a finished verdict instead of a promise is refused as the freezing body come back.
 
