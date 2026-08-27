@@ -45,7 +45,7 @@ export class MissingWorkerCwdError extends Error {
 }
 
 /**
- * spawnWorker(opts) → { pid, kill }. Spawns `bin` with `args` under `cwd`/`env`, shell
+ * spawnWorker(opts) → { pid, kill, alive }. Spawns `bin` with `args` under `cwd`/`env`, shell
  * DISABLED; writes `prompt` to stdin and ends it; line-buffers stdout and calls
  * `onLine(line)` per COMPLETE line (a trailing partial is flushed on exit); calls
  * `onExit({code, signal})` when the child exits.
@@ -53,12 +53,20 @@ export class MissingWorkerCwdError extends Error {
  * The prompt is the ONLY channel for task content — it is written to stdin, never added
  * to `args`. Callers pass the arg array from args.mjs unchanged.
  *
+ * `alive()` ANSWERS «IS THE PROCESS STILL THERE», AND IT IS THE ONLY HONEST ANSWER AVAILABLE
+ * HERE. Until it existed, the one signal anybody had about a running attempt was its OUTPUT:
+ * the lease was renewed from the stream, so a worker thinking silently for longer than one
+ * lease period was indistinguishable from a wedged process — and the watchdog buried it while
+ * it worked. This is not a heuristic and not a timer: the child's death is reported by the OS
+ * as the 'exit' event (and a child that never started as 'error'), so `alive` is a FACT the
+ * handle observed, not a guess about it. A handle without a pid was never a process.
+ *
  * @param {{
  *   bin:string, args:string[], cwd:string, env:object, prompt?:string,
  *   spawnImpl?:Function, onLine?:(line:string)=>void, onExit?:(e:{code:number|null,signal:string|null})=>void,
  *   onError?:(err:Error)=>void
  * }} opts
- * @returns {{pid:number|undefined, kill:()=>void}}
+ * @returns {{pid:number|undefined, kill:()=>void, alive:()=>boolean}}
  */
 export function spawnWorker({ bin, args, cwd, env, prompt, spawnImpl = defaultSpawn, onLine, onExit, onError } = {}) {
   // TERMINAL PARITY (header): no cwd would mean the daemon's own directory, i.e. a session
@@ -82,9 +90,13 @@ export function spawnWorker({ bin, args, cwd, env, prompt, spawnImpl = defaultSp
   // Attached BEFORE the stdin write below, because that write is the first thing that can
   // fail on a child which never started.
   let failed = false
+  // ЖИВ ИЛИ НЕТ — ОДИН ФЛАГ, ПОДНЯТЫЙ СОБЫТИЕМ ОС, а не вычисляемый по времени или по выводу.
+  // Он поднимается в обоих концах жизни ребёнка: 'error' — процесс не родился, 'exit' — умер.
+  let exited = false
   if (typeof child.on === 'function') {
     child.on('error', (err) => {
       failed = true
+      exited = true
       if (onError) onError(err)
     })
   }
@@ -116,6 +128,9 @@ export function spawnWorker({ bin, args, cwd, env, prompt, spawnImpl = defaultSp
 
   if (typeof child.on === 'function') {
     child.on('exit', (code, signal) => {
+      // ПЕРВОЙ СТРОКОЙ, до всякого повествования: чей-то обработчик может бросить, а факт
+      // смерти ребёнка от этого фактом быть не перестанет.
+      exited = true
       if (buf.length && onLine) {
         onLine(buf) // flush a trailing partial line (no terminating newline)
         buf = ''
@@ -129,5 +144,7 @@ export function spawnWorker({ bin, args, cwd, env, prompt, spawnImpl = defaultSp
     kill: () => {
       if (typeof child.kill === 'function') child.kill()
     },
+    /** Жив ли ребёнок ПРЯМО СЕЙЧАС: есть pid и ОС ещё не сообщила о его конце. */
+    alive: () => !exited && child.pid !== undefined && child.pid !== null,
   }
 }
