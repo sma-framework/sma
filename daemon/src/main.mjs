@@ -120,7 +120,7 @@ import { createBuildArgs } from './runner/build-args.mjs'
 import { mirrorPersonalLayer } from './runner/personal-layer.mjs'
 import { workerReadiness, poolReadiness } from './runner/readiness.mjs'
 import { runMerge } from '../../scripts/sma/lib/merge-gate.mjs'
-import { runMergeSmoke } from '../../scripts/sma/lib/merge-smoke.mjs'
+import { runMergeSmokeAsync } from '../../scripts/sma/lib/merge-smoke.mjs'
 
 /**
  * runUpdateVerb({apply, projectDir}) — the update door's ONE collaborator, wired here and
@@ -878,7 +878,13 @@ export function createDaemon(o = {}) {
   // A NAME OF ITS OWN, for the same reason the three below have one: a door names the task it
   // needs done, never a command it wants run. A generic «run whatever» collaborator on a
   // request path is how a browser gets to name a program.
-  const mergeTestRunner = o.runTests ?? runMergeSmoke
+  //
+  // THE ASYNC ONE, deliberately. The ritual has awaited its runner since the day it was
+  // written; what the root handed it was still the synchronous body, so the approval door
+  // froze the daemon's one event loop for up to two minutes of smoke run while a person
+  // waited on «Одобрить». The command line keeps the synchronous runner — it blocks only
+  // its own process; a door may not block anybody's.
+  const mergeTestRunner = o.runTests ?? runMergeSmokeAsync
 
   // ═══ КОД, КОТОРЫЙ НИКТО НЕ СМОГ ПОДПИСАТЬ ═══
   //

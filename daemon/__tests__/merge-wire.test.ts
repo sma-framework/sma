@@ -112,14 +112,31 @@ describe('the merge gate of a PRODUCTION daemon has tests to run', () => {
    * sentence about there being nothing to run — a shape no placeholder produces, and no test
    * is executed to get it, because the absence of the target is the whole answer.
    */
-  it('the wired runner answers in its own words when the tree holds nothing to run', () => {
+  it('the wired runner answers in its own words when the tree holds nothing to run', async () => {
     const bare = mkdtempSync(join(tmpdir(), 'sma-merge-wire-bare-'))
     try {
-      const answer: any = park.front.deps.mergeTestRunner({ cwd: bare })
+      // Awaited on purpose: the production root now hands the door the ASYNCHRONOUS runner —
+      // a synchronous answer here would mean the loop-freezing body is back on the wire.
+      const answer: any = await park.front.deps.mergeTestRunner({ cwd: bare })
       expect(answer.passed, 'an empty tree is not a red verdict').toBe(null)
       expect(answer.ran).toBe(false)
       expect(answer.note).toBe(NO_TARGET_NOTE)
       expect(answer.note).toContain(MERGE_SMOKE_TARGET)
+    } finally {
+      rmSync(bare, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * The door's runner must not hold the event loop. The claim is made by SHAPE: the wired
+   * runner hands back a THENABLE — the loop-freezing body answered with the verdict object
+   * itself, synchronously, and that shape is exactly what this assertion refuses.
+   */
+  it('the wired runner is asynchronous — it hands back a promise, not a finished verdict', () => {
+    const bare = mkdtempSync(join(tmpdir(), 'sma-merge-wire-async-'))
+    try {
+      const answer: any = park.front.deps.mergeTestRunner({ cwd: bare })
+      expect(typeof answer?.then, 'a synchronous verdict means the loop-freezing runner is back').toBe('function')
     } finally {
       rmSync(bare, { recursive: true, force: true })
     }

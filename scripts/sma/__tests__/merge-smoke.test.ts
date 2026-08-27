@@ -22,11 +22,13 @@
 
 import { describe, it, expect } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 
 import {
   runMergeSmoke,
+  runMergeSmokeAsync,
   resolveSuiteEntry,
   MERGE_SMOKE_TARGET,
   MERGE_SMOKE_TIMEOUT_MS,
@@ -243,4 +245,117 @@ describe('the runner actually runs tests — proved by launching them', () => {
       rmSync(tree, { recursive: true, force: true })
     }
   })
+})
+
+/**
+ * ═══ THE ASYNCHRONOUS RUNNER — the one the DAEMON's approval door is handed ═══════════════
+ *
+ * Same three worlds, spoken through a spawned child's two events instead of one thrown error:
+ * 'error' is a launch that never happened, 'exit' carries a code (a verdict) or a signal with
+ * no code (a deadline — the machine, not the tests). The branch tests below drive those exact
+ * shapes through a stub child, for the same reason the synchronous tests above drive error
+ * shapes: a fake that answers from the distinction under test proves only that the fake works.
+ */
+function stubChild() {
+  const child: any = new EventEmitter()
+  child.killed = false
+  child.kill = () => {
+    child.killed = true
+  }
+  return child
+}
+
+describe('the asynchronous runner tells the same three worlds apart', () => {
+  it('does NOT hold the loop: the call returns a pending promise before the child says a word', async () => {
+    const child = stubChild()
+    const verdicts: any[] = []
+    const p = runMergeSmokeAsync({ cwd: '/repo', ...treeWithTarget, spawn: () => child }).then((v: any) => {
+      verdicts.push(v)
+      return v
+    })
+    // the call is back in our hands while the child is still running — with the synchronous
+    // body this line was unreachable until the whole smoke had finished.
+    await new Promise((r) => setImmediate(r))
+    expect(verdicts, 'the verdict arrived before the child exited — who was asked?').toHaveLength(0)
+    child.emit('exit', 0, null)
+    expect(await p).toMatchObject({ passed: true, ran: true })
+  })
+
+  it('a spawn that never started is NO RUN, not «tests are red» — as an event this time', async () => {
+    const child = stubChild()
+    const p = runMergeSmokeAsync({ cwd: '/repo', ...treeWithTarget, spawn: () => child })
+    child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }))
+    expect(await p).toMatchObject({ passed: null, ran: false, note: NO_SUITE_RUNNER_NOTE })
+  })
+
+  it('a child that died by signal with no code is NO RUN — the machine is not the tests', async () => {
+    const child = stubChild()
+    const p = runMergeSmokeAsync({ cwd: '/repo', ...treeWithTarget, spawn: () => child })
+    child.emit('exit', null, 'SIGTERM')
+    expect(await p).toMatchObject({ passed: null, ran: false, note: TIMED_OUT_NOTE })
+  })
+
+  it('a child that RAN and exited non-zero is red — and carries the code it left with', async () => {
+    const child = stubChild()
+    const p = runMergeSmokeAsync({ cwd: '/repo', ...treeWithTarget, spawn: () => child })
+    child.emit('exit', 1, null)
+    const res: any = await p
+    expect(res).toMatchObject({ passed: false, ran: true, exitCode: 1 })
+    expect(res.note, 'a verdict has no «why there was no run» to give').toBeUndefined()
+  })
+
+  it('keeps the measured launch form: the interpreter, an absolute entry, no shell, output ignored', async () => {
+    const seen: any[] = []
+    const child = stubChild()
+    const p = runMergeSmokeAsync({
+      cwd: '/repo',
+      exists: () => true,
+      resolveEntry: () => 'C:/anywhere/suite-runner.mjs',
+      spawn: (file: string, args: string[], opts: any) => {
+        seen.push({ file, args, opts })
+        return child
+      },
+    })
+    child.emit('exit', 0, null)
+    await p
+    expect(seen).toHaveLength(1)
+    const [call] = seen
+    expect(call.file).toBe(process.execPath)
+    expect(call.args[0]).toBe('C:/anywhere/suite-runner.mjs')
+    expect(call.args).toContain(MERGE_SMOKE_TARGET)
+    expect(call.opts.shell, 'no shell — the entry is absolute, so none is needed').toBeUndefined()
+    expect(call.opts.cwd).toBe('/repo')
+    expect(call.opts.stdio, 'the smoke speaks in its exit code, never into our buffers').toBe('ignore')
+  })
+
+  it('a tree without the target resolves immediately, and nothing is launched at all', async () => {
+    let launched = 0
+    const res: any = await runMergeSmokeAsync({
+      cwd: '/nowhere',
+      exists: () => false,
+      resolveEntry: () => 'C:/anywhere/suite-runner.mjs',
+      spawn: () => {
+        launched += 1
+        return stubChild()
+      },
+    })
+    expect(res).toMatchObject({ passed: null, ran: false, note: NO_TARGET_NOTE })
+    expect(launched).toBe(0)
+  })
+
+  it('a REAL foreign tree whose target PASSES answers green — through the spawned child', async () => {
+    const tree = mkdtempSync(join(tmpdir(), 'sma-smoke-async-'))
+    const target = join(tree, MERGE_SMOKE_TARGET)
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, `import { describe, it, expect } from 'vitest'\ndescribe('smoke', () => { it('passes', () => { expect(1).toBe(1) }) })\n`, 'utf8')
+    try {
+      const res: any = await runMergeSmokeAsync({ cwd: tree })
+      expect(res, `the real async runner did not answer green: ${JSON.stringify(res)}`).toMatchObject({
+        passed: true,
+        ran: true,
+      })
+    } finally {
+      rmSync(tree, { recursive: true, force: true })
+    }
+  }, 180000)
 })

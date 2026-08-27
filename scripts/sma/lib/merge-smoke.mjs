@@ -35,7 +35,7 @@
  */
 
 import { createRequire } from 'node:module'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
@@ -127,4 +127,76 @@ export function runMergeSmoke(o = {}) {
     // Anything else IS a verdict: the child ran and left with a non-zero code.
     return { passed: false, ran: true, exitCode: err.status }
   }
+}
+
+/**
+ * runMergeSmokeAsync({cwd}) — the SAME three-valued answer, without holding the event loop.
+ *
+ * WHY A SECOND BODY. The synchronous runner above is right for the command line: the only
+ * thing it blocks is its own process, and its caller is the person who asked. The APPROVAL
+ * DOOR is different — it lives on the daemon's one event loop, beside every other door and
+ * the tick, and a synchronous child there froze the whole front for up to two minutes while
+ * a person waited on «Одобрить» (measured 26.08.2026: a click made during that freeze sat in
+ * the browser for minutes and fired after the person had decided otherwise). The ritual has
+ * been ready the whole time: runMerge AWAITS its runner by design — the composition root
+ * simply never handed it an asynchronous one. This is that runner.
+ *
+ * THE SHAPES DIFFER, THE WORLDS DO NOT. execFileSync speaks in one thrown error; a spawned
+ * child speaks in two events — 'error' for a launch that never happened, 'exit' with a code
+ * OR a signal for one that did. The mapping below carries the exact same three-world rule:
+ * a launch that never started and a child killed on its deadline are the ABSENCE of a run,
+ * each in its own words; only a child that ran and left with a code has a verdict.
+ */
+export function runMergeSmokeAsync(o = {}) {
+  const tree = o.cwd || process.cwd()
+  const target = o.target || MERGE_SMOKE_TARGET
+  const exists = o.exists || existsSync
+  const resolveEntry = o.resolveEntry || resolveSuiteEntry
+  const spawnImpl = o.spawn || spawn
+
+  // The two pre-checks are the sync runner's own, verbatim: nothing to run, and nothing to
+  // run it with, are both known before any child exists — and both are «no run», never red.
+  if (!exists(join(tree, target))) return Promise.resolve({ passed: null, ran: false, note: NO_TARGET_NOTE })
+  let entry
+  try {
+    entry = resolveEntry()
+  } catch {
+    return Promise.resolve({ passed: null, ran: false, note: NO_SUITE_RUNNER_NOTE })
+  }
+
+  return new Promise((resolve) => {
+    // Same launch discipline as above: the interpreter this process already runs under, an
+    // absolute entry, an args array, no shell, output ignored. The ceiling is our own timer
+    // because spawn has no `timeout` seat the way execFileSync does — and the kill it fires
+    // still arrives here as an 'exit' with a signal, which is the deadline branch below.
+    const child = spawnImpl(process.execPath, [entry, 'run', target], {
+      cwd: tree,
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    let deadline = false
+    const timer = setTimeout(() => {
+      deadline = true
+      try {
+        child.kill()
+      } catch {
+        /* the child beat the ceiling to the grave — the exit handler already spoke */
+      }
+    }, MERGE_SMOKE_TIMEOUT_MS)
+    child.on('error', () => {
+      // A SPAWN THAT NEVER STARTED IS NOT A VERDICT — the same measured defect as above,
+      // arriving as an event instead of a throw.
+      clearTimeout(timer)
+      resolve({ passed: null, ran: false, note: NO_SUITE_RUNNER_NOTE })
+    })
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer)
+      // A DEADLINE IS NOT A VERDICT: our own kill, or any death by signal with no code.
+      if (deadline || (signal != null && code == null)) {
+        return resolve({ passed: null, ran: false, note: TIMED_OUT_NOTE })
+      }
+      if (code === 0) return resolve({ passed: true, ran: true })
+      resolve({ passed: false, ran: true, exitCode: code })
+    })
+  })
 }
