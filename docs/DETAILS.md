@@ -611,6 +611,19 @@ judged: content wider than the viewport at phone width, a control that cannot be
 control with no accessible name, uncaught exceptions, dead requests, the app's own API at 4xx or
 5xx.
 
+**And the window it drives comes from one command.** A live look needs a live window, and the
+running daemon is the wrong one twice over: it serves the build of the main tree, so a change made
+in your checkout is not on the screen at all, and it stands on the real queue, so a walk across it
+can move actual work. `node scripts/sma/ui-stage.mjs -- node scripts/sma/ui-drive.mjs {url}` is that
+scene, built once instead of by hand each time: the built window of **this** checkout, on a port
+found by taking it — there is no flag to name one, because a named port is how a scene lands on the
+daemon's — in a throwaway directory that is its whole world, behind a token minted at boot, held in
+that process, printed and passed through the environment, and written to no file. Without `--` it
+raises the window and holds it for a person; with `--` it runs the command and takes the scene down
+after it, at the end and on a signal, handing back the command's own exit code. It builds nothing on
+your behalf: no built window is exit 3 with the one command that fixes it, because turning «open the
+window» into «change the repository» is not a trade a check may make for you.
+
 That sideways measurement follows the CONTENT, not the document. A window that carries its minimum
 width on a container inside the page measures perfectly clean at phone width while most of the
 screen lies past the edge — so the finding names the box that holds the content and how many pixels
