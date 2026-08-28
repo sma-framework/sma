@@ -69,6 +69,10 @@ import { createMemoryQueue, REASON_LABELS } from '../src/queue/adapter.mjs'
 // screen's payload. Every joint of that path had a green test of its own while the path
 // itself was cut, so the case has to cross the module boundary the defect hid behind.
 import { deriveState } from '../src/front/state.mjs'
+// The LIVE role resolver, imported for the wire cases at the foot of this file: an agent that
+// lives in this machine's store has no repo-relative roleFile to be gated on, so «доехала ли
+// роль» can only be answered by letting the real resolver meet the real tick.
+import { resolveWorkerContext } from '../src/front/harness.mjs'
 import { tickJournalLine } from '../src/main.mjs'
 import { windowState, isOpen } from '../src/policy/windows.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
@@ -6749,5 +6753,121 @@ describe('снимок контекста и навыки материализу
     const text = readFileSync(join(copy, CONTEXT_FILE), 'utf8')
     expect(text, 'секрет уехал файлом в дерево, где работает чужой процесс').not.toContain(token)
     expect(text, 'вырезали больше, чем нужно: остальные строки человека обязаны выжить').toContain('третья строка')
+  })
+})
+
+/**
+ * ═════ РОЙ ЖИВЁТ НА МАШИНЕ: ПРОВОД, А НЕ НАЛИЧИЕ ФАЙЛА ═════
+ *
+ * Решение владельца 27.08: рой агентов принадлежит машине, а не проекту. Читающая сторона
+ * (harness.mjs) закрыта своими случаями; здесь закрывается СТЫК, на котором всё и обрывалось.
+ *
+ * Ворота выдачи роли стояли на поле `worker.roleFile`. Это поле есть только у работника, чьё
+ * определение нашлось в ДЕРЕВЕ ПРОЕКТА: путь роли раскрывается относительно репозитория, и у
+ * определения из хранилища машины такого пути нет и быть не может. Значит агент машины мог
+ * числиться на карточке включённым, а сессия не получала ни строки роли — «есть в списке» и
+ * «работает» расходились молча. Случай ниже спрашивает единственное, что доказывает обратное:
+ * доехал ли текст роли до `spec.prompt`, то есть до аргументов, с которыми поднимают работника.
+ */
+describe('рой на машине: роль агента машины доезжает до запуска работника', () => {
+  const SCOUT = `---
+name: sma-scout
+description: Ищет по дереву и не правит.
+lane: prod
+provider: claude
+---
+МАРКЕР-РОЛИ-ИЗ-ХРАНИЛИЩА-МАШИНЫ
+`
+
+  /** Фальшивая ФС ровно того вида, что читает harness: только машинное хранилище, дерева нет. */
+  const machineOnlyFs = (name: string, body: string) => ({
+    existsSync: (p: string) => String(p).replace(/\\/g, '/').endsWith(`/machine/agents/${name}.md`),
+    readFileSync: (p: string) => {
+      if (String(p).replace(/\\/g, '/').endsWith(`/machine/agents/${name}.md`)) return body
+      throw new Error(`ENOENT ${p}`)
+    },
+    readdirSync: (p: string) => {
+      if (String(p).replace(/\\/g, '/').endsWith('/machine/agents')) return [`${name}.md`]
+      throw new Error(`ENOENT ${p}`)
+    },
+  })
+
+  const spawnRecording = (spawns: any[]) => (spec: any) => {
+    spawns.push({ prompt: String(spec.prompt ?? '') })
+    spec.onLine?.('APPROACH_NOTE: прямой путь')
+    spec.onLine?.('LESSON_NONE: тестовый работник')
+    spec.onExit?.({ code: 0, signal: null })
+    return { pid: 1, kill: () => {} }
+  }
+
+  const RESPONSES = {
+    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/BL-1', branch: 'wt/BL-1' }) },
+    reverify: GREEN_REVERIFY,
+  }
+
+  it('работник БЕЗ roleFile получает роль из хранилища машины — она в задании запуска', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+
+    const spawns: any[] = []
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker: spawnRecording(spawns),
+      responses: RESPONSES,
+      config: {
+        repoDir: '/repo',
+        // ровно то, что записывает дверь включения для определения из хранилища машины:
+        // профиль есть, пина роли нет — взять его неоткуда
+        workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/x' }, enabled: true }],
+      },
+      deps: {
+        resolveWorkerContext,
+        fsImpl: machineOnlyFs('max-2', SCOUT),
+        env: { SMA_DAEMON_AGENTS: '/machine/agents' },
+      },
+    })
+
+    await tick(deps)
+
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0].prompt, 'роль из хранилища машины не доехала до аргументов запуска').toContain(
+      'МАРКЕР-РОЛИ-ИЗ-ХРАНИЛИЩА-МАШИНЫ',
+    )
+    // задание не подменено — роль ДОПИСАНА перед ним, как и роль из дерева
+    expect(spawns[0].prompt).toContain('do it')
+    expect(spawns[0].prompt.indexOf('МАРКЕР-РОЛИ-ИЗ-ХРАНИЛИЩА-МАШИНЫ')).toBeLessThan(
+      spawns[0].prompt.indexOf('do it'),
+    )
+  })
+
+  it('нечего найти — ничего и не дописано: пустое хранилище не выдумывает роли', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+
+    const spawns: any[] = []
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker: spawnRecording(spawns),
+      responses: RESPONSES,
+      config: {
+        repoDir: '/repo',
+        workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/x' }, enabled: true }],
+      },
+      deps: {
+        resolveWorkerContext,
+        fsImpl: machineOnlyFs('somebody-else', SCOUT),
+        env: { SMA_DAEMON_AGENTS: '/machine/agents' },
+      },
+    })
+
+    await tick(deps)
+
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0].prompt).not.toContain('МАРКЕР-РОЛИ-ИЗ-ХРАНИЛИЩА-МАШИНЫ')
   })
 })

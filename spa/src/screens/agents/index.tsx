@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { isNotReady, STOCK_TEAM_TARGET } from '../../api/client'
 import { useHarnessQuery, useToggleAgent } from '../../api/queries'
-import type { AgentCard, StockTeamCard } from '../../api/types'
+import type { AgentCard, AgentSource, AgentStore, StockTeamCard } from '../../api/types'
 import { OPEN_SCREEN_EVENT } from '../../shell/navigation'
 import type { OpenScreenDetail } from '../../shell/navigation'
 import { accentFor, initialOf } from '../../shell/format'
@@ -44,12 +44,46 @@ import { ModelDialog } from './ModelDialog'
  * which of them are on; and which have been edited here, with a mark when a newer shipped
  * version exists. A definition that could not be read says so on its own card — an unreadable
  * file is a visible fact, not a missing row.
+ *
+ * ════════════════════════ TWO STORES, AND EVERY CARD NAMES ITS OWN ══════════════════════
+ *
+ * The swarm lives in TWO places — the tree being worked in, and this machine's own agents
+ * directory, which is there under every project. The daemon used to read whichever of the two
+ * existed FIRST, so a project with any `.claude/agents/` at all hid the machine's whole swarm
+ * and this screen showed a roster that was never the whole roster. Both are read now, so every
+ * card says which store it came out of: with two stores in play, an agent whose origin is not
+ * on its card is one nobody can reason about when a name exists in both.
+ *
+ * AND THE EMPTY ROSTER EXPLAINS ITSELF, for the reason the skills screen already learned the
+ * hard way: «определений не найдено» without a place reads as «этого в продукте нет». So when
+ * there is nothing to show, both directories are named and each says whether it exists at all.
  */
 
 /** The services that do the work, in the words the rest of the window uses for them. */
 const PROVIDER_LABEL: Record<string, string> = {
   claude: 'Клод',
   codex: 'Кодекс',
+}
+
+/** The two stores in the person's own words — the daemon says 'project'/'machine'. */
+const STORE_LABEL: Record<AgentSource, string> = {
+  project: 'проект',
+  machine: 'машина',
+}
+
+/** Why a card carries the badge it carries, said in full on hover. */
+const STORE_HINT: Record<AgentSource, string> = {
+  project: 'Дерево проекта — это определение живёт вместе с кодом',
+  machine: 'Хранилище машины — этот агент доступен в любом проекте',
+}
+
+/** What the screen looked at, said as a sentence — the whole content of an empty roster. */
+function whereWeLooked(stores: AgentStore[]): string[] {
+  return stores.map(
+    (s) =>
+      `${STORE_LABEL[s.source] ?? s.source}: ${s.path}` +
+      (s.present ? ` — каталог есть, определений в нём ${s.count}` : ' — такого каталога нет'),
+  )
 }
 
 /** The lines of work, in the same words «Команда» and «Задачи» use. */
@@ -227,6 +261,14 @@ function StockRow({ member }: { member: StockTeamCard }) {
             <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${member.enabled ? 'bg-green' : 'bg-tx3'}`} />
             {member.enabled ? 'включён' : 'выключен'}
           </span>
+          {/* WHERE THIS ONE CAME FROM, on the card and not in a tooltip: with two stores an
+              agent whose store is invisible is one nobody can place when a name is in both. */}
+          <span
+            title={STORE_HINT[member.source] ?? ''}
+            className="rounded-[6px] border border-bd2 px-1.5 py-0.5 text-[10px] text-tx3"
+          >
+            {STORE_LABEL[member.source] ?? member.source}
+          </span>
           {member.forked ? (
             <span className="rounded-full bg-warn-s px-2 py-[2px] text-[10px] text-warn-tx">изменён Вами</span>
           ) : null}
@@ -239,9 +281,10 @@ function StockRow({ member }: { member: StockTeamCard }) {
           <div className="mt-[3px] text-[11.5px] leading-[1.5] text-tx2">{member.description}</div>
         ) : null}
 
-        {member.problem ? (
-          <p className="m-0 mt-1 text-[11px] text-err-tx">Файл не прочитался: {member.problem}</p>
-        ) : null}
+        {/* One line for two different things now — an unreadable file and a shadowed twin —
+            and both are said in the daemon's own words rather than re-titled here, because a
+            prefix invented on this side would mislabel whichever of them it was not written for. */}
+        {member.problem ? <p className="m-0 mt-1 text-[11px] text-warn-tx">{member.problem}</p> : null}
 
         {member.tools.length > 0 ? (
           <div className="mt-[3px] text-[11px] text-tx3">Инструменты: {member.tools.join(', ')}</div>
@@ -272,7 +315,15 @@ function StockRow({ member }: { member: StockTeamCard }) {
  * which is a defect in its own right: a silent no-op. The outcome is stated either way now —
  * a refusal in red, and a plain confirmation of what moved when there was none.
  */
-function StockTeamSection({ team, notReady }: { team: StockTeamCard[]; notReady: boolean }) {
+function StockTeamSection({
+  team,
+  stores,
+  notReady,
+}: {
+  team: StockTeamCard[]
+  stores: AgentStore[]
+  notReady: boolean
+}) {
   const toggle = useToggleAgent()
   const [problem, setProblem] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<string | null>(null)
@@ -312,11 +363,29 @@ function StockTeamSection({ team, notReady }: { team: StockTeamCard[]; notReady:
     return (
       <div>
         <div className="mb-2 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">Команда SMA</div>
-        <p className="m-0 text-[13px] text-tx2">
-          {notReady
-            ? 'Список появится, когда кузница заработает.'
-            : 'Определений агентов на диске не найдено — команда приезжает вместе с установкой SMA.'}
-        </p>
+        {notReady ? (
+          <p className="m-0 text-[13px] text-tx2">Список появится, когда кузница заработает.</p>
+        ) : (
+          <div className="flex max-w-[720px] flex-col gap-2">
+            <p className="m-0 text-[13px] text-tx2">
+              Определений агентов не найдено. Искали в двух местах — вот в каких:
+            </p>
+            <ul className="m-0 flex list-none flex-col gap-1 p-0">
+              {whereWeLooked(stores).map((line) => (
+                <li key={line} className="text-[11.5px] break-all text-tx3">
+                  {line}
+                </li>
+              ))}
+              {stores.length === 0 ? (
+                <li className="text-[11.5px] text-tx3">Демон не сказал, где искал, — список хранилищ пуст.</li>
+              ) : null}
+            </ul>
+            <p className="m-0 text-[12.5px] text-tx2">
+              Команда приезжает вместе с установкой SMA. Агенты из хранилища машины видны в любом проекте —
+              достаточно, чтобы они лежали в одном из названных каталогов.
+            </p>
+          </div>
+        )}
       </div>
     )
   }
@@ -402,8 +471,10 @@ function StockTeamSection({ team, notReady }: { team: StockTeamCard[]; notReady:
 export function Screen() {
   const harness = useHarnessQuery()
   const agents = harness.data?.agents ?? []
-  /** The whole roster that arrived with the install — the same reading, one key over. */
+  /** The whole roster reachable from here — both stores, the same reading, one key over. */
   const stockTeam = harness.data?.stockTeam ?? []
+  /** And the walk itself, so an empty roster can name the two places it looked in. */
+  const agentStores = harness.data?.agentStores ?? []
   /** A draft with no kind is a worker's draft: this screen is where the forge lands by default. */
   const drafts = (harness.data?.drafts ?? []).filter((d) => d.kind === 'agent' || d.kind === null)
 
@@ -464,7 +535,11 @@ export function Screen() {
             )}
           </div>
 
-          <StockTeamSection team={stockTeam} notReady={harness.isError && isNotReady(harness.error)} />
+          <StockTeamSection
+            team={stockTeam}
+            stores={agentStores}
+            notReady={harness.isError && isNotReady(harness.error)}
+          />
 
           {drafts.length > 0 ? (
             <div>

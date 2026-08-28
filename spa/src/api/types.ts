@@ -1381,6 +1381,26 @@ export interface DraftCard {
 export type StockOrigin = 'sma' | 'yours'
 
 /**
+ * WHICH STORE a definition was found in — the served tree, or this machine's own swarm. The
+ * same two words a skill's source uses, and deliberately a separate type: the two screens read
+ * different keys off the payload and a shared alias would hide the day one of them grows a
+ * third store.
+ */
+export type AgentSource = 'project' | 'machine'
+
+/**
+ * One of the two places the daemon looked for agent definitions, as it actually looked. The
+ * SkillStore twin, one screen over, and it exists for the same reason: an empty roster that
+ * cannot name where it looked is indistinguishable from a product that has no agents.
+ */
+export interface AgentStore {
+  source: AgentSource
+  path: string
+  present: boolean
+  count: number
+}
+
+/**
  * What is known about a newer shipped version. 'unknown' means nobody has ever accepted a
  * version of this one, so there is nothing to compare against — it is never dressed up as
  * 'current'. 'not-shipped' is the user's own agent, which SMA does not ship updates for.
@@ -1398,10 +1418,12 @@ export interface StockTeamCard {
   description: string
   tools: string[]
   enabled: boolean
+  /** Which store this definition came out of — always shown, never guessed on this side. */
+  source: AgentSource
   origin: StockOrigin
   forked: boolean
   stockUpdate: StockUpdate
-  /** A definition that could not be read — named, so it is visible instead of missing. */
+  /** A definition that could not be read, or a twin that was shadowed — named, not hidden. */
   problem: string | null
 }
 
@@ -1438,6 +1460,8 @@ export interface HarnessPayload {
   mcp: McpCard[]
   drafts: DraftCard[]
   stockTeam: StockTeamCard[]
+  /** The two stores, as they were walked — the words an empty roster explains itself with. */
+  agentStores: AgentStore[]
   telegram: TelegramLink
 }
 

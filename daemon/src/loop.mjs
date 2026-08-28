@@ -3811,7 +3811,13 @@ export async function tick(deps = {}) {
       // «включён» is real in the session. Optional + DI-guarded — skipped when not injected.
       if (typeof deps.resolveWorkerContext === 'function' && route && route.workerId) {
         const worker = (config.workers || []).find((w) => w && w.id === route.workerId)
-        if (worker && (worker.roleFile || (Array.isArray(worker.skills) && worker.skills.length))) {
+        // ГДЕ ЛЕЖИТ ОПРЕДЕЛЕНИЕ, РЕШАЕТ НЕ ЭТОТ ФАЙЛ. Ворота стояли на `worker.roleFile` — на
+        // поле, которое есть ТОЛЬКО у работника, чьё определение нашлось в дереве проекта.
+        // Работник из хранилища машины такого поля не имеет и не может иметь (путь роли
+        // раскрывается относительно репозитория), и роль ему не выдавалась вовсе: карточка
+        // говорила «включён», а сессия не получала ни строки. Спрашиваем разрешатель всегда —
+        // он сам ищет по обоим хранилищам и отвечает пустым, когда находить нечего.
+        if (worker) {
           const ctx = deps.resolveWorkerContext({ worker, repoDir: config.repoDir, fsImpl: deps.fsImpl, env: deps.env })
           // ТЕКСТ ВЫДАННЫХ НАВЫКОВ ЕДЕТ ТЕМ ЖЕ ПУТЁМ, ЧТО И РОЛЬ. Раздача навыка была записью
           // в конфиге и строкой в журнале: сессия, которой навык выдали, о нём не узнавала.
@@ -3819,10 +3825,11 @@ export async function tick(deps = {}) {
           // работа: кто работник, что он умеет, и лишь потом что делать.
           if (ctx && ctx.skillsPreamble) spec.prompt = `${ctx.skillsPreamble}\n\n${spec.prompt ?? ''}`
           if (ctx && ctx.rolePreamble) spec.prompt = `${ctx.rolePreamble}\n\n${spec.prompt ?? ''}`
-          roleNotes = [
-            ...(worker.roleFile ? [worker.roleFile] : []),
-            ...((ctx && ctx.skillsList) || worker.skills || []),
-          ]
+          // ФАЙЛ РОЛИ НАЗЫВАЕТСЯ ТОТ, ЧТО ПРОЧИТАН. У работника из дерева это его пин; у
+          // работника из хранилища машины пина нет, и без второго слагаемого слой памяти
+          // сказал бы «роли не было» о попытке, которой роль выдали.
+          const roleRef = worker.roleFile || (ctx && ctx.roleRef) || null
+          roleNotes = [...(roleRef ? [roleRef] : []), ...((ctx && ctx.skillsList) || worker.skills || [])]
         }
       }
       const streamLines = []
