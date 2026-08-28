@@ -177,6 +177,62 @@ export function derivePresence({ windowOpen, hasActiveTask, pulseAgeSec } = {}) 
 }
 
 /**
+ * ЧЕМ КОНЧИЛАСЬ РАБОТА — одно слово из закрытого списка, и оно всегда чьё-то.
+ *
+ * Два разных этажа правды отвечают на этот вопрос, и они НЕ равны:
+ *
+ *   · ПОСЛЕДНЕЕ СЛОВО О ЗАДАЧЕ — статус строки очереди. «Принята» и «возвращена» — это акты
+ *     ЧЕЛОВЕКА, и никакого другого источника у них нет: леджер попыток знает, чем кончился
+ *     подход, и не знает, что о нём сказали потом. Поэтому когда чтение ещё несёт строку,
+ *     слово берётся у неё.
+ *   · СЛОВО САМОГО ПОДХОДА — `completed` / `failed` из леджера. Оно остаётся, когда строки уже
+ *     нет вовсе (очередь свою историю подрезает, файлы леджера — нет), и говорит ровно то, что
+ *     знает: работа была доведена или сорвалась. «Принята» отсюда не выводится — приёмки
+ *     никто не наблюдал, и назвать её было бы выдумкой ровно того сорта, ради запрета которой
+ *     этот файл написан.
+ *
+ * `completed` НА СТРОКЕ ЗНАЧИТ ТО ЖЕ, что и в леджере, и намеренно не переименовано в
+ * «принята»: `approved` — отдельный статус, и он существует именно потому, что «сделана» и
+ * «принята» — разные новости.
+ */
+const HISTORY_OUTCOME_BY_STATUS = Object.freeze({
+  approved: 'approved',
+  returned: 'returned',
+  failed: 'failed',
+  completed: 'completed',
+  awaiting_approval: 'awaiting',
+  approving: 'awaiting',
+  queued: 'running',
+  claimed: 'running',
+  running: 'running',
+})
+
+/**
+ * historyRow({taskId, endedAt, outcome}, row) → одна строка истории работника.
+ *
+ * `title`, `kind` и `phase` — слова СТРОКИ ОЧЕРЕДИ, и когда строки в чтении нет, все три
+ * молчат: `title: null` и `kind: null` значат «сказать некому», а не «безымянная инлайн-
+ * задача». Экран обязан различать это, потому что иначе фаза, чью строку очередь уже
+ * подрезала, тихо переехала бы в столбец инлайн-задач.
+ *
+ * РОД РАБОТЫ ЧИТАЕТСЯ ТАМ ЖЕ, ГДЕ ЕГО ЧИТАЕТ ИСПОЛНИТЕЛЬ, — в конверте `data` строки: тик
+ * узнаёт стадию фазы по `data.phase` и ничему другому. Второе определение «что такое фаза»
+ * разошлось бы с первым, и разошлось бы молча.
+ */
+function historyRow(entry, row) {
+  const data = row && row.data && typeof row.data === 'object' && !Array.isArray(row.data) ? row.data : null
+  const phase = data && data.phase !== undefined && data.phase !== null ? String(data.phase).trim() : ''
+  return {
+    taskId: entry.taskId,
+    endedAt: entry.endedAt,
+    title: row && typeof row.title === 'string' && row.title !== '' ? row.title : null,
+    kind: row ? (phase !== '' ? 'phase' : 'task') : null,
+    ...(phase !== '' ? { phase } : {}),
+    outcome: (row && HISTORY_OUTCOME_BY_STATUS[row.status]) || entry.outcome,
+  }
+}
+
+/**
  * parseReceiptSummary(receiptRef, {readReceipt}) → {testsPassed, testsTotal, tscClean,
  * guardClean}. The receiptRef may ALREADY be a structured receipt object (the common
  * case — the loop writes the rich attempt row) or a string ref resolved via an injected
@@ -2734,6 +2790,24 @@ export async function deriveState(deps = {}) {
   }
   const awaiting = [...awaitingRows].sort((a, b) => waitingSince(a) - waitingSince(b)).map(toTaskRow)
 
+  // ── ЧТО ЭТОТ РАБОТНИК ВЁЛ — the ledger's durable spine, joined to the words of the queue ──
+  //
+  // The ledger names the WORKER of every try and survives everything (it is files); the queue
+  // row holds the TITLE, the KIND of work and the last word a PERSON said about it, and the
+  // queue is where those three live. So the list of pieces comes from the ledger and the words
+  // beside each piece come from the row — a join, never a second count.
+  //
+  // WHY NOT FROM THE ROWS ALONE. A row's `workerId` is CLEARED the moment the work is re-queued
+  // or the attempts run out (adapter.mjs does it deliberately, and the durable backend does the
+  // same), so «кто это вёл» is exactly the fact the rows stop carrying at the moment it becomes
+  // interesting. A roster built off them would show a worker's failures vanishing one by one.
+  //
+  // THE LOOKUP IS BUILT OFF THE UNNARROWED ROWS on purpose. The project filter narrows the
+  // TASK LISTS — it is not a statement about who did what, and a worker whose history went
+  // titleless because a person had narrowed the board to another project would be a screen
+  // answering a question nobody asked.
+  const rowById = new Map(latestRowPerId(allRows).map((r) => [r.id, r]))
+
   // ── workers[] — presence is a PURE derive. The roster is ALSO the only list
   // that names a claimed task, so the three facts a screen needs to place that task travel
   // with it: its id, its NAME and its PROJECT. Without the last two a board can only print
@@ -2761,6 +2835,12 @@ export async function deriveState(deps = {}) {
     // catalogue was opened and nothing concluded in the period, and that is a measurement.
     const stats30d = workerStats ? workerStats.statsFor(w.id) : null
 
+    // The pieces this one led, over the SAME period and out of the SAME pass that counted
+    // them. Absent — never empty — when the ledger could not be read: an empty list reads as
+    // «этот ничего не вёл», which is a claim, and the card must be able to say «нет данных».
+    const history =
+      workerStats && typeof workerStats.historyFor === 'function' ? workerStats.historyFor(w.id) : null
+
     return {
       id: w.id,
       lane: w.lane,
@@ -2784,6 +2864,7 @@ export async function deriveState(deps = {}) {
       ...(pulseAgeSec !== undefined ? { pulseAgeSec } : {}),
       presence,
       ...(stats30d ? { stats30d } : {}),
+      ...(history ? { history: history.map((h) => historyRow(h, rowById.get(h.taskId))) } : {}),
     }
   })
 

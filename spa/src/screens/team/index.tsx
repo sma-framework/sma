@@ -1,9 +1,10 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useStateQuery } from '../../api/queries'
 import type { Presence, WorkerRow } from '../../api/types'
 import { OPEN_SCREEN_EVENT } from '../../shell/navigation'
 import type { OpenScreenDetail } from '../../shell/navigation'
 import { WorkerCard } from './WorkerCard'
+import { WorkerHistory } from './WorkerHistory'
 
 /**
  * «Команда» — the roster: who is on what, whose window is nearly spent, who is free.
@@ -26,6 +27,11 @@ import { WorkerCard } from './WorkerCard'
  * done nothing. A statistic is a count over a stated period, not over whatever a poll returned;
  * the period now rides in the payload and the screen only prints it, with «за 30 дней» said in
  * words beside the figures.
+ *
+ * И РАБОТНИК ТЕПЕРЬ ОТКРЫВАЕТСЯ. По имени (и по самим цифрам) открывается его история —
+ * `workers[].history`, работы, которые он вёл, с исходом каждой и с переходом в карточку
+ * любой из них. Она приезжает тем же одним чтением и из того же прохода по леджеру, что и
+ * цифры: экран по-прежнему НИЧЕГО не спрашивает у демона от себя и ничего не считает сам.
  */
 
 /** The lines of work, in the words the rest of the product uses for them. */
@@ -95,6 +101,12 @@ export function Screen() {
   const state = useStateQuery()
   const data = state.data
   const workers = data?.workers ?? []
+  /**
+   * Открытая история — ПО ИМЕНИ работника, а не копией строки: чтение обновляется каждые
+   * несколько секунд, и окно, держащее снимок, показывало бы вчерашнее, пока его не закроют.
+   */
+  const [openedId, setOpenedId] = useState<string | null>(null)
+  const opened = workers.find((w) => w.id === openedId) ?? null
 
   /** The title of a task in hand — looked up in the rows the window already has. */
   const titleOf = useMemo(() => {
@@ -153,12 +165,25 @@ export function Screen() {
                   taskTitle={w.taskId ? (titleOf.get(w.taskId) ?? null) : null}
                   stats={w.stats30d ?? null}
                   onOpenTask={openTask}
+                  onOpenHistory={() => setOpenedId(w.id)}
                 />
               )
             })}
           </div>
         </div>
       )}
+
+      {opened ? (
+        <WorkerHistory
+          worker={opened}
+          stats={opened.stats30d ?? null}
+          onOpenTask={(taskId) => {
+            setOpenedId(null)
+            openTask(taskId)
+          }}
+          onClose={() => setOpenedId(null)}
+        />
+      ) : null}
     </section>
   )
 }
