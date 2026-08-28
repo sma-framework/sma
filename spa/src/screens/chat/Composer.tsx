@@ -4,16 +4,15 @@ import { useEffect, useRef } from 'react'
  * Composer — the one place a person speaks to the team, and the line that says what
  * speaking to it does.
  *
- * The caption is not decoration and is not paraphrased anywhere: «Читает и предлагает.
- * Запускает работу только по Вашей кнопке — сам ничего не начинает.» It is the boundary of
- * the whole lane, written where the hand is, at the moment of typing — not in a help page
- * nobody opens.
+ * The caption is not decoration and is not paraphrased anywhere: «Читает и предлагает. Ставит
+ * задачу по Вашему слову — приёмку решаете Вы сами.» It is the boundary of the whole lane,
+ * written where the hand is, at the moment of typing — not in a help page nobody opens.
  *
- * IT SAYS THE SECOND HALF SINCE 10.08.2026. The line used to stop at «Ничего не запускает
- * сам», which is true and was read as «work cannot be started here at all» — by the owner,
- * on his own product. The invariant is unchanged: a typed sentence starts nothing, ever. What
- * changed is that the caption now also names the door that does exist, one button away on the
- * draft. A boundary that hides the path is not a safer boundary, it is a locked room.
+ * ГРАНИЦА ПЕРЕЕХАЛА ОДИН РАЗ, И ЧЕСТНО. Строка обещала «запускает работу только по Вашей
+ * кнопке»; теперь разговор доводит дело до постановки СЛОВАМИ — человек говорит «да», и
+ * задача заводится. Причина в дверях: у бота кнопок нет вовсе, и если бы слово работало
+ * только там, окно и телефон стали бы разными продуктами. Что НЕ переехало — приёмка: её
+ * по-прежнему нажимает рука, и вторая половина строки говорит именно об этом.
  *
  * What is deliberately NOT here: prompt chips, «умные подсказки», a microphone. A person
  * says what they want in their own words; a row of suggested sentences teaches them to say
@@ -94,7 +93,7 @@ export function Composer({
           )}
         </div>
         <div className="mt-[7px] text-[11px] text-tx3">
-          Читает и предлагает. Запускает работу только по Вашей кнопке — сам ничего не начинает.
+          Читает и предлагает. Ставит задачу по Вашему слову — приёмку решаете Вы сами.
         </div>
       </div>
     </div>

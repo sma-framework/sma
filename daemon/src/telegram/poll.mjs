@@ -29,11 +29,17 @@
  * loses nothing but the thread — every turn of the old one is already on the book.
  *
  * ═══════════════ WHAT THE BRIDGE MAY NOT DO ════════════════════════════════════════
- * A DRAFT DOES NOT BECOME A TASK AND A PROPOSAL DOES NOT BECOME A DECISION. The engine's
- * answer can carry both; in the window they become buttons a person presses. Here they become
- * a SENTENCE that names the task and says where it is decided. There are no buttons in this
- * module for the same reason there is no read model: a phone is a place where the owner is
- * walking, and «одобрено» is not something to press by accident on the way.
+ * ЗАДАЧА СТАВИТСЯ СЛОВОМ, РЕШЕНИЕ — НЕТ, И РАЗНИЦА ЗДЕСЬ НАМЕРЕННАЯ. Кнопок в этом модуле
+ * нет вовсе — телефон это место, где владелец идёт по улице, и «одобрено» не должно нажаться
+ * по дороге. Но постановку задачи отсутствие кнопок отнимать не вправе: слово владельца —
+ * «задачи с телефона ставим обязательно, они обязаны быть идентичными, это просто двери».
+ * Поэтому черновик здесь называется вслух и ЖДЁТ СЛОВА: человек отвечает «да», и следующий
+ * ход — обычный ход того же мозга — ставит задачу той же дверью, что и окно. Ни строки логики
+ * согласия в этом модуле нет: он по-прежнему только возит слова туда и обратно.
+ *
+ * А ПРЕДЛОЖЕНИЕ РЕШЕНИЯ ОСТАЁТСЯ ФРАЗОЙ. Приёмка — рука человека в окне: здесь она не
+ * получает ни кнопки, ни слова, и «да» её не заменяет (движок соглашением ставит задачу и
+ * ничего не принимает). Бот называет задачу и говорит, где решают.
  *
  * A STRANGER NEVER CAUSES AN ACTION. Any chat that is not the paired one gets a single
  * sentence saying whose bot this is, and nothing else happens: the brain is not consulted, no
@@ -81,8 +87,12 @@ export const TURN_FAILED_REPLY = 'Не смог ответить на этот �
 /** The engine answered with no words at all — vanishingly rare, and never silence on the phone. */
 export const EMPTY_ANSWER_REPLY = 'Ответ пришёл пустым — повторите вопрос, пожалуйста.'
 
-/** A draft is inert everywhere; here it does not even get a button to be inert next to. */
-export const DRAFT_NOTE = 'Задача отсюда не заводится — поставить её можно в окне.'
+/**
+ * Черновик на телефоне ждёт СЛОВА, а не кнопки: кнопок здесь нет и не будет, поэтому «да» —
+ * единственный способ согласиться, и он же работает в окне. Фраза зовёт человека сказать это
+ * слово, а не отсылает его к другому экрану, которого у него сейчас нет под рукой.
+ */
+export const DRAFT_NOTE = 'Пока не поставлено. Скажите «да» — и я поставлю отсюда.'
 
 /** And a decision is the one thing a phone must never make by a tap on a notification. */
 export const DECISION_NOTE = 'Решение принимается в окне — здесь кнопок нет.'
@@ -173,10 +183,10 @@ function byCharacters(text, cap) {
  * answerToText(answer) → what the phone is told, as PLAIN PROSE.
  *
  * The window renders an answer: buttons for a draft, buttons for a proposed decision, buttons
- * for the documents it names. None of that exists here, so the two that MATTER — a draft and a
- * decision — are said in words, with the task named, and the person is pointed at the place
- * where the press actually happens. Silence about them would be the worst of both: the bot
- * would sound as if it had done something.
+ * for the documents it names. None of that exists here, so the two that MATTER are said in
+ * words, with the task named: черновик зовёт сказать «да» (постановка словом работает и
+ * здесь, и в окне), предложение решения отсылает туда, где приёмку нажимают рукой. Silence
+ * about them would be the worst of both: the bot would sound as if it had done something.
  *
  * @param {object} answer — the engine's answer, exactly as `handleChatTurn` returned it
  * @returns {string}

@@ -6,7 +6,7 @@
  * built into its structure, so the sentence the screen prints under the input box is true by
  * construction and not by good intentions:
  *
- *     «Читает и предлагает. Запускает работу только по Вашей кнопке — сам ничего не начинает.»
+ *     «Читает и предлагает. Ставит задачу по Вашему слову — приёмку решаете Вы сами.»
  *
  * That formula is the UI contract (CHAT_BOUNDARY_FORMULA below — the screen renders this
  * exact string). Here is what makes it honest:
@@ -18,16 +18,29 @@
  *    incapable of spawning anything. Only a genuinely open question reaches a model session.
  *    A misclassification is SAFE by design: the free branch answers honestly too, just dearer.
  *
- * ── LAW 2 · HANDS TIED. The one «action» this engine can take is to put a task
- *    DRAFT in its answer — a card with a title, a proposed worker, a mode and acceptance.
- *    The human presses «Создать»; the SPA then posts the ordinary task-creation request that
- *    any screen posts. This module has NO path to the queue: it reads the adapter and never
- *    writes, and the queue-writing verb does not appear in this file at all. A capability that
- *    is absent cannot be smuggled — which is why the worst outcome of a successful prompt
- *    injection here is a draft a human declines.
+ * ── ЗАКОН 2 · ДОГОВОРИЛИСЬ — И ТОГДА СТАВИТСЯ. Разговор доводит работу до постановки
+ *    СЛОВАМИ: он предлагает ЧЕРНОВИК, а когда человек в этой же беседе говорит «да»,
+ *    черновик уходит в очередь. Слово владельца: «ты запускаешь процессы после того как мы
+ *    пообщаемся»; и про телефон отдельно: «задачи с телефона ставим обязательно, они обязаны
+ *    быть идентичными, это просто двери». У бота кнопок нет вовсе — «да» там говорится
+ *    словом, и значит в окне слово обязано работать так же; кнопка «Создать» остаётся
+ *    коротким путём, а не единственным.
  *
- * ── LAW 3 · OUTSIDE THE QUEUE. A conversation builds nothing, so it takes no
- *    queue slot, no worktree, no receipt, and never appears among the tasks. The free branch
+ *    ЧЕГО ЭТО НЕ ОТМЕНЯЕТ, И ЭТО ВАЖНЕЕ САМОЙ ВОЗМОЖНОСТИ:
+ *      · ДВЕРЬ ОЧЕРЕДИ ЭТОМУ ФАЙЛУ НЕ ПРИНАДЛЕЖИТ. Он зовёт ВЫДАННУЮ ему способность
+ *        (`deps.putTask`) — ту самую сборку, которой ставит задачу окно, — а глагола очереди
+ *        в этом файле по-прежнему нет ни разу: grep остаётся доказательством, которое
+ *        читатель проводит сам, и оно всё ещё зелёное.
+ *      · СОГЛАСИЕ — ЭТО СЛОВО ЧЕЛОВЕКА, А НЕ ВЫВОД ДВИЖКА. Оно опознаётся словарём, только
+ *        когда сообщение целиком из него состоит, и относится РОВНО к последнему черновику
+ *        этой беседы. Худшее, чего добьётся успешная инъекция, — черновик, на который
+ *        человек не скажет «да».
+ *      · ПРИЁМКА ЗДЕСЬ НЕ ЖИВЁТ. «Одобрить» и «Вернуть» — рука человека в окне: постановка
+ *        словом да, приёмка словом нет, и у бота кнопок нет и не будет.
+ *
+ * ── LAW 3 · OUTSIDE THE QUEUE. Сам ход разговора не строит ничего: он не берёт ни слота
+ *    очереди, ни рабочей копии, ни квитанции и среди задач не показывается (задача, которую
+ *    он поставил по согласию, — обычная строка очереди со своей карточкой). The free branch
  *    calls the spawn primitive DIRECTLY (see dispatchFreeTurn) — never the tick/claim path —
  *    and books its spend under a reserved task id (`chat-<ts>`), which is what makes the
  *    «Разговор» line on «Расходы» real instead of invisible.
@@ -64,7 +77,7 @@ import {
 
 /** The sentence the screen prints under the input box — the boundary, in the founder's words. */
 export const CHAT_BOUNDARY_FORMULA =
-  'Читает и предлагает. Запускает работу только по Вашей кнопке — сам ничего не начинает.'
+  'Читает и предлагает. Ставит задачу по Вашему слову — приёмку решаете Вы сами.'
 
 /** Short RU chips for a task card. The card says what the park says, in human words. */
 export const STATUS_LABELS = Object.freeze({
@@ -184,11 +197,111 @@ function stageIntent(text) {
   return { stage: named[1], phase: phase[1] }
 }
 
+// ── согласие: слово, которым человек говорит «ставь» ──────────────────────────
+//
+// ══════════ СОГЛАСИЕ — ЭТО СЛОВО ЧЕЛОВЕКА, А НЕ ВЫВОД ДВИЖКА ══════════
+//
+// На телефоне кнопок нет: там «да» говорится словом, и другого способа согласиться не
+// существует. Значит и в окне слово обязано работать так же — иначе двери разные, а приказ
+// владельца ровно обратный: «это просто двери». Отсюда весь этот раздел.
+//
+// СЛОВАРЬ НАМЕРЕННО УЗКИЙ, и узость — это и есть его безопасность. Согласием считается
+// сообщение, которое ЦЕЛИКОМ состоит из слов согласия: «да», «давай, ставь», «ок, поехали».
+// Фраза, в которой есть что-то ЕЩЁ, — «да, но сначала посмотри расходы» — согласием не
+// является и уходит в ту ветку, которая умеет разговаривать. Разница между словом человека и
+// догадкой движка проходит ровно здесь: то, что человек сказал вдобавок, движок не имеет
+// права отбросить, чтобы услышать «ставь».
+
+/** Слова, которыми человек соглашается. Хотя бы одно из них обязано быть в сообщении. */
+const CONSENT_CORE = new Set([
+  'да',
+  'ага',
+  'угу',
+  'ок',
+  'окей',
+  'хорошо',
+  'давай',
+  'давайте',
+  'поехали',
+  'ставь',
+  'ставьте',
+  'ставим',
+  'поставь',
+  'поставьте',
+  'заводи',
+  'заводите',
+  'запускай',
+  'запускайте',
+  'действуй',
+  'действуйте',
+  'делай',
+  'делайте',
+  'согласен',
+  'согласна',
+  'подтверждаю',
+  'утверждаю',
+  'годится',
+  'валяй',
+  'вперед',
+  'ладно',
+])
+
+/** Слова, которые рядом с согласием ничего не меняют. Сами по себе согласием НЕ являются. */
+const CONSENT_FILLER = new Set([
+  'пожалуйста',
+  'конечно',
+  'ну',
+  'вот',
+  'тогда',
+  'сразу',
+  'отлично',
+  'супер',
+  'спасибо',
+  'это',
+  'эту',
+  'этот',
+  'ее',
+  'его',
+  'их',
+  'такую',
+  'такое',
+  'задачу',
+  'задача',
+  'работу',
+  'работа',
+])
+
+/** Длиннее этого — уже не «да», а фраза. Согласие коротко, и краткость тут признак. */
+const CONSENT_WORD_CAP = 6
+
+/**
+ * isConsent(text) → сказал ли человек «да» — и ничего кроме.
+ *
+ * Всё сообщение, а не слово внутри него: одно слово согласия обязано БЫТЬ, и ни одного
+ * постороннего слова быть не должно. Ёфикация снимается, как и везде в этом файле, чтобы
+ * «поехали» и «поедем» не зависели от раскладки, которой человек печатал.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isConsent(text) {
+  const words = String(text ?? '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+  if (words.length === 0 || words.length > CONSENT_WORD_CAP) return false
+  if (!words.some((w) => CONSENT_CORE.has(w))) return false
+  return words.every((w) => CONSENT_CORE.has(w) || CONSENT_FILLER.has(w))
+}
+
 /**
  * classifyTurn(text) → the branch that can answer it.
  *
- * Dictionary patterns over the founder's own phrasings, in a fixed order. The four
- * work-putting intents are asked FIRST, because a sentence that puts work may perfectly well
+ * Dictionary patterns over the founder's own phrasings, in a fixed order. СОГЛАСИЕ спрошено
+ * ПЕРВЫМ: это единственный ход, который что-то делает, и читается он не по намёку, а по
+ * целому сообщению — значит ни у одной ветки ниже он ничего отнять не может. Then the four
+ * work-putting intents, because a sentence that puts work may perfectly well
  * mention money or a failure inside its own title («поставь задачу разобраться с расходами»),
  * and the branch that reads a question about the park would answer a question nobody asked.
  * Then spend, then a failure question that actually names a task, then status, else free.
@@ -197,11 +310,12 @@ function stageIntent(text) {
  * the split, and it is why every pattern here is a word a person wrote.
  *
  * @param {string} text
- * @returns {'stage'|'task-debug'|'task-research'|'task-prod'|'fail-reason'|'spend'|'status'|'free'}
+ * @returns {'consent'|'stage'|'task-debug'|'task-research'|'task-prod'|'fail-reason'|'spend'|'status'|'free'}
  */
 export function classifyTurn(text) {
   const s = String(text ?? '')
   if (!s.trim()) return 'free'
+  if (isConsent(s)) return 'consent'
   if (stageIntent(s)) return 'stage'
   if (DEBUG_RE.test(s)) return 'task-debug'
   if (RESEARCH_RE.test(s)) return 'task-research'
@@ -897,6 +1011,100 @@ export function readHistory({ dir, conversationId, project, limit = 50, fsImpl }
   return out.slice(Math.max(0, out.length - limit))
 }
 
+// ── согласие ставит задачу: единственное действие этой полосы ──────────────────
+//
+// ═══════ «ДА» — ЭТО ДВЕРЬ, И ОНА ОДНА НА ОКНО И НА ТЕЛЕФОН ═══════
+//
+// Черновик предложен предыдущим ходом; человек сказал «да». Дальше — постановка, и она идёт
+// ТОЙ ЖЕ сборкой, которой ставит задачу окно: способность выдана двери (`deps.putTask`), а не
+// взята этим файлом. Обе двери — окно и мост телеграма — зовут одну и ту же сборку хода,
+// поэтому одинаковость исхода здесь не соглашение, которое надо соблюдать, а устройство.
+//
+// ЧЕТЫРЕ ОТКАЗА, И КАЖДЫЙ НАЗЫВАЕТ СЕБЯ. Соглашаться не с чем; согласие на стадию фазы (у
+// неё своя дверь, и второго автора запуска стадии здесь не заводится); двери постановки нет
+// вовсе; дверь отказала. Одна фраза на четыре случая научила бы только одному — повторять
+// «да» в пустоту.
+
+/** Согласие сказано, а предлагать было нечего. */
+export const CONSENT_NOTHING_TEXT =
+  'Соглашаться пока не с чем: задачу я не предлагал. Скажите, что поставить, — предложу черновик.'
+
+/** Согласие сказано на стадию фазы: её запускает своя дверь, и второй здесь не появится. */
+export const CONSENT_STAGE_TEXT =
+  'Стадию фазы словом не запускаю — у неё своя дверь: кнопка «Запустить стадию» в окне. Задачу поставлю словом.'
+
+/** Согласие сказано разговору, которому двери постановки не выдали. */
+export const CONSENT_NO_DOOR_TEXT =
+  'Поставить отсюда не вышло: у этого разговора нет двери постановки. Задача ставится в окне.'
+
+/** Дверь есть и отказала — её причина едет словами, а не заглаживается вежливой фразой. */
+function consentRefusalText(reason) {
+  const said = String(reason ?? '').trim()
+  return said ? `Поставить не вышло: ${said}` : 'Поставить не вышло — задача не заведена.'
+}
+
+/** Как называется поставленная задача. ОДНА фраза — её читают и в окне, и в телеграме. */
+export function taskPutText(title) {
+  const name = String(title ?? '').trim()
+  return name ? `Поставил. Задача «${name}» — в очереди.` : 'Поставил — задача в очереди.'
+}
+
+/**
+ * pendingDraft(conversationId, deps, project) → черновик ПОСЛЕДНЕГО ответа этой беседы, или null.
+ *
+ * Согласие относится к тому, о чём только что говорили, — поэтому смотрится РОВНО последний
+ * ход помощника, а не любой черновик, когда-либо предложенный в беседе. Иначе «да», сказанное
+ * через три хода про другое, поставило бы вчерашнюю задачу, а человек имел в виду сегодняшнюю.
+ * И отсюда же берётся защита от второго «да» подряд: после постановки последний ход помощника
+ * черновика уже не несёт, так что вторая копия задачи не заводится — человеку честно говорят,
+ * что соглашаться не с чем.
+ */
+function pendingDraft(conversationId, deps, project) {
+  const turns = Array.isArray(deps.memory) ? deps.memory : conversationMemory(conversationId, deps, project)
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const t = turns[i]
+    if (!t || t.role !== 'assistant') continue
+    return t.draft && typeof t.draft === 'object' ? t.draft : null
+  }
+  return null
+}
+
+/**
+ * putPendingDraft({conversationId, deps, project}) → ответ на согласие.
+ *
+ * Ставит ровно тот черновик, который висит последним, и ровно один раз. Отказ двери — не
+ * поломка хода: человек получает фразу, беседа продолжается, задача не заведена.
+ *
+ * @returns {Promise<{kind:string, text:string, taskRef?:object, error?:string}>}
+ */
+async function putPendingDraft({ conversationId, deps = {}, project } = {}) {
+  const draft = pendingDraft(conversationId, deps, project)
+  if (!draft) return { kind: 'fact', text: CONSENT_NOTHING_TEXT }
+  if (draft.data && draft.data.kind === 'stage') return { kind: 'fact', text: CONSENT_STAGE_TEXT }
+  if (typeof deps.putTask !== 'function') {
+    return { kind: 'fact', text: CONSENT_NO_DOOR_TEXT, error: 'no-put-door' }
+  }
+
+  let put
+  try {
+    put = await deps.putTask(draft)
+  } catch (e) {
+    return { kind: 'fact', text: consentRefusalText(e && e.message ? e.message : e), error: 'put-failed' }
+  }
+  if (!put || put.ok !== true || !put.id) {
+    return { kind: 'fact', text: consentRefusalText(put && put.reason), error: 'put-refused' }
+  }
+
+  const title = String(put.title ?? draft.title ?? '').trim()
+  return {
+    kind: 'created',
+    text: taskPutText(title),
+    // КАРТОЧКА ТОЙ ЖЕ ФОРМЫ, что у любого ответа с задачей: окно рисует её ссылкой, телефон
+    // читает название из фразы. Статус не выдуман — только что поставленная задача в очереди.
+    taskRef: { id: put.id, title: title || null, status: 'queued', statusLabel: STATUS_LABELS.queued },
+  }
+}
+
 // ── the single door ────────────────────────────────────────────────────────────
 
 /** A conversation id is minted from the clock — readable, sortable, no dependency. */
@@ -912,7 +1120,10 @@ function newConversationId(clock) {
  * models stay pure functions a test can call directly.
  *
  * deps: { adapter (list only), readUsageRows|dataDir, config, historyDir, project, clock,
- *         fsImpl, dispatchFree, ...the free branch's own spawn dependencies }
+ *         fsImpl, dispatchFree, putTask, ...the free branch's own spawn dependencies }
+ *
+ * `deps.putTask(draft)` — ВЫДАННАЯ дверью способность поставить задачу: та же сборка, которой
+ * ставит её окно. Её нет — согласие честно отвечает, что двери нет, и ничего не заводится.
  *
  * `deps.project` — проект, при котором ход сказан. Его подаёт дверь (тем же `doorProject`,
  * которым штампуется задача), а не вызывающий: беседа принадлежит тому проекту, на который
@@ -931,9 +1142,14 @@ export async function handleChatTurn({ text, conversationId, turnId, deps = {} }
   // не смогли разойтись, если выбор сменится посреди ответа.
   const project = typeof deps.project === 'string' && deps.project !== '' ? deps.project : null
 
+  // СОГЛАСИЕ — единственный ход, который что-то ДЕЛАЕТ, и делает он ровно одно: отправляет
+  // в очередь черновик, предложенный предыдущим ходом ЭТОЙ беседы, выданной для этого дверью
+  // способностью. Ни одна ветка ниже согласия не касается.
+  let answer = kind === 'consent' ? await putPendingDraft({ conversationId: convId, deps, project }) : null
+
   // a sentence that already names its own lane (or its stage) is answered by dictionary:
   // no session, no cost, and — since a draft is inert — no reach toward anything either
-  let answer = DRAFT_INTENTS.includes(kind) ? draftFromIntent({ text, kind }) : null
+  if (!answer && DRAFT_INTENTS.includes(kind)) answer = draftFromIntent({ text, kind })
 
   if (answer) {
     // the draft IS the answer; nothing else is consulted
@@ -1362,6 +1578,10 @@ function decisionBlock(board, snapshot) {
     'к возврату (что доделать); если подсказки нет, поля тоже нет. Одна DECISION-строка на',
     'ответ: приёмка идёт по одной задаче, а не скопом.',
     '',
+    'СЛОВО ЗДЕСЬ НЕ РЕШАЕТ. Постановку задачи «да» человека делает, приёмку — нет: работу',
+    'принимает рука в окне, и никакое согласие в переписке её не заменяет. Не пишите, что',
+    'задача одобрена или возвращена, — этого не случилось.',
+    '',
     'НЕ ОБЕЩАЙТЕ КНОПКИ — ДАВАЙТЕ ИХ. Строчки вроде «скажите, когда будете готовы, и я',
     'подставлю кнопки» лишают человека и кнопок, и способа их получить: он видит рассказ о',
     'задаче и пустоту под ним. Кнопки ничему не мешают — их можно не нажимать; а «Открыть»',
@@ -1399,15 +1619,19 @@ export function buildChatPrompt({ voice, text, workers, board, snapshot, memory 
     `Вы отвечаете человеку в окне «Разговор». Подпись под полем ввода: «${CHAT_BOUNDARY_FORMULA}»`,
     'Она означает буквально следующее, и это устройство, а не пожелание:',
     '',
-    '- Вы НЕ запускаете задачи, не ставите их в очередь, не трогаете репозиторий и ничего не публикуете.',
-    '- Вы отвечаете словами. Единственное «действие» — предложить ЧЕРНОВИК задачи.',
-    '- Черновик уходит в работу только после того, как человек нажмёт «Создать».',
+    '- Вы не трогаете репозиторий и ничего не публикуете. Приёмку Вы не ведёте: «одобрить» и',
+    '  «вернуть» человек нажимает сам в окне.',
+    '- Вы отвечаете словами. Единственное действие — предложить ЧЕРНОВИК задачи.',
+    '- Черновик уходит в работу, когда человек СОГЛАСИТСЯ: скажет «да» («давай», «ставь») или',
+    '  нажмёт «Создать». Пока согласия не было — задача не поставлена, и писать обратное нельзя.',
+    '- Согласием считается слово человека, а не Ваш вывод из разговора. Не решайте за него.',
     '- Пишите обычным текстом, без разметки: окно печатает Ваши слова как есть, и звёздочки',
     '  или решётки будут видны буквально.',
     '',
     '## Если человек просит поставить задачу',
     '',
-    'Ответьте одной-двумя фразами и последней строкой выведите черновик ровно в таком виде:',
+    'Ответьте одной-двумя фразами, спросите коротко, годится ли, и последней строкой выведите',
+    'черновик ровно в таком виде:',
     '',
     'DRAFT: {"title":"...","worker":"...","mode":"обычный","acceptance":"..."}',
     '',

@@ -2553,6 +2553,74 @@ const CHAT_HISTORY_LIMIT = 50
 const CHAT_HISTORY_MAX = 200
 
 /**
+ * putDraftedTask({config, deps, draft}) → `{ok:true, id, title}` или `{ok:false, reason}`.
+ *
+ * ═══ ПОСТАНОВКА ПО СЛОВУ ИДЁТ ТОЙ ЖЕ ДВЕРЬЮ, ЧТО И ПО КНОПКЕ ═══
+ *
+ * Приказ владельца: разговор договаривается словами и сам ставит задачу, когда человек
+ * согласился, — и одинаково в окне и в боте. Двери должны быть ОДНОЙ дверью, а не двумя
+ * похожими: и правило проекта (`doorProject`), и чеканка идентификатора, и проверка формы
+ * (`validateTask`), и колокол `task.queued` здесь ровно те же, что у `handleEnqueue`. Иначе
+ * задача, поставленная словом, однажды окажется чуть-чуть другой задачей, чем поставленная
+ * кнопкой, и разницу никто не заметит до разбора.
+ *
+ * ЛИНИЯ РАБОТЫ ВЫВОДИТСЯ ТАК ЖЕ, КАК ЕЁ ВЫВОДИТ ЭКРАН: из черновика, а если он её не назвал —
+ * из полосы предложенного работника. Не вывелась — это ОТКАЗ СЛОВАМИ, а не догадка: очередь
+ * маршрутизирует внутри полосы, и выдуманная полоса увезла бы работу не туда молча.
+ *
+ * `source:'roster'` — потому что это и есть явное слово владельца, как нажатие кнопки.
+ * Отказ здесь никогда не бросается: согласие не должно ронять ход разговора, и человек читает
+ * причину фразой, а не видит «не получилось ответить».
+ */
+async function putDraftedTask({ config, deps, draft }) {
+  const adapter = deps.adapter
+  if (!adapter || typeof adapter.enqueue !== 'function') return { ok: false, reason: 'очередь этому демону не подключена' }
+
+  const d = draft && typeof draft === 'object' ? draft : {}
+  const title = String(d.title ?? '').trim()
+  if (!title) return { ok: false, reason: 'в черновике нет названия' }
+
+  const roster = config && Array.isArray(config.workers) ? config.workers : []
+  const worker = d.worker ? roster.find((w) => w && w.id === d.worker) : null
+  const lane = d.lane ?? (worker && worker.lane) ?? null
+  if (!lane) {
+    return {
+      ok: false,
+      reason: d.worker
+        ? `у исполнителя «${d.worker}» не назначена линия работы`
+        : 'в черновике не названа линия работы',
+    }
+  }
+
+  const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+  const task = {
+    id: `R-${clock()}`,
+    source: 'roster',
+    // WHOSE WORK THIS IS, written down at the one moment it is known — see doorProject.
+    ...doorProject(config),
+    title,
+    lane,
+    ...(d.description !== undefined ? { description: d.description } : {}),
+    ...(d.acceptance !== undefined ? { acceptance: d.acceptance } : {}),
+  }
+
+  let norm
+  try {
+    norm = validateTask(task)
+  } catch (err) {
+    return { ok: false, reason: String((err && err.message) || 'черновик не прошёл проверку') }
+  }
+  let result
+  try {
+    result = await adapter.enqueue(norm)
+  } catch (err) {
+    return { ok: false, reason: String((err && err.message) || 'очередь не приняла задачу') }
+  }
+  emitSafe(deps, { event: 'task.queued', taskId: norm.id, status: 'queued' })
+  return { ok: true, id: (result && result.id) || norm.id, title: norm.title }
+}
+
+/**
  * The collaborator set the chat engine takes — the chat analogue of stateDeps.
  *
  * ПРОЕКТ ХОДА БЕРЁТСЯ ТАМ ЖЕ, ГДЕ ЕГО БЕРЁТ ДВЕРЬ ПОСТАНОВКИ ЗАДАЧ — `doorProject`, то есть
@@ -2578,6 +2646,11 @@ function chatDeps(config, deps, extra = {}) {
     spawnWorker: deps.spawnWorker,
     // the Stop button's other half — the live-turn registry the stop door also holds
     chatTurns: deps.chatTurns,
+    // ПОСТАНОВКА ПО СЛОВУ. Способность выдаётся ЗДЕСЬ — в одном месте на обе двери: и окно, и
+    // мост телеграма зовут runChatTurn, который собирает сотрудников этой функцией. Поэтому
+    // «да», сказанное с телефона, и «да», сказанное в окне, идут в одну и ту же дверь
+    // постановки с одним и тем же правилом проекта — не по договорённости, а по устройству.
+    putTask: (draft) => putDraftedTask({ config, deps, draft }),
     ...(typeof deps.readUsageRows === 'function' ? { readUsageRows: deps.readUsageRows } : {}),
   }
 }

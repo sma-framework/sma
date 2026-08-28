@@ -518,12 +518,16 @@ describe('handleChatTurn (the single door)', () => {
   })
 
   it('carries the boundary formula the screen prints under the input box', () => {
-    // The second half was added 10.08.2026: the first half alone is true and was read by the
-    // owner as «here work cannot be started at all». The invariant did not change — a typed
-    // sentence still starts nothing — the caption merely stopped hiding the door that exists.
+    // Обе половины границы — то, что полоса ДЕЛАЕТ, и то, чего она не делает. Первая переехала
+    // один раз и честно: раньше работа начиналась «только по Вашей кнопке», теперь разговор
+    // ставит задачу по слову человека — иначе телефон, где кнопок нет вовсе, был бы другим
+    // продуктом. Вторая половина не переезжала ни разу: приёмку решает человек своей рукой.
     expect(CHAT_BOUNDARY_FORMULA).toBe(
-      'Читает и предлагает. Запускает работу только по Вашей кнопке — сам ничего не начинает.',
+      'Читает и предлагает. Ставит задачу по Вашему слову — приёмку решаете Вы сами.',
     )
+    // …и ровно эта строка напечатана под полем ввода: подпись не пересказывается, а совпадает.
+    const composer = readFileSync(new URL('../../spa/src/screens/chat/Composer.tsx', import.meta.url), 'utf8')
+    expect(composer.includes(CHAT_BOUNDARY_FORMULA)).toBe(true)
   })
 
   it('has no path to the queue at all — the word is absent from the module', () => {
