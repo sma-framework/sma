@@ -33,6 +33,13 @@ export interface WindowFact {
   resetsAt: string | null
   /** The provider's own percentage, ONLY when it sent one. Null means it did not. */
   pct: number | null
+  /**
+   * Where this fact came from, when it was not the account's own reading. `terminal` means a
+   * status line signed into this account's config directory reported it — the same
+   * subscription, said by another mouth — and the screen names that instead of passing it off
+   * as a measurement of the account's own work stream. Absent for an account's own reading.
+   */
+  source?: 'terminal'
 }
 
 export interface WindowBar {

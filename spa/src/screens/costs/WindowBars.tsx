@@ -49,8 +49,9 @@ export function WindowBars({ accounts }: { accounts: SpendAccount[] }) {
     <section className="rounded-[14px] border border-bd bg-card px-6 py-[22px] shadow-panel">
       <h2 className="m-0 mb-1 text-[14px] font-semibold text-tx">Окна подписок</h2>
       <p className="m-0 mb-4 text-[11.5px] leading-[1.55] text-tx3">
-        Поставщик сообщает три вещи: какое окно, принимает ли оно работу и когда сбросится.
-        Сколько процентов окна израсходовано, он не сообщает — поэтому этой цифры здесь нет.
+        Поставщик сообщает: какое окно, принимает ли оно работу и когда сбросится. Процент
+        израсходованного он присылает не всегда — где его не было, здесь не стоит цифры, а не
+        стоит ноль.
       </p>
 
       {accounts.length === 0 ? (

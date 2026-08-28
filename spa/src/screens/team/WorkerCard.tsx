@@ -1,5 +1,5 @@
 import type { Presence, WindowFact, WorkerRow } from '../../api/types'
-import { WINDOW_UNKNOWN_HINT, accentFor, initialOf, windowWords } from '../../shell/format'
+import { WINDOW_TERMINAL_HINT, WINDOW_UNKNOWN_HINT, accentFor, initialOf, windowWords } from '../../shell/format'
 
 /**
  * WorkerCard — one worker, and the honest answer to «can this one take work right now».
@@ -59,17 +59,32 @@ function clockOf(iso: string): string {
   return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
 }
 
-/** One window: its name, and what the provider last said about it. */
+/**
+ * One window: its name, and what the provider last said about it.
+ *
+ * A LINE THAT CARRIES A NUMBER SAYS WHERE IT CAME FROM. The percentage on these two lines is
+ * the provider's own, but not always through the same mouth: the work stream reports whichever
+ * window is closest to biting, so the other one is filled from the status-line reading of a
+ * session signed into this account's own config directory. The reader is told which, in the
+ * hint, rather than on the line — the fact is the same fact either way, and a permanent word
+ * beside every window would be noise on a card that has four lines to spend.
+ */
 function WindowLine({ label, fact, override }: { label: string; fact: WindowFact | undefined; override?: string }) {
   const words = windowWords(fact)
   const text = override ?? words.text
   const unknown = !override && fact?.status !== 'open' && fact?.status !== 'exhausted'
+  const hint = override ? undefined : unknown ? WINDOW_UNKNOWN_HINT : fact?.source === 'terminal' ? WINDOW_TERMINAL_HINT : undefined
   return (
-    <div className="min-w-0 flex-1" title={unknown ? WINDOW_UNKNOWN_HINT : undefined}>
+    <div className="min-w-0 flex-1" title={hint}>
       <div className="mb-1 text-[10.5px] whitespace-nowrap text-tx3">{label}</div>
       <div className="flex items-center gap-[5px]">
         <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${override ? 'bg-warn' : words.dot}`} />
         <span className={`truncate text-[10.5px] ${!override && words.muted ? 'text-tx3' : 'text-tx2'}`}>{text}</span>
+        {/* The percentage, in the same place and the same words «Расходы» puts it — and only
+            when the provider sent one, which is why it was never drawn here before. */}
+        {!override && typeof fact?.pct === 'number' ? (
+          <span className="flex-none text-[10.5px] text-tx3 tabular-nums">{Math.round(fact.pct)}%</span>
+        ) : null}
       </div>
     </div>
   )
