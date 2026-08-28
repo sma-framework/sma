@@ -106,10 +106,11 @@ describe('spend-adapter — the versioned log-format quarantine (Task 1)', () =>
     expect(unknown.outputTokens).toBe(2)
   })
 
-  it('Test 3b: the 2026-07-21 table — version pinned, fable priced, mythos routed, opus corrected', () => {
+  it('Test 3b: the shared table — version pinned, fable priced, mythos routed, opus corrected', () => {
     // The version IS the contract: a rate change without a version bump is a silent
-    // table swap, which the stamp exists to forbid.
-    expect(pricingVersion).toBe('claude-pricing-2026-07-21')
+    // table swap, which the stamp exists to forbid. The table itself now lives in
+    // lib/pricing.mjs and is re-exported here — its rates are pinned in pricing.test.ts.
+    expect(pricingVersion).toBe('claude-pricing-2026-08-28')
     expect(PRICING_USD_PER_MTOK.fable).toEqual({ input: 10, output: 50, cacheWrite: 12.5, cacheRead: 1 })
     expect(PRICING_USD_PER_MTOK.opus).toEqual({ input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 })
     expect(PRICING_USD_PER_MTOK.sonnet).toEqual({ input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 })

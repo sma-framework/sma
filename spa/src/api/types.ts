@@ -395,6 +395,17 @@ export interface Spend {
  * and books no euros, so tokens are what makes that work visible at all, while `eur` is the
  * API-fallback money — honestly zero when nothing was billed.
  *
+ * ЧЕТЫРЕ ЧИСЛА, ТЕМИ ЖЕ ИМЕНАМИ, КАКИМИ ИХ ЗНАЕТ КВИТАНЦИЯ (`TokenSums` выше): вход, выход,
+ * чтение кэша, запись кэша. Одна колонка «Токены» складывала их в число, по которому нельзя
+ * ни узнать причину дорогого дня, ни пересчитать цену: кэш стоит своих ставок.
+ *
+ * `apiEquivalentEur` — сколько этот же расход стоил бы, если бы работа шла по API, по ценнику
+ * платформы (scripts/sma/lib/pricing.mjs, один на командную строку и демона). Это СПРАВОЧНАЯ
+ * цифра: работа идёт по подписке, которая уже оплачена, и складывать её с `eur` — значит
+ * платить дважды на бумаге. Поле отдельное именно поэтому, и экран обязан назвать его словами.
+ * `unpricedTokens` — токены, чью модель ценник не знает: с ними справочная цена занижена, и
+ * это видно, а не скрыто.
+ *
  * `taskId` is present when the point stands for the conversation's own lane: the daemon
  * books a turn under the reserved `chat-` prefix, and that prefix is how the screen finds
  * the «Разговор» line. `machine` appears once more than one machine is in the household.
@@ -404,7 +415,13 @@ export interface CostPoint {
   account: string
   tokensIn: number
   tokensOut: number
+  cacheRead: number
+  cacheWrite: number
+  /** Модель, через которую прошло большинство токенов этой полосы за день; null — не названа. */
+  model: string | null
   eur: number
+  apiEquivalentEur: number
+  unpricedTokens: number
   taskId?: string
   machine?: string
 }

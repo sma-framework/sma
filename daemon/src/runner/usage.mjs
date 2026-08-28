@@ -13,6 +13,12 @@
  * substrate) UNTOUCHED by daemon concerns; a future spend-adapter entry can ingest these
  * rows if the two sources ever merge. This is a runner-side canonical event, append-only.
  *
+ * ЦЕННИК ОБЩИЙ, И ЭТО ЕДИНСТВЕННОЕ, ЧТО ОТСЮДА БЕРЁТСЯ У ПОДЛОЖКИ. Своя книга — да, свой
+ * список ставок — нет: `priceUsd` приходит из scripts/sma/lib/pricing.mjs, того же, по
+ * которому считает командная строка. Второй список согласен с первым ровно один день — тот,
+ * в который его написали, — а расходятся они молча, и узнаёт об этом человек по счёту.
+ * Зависимость односторонняя: демон знает про подложку, подложка про демона — никогда.
+ *
  * TWO INDEPENDENT SOURCES, reconciled at the roster:
  *   1. THIS module — the runner books per-session rows from the parsed stream/final events.
  *   2. The EXISTING `sma spend` ledger — because args.mjs sets SMA_SPEND_LOGS_DIR per
@@ -39,6 +45,8 @@
 
 import { appendFileSync as fsAppend, readFileSync as fsRead, mkdirSync as fsMkdir } from 'node:fs'
 import { join } from 'node:path'
+
+import { priceUsd } from '../../../scripts/sma/lib/pricing.mjs'
 
 /** Coarse time-based token rate for the estimate fallback (documented heuristic, A4). */
 const EST_OUTPUT_TOKENS_PER_SEC = 20
@@ -150,6 +158,12 @@ export function codexTokensFromFinal(finalEvent = {}) {
  * выше и зовётся отсюда. Две копии одного разбора согласны в день, когда их написали, и
  * расходятся в день, когда поставщик переименует поле в одной из них.
  *
+ * ЧЕТЫРЕ ЧИСЛА КЛАДУТСЯ В СТРОКУ ЦЕЛИКОМ, А НЕ ДВА ИЗ ЧЕТЫРЁХ. Читатель кадра возвращал все
+ * четыре и с самого начала, а строка книги брала вход и выход и роняла кэш на пол — то есть
+ * ровно ту половину, без которой «сколько это стоило бы по ценнику» не считается вовсе:
+ * прочитанный из кэша миллион и отправленный заново миллион отличаются в цене в разы, а по
+ * двум числам выглядят одинаково.
+ *
  * @param {{totalCostUsd?:number|null, modelUsage?:object|null}} resultEvent
  * @param {{accountName?:string, taskId?:string, attempt?:number, model?:string}} [ctx]
  * @returns {object}
@@ -159,7 +173,12 @@ export function claudeUsageFromResult(resultEvent = {}, { accountName, taskId, a
   const modelKeys = Object.keys(modelUsage || {})
   const modelName = model ?? modelKeys[0] ?? null
 
-  const { input: inputTokens, output: outputTokens } = claudeTokensFromResult(resultEvent)
+  const {
+    input: inputTokens,
+    output: outputTokens,
+    cacheRead: cacheReadTokens,
+    cacheWrite: cacheWriteTokens,
+  } = claudeTokensFromResult(resultEvent)
 
   const row = {
     accountName: accountName ?? null,
@@ -169,6 +188,8 @@ export function claudeUsageFromResult(resultEvent = {}, { accountName, taskId, a
     model: modelName,
     inputTokens,
     outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
     source: 'stream-result',
     ...(channel !== undefined ? { channel } : {}),
   }
@@ -190,7 +211,12 @@ export function claudeUsageFromResult(resultEvent = {}, { accountName, taskId, a
 export function codexUsageFromFinal(finalEvent = {}, ctx = {}) {
   // ТОТ ЖЕ ЧИТАТЕЛЬ КАДРА, что у квитанции попытки — см. `claudeUsageFromResult` о двух копиях
   // одного разбора.
-  const { input: inputTokens, output: outputTokens } = codexTokensFromFinal(finalEvent)
+  const {
+    input: inputTokens,
+    output: outputTokens,
+    cacheRead: cacheReadTokens,
+    cacheWrite: cacheWriteTokens,
+  } = codexTokensFromFinal(finalEvent)
 
   if (inputTokens === 0 && outputTokens === 0) {
     // A4 gap — book a time-based estimate, never blind $0. The provider is NAMED on the way in:
@@ -207,6 +233,10 @@ export function codexUsageFromFinal(finalEvent = {}, ctx = {}) {
     model: ctx.model ?? null,
     inputTokens,
     outputTokens,
+    cacheReadTokens,
+    // Запись кэша этот поставщик не сообщает вовсе (см. `codexTokensFromFinal`): ноль здесь
+    // значит «про это не говорят», и четвёрка полей у строки одна на обоих поставщиков.
+    cacheWriteTokens,
     source: 'codex-final',
     ...(ctx.channel !== undefined ? { channel: ctx.channel } : {}),
   }
@@ -250,6 +280,11 @@ export function estimateUsage({ accountName, taskId, attempt, provider, model, s
     model: model ?? null,
     inputTokens: 0,
     outputTokens: estOutputTokens,
+    // Кэш оценке неоткуда взять: он не выводится из длительности ничем. Нули здесь — это
+    // «поставщик не сказал», и строка всё равно помечена оценкой, поэтому в справочную цену
+    // она попадает как оценка, а не как измерение.
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     source: 'estimate',
     ...(channel !== undefined ? { channel } : {}),
   }
@@ -281,6 +316,11 @@ export function bookUsage({ dataDir, event = {}, clock = Date.now, fsImpl } = {}
     model: event.model ?? null,
     inputTokens: num(event.inputTokens),
     outputTokens: num(event.outputTokens),
+    // ЧЕТЫРЕ ЧИСЛА, А НЕ ДВА — иначе цена «как если бы по API» не считается по этой книге:
+    // кэш стоит своих ставок, и строка без него занижает счёт молча. Строка, записанная до
+    // этого, кэша не несёт вовсе, и ноль читается как «не записано», а не как «не было».
+    cacheReadTokens: num(event.cacheReadTokens),
+    cacheWriteTokens: num(event.cacheWriteTokens),
     source: event.source ?? 'unknown',
     // WHICH MONEY THIS IS. A subscription session carries a real costUsd — that is the
     // «subscriptions are never $0» differentiator — but that figure is what the plan
@@ -369,10 +409,29 @@ function round2(n) {
  * prefix the conversation writes. Splitting by lane — rather than by task — is what keeps
  * the payload small: at most two points per account per day, whatever the park did.
  *
+ * ЧЕТЫРЕ ЧИСЛА И ЦЕНА «КАК ЕСЛИ БЫ ПО API». Точка несёт вход, выход, чтение кэша и запись
+ * кэша по отдельности, потому что вопрос экрана — не только «сколько», но и «из чего»: день,
+ * у которого миллион прочитан из кэша, и день, у которого тот же миллион отправлен заново,
+ * стоят по-разному в разы, а по двум числам выглядят одинаково. Рядом едет `apiEquivalentEur`
+ * — что этот же расход стоил бы по ценнику платформы, посчитанное ПОСТРОЧНО, каждая строка по
+ * ставкам СВОЕЙ модели: день, в середине которого сменили модель, иначе оценивался бы по
+ * последней из них.
+ *
+ * ЭТО СПРАВОЧНАЯ ЦИФРА, А НЕ СЧЁТ. Работа идёт по подписке, которая уже оплачена; сложить её
+ * с `eur` значило бы выставить себе счёт дважды, поэтому это ОТДЕЛЬНОЕ поле, а обязанность
+ * назвать его словами лежит на экране. `unpricedTokens` — та часть токенов, чью модель ценник
+ * не знает: без неё справочная цена молча занижается, а выглядит точной.
+ *
+ * `model` — имя модели, через которую прошло БОЛЬШИНСТВО токенов полосы за день. Точка — это
+ * сумма дня, а не один ход, и одно имя на ней отвечает на вопрос «чем это делалось», не
+ * притворяясь, что модель была ровно одна.
+ *
  * A missing or corrupt book yields fewer points, never an error.
  *
  * @param {{dataDir:string, days?:number, accounts?:string[], clock?:Function, fsImpl?:object}} opts
- * @returns {{day:string, account:string, tokensIn:number, tokensOut:number, eur:number, taskId?:string}[]}
+ * @returns {{day:string, account:string, tokensIn:number, tokensOut:number, cacheRead:number,
+ *   cacheWrite:number, model:string|null, eur:number, apiEquivalentEur:number,
+ *   unpricedTokens:number, taskId?:string}[]}
  */
 export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fsImpl } = {}) {
   const span = Math.max(1, Math.floor(Number(days) || 14))
@@ -380,6 +439,8 @@ export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fs
   const wanted = Array.isArray(accounts) && accounts.length > 0 ? new Set(accounts.map(String)) : null
 
   const points = new Map()
+  /** Сколько токенов прошло через каждую модель — по точке; из этого выбирается имя на выходе. */
+  const models = new Map()
   for (const r of rows) {
     const at = Date.parse(r.ts)
     if (!Number.isFinite(at)) continue // an unstampable row belongs to no day
@@ -393,11 +454,48 @@ export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fs
 
     let point = points.get(key)
     if (!point) {
-      point = { day, account, tokensIn: 0, tokensOut: 0, eur: 0 }
+      point = {
+        day,
+        account,
+        tokensIn: 0,
+        tokensOut: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        model: null,
+        eur: 0,
+        apiEquivalentEur: 0,
+        unpricedTokens: 0,
+      }
       points.set(key, point)
+      models.set(key, new Map())
     }
-    point.tokensIn += num(r.inputTokens)
-    point.tokensOut += num(r.outputTokens)
+
+    const counts = {
+      input: num(r.inputTokens),
+      output: num(r.outputTokens),
+      cacheRead: num(r.cacheReadTokens),
+      cacheWrite: num(r.cacheWriteTokens),
+    }
+    point.tokensIn += counts.input
+    point.tokensOut += counts.output
+    point.cacheRead += counts.cacheRead
+    point.cacheWrite += counts.cacheWrite
+
+    const model = typeof r.model === 'string' && r.model.trim() ? r.model.trim() : null
+    const rowTokens = counts.input + counts.output + counts.cacheRead + counts.cacheWrite
+    if (model) {
+      const tally = models.get(key)
+      tally.set(model, (tally.get(model) ?? 0) + rowTokens)
+    }
+
+    // ЦЕНА СЧИТАЕТСЯ ПО ОБЩЕМУ ЦЕННИКУ (scripts/sma/lib/pricing.mjs) — тому же, по которому
+    // считает командная строка. Модель ценнику неизвестна → цены НЕТ, и токены уходят в
+    // `unpricedTokens`: ноль на этом месте назвал бы бесплатной работу, которую просто некому
+    // оценить.
+    const usd = priceUsd({ model, ...counts })
+    if (usd == null) point.unpricedTokens += rowTokens
+    else point.apiEquivalentEur += usd
+
     // The point's euro figure is what this file's own header promises: «the API-fallback
     // money, honestly zero when nothing was billed». Subscription rows ride the token
     // counts; their estimate never lands in a euro column (QA D4).
@@ -407,9 +505,32 @@ export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fs
     if (conversation) point.taskId = taskId
   }
 
-  return [...points.values()]
-    .map((p) => ({ ...p, eur: round2(p.eur) }))
+  return [...points.entries()]
+    .map(([key, p]) => ({
+      ...p,
+      model: dominantModel(models.get(key)),
+      eur: round2(p.eur),
+      apiEquivalentEur: round2(p.apiEquivalentEur),
+    }))
     .sort((a, b) => (a.day === b.day ? a.account.localeCompare(b.account) : a.day.localeCompare(b.day)))
+}
+
+/**
+ * Имя модели, через которую прошло больше всего токенов точки — или null, когда ни одна строка
+ * модели не назвала. Ничья решается именем, чтобы одна и та же книга давала один и тот же
+ * ответ при каждом чтении: показание, зависящее от порядка строк, — это не показание.
+ */
+function dominantModel(tally) {
+  if (!tally || tally.size === 0) return null
+  let best = null
+  let bestTokens = -1
+  for (const [model, tokens] of tally) {
+    if (tokens > bestTokens || (tokens === bestTokens && model.localeCompare(best) < 0)) {
+      best = model
+      bestTokens = tokens
+    }
+  }
+  return best
 }
 
 /**

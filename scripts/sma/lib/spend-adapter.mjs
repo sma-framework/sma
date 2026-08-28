@@ -31,6 +31,11 @@
  * over guessing; the caller surfaces the `unpriced` count in every report. NO
  * network fetch of pricing EVER (substrate law) — the table is versioned data.
  *
+ * THE TABLE ITSELF LIVES IN pricing.mjs and is re-exported here unchanged, because
+ * this ledger is no longer its only reader: the daemon prices its own usage book
+ * from the same list. Two lists would be two answers to one question, and only one
+ * of them would get corrected on the day a vendor rate moves.
+ *
  * ═══════════════════════════ BRIDGE ══════════════════════════════════════════
  *
  * probeNativeSpend is the demolition-clause sensor: the day the vendor ships a
@@ -44,6 +49,8 @@
 import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir as osHomedir } from 'node:os'
+
+import { PRICING_USD_PER_MTOK, pricingVersion, priceUsd } from './pricing.mjs'
 
 /** truthy env flag: set and not ''/0/false. Mirrors the reflex/gates convention. */
 function truthy(v) {
@@ -62,48 +69,19 @@ function strOr(v, d) {
   return typeof v === 'string' && v.trim() ? v : d
 }
 
-// ═══════════════════════════ pricing (versioned data) ═══════════════════════════
-
-/** The pricing-table version, stamped into every report (no silent table swaps). */
-export const pricingVersion = 'claude-pricing-2026-07-21'
+// ═══════════════════════════ pricing (versioned data, ONE list) ═════════════════
 
 /**
- * PRICING_USD_PER_MTOK — USD per MILLION tokens for the known model families. Input,
- * output, cache-write (cache_creation), and cache-read (cache_read) each have their
- * own rate. Static data, NEVER fetched over the network. An unknown model → null
- * (booked token-only, costUSD null, `unpriced`). Family match is a substring test on
- * a lowercased model string so a versioned id ('claude-opus-4-8') maps to its tier.
- *
- * Source: the official Anthropic pricing page, verified 2026-07-21.
- * The prior table (claude-pricing-2026-07) OVERCOUNTED opus 3x (it carried the
- * deprecated Opus 4.1/4 rates $15/$75; current Opus 4.5-4.8 are $5/$25) and had NO
- * fable row (fable-family events went unpriced). cacheWrite = the 5-minute-TTL write
- * rate (the table's single-rate convention); 1h-TTL writes bill higher ($20 fable /
- * $10 opus) — a known, stated approximation, not billing truth. Sonnet row = the
- * promo price THROUGH 2026-08-31 ($2/$10); from Sep 1 it becomes $3/$15 — bump this
- * table + its version then.
+ * The price list and its version come from pricing.mjs and are re-exported UNCHANGED,
+ * so every caller that already imports them from here keeps working while there is
+ * exactly one table in the tree. See pricing.mjs for the rates and their provenance.
  */
-export const PRICING_USD_PER_MTOK = {
-  fable: { input: 10, output: 50, cacheWrite: 12.5, cacheRead: 1 },
-  opus: { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
-  sonnet: { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 },
-  haiku: { input: 0.8, output: 4, cacheWrite: 1, cacheRead: 0.08 },
-}
-
-/** pricingFor(model) → the tier rates, or null for an unknown model family. */
-function pricingFor(model) {
-  const m = String(model || '').toLowerCase()
-  if (m.includes('fable') || m.includes('mythos')) return PRICING_USD_PER_MTOK.fable
-  if (m.includes('opus')) return PRICING_USD_PER_MTOK.opus
-  if (m.includes('sonnet')) return PRICING_USD_PER_MTOK.sonnet
-  if (m.includes('haiku')) return PRICING_USD_PER_MTOK.haiku
-  return null
-}
+export { PRICING_USD_PER_MTOK, pricingVersion }
 
 /**
  * priceEvent(ev) — resolve costUSD + costSource. A finite line-carried costUSD wins
- * (source 'line'); else compute from the table (source 'computed'); an unknown model
- * → {costUSD:null, costSource:'unpriced'} (tokens stay booked). Rounded to 1e-6 USD.
+ * (source 'line'); else compute from the shared table (source 'computed'); an unknown
+ * model → {costUSD:null, costSource:'unpriced'} (tokens stay booked).
  * @param {object} ev the canonical event (mutated in place)
  */
 function priceEvent(ev) {
@@ -111,19 +89,19 @@ function priceEvent(ev) {
     ev.costSource = 'line'
     return ev
   }
-  const rates = pricingFor(ev.model)
-  if (!rates) {
+  const usd = priceUsd({
+    model: ev.model,
+    input: ev.inputTokens,
+    output: ev.outputTokens,
+    cacheRead: ev.cacheReadTokens,
+    cacheWrite: ev.cacheCreationTokens,
+  })
+  if (usd == null) {
     ev.costUSD = null
     ev.costSource = 'unpriced'
     return ev
   }
-  const usd =
-    (ev.inputTokens * rates.input +
-      ev.outputTokens * rates.output +
-      ev.cacheCreationTokens * rates.cacheWrite +
-      ev.cacheReadTokens * rates.cacheRead) /
-    1e6
-  ev.costUSD = Math.round(usd * 1e6) / 1e6
+  ev.costUSD = usd
   ev.costSource = 'computed'
   return ev
 }

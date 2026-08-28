@@ -225,7 +225,7 @@ describe('поток → квитанция попытки: четыре чис�
     expect(receipt.tokens).toEqual({ input: IN, output: OUT, cacheRead: CACHE_READ, cacheWrite: CACHE_WRITE })
   })
 
-  it('книга трат и квитанция сняты с ОДНОГО кадра — вход и выход совпадают', async () => {
+  it('книга трат и квитанция сняты с ОДНОГО кадра — все четыре числа совпадают', async () => {
     const { runDir, booked } = await runTick()
     const receipt = readJson(join(runDir, 'receipt.json'))
 
@@ -233,6 +233,10 @@ describe('поток → квитанция попытки: четыре чис�
     expect(booked[0].source).toBe('stream-result')
     expect(booked[0].inputTokens).toBe(receipt.tokens.input)
     expect(booked[0].outputTokens).toBe(receipt.tokens.output)
+    // КЭШ ТОЖЕ, и это не педантизм: без него по книге не считается цена «как если бы по API» —
+    // чтение и запись кэша стоят своих ставок, и строка без них занижает счёт молча.
+    expect(booked[0].cacheReadTokens).toBe(receipt.tokens.cacheRead)
+    expect(booked[0].cacheWriteTokens).toBe(receipt.tokens.cacheWrite)
   })
 
   it('ПРОВАЛИВШАЯСЯ попытка несёт те же числа — она их потратила ровно так же', async () => {
