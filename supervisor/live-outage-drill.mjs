@@ -42,6 +42,7 @@
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:http'
+import { createServer as netCreateServer } from 'node:net'
 import { createReadStream, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
@@ -49,9 +50,33 @@ import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const FRONT_PORT = 7791
-const BOT_PORT = 7801
-const WINDOW_PORT = 7802
+
+/**
+ * Порты прогона БЕРУТСЯ СВОБОДНЫМИ, а не назначаются числом.
+ *
+ * Прибитый гвоздём порт делает прогон заложником всего, что на этой машине занимает то же
+ * число, — и врёт при этом самым дорогим способом: 28.08 порт 7791 занял чужой процесс,
+ * поднятый работником для своей проверки, поэтому «убитый» демон продолжал отвечать, падение
+ * не объявилось и прогон отчитался тремя провалами, ни один из которых не был про продукт.
+ * Полчаса ушло на поиск ошибки в правке, которой там не было.
+ *
+ * Ядро само отдаёт свободный порт на listen(0) — это и есть единственный надёжный способ
+ * узнать, что порт свободен: не спросить, а занять.
+ */
+function freePort() {
+  return new Promise((res, rej) => {
+    const srv = netCreateServer()
+    srv.on('error', rej)
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address()
+      srv.close(() => res(port))
+    })
+  })
+}
+
+const FRONT_PORT = await freePort()
+const BOT_PORT = await freePort()
+const WINDOW_PORT = await freePort()
 const DEADLINE_MS = 240000
 
 let failCount = 0

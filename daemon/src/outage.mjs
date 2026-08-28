@@ -181,6 +181,7 @@ export function closeOutage({
   roseAt,
   riseNotifiedAt = null,
   riseNotice = '',
+  falseAlarm = false,
   now = Date.now,
   io = {},
   fsImpl = {},
@@ -188,6 +189,11 @@ export function closeOutage({
 } = {}) {
   const stamp = (v) => (typeof v === 'string' ? v : new Date(v ?? now()).toISOString())
   const receipt = {
+    // ЛОЖНАЯ ТРЕВОГА — ТОЖЕ ИСХОД, И ЕГО НАДО НАЗВАТЬ. Квитанция без этого поля читается как
+    // «падение было и кончилось», хотя падения не было вовсе: дверь просто отвечала дольше
+    // отпущенного, пока демон был занят. Такая квитанция врёт умолчанием, а по ним потом
+    // считают надёжность.
+    ...(falseAlarm ? { falseAlarm: true } : {}),
     downAt: marker.downAt ?? null,
     declaredAt: marker.declaredAt ?? null,
     reason: marker.reason ?? '',

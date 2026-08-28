@@ -188,37 +188,62 @@ export function doorUrl(config = {}) {
 }
 
 /**
- * probeDoor({config}) → {answered, status, state, reason}.
+ * probeDoor({config}) → {answered, status, state, reason, kind}.
  *
  * `answered:true` means SOMETHING is serving that address — a 401 counts, because a refusal
  * is still an answer and the question here is «is the door up». `state` is filled only on a
  * 200 with a JSON body, so the live-work check below can tell «nobody is working» from «I was
  * not allowed to look».
  *
- * GET /api/state is an EXISTING door of the frozen table; this module adds none.
+ * `path` CHOOSES WHICH DOOR THE QUESTION IS ASKED AT, and that choice is not cosmetic. The
+ * default is `/api/state`, because the callers that also need the roster (the stop that
+ * refuses to kill live work) can only get it there. But that door is the HEAVIEST thing the
+ * product serves: it assembles the whole board. Under six live attempts it has answered in
+ * 7.5 seconds, and once in 51. A caller that only wants «is anything alive» must not ask its
+ * question at the most expensive door in the house — it will keep mistaking a busy daemon for
+ * a dead one. `GET /` is served by the same process out of a built file and stays cheap under
+ * any load, which is why the watchdog asks there. Both are EXISTING doors of the frozen
+ * table; this module adds none.
+ *
+ * `kind` NAMES WHAT KIND OF SILENCE IT WAS, because they are not the same fact:
+ *   refused — nothing is listening on that port (ECONNREFUSED and its kin). PROOF of death.
+ *   timeout — something accepted the connection and did not answer in time. NOT proof: a
+ *             daemon busy with six attempts looks exactly like this, and so does a hung one.
+ *   other   — anything else.
+ * Whoever decides «fallen» is entitled to be more patient with a timeout than with a refusal,
+ * and cannot be unless the two arrive under different names.
  */
-export async function probeDoor({ config = {}, fetchImpl = globalThis.fetch, timeoutMs = 3000 } = {}) {
-  const url = `${doorUrl(config)}/api/state`
+export async function probeDoor({ config = {}, fetchImpl = globalThis.fetch, timeoutMs = 3000, path = '/api/state' } = {}) {
+  const url = `${doorUrl(config)}${path}`
   try {
     const res = await fetchImpl(url, {
       headers: config.token ? { authorization: `Bearer ${config.token}` } : {},
       signal: AbortSignal.timeout(timeoutMs),
     })
     let state = null
-    if (res.status === 200) {
+    if (res.status === 200 && path === '/api/state') {
       try {
         state = await res.json()
       } catch {
         state = null // an answer we cannot read is an answer all the same
       }
     }
-    return { answered: true, status: res.status, state, reason: '' }
+    return { answered: true, status: res.status, state, reason: '', kind: '' }
   } catch (err) {
+    const code = String((err && err.code) || '')
+    const name = String((err && err.name) || '')
+    const kind =
+      code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EHOSTUNREACH' || code === 'ENOTFOUND'
+        ? 'refused'
+        : name === 'TimeoutError' || code === 'ABORT_ERR' || code === '23' || name === 'AbortError'
+          ? 'timeout'
+          : 'other'
     return {
       answered: false,
       status: 0,
       state: null,
       reason: String((err && err.code) || (err && err.message) || err),
+      kind,
     }
   }
 }

@@ -21,7 +21,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -32,12 +32,14 @@ import {
   fallWords,
   openOutage,
   outageMarkerPath,
+  outageReceiptsDir,
   outageSeconds,
   readOutage,
   riseWords,
   stampOutage,
 } from '../src/outage.mjs'
-import { createWatch } from '../src/watch.mjs'
+import { createWatch, KNOCK_PATH, KNOCK_TIMEOUT_MS } from '../src/watch.mjs'
+import { probeDoor } from '../src/control.mjs'
 import { telegramApiBase, TELEGRAM_API_BASE } from '../src/telegram/client.mjs'
 import { ApiError } from '../../spa/src/api/client'
 import { doorSilent, linkLost, linkWords } from '../../spa/src/shell/link-state'
@@ -70,13 +72,20 @@ describe('сторож — молчание двери превращается 
     record = { pid: 4242, bind: '127.0.0.1', port: 7791, startedAt: '', path: '' },
     clock = clockFrom(T0),
     config = scratchConfig(),
+    liftChangesPid = true,
   }: {
-    answers: Array<{ answered: boolean; status?: number; reason?: string }>
+    answers: Array<{ answered: boolean; status?: number; reason?: string; kind?: string }>
     record?: unknown
     clock?: ReturnType<typeof clockFrom>
     config?: Record<string, unknown>
+    // ПОДЪЁМ, КОТОРЫЙ СРАБОТАЛ, ОСТАВЛЯЕТ ДРУГОЙ ПРОЦЕСС — и подделка обязана это отражать,
+    // иначе она умеет меньше жизни: сторож отличает настоящее воскрешение от ложной тревоги
+    // именно по смене записи о процессе. `false` — подъём, который ничего не поднял, потому
+    // что демон и не умирал: ровно то, что делает наш скрипт подъёма над живой дверью.
+    liftChangesPid?: boolean
   }) {
     let knock = 0
+    let live = record as { pid: number }
     const sent: Array<{ text: string; at: number }> = []
     const lifts: Array<{ at: number }> = []
     const lines: string[] = []
@@ -85,12 +94,19 @@ describe('сторож — молчание двери превращается 
       probe: async () => {
         const a = answers[Math.min(knock, answers.length - 1)]
         knock += 1
-        return { answered: a.answered, status: a.status ?? 0, state: null, reason: a.reason ?? '' }
+        return {
+          answered: a.answered,
+          status: a.status ?? 0,
+          state: null,
+          reason: a.reason ?? '',
+          kind: a.kind ?? (a.answered ? '' : 'refused'),
+        }
       },
-      readRecord: () => record,
+      readRecord: () => live,
       lift: { cmd: 'подъём', args: ['раз'], cwd: '.' },
       spawnLift: () => {
         lifts.push({ at: clock.now() })
+        if (liftChangesPid) live = { ...live, pid: live.pid + 1 }
       },
       notify: async ({ text }: { text: string }) => {
         sent.push({ text, at: clock.now() })
@@ -197,6 +213,98 @@ describe('сторож — молчание двери превращается 
     expect(w.sent).toHaveLength(1) // второго сообщения от сторожа нет и быть не может
     expect(w.sent[0].text).not.toContain('поднялся')
     expect(w.lines.join(' ')).toContain('я не он')
+  })
+
+  // ── ЗАНЯТЫЙ ДЕМОН — НЕ ПОКОЙНИК ────────────────────────────────────────────────
+  //
+  // 28.08 сторож объявил падение живого демона и написал владельцу в телеграм. Демон был
+  // занят шестью попытками, а сторож спрашивал у самой тяжёлой двери продукта с терпением в
+  // три секунды. Ниже — то, чего не хватало, чтобы этого не случилось.
+
+  it('истёкшее ожидание НЕ становится падением по трём кругам: занятый демон выглядит именно так', async () => {
+    const w = watchOver({ answers: [{ answered: false, kind: 'timeout' }] })
+    for (let i = 0; i < 6; i += 1) {
+      const round = await w.watch.tick()
+      expect(round.phase).toBe('suspect') // подозрение — да; приговор — нет
+      w.clock.advance(15000)
+    }
+    expect(w.sent).toHaveLength(0) // владельца не будили
+    expect(w.lifts).toHaveLength(0) // и поднимать живого не пытались
+  })
+
+  it('но и повешенного не выгораживает: молчание, которое всё длится, падением всё-таки станет', async () => {
+    const w = watchOver({ answers: [{ answered: false, kind: 'timeout' }] })
+    for (let i = 0; i < 12; i += 1) {
+      await w.watch.tick()
+      w.clock.advance(15000)
+    }
+    expect(w.sent).toHaveLength(1)
+    expect(w.lifts).toHaveLength(1)
+  })
+
+  it('отказ в соединении остаётся доказательством смерти и хватает трёх', async () => {
+    const w = watchOver({ answers: [{ answered: false, kind: 'refused', reason: 'ECONNREFUSED' }] })
+    for (let i = 0; i < 3; i += 1) {
+      await w.watch.tick()
+      w.clock.advance(15000)
+    }
+    expect(w.sent).toHaveLength(1)
+  })
+
+  it('ложная тревога закрывается САМИМ сторожем: воскресать некому, процесс тот же', async () => {
+    const config = scratchConfig()
+    const w = watchOver({
+      config,
+      // подъём над живой дверью ничего не поднимает — процесс остаётся прежним
+      liftChangesPid: false,
+      answers: [
+        { answered: false, kind: 'refused' },
+        { answered: false, kind: 'refused' },
+        { answered: false, kind: 'refused' },
+        { answered: true, status: 200 },
+      ],
+    })
+    for (let i = 0; i < 3; i += 1) {
+      await w.watch.tick()
+      w.clock.advance(15000)
+    }
+    expect(readOutage({ config })).not.toBeNull() // провал открыт
+
+    const back = await w.watch.tick()
+    expect(back.phase).toBe('back')
+    expect(readOutage({ config })).toBeNull() // и закрыт — а не оставлен висеть навсегда
+    expect(w.lines.join(' ')).toContain('тревога была ложной')
+
+    const dir = outageReceiptsDir(config)
+    const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')) : []
+    expect(files).toHaveLength(1)
+    const receipt = JSON.parse(readFileSync(join(dir, files[0]), 'utf8'))
+    // квитанция НАЗЫВАЕТ исход: без этого поля она читается как «падение было и кончилось»
+    expect(receipt.falseAlarm).toBe(true)
+  })
+
+  it('сторож спрашивает у ДЕШЁВОЙ двери, а не у той, что собирает всю доску', async () => {
+    const asked: string[] = []
+    const watch = createWatch({
+      config: scratchConfig(),
+      probe: async (cfg: Record<string, unknown>) =>
+        probeDoor({
+          config: cfg,
+          path: KNOCK_PATH,
+          timeoutMs: KNOCK_TIMEOUT_MS,
+          fetchImpl: async (url: string) => {
+            asked.push(String(url))
+            return { status: 200, json: async () => ({}) } as unknown as Response
+          },
+        }),
+      readRecord: () => ({ pid: 1, bind: '127.0.0.1', port: 7791, startedAt: '', path: '' }),
+      spawnLift: () => {},
+      notify: async () => ({ sent: true, reason: '' }),
+    })
+    await watch.tick()
+    expect(asked).toHaveLength(1)
+    expect(asked[0].endsWith('/')).toBe(true)
+    expect(asked[0]).not.toContain('/api/state')
   })
 
   it('провал, начатый другим сторожем, продолжается, а не открывается заново', async () => {

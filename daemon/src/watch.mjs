@@ -43,13 +43,45 @@
  */
 
 import { doorUrl, liftCommand, probeDoor, readPidRecord } from './control.mjs'
-import { fallWords, notifyOwner, openOutage, stampOutage } from './outage.mjs'
+import { closeOutage, fallWords, notifyOwner, openOutage, stampOutage } from './outage.mjs'
 
 /** Как часто спрашивают дверь. Пятнадцать секунд — минута на объявление провала. */
 export const POLL_MS = 15000
 
-/** Сколько подряд неотвеченных стуков превращают молчание в провал. */
+/** Сколько подряд ОТКАЗАННЫХ стуков превращают молчание в провал. */
 export const MISSES_TO_DECLARE = 3
+
+/**
+ * ОТКАЗ И МОЛЧАНИЕ — РАЗНЫЕ ФАКТЫ, И ТЕРПЕНИЕ К НИМ РАЗНОЕ.
+ *
+ * «В порт никто не слушает» — доказательство смерти, и трёх таких хватает. «Соединение
+ * приняли и не ответили за отпущенное время» — не доказательство ничего: ровно так выглядит
+ * демон, занятый шестью попытками. 28.08 это стоило владельцу ложной тревоги в телеграме —
+ * сторож спрашивал у САМОЙ ТЯЖЁЛОЙ двери продукта с терпением в три секунды, а та под
+ * нагрузкой отвечает за семь с половиной и однажды ответила за пятьдесят одну. Демон был жив
+ * всё это время; подъём, который сторож запустил, вежливо ничего не сделал, а запись о
+ * провале осталась открытой навсегда, потому что закрывает её только воскресший.
+ *
+ * Поэтому у молчания свой счёт, заметно больший. Повешенный демон — принимающий соединения
+ * и не отвечающий — так тоже будет пойман, просто не за минуту, а за несколько. Цена ошибки
+ * несимметрична: не пойманное вовремя зависание стоит минут, а ложная тревога стоит доверия
+ * к сторожу, после чего его перестают слушать вовсе.
+ */
+export const TIMEOUT_MISSES_TO_DECLARE = 12
+
+/**
+ * Терпение ОДНОГО стука сторожа. Дверь, у которой он спрашивает, дешёвая, поэтому десяти
+ * секунд хватает с запасом даже на загруженной машине. Смысл не в величине, а в том, что она
+ * названа ЗДЕСЬ, а не унаследована от команд, которым спешить некуда.
+ */
+export const KNOCK_TIMEOUT_MS = 10000
+
+/**
+ * Дверь, у которой сторож спрашивает «жив ли». Корень раздаётся из собранного файла и
+ * остаётся дешёвым под любой нагрузкой — в отличие от двери состояния, которая собирает всю
+ * доску. Вопрос «жив ли» не должен зависеть от самого дорогого вычисления в доме.
+ */
+export const KNOCK_PATH = '/'
 
 /** Реже этого подъём не повторяется: boot демона занимает десятки секунд. */
 export const LIFT_COOLDOWN_MS = 120000
@@ -75,24 +107,29 @@ export const PHASES = Object.freeze(['up', 'back', 'suspect', 'declared', 'lifti
  */
 export function createWatch({
   config = {},
-  probe = (cfg) => probeDoor({ config: cfg }),
+  probe = (cfg) => probeDoor({ config: cfg, path: KNOCK_PATH, timeoutMs: KNOCK_TIMEOUT_MS }),
   readRecord = (cfg) => readPidRecord({ config: cfg }),
   lift = liftCommand(),
   spawnLift,
   notify = (o) => notifyOwner(o),
   openOutageImpl = (o) => openOutage(o),
   stampOutageImpl = (o) => stampOutage(o),
+  closeOutageImpl = (o) => closeOutage(o),
   now = Date.now,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   log = () => {},
   pollMs = POLL_MS,
   missesToDeclare = MISSES_TO_DECLARE,
+  timeoutMissesToDeclare = TIMEOUT_MISSES_TO_DECLARE,
   liftCooldownMs = LIFT_COOLDOWN_MS,
 } = {}) {
   const where = doorUrl(config)
   let misses = 0
   let firstMissAt = 0
   let outage = null
+  // Чей это был процесс в момент объявления провала. Тот же самый на возврате означает, что
+  // демон не умирал вовсе, и закрыть провал придётся сторожу — воскресать некому.
+  let pidAtFall = null
   let lastLiftAt = 0
   let saidStopped = false
   let running = false
@@ -127,8 +164,31 @@ export function createWatch({
       // вторая не сообщает ни о чём. Один и тот же ответ двери, два разных исхода круга.
       const wasDown = outage !== null
       if (wasDown) {
-        log(`дверь ${where} снова отвечает (${door.status}). О подъёме скажет сам поднявшийся демон — я не он.`)
+        // ЕСЛИ ДЕМОН НЕ УМИРАЛ, ЗАКРЫТЬ ПРОВАЛ БОЛЬШЕ НЕКОМУ. О подъёме говорит воскресший —
+        // но в ложной тревоге воскресать некому, процесс тот же самый, и запись о провале
+        // осталась бы открытой навсегда. 28.08 так и вышло: тревога ушла в телеграм, дверь
+        // ответила через минуту, а маркер на диске остался лежать с открытым провалом.
+        // Отличие проверяемое, а не на глаз: у процесса та же запись — значит перезапуска не
+        // было. Другая запись — был настоящий подъём, и слово остаётся за поднявшимся.
+        const nowRecord = readRecord(config)
+        const samePid = pidAtFall !== null && nowRecord && nowRecord.pid === pidAtFall
+        // ВТОРОЙ ПРИЗНАК — НА СЛУЧАЙ ПОДХВАЧЕННОГО ПРОВАЛА. Сторож, поднятый после чужого
+        // объявления, не помнит процесса на момент падения; но время его запуска записано, и
+        // процесс, начавшийся РАНЬШЕ, чем дверь замолчала, — тот же самый, который молчал.
+        // Ни один перезапуск не может дать процесс старше собственного падения.
+        const startedBefore = (() => {
+          const started = Date.parse((nowRecord && nowRecord.startedAt) || '')
+          const fell = Date.parse((outage && outage.downAt) || '')
+          return Number.isFinite(started) && Number.isFinite(fell) && started < fell
+        })()
+        if (samePid || startedBefore) {
+          log(`дверь ${where} снова отвечает (${door.status}) — процесс тот же, что молчал: демон не умирал, тревога была ложной. Закрываю провал сам.`)
+          closeOutageImpl({ config, marker: outage, doorBackAt: now(), falseAlarm: true, now })
+        } else {
+          log(`дверь ${where} снова отвечает (${door.status}). О подъёме скажет сам поднявшийся демон — я не он.`)
+        }
         outage = null
+        pidAtFall = null
       }
       misses = 0
       firstMissAt = 0
@@ -150,8 +210,15 @@ export function createWatch({
     }
 
     if (!outage) {
-      if (misses < missesToDeclare) return { phase: 'suspect', misses, door, outage: null }
+      // Порог берётся ПО РОДУ ПОСЛЕДНЕГО МОЛЧАНИЯ. Отказ в соединении — доказательство, что в
+      // порт никто не слушает, и трёх довольно. Истёкшее ожидание доказывает лишь то, что
+      // ответа не было ЗА ЭТО ВРЕМЯ, — а занятый демон выглядит именно так; ему отпускается
+      // заметно больше кругов, прежде чем его объявят покойником. Род неизвестен (стук из
+      // старого кода, подделка в сьюте) — ведём себя как раньше, по строгому порогу.
+      const needed = door && door.kind === 'timeout' ? timeoutMissesToDeclare : missesToDeclare
+      if (misses < needed) return { phase: 'suspect', misses, door, outage: null }
 
+      pidAtFall = record ? record.pid : null
       outage = openOutageImpl({
         config,
         downAt: firstMissAt,
