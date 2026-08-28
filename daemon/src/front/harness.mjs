@@ -29,6 +29,28 @@
  * (whether the NAMED var is populated in the process env) — never a token, never a command,
  * never a file body. Env VALUES never appear in a harness payload.
  *
+ * ═══════════════════════ THE TWO SKILL STORES ════════════════════════════════════
+ * A skill is a folder with a SKILL.md, and there are TWO places one can live:
+ *   - THE PROJECT STORE, `<repo>/.claude/skills/` — the skills of the tree being served.
+ *   - THE MACHINE STORE, `<CLAUDE_CONFIG_DIR|~/.claude>/skills/` (SMA_DAEMON_SKILLS wins) —
+ *     the skills of the person at this keyboard, available under EVERY project.
+ * Until both were read, a person whose skills live in the machine store opened the screen,
+ * saw nothing, and concluded the product has no such feature — while the daemon had simply
+ * looked in one directory out of two. So both are walked, EVERY card names the store it came
+ * from, and the read model also returns the stores themselves — path, presence, count — so an
+ * empty list can say WHERE it looked instead of saying nothing.
+ *
+ * NOTHING IS TAKEN FROM A THIRD TREE. These two are the whole of it: a skill from anywhere
+ * else would arrive unattributable, and «где я это взял» is exactly what a card must answer.
+ * A machine skill whose id is also a project skill is NOT shown twice and NOT silently
+ * dropped — the project's own copy wins (it is nearer to the work) and says so on its card.
+ *
+ * WRITING ONE. `createMachineSkill` is the only writer, it writes ONLY into the machine store,
+ * and it REFUSES an id that already exists in either store — a create door that silently
+ * overwrote somebody's skill would be a delete nobody asked for. The request contributes an
+ * id (a strict slug, so no path segment of it can ever leave that directory), a one-line
+ * description and a body: TEXT into a markdown file, never a config value and never a command.
+ *
  * ═══════════════════════ THE STOCK TEAM ══════════════════════════════════════════
  * `readStockTeam` is the SECOND read model in this module and it answers a different
  * question than `agents` does. `agents` is the PIPELINE: the worker profiles the roster
@@ -60,7 +82,7 @@ import {
 import { homedir as osHomedir } from 'node:os'
 import { join } from 'node:path'
 
-import { atomicWriteJson } from '../../../scripts/sma/lib/fs-atomics.mjs'
+import { atomicWriteJson, atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 // The config writer is IMPORTED, never re-implemented: this file used to carry its own
 // private twin of it, and a twin is how a rule ends up living in only one of the two places
 // that write the same file. See config.mjs `writeConfig` — it is read-modify-write, so a key
@@ -86,6 +108,14 @@ export class MissingDefinitionFileError extends Error {
 }
 export class UnknownSkillError extends Error {
   constructor(message) { super(message); this.name = 'UnknownSkillError' }
+}
+/** A create that would land on top of a skill somebody already has — refused, never merged. */
+export class SkillExistsError extends Error {
+  constructor(message) { super(message); this.name = 'SkillExistsError' }
+}
+/** A create whose id, description or body is not something that may become a file. */
+export class InvalidSkillError extends Error {
+  constructor(message) { super(message); this.name = 'InvalidSkillError' }
 }
 
 /** Registry entry id shape — the id-allowlist the toggle validates against. */
@@ -241,28 +271,132 @@ function agentEntry(worker, repoDir, fsImpl) {
   }
 }
 
-/** Scan the .claude/skills tree (each SKILL.md) and join per-profile assignment. */
-function scanSkills(config, repoDir, fsImpl) {
-  const skillsDir = join(repoDir ?? '.', '.claude', 'skills')
+// ── the two skill stores ──
+
+/** Where a skill was found: the served tree, or this machine's own library. */
+export const SKILL_SOURCES = Object.freeze(['project', 'machine'])
+
+/** The frontmatter description a skill card carries as its subtitle, capped. */
+const SKILL_DESCRIPTION_CAP = 300
+
+/** The file a skill folder is recognised by — one spelling, shared by reader and writer. */
+const SKILL_FILE = 'SKILL.md'
+
+/**
+ * resolveMachineSkillsDir({env, homedir}) — the MACHINE store: the skills of the person at
+ * this keyboard, reachable under every project. SMA_DAEMON_SKILLS wins (the SMA_DAEMON_MCP
+ * precedent, and what a test or a drive points somewhere harmless with); else
+ * $CLAUDE_CONFIG_DIR/skills; else ~/.claude/skills. The same env-then-homedir order
+ * resolveStockTeamDirs already walks — one machine, one idea of where its own things live.
+ *
+ * @param {{env?:object, homedir?:Function}} [opts]
+ * @returns {string}
+ */
+export function resolveMachineSkillsDir({ env = process.env, homedir = osHomedir } = {}) {
+  const override = env.SMA_DAEMON_SKILLS
+  if (override && String(override).trim()) return String(override).trim()
+  const configDir = env.CLAUDE_CONFIG_DIR
+  if (configDir && String(configDir).trim()) return join(String(configDir).trim(), 'skills')
+  return join(homedir(), '.claude', 'skills')
+}
+
+/**
+ * skillStorePaths({repoDir, env, homedir}) → the two directories a skill may live in, in the
+ * order they are searched. Exported because the WINDOW shows them: an empty list has to name
+ * where it looked, and a path invented a second time on the front would name somewhere else.
+ *
+ * @param {{repoDir?:string, env?:object, homedir?:Function}} [opts]
+ * @returns {Array<{source:string, path:string}>}
+ */
+export function skillStorePaths({ repoDir, env = process.env, homedir = osHomedir } = {}) {
+  return [
+    { source: 'project', path: join(repoDir ?? '.', '.claude', 'skills') },
+    { source: 'machine', path: resolveMachineSkillsDir({ env, homedir }) },
+  ]
+}
+
+/**
+ * Read one skill folder → a card, or null when the folder holds no SKILL.md (an ordinary
+ * directory that happens to sit beside skills is not a skill, and never a `problem`).
+ */
+function skillEntry({ id, dir, source, fsImpl }) {
+  const content = readFileSafe(join(dir, String(id), SKILL_FILE), fsImpl)
+  if (!content) return null
+  const fm = readFrontmatter(content).frontmatter
+  return {
+    id: String(id),
+    title: (fm && (fm.name || fm.title)) || String(id),
+    description: fm ? String(fm.description ?? '').trim().slice(0, SKILL_DESCRIPTION_CAP) : '',
+    source,
+    assignedTo: [],
+    problem: null,
+  }
+}
+
+/**
+ * scanSkills(config, repoDir, fsImpl, env, homedir) → {skills, stores}.
+ *
+ * BOTH stores are walked, project first, and every card says which one it came from. An id
+ * present in both is ONE card — the project's, because the tree being worked in is nearer
+ * than the machine's library — and it carries a `problem` naming the copy that was passed
+ * over: a shadowing that nobody is told about is indistinguishable from a skill that vanished.
+ *
+ * `stores` is the walk itself, reported: each store's path, whether that directory exists at
+ * all, and how many skills came out of it. That is what an empty screen says out loud.
+ */
+function scanSkills(config, repoDir, fsImpl, env, homedir) {
   const readdirSync = (fsImpl && fsImpl.readdirSync) || fsReaddirSync
-  let names = []
-  try {
-    names = readdirSync(skillsDir)
-  } catch {
-    names = []
-  }
   const out = []
-  for (const id of names) {
-    const content = readFileSafe(join(skillsDir, String(id), 'SKILL.md'), fsImpl)
-    if (!content) continue // not a skill dir (no SKILL.md)
-    const fm = readFrontmatter(content).frontmatter
-    const title = (fm && (fm.name || fm.title)) || String(id)
-    const assignedTo = (config.workers ?? [])
-      .filter((w) => Array.isArray(w.skills) && w.skills.includes(String(id)))
-      .map((w) => w.id)
-    out.push({ id: String(id), title, assignedTo })
+  const byId = new Map()
+  const stores = []
+  for (const { source, path } of skillStorePaths({ repoDir, env, homedir })) {
+    let names = null
+    try {
+      names = readdirSync(path).map(String)
+    } catch {
+      names = null // an absent (or unreadable) store is an answer, and it is reported as one
+    }
+    let count = 0
+    for (const id of names ?? []) {
+      const card = skillEntry({ id, dir: path, source, fsImpl })
+      if (!card) continue
+      count += 1
+      const already = byId.get(card.id)
+      if (already) {
+        already.problem =
+          `такой же навык лежит и в хранилище «${source}» — здесь действует тот, что найден в «${already.source}»`
+        continue
+      }
+      byId.set(card.id, card)
+      out.push(card)
+    }
+    stores.push({ source, path, present: names !== null, count })
   }
-  return out
+  const workers = config.workers ?? []
+  for (const card of out) {
+    card.assignedTo = workers.filter((w) => Array.isArray(w.skills) && w.skills.includes(card.id)).map((w) => w.id)
+  }
+  return { skills: out, stores }
+}
+
+/**
+ * findSkillFile({skillId, repoDir, fsImpl, env, homedir}) → {source, path, content} for the
+ * store the skill is ACTUALLY in, or null. THE ONE LOOKUP: the assign applier, the create
+ * door's collision check and the worker's context preamble all ask it, so «which file is this
+ * skill» has a single answer and an assignment can never point at a file the reader disagrees
+ * about.
+ *
+ * @param {{skillId:string, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function}} args
+ * @returns {{source:string, path:string, content:string}|null}
+ */
+export function findSkillFile({ skillId, repoDir, fsImpl, env = process.env, homedir = osHomedir } = {}) {
+  if (typeof skillId !== 'string' || !skillId) return null
+  for (const { source, path } of skillStorePaths({ repoDir, env, homedir })) {
+    const file = join(path, skillId, SKILL_FILE)
+    const content = readFileSafe(file, fsImpl)
+    if (content != null) return { source, path: file, content }
+  }
+  return null
 }
 
 // ── the stock team read model ──
@@ -424,8 +558,9 @@ function mcpEntry(server, env) {
 
 /**
  * readHarness({config, registry, adapter, repoDir, fsImpl, env, homedir, clock}) → ONE
- * explicit-pick payload {agents, skills, mcp, drafts, stockTeam, telegram}. Agents join profile +
- * roleFile frontmatter; skills scan the tree + per-profile assignment; mcp exposes env-var
+ * explicit-pick payload {agents, skills, skillStores, mcp, drafts, stockTeam, telegram}. Agents
+ * join profile + roleFile frontmatter; skills walk BOTH stores (project + machine) with the
+ * store named on every card and per-profile assignment joined in; mcp exposes env-var
  * NAMES with '[set]'/'[unset]' only (values NEVER appear); drafts are the forge tasks awaiting
  * approval (kind + draftPath); stockTeam is the installed roster (readStockTeam). No field
  * carries tokens, commands, or file bodies.
@@ -437,13 +572,19 @@ function mcpEntry(server, env) {
  * and nothing else of it: the read model that the «Подключения» screen renders may never be
  * a way to read a credential back out (telegramLinkView owns that promise).
  *
+ * `skillStores` is additive by the same rule, and it exists for the ONE thing an empty list
+ * could not do before: say where it looked. A directory path is not a secret — the assign
+ * door already names one in its refusals — and without it «навыков нет» reads as «этого в
+ * продукте нет», which is what actually happened to a person whose skills were in the other
+ * store.
+ *
  * @param {{config:object, registry?:object, adapter?:object, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function, clock?:Function}} args
- * @returns {Promise<{agents:Array, skills:Array, mcp:Array, drafts:Array, stockTeam:Array, telegram:object}>}
+ * @returns {Promise<{agents:Array, skills:Array, skillStores:Array, mcp:Array, drafts:Array, stockTeam:Array, telegram:object}>}
  */
 export async function readHarness({ config, registry, adapter, repoDir, fsImpl, env = process.env, homedir = osHomedir, clock } = {}) {
   const cfg = config ?? {}
   const agents = (cfg.workers ?? []).map((w) => agentEntry(w, repoDir, fsImpl))
-  const skills = scanSkills(cfg, repoDir, fsImpl)
+  const { skills, stores: skillStores } = scanSkills(cfg, repoDir, fsImpl, env, homedir)
   const mcp = ((registry && registry.servers) || []).map((s) => mcpEntry(s, env))
   const stockTeam = readStockTeam({ config: cfg, repoDir, fsImpl, env, homedir })
 
@@ -466,7 +607,7 @@ export async function readHarness({ config, registry, adapter, repoDir, fsImpl, 
       }))
   }
 
-  return { agents, skills, mcp, drafts, stockTeam, telegram: telegramLinkView(cfg, { now: (clock ?? Date.now)() }) }
+  return { agents, skills, skillStores, mcp, drafts, stockTeam, telegram: telegramLinkView(cfg, { now: (clock ?? Date.now)() }) }
 }
 
 // ── the two-step activation appliers (config/registry writes, atomic) ──
@@ -685,17 +826,21 @@ export function applyStockTeamToggle({ config, enabled, repoDir, launchDir, fsIm
 
 /**
  * applySkillAssign({config, skillId, workerIds, repoDir, launchDir, fsImpl, env, homedir}) →
- * the updated config. The skill file `.claude/skills/<skillId>/SKILL.md` MUST exist; every
- * workerId must be an existing profile. REPLACES the skill's assignment: the listed workers
- * get skillId in their `skills`, every other worker has it removed. Empty workerIds =
- * unassign everywhere. Written atomically.
+ * the updated config. The skill's `SKILL.md` MUST exist in ONE OF THE TWO STORES — the served
+ * tree or this machine's library (findSkillFile) — and every workerId must be an existing
+ * profile. REPLACES the skill's assignment: the listed workers get skillId in their `skills`,
+ * every other worker has it removed. Empty workerIds = unassign everywhere. Written atomically.
+ *
+ * It looks in both stores for the same reason the read model walks both: a card the window
+ * shows must be a card the window can act on. While this checked only the project tree, every
+ * machine skill on the screen answered 404 to the one button it had.
  */
 export function applySkillAssign({ config, skillId, workerIds, repoDir, launchDir, fsImpl, env = process.env, homedir = osHomedir }) {
   if (!config || !Array.isArray(config.workers)) throw new UnknownProfileError('applySkillAssign: config.workers required')
   if (typeof skillId !== 'string' || !skillId) throw new UnknownSkillError('applySkillAssign: skillId required')
-  const skillFile = join(repoDir ?? '.', '.claude', 'skills', skillId, 'SKILL.md')
-  if (!readFileSafe(skillFile, fsImpl)) {
-    throw new UnknownSkillError(`no skill file .claude/skills/${skillId}/SKILL.md`)
+  if (!findSkillFile({ skillId, repoDir, fsImpl, env, homedir })) {
+    const looked = skillStorePaths({ repoDir, env, homedir }).map((s) => join(s.path, skillId, SKILL_FILE))
+    throw new UnknownSkillError(`no ${SKILL_FILE} for skill "${skillId}" — looked in ${looked.join(' and ')}`)
   }
   const ids = Array.isArray(workerIds) ? workerIds.map(String) : []
   const known = new Set(config.workers.map((w) => w.id))
@@ -711,6 +856,77 @@ export function applySkillAssign({ config, skillId, workerIds, repoDir, launchDi
   const nextConfig = { ...config, workers: nextWorkers }
   writeConfig(nextConfig, { env, homedir, fsImpl, launchDir })
   return nextConfig
+}
+
+// ── writing a skill (the machine store, and only it) ──
+
+/**
+ * The shape of an id that may become a DIRECTORY NAME. Lower-case latin, digits and dashes,
+ * bounded, and it must start with a letter or a digit — so there is no spelling of it that
+ * contains a separator, a dot or a leading dash, and therefore no spelling that leaves the
+ * store it is joined onto. This is the whole of the path safety: the value is checked before
+ * it is joined, not sanitised after.
+ */
+const SKILL_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
+
+/** A one-line description is one line — a newline in it would open a second frontmatter key. */
+const SKILL_CREATE_DESCRIPTION_CAP = 300
+
+/** How long a skill a person writes in the window may be. Bounded, like every other body. */
+export const SKILL_BODY_CAP = 20000
+
+/**
+ * createMachineSkill({id, description, body, env, homedir, fsImpl}) → {id, source, path}.
+ *
+ * THE ONE WRITER OF A SKILL FILE, and it writes into the MACHINE store only. That is the
+ * owner's own instruction: a skill written here must be usable from every project, and a file
+ * put in the served tree would belong to that tree alone (and would land in somebody's
+ * repository as an uncommitted stranger).
+ *
+ * IT REFUSES AN EXISTING ID, in either store. Overwriting is a different act from creating and
+ * would be a deletion nobody asked for; a person who wants the text changed edits the file
+ * whose path this function returned.
+ *
+ * WHAT THE REQUEST CONTRIBUTES IS TEXT, AND ONLY TEXT. The id is validated against a shape
+ * that cannot contain a path separator; the description is one line, capped, with its own
+ * newlines removed so it cannot grow a second frontmatter key; the body is capped and lands
+ * BELOW the closing fence, where nothing it contains is read as a header. Nothing here becomes
+ * a config value, a command or an argument — the same posture the MCP registry keeps.
+ *
+ * The frontmatter is `name: <id>` deliberately: that is the spelling the CLI's own skill
+ * loader reads, so a skill written here is the same kind of object as one written by hand.
+ *
+ * @param {{id:string, description?:string, body:string, env?:object, homedir?:Function, fsImpl?:object}} args
+ * @returns {{id:string, source:string, path:string}}
+ */
+export function createMachineSkill({ id, description, body, env = process.env, homedir = osHomedir, fsImpl } = {}) {
+  if (typeof id !== 'string' || !SKILL_ID_RE.test(id)) {
+    throw new InvalidSkillError(`createMachineSkill: id must match ${SKILL_ID_RE.source} (latin, digits, dashes)`)
+  }
+  if (typeof body !== 'string' || body.trim() === '') {
+    throw new InvalidSkillError('createMachineSkill: body required — a skill with no text teaches nothing')
+  }
+  if (body.length > SKILL_BODY_CAP) {
+    throw new InvalidSkillError(`createMachineSkill: body exceeds ${SKILL_BODY_CAP} characters`)
+  }
+  const oneLine = String(description ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, SKILL_CREATE_DESCRIPTION_CAP)
+  if (!oneLine) {
+    throw new InvalidSkillError('createMachineSkill: description required — the card has nothing to say otherwise')
+  }
+
+  const found = findSkillFile({ skillId: id, fsImpl, env, homedir })
+  if (found) {
+    throw new SkillExistsError(`skill "${id}" already exists in the "${found.source}" store (${found.path}) — a create never overwrites`)
+  }
+
+  const path = join(resolveMachineSkillsDir({ env, homedir }), id, SKILL_FILE)
+  const text = `---\nname: ${id}\ndescription: ${oneLine}\n---\n\n${body.replace(/\r\n/g, '\n').trimEnd()}\n`
+  atomicWriteRaw(path, text, {
+    mkdirFn: fsImpl && fsImpl.mkdirSync,
+    writeFn: fsImpl && fsImpl.writeFileSync,
+    renameFn: fsImpl && fsImpl.renameSync,
+  })
+  return { id, source: 'machine', path }
 }
 
 /**
@@ -738,16 +954,30 @@ export function applyMcpToggle({ registry, serverId, enabled, homedir = osHomedi
   return { ...registry, servers: nextServers, path }
 }
 
+/** Everything the assigned skills together may add to one prompt. Bounded like the role body. */
+const SKILLS_PREAMBLE_CAP = 16 * 1024
+
 /**
- * resolveWorkerContext({worker, repoDir, fsImpl}) → {rolePreamble?, skillsList}. The merged
- * roleFile body (capped 8 KB) becomes the rolePreamble the loop prepends to an ENABLED
- * agent's task prompt — this is what makes «включён» real in a session — and the assigned
- * skill names travel alongside. No roleFile → no preamble (skillsList still returned).
+ * resolveWorkerContext({worker, repoDir, fsImpl, env, homedir}) → {rolePreamble?,
+ * skillsPreamble?, skillsList}. The merged roleFile body (capped 8 KB) becomes the
+ * rolePreamble the loop prepends to an ENABLED agent's task prompt — this is what makes
+ * «включён» real in a session.
  *
- * @param {{worker:object, repoDir?:string, fsImpl?:object}} args
- * @returns {{rolePreamble?:string, skillsList:string[]}}
+ * AND THE ASSIGNED SKILLS TRAVEL THE SAME ROAD, WITH THEIR TEXT. Until this they travelled as
+ * names into the journal and nowhere else: a person gave a worker a skill through «Кому дать»,
+ * the config recorded it, and the session it was given to never learned that it had one. So
+ * each assigned skill is LOOKED UP IN BOTH STORES (findSkillFile) and its body is carried into
+ * the preamble under a heading that names the store it came from — a machine skill works in a
+ * project whose tree has no skills directory at all, which is the point of having the second
+ * store, and the worker's copy is never asked to contain it.
+ *
+ * A skill that is assigned and cannot be found is named in the preamble as missing rather than
+ * dropped: an instruction the person believes was given must not disappear in silence.
+ *
+ * @param {{worker:object, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function}} args
+ * @returns {{rolePreamble?:string, skillsPreamble?:string, skillsList:string[]}}
  */
-export function resolveWorkerContext({ worker, repoDir, fsImpl } = {}) {
+export function resolveWorkerContext({ worker, repoDir, fsImpl, env = process.env, homedir = osHomedir } = {}) {
   const skillsList = worker && Array.isArray(worker.skills) ? worker.skills.slice() : []
   let rolePreamble
   if (worker && worker.roleFile) {
@@ -757,5 +987,26 @@ export function resolveWorkerContext({ worker, repoDir, fsImpl } = {}) {
       rolePreamble = String(body || content).slice(0, ROLE_PREAMBLE_CAP)
     }
   }
-  return { ...(rolePreamble ? { rolePreamble } : {}), skillsList }
+
+  let skillsPreamble
+  if (skillsList.length > 0) {
+    const parts = ['# Навыки, выданные вам', '']
+    for (const id of skillsList) {
+      const found = findSkillFile({ skillId: id, repoDir, fsImpl, env, homedir })
+      if (!found) {
+        parts.push(`## ${id}`, '', 'Файл этого навыка не найден ни в дереве проекта, ни в хранилище машины.', '')
+        continue
+      }
+      const { body } = readFrontmatter(found.content)
+      const store = found.source === 'project' ? 'дерево проекта' : 'хранилище машины'
+      parts.push(`## ${id} (источник: ${store})`, '', String(body || found.content).trim(), '')
+    }
+    skillsPreamble = parts.join('\n').slice(0, SKILLS_PREAMBLE_CAP)
+  }
+
+  return {
+    ...(rolePreamble ? { rolePreamble } : {}),
+    ...(skillsPreamble ? { skillsPreamble } : {}),
+    skillsList,
+  }
 }

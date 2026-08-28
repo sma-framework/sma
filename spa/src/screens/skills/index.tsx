@@ -1,33 +1,66 @@
 import { useMemo, useState } from 'react'
 import { isNotReady, isRaceLost } from '../../api/client'
 import { useApprove, useHarnessQuery } from '../../api/queries'
-import type { AgentCard, DraftCard as DraftRow, SkillCard } from '../../api/types'
+import type { AgentCard, DraftCard as DraftRow, SkillCard, SkillSource, SkillStore } from '../../api/types'
 import { ForgeDialog } from '../agents/ForgeDialog'
 import { OPEN_SCREEN_EVENT } from '../../shell/navigation'
 import type { OpenScreenDetail } from '../../shell/navigation'
 import { accentFor, initialOf } from '../../shell/format'
 import { AssignDialog } from './AssignDialog'
+import { CreateDialog } from './CreateDialog'
 
 /**
- * «Навыки» — the abilities a worker can be given, and the one decision that gives them.
+ * «Навыки» — the abilities a worker can be given, where they live, and how one is written.
  *
- * ═══════════════════ A SKILL IS A FILE; ASSIGNMENT IS THE ONLY SWITCH ═══════════════════
+ * ═══════════════════ TWO STORES, AND EVERY CARD NAMES ITS OWN ═══════════════════
  *
- * The daemon finds skills by walking the tree: each folder with a SKILL.md is one card here.
- * There is no route that creates, renames or deletes a skill from the window, so this screen
- * offers none of those. What it does offer is the single thing the daemon does accept —
- * WHO HAS IT — through «Кому дать».
+ * A skill is a folder with a SKILL.md, and the daemon walks TWO places for them: the tree of
+ * the project being worked in, and this machine's own skill library, which is there under
+ * every project. Both are shown together and every card says which store it came out of —
+ * a skill whose origin is not on its card is a skill nobody can reason about when two of them
+ * disagree.
  *
- * A new skill therefore takes the same two human steps as a new worker: the forge writes a
- * draft, a person approves it (that lands SKILL.md in the tree), and only then can it be given
- * to anybody — the assign applier refuses a skill whose file does not exist yet. The draft row
- * below says exactly that, and never shows a «дать» button before the file is real.
+ * THE EMPTY LIST EXPLAINS ITSELF. This screen used to say «навыков нет» and stop, and that is
+ * how a person whose skills sit in the machine store concluded the product has no such
+ * feature: it had simply been reading one directory out of two. So when there is nothing to
+ * show, the screen names both directories it looked in and whether each exists at all.
+ *
+ * ═══════════════════ WRITING ONE, AND GIVING IT AWAY ═══════════════════
+ *
+ * «Написать навык» writes the person's own text into the MACHINE store and answers with the
+ * file's path — one act, done when the button returns. Beside it, «Собрать черновик» still
+ * asks the forge to draft one for approval: they are different requests («вот текст» versus
+ * «придумай»), and the screen offers both rather than pretending one is the other.
+ *
+ * A forged draft still takes the same two human steps as a new worker: approve it (that lands
+ * SKILL.md in the tree), and only then give it to anybody — the assign applier refuses a skill
+ * whose file does not exist yet. The draft row says exactly that, and never shows a «дать»
+ * button before the file is real.
+ *
+ * TOOLS ARE NOT HERE, ON PURPOSE. A connection is a reach OUTWARD and lives on «Подключения»;
+ * a skill is something a worker KNOWS. Mixing them on one screen would make a person choose
+ * between two things that are switched on for different reasons and mean different risks.
  *
  * The mirror draws an on/off switch on a card. «Off» on this screen means «нет ни у кого»: the
  * daemon keeps no per-skill enabled flag, and a switch pretending to be one would be a second,
  * invented state. So the card shows who holds the skill — in words and in faces — and the
  * dialog is where that changes.
  */
+
+/** The two stores in the person's own words — the daemon says 'project'/'machine'. */
+const STORE_LABEL: Record<SkillSource, string> = {
+  project: 'проект',
+  machine: 'машина',
+}
+
+/** What the screen looked at, said as a sentence — the whole content of an empty list. */
+function whereWeLooked(stores: SkillStore[]): string[] {
+  return stores.map(
+    (s) =>
+      `${STORE_LABEL[s.source] ?? s.source}: ${s.path}` +
+      (s.present ? ` — каталог есть, навыков в нём ${s.count}` : ' — такого каталога нет'),
+  )
+}
 
 /** Who holds this skill, said in one line, out of the roster the window already has. */
 function holdersLabel(skill: SkillCard, agents: AgentCard[], titleOf: Map<string, string>): string {
@@ -117,9 +150,11 @@ export function Screen() {
   const harness = useHarnessQuery()
   const agents = harness.data?.agents ?? []
   const skills = harness.data?.skills ?? []
+  const stores = harness.data?.skillStores ?? []
   const drafts = (harness.data?.drafts ?? []).filter((d) => d.kind === 'skill')
 
   const [assigning, setAssigning] = useState<string | null>(null)
+  const [writing, setWriting] = useState(false)
 
   const titleOf = useMemo(() => {
     const map = new Map<string, string>()
@@ -146,10 +181,20 @@ export function Screen() {
           <span className="text-[16px] font-bold text-ok-tx tabular-nums">{held}</span>
           <span className="text-[11.5px] text-tx2">розданы</span>
         </div>
+        <div className="flex-1" />
+        <button
+          type="button"
+          onClick={() => setWriting(true)}
+          className="flex-none rounded-[8px] bg-blue px-[15px] py-1.5 text-[11.5px] font-semibold text-white hover:bg-blue-d"
+        >
+          Написать навык
+        </button>
       </header>
 
       <div className="flex flex-none items-center border-b border-bd px-7 py-3">
-        <span className="text-[12.5px] text-tx2">Умения, которые можно дать любому работнику.</span>
+        <span className="text-[12.5px] text-tx2">
+          Умения, которые можно дать любому работнику. Инструменты — это другое: они живут на «Подключениях».
+        </span>
       </div>
 
       {harness.isError ? (
@@ -168,9 +213,27 @@ export function Screen() {
       <div className="min-h-0 flex-1 overflow-y-auto px-7 pt-6 pb-8">
         <div className="flex flex-col gap-6">
           {skills.length === 0 ? (
-            <p className="m-0 text-[13px] text-tx2">
-              Навыков нет. Опишите нужный внизу — кузница соберёт черновик, одобрите его Вы.
-            </p>
+            <div className="flex max-w-[720px] flex-col gap-2">
+              <p className="m-0 text-[13px] text-tx2">
+                Навыков не найдено. Искали в двух местах — вот в каких:
+              </p>
+              <ul className="m-0 flex list-none flex-col gap-1 p-0">
+                {whereWeLooked(stores).map((line) => (
+                  <li key={line} className="text-[11.5px] break-all text-tx3">
+                    {line}
+                  </li>
+                ))}
+                {stores.length === 0 ? (
+                  <li className="text-[11.5px] text-tx3">
+                    Демон не сказал, где искал, — список хранилищ пуст.
+                  </li>
+                ) : null}
+              </ul>
+              <p className="m-0 text-[12.5px] text-tx2">
+                Нажмите «Написать навык» — он ляжет в хранилище машины и будет виден в любом проекте.
+                Или опишите нужный внизу: кузница соберёт черновик, одобрите его Вы.
+              </p>
+            </div>
           ) : (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3.5">
               {skills.map((skill) => (
@@ -178,7 +241,29 @@ export function Screen() {
                   key={skill.id}
                   className="flex flex-col gap-3 rounded-[13px] border border-bd bg-card px-[18px] py-4 shadow-panel"
                 >
-                  <div className="text-[13.5px] leading-[1.35] font-semibold text-tx">{skill.title}</div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 text-[13.5px] leading-[1.35] font-semibold text-tx">{skill.title}</div>
+                    {/* WHERE THIS ONE CAME FROM, on the card and not in a tooltip: a skill whose
+                        store is not visible is one nobody can reason about when two disagree. */}
+                    <span
+                      title={
+                        skill.source === 'machine'
+                          ? 'Хранилище машины — этот навык доступен в любом проекте'
+                          : 'Дерево проекта — этот навык живёт вместе с кодом'
+                      }
+                      className="flex-none rounded-[6px] border border-bd2 px-1.5 py-0.5 text-[10px] text-tx3"
+                    >
+                      {STORE_LABEL[skill.source] ?? skill.source}
+                    </span>
+                  </div>
+
+                  {skill.description ? (
+                    <div className="line-clamp-3 text-[11.5px] leading-[1.45] text-tx2">{skill.description}</div>
+                  ) : null}
+
+                  {skill.problem ? (
+                    <div className="text-[11px] leading-[1.4] text-warn-tx">{skill.problem}</div>
+                  ) : null}
 
                   <div className="flex min-h-[19px] items-center gap-[7px]">
                     {skill.assignedTo.length > 0 ? (
@@ -236,7 +321,7 @@ export function Screen() {
             heading="Собрать новый навык"
             placeholder="Опишите навык…"
             submitLabel="Собрать черновик"
-            note="Черновик готовит кузница; решение одобрить его и кому дать навык остаётся за Вами."
+            note="Черновик готовит кузница; решение одобрить его и кому дать навык остаётся за Вами. Готовый текст навыка быстрее написать самому — кнопка «Написать навык» наверху."
             rows={2}
           />
         </div>
@@ -244,6 +329,9 @@ export function Screen() {
 
       {openSkill ? (
         <AssignDialog skill={openSkill} agents={agents} onClose={() => setAssigning(null)} />
+      ) : null}
+      {writing ? (
+        <CreateDialog onClose={() => setWriting(false)} onCreated={() => void harness.refetch()} />
       ) : null}
     </section>
   )

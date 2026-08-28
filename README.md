@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="version 5.6.1">
-  <img src="https://img.shields.io/badge/tests-5066%2F5066-3CC0A0" alt="tests 5066/5066">
+  <img src="https://img.shields.io/badge/tests-5088%2F5088-3CC0A0" alt="tests 5088/5088">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -431,6 +431,16 @@ A project is a first-class dimension now, not a separate install: one daemon run
 Across machines, daemons federate. You nominate one daemon as the **hub** and introduce its peers from the app: the hub mints a single-use invitation, you carry it to the second machine, and from then on the hub aggregates state — presence per machine, costs and windows per machine, every project in one window. Actions are not re-played by the hub: an approval or a new task issued from the hub travels to the owning machine as the same already-authorised call, through every door it would have passed locally. A peer opened directly still shows its own machine, with a quiet banner when the hub is unreachable — there is no single point of failure.
 
 The network between your machines is **yours, not ours**: a private mesh (WireGuard, Tailscale, or a self-hosted coordinator). **The daemon never asks to be exposed to the public internet**, and no vendor cloud appears anywhere in this design.
+
+### Skills — two stores, named on every card, and one you can write from the window
+
+A skill is a folder with a `SKILL.md` in it, and a worker can be given one. There are **two places** a skill lives, and the screen now reads both: the **project** store in the tree you are working in (`.claude/skills/`), and the **machine** store — this machine's own library (`$CLAUDE_CONFIG_DIR/skills`, else `~/.claude/skills`; `SMA_DAEMON_SKILLS` overrides both), which is there under every project you connect. Every card says which of the two it came from, because a skill whose origin is invisible is one nobody can reason about on the day two of them disagree. Nothing is pulled in from any third tree.
+
+**An empty list now says where it looked.** This screen used to answer «навыков нет» and stop — and that is how somebody whose skills sat in the machine store concluded the feature did not exist: the daemon walked one directory out of two, and a feature reading the wrong place is indistinguishable, from outside, from a feature nobody built. When there is nothing to show, the screen names both directories and whether each exists at all.
+
+**«Написать навык» writes a file, and answers with its path.** You type a name, one line about what it does, and the text itself; it lands in the **machine** store and is on the screen and assignable immediately. It is not the forge and does not pretend to be: `/api/forge` asks a worker to draft a skill and waits for your approval — the right road for «придумай мне навык», and a useless one when you already have the text. The door refuses an id that is taken in **either** store rather than overwriting somebody's skill, and the proof of the act is the path it returns — a file on a disk, not a status code. Tools are deliberately not on this screen: a connection is a reach *outward* and lives on «Подключения»; a skill is something a worker *knows*.
+
+**And giving one away now reaches the session.** «Кому дать» has always written the assignment into the roster config — and until this release that is all it did: the skill names went into the attempt's journal and nowhere else, so a worker you had given a skill to never learned it had one. The assigned skill's **text** is now looked up in whichever store holds it and carried into what the worker is started with, under a heading naming that store — so a machine skill works on a project whose tree has no skills directory at all, which is the whole point of the second store. An assigned skill whose file has since gone is named as missing rather than dropped in silence.
 
 ### Connections — Telegram: your own bot, connected from the window, and the same conversation on your phone
 

@@ -6,8 +6,8 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-FOUR routes
- *     (re-frozen 2026-08-25 — the growth past the V5.4 fifty-three is EXPLICIT, TEN doors,
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-FIVE routes
+ *     (re-frozen 2026-08-28 — the growth past the V5.4 fifty-three is EXPLICIT, ELEVEN doors,
  *     each declared by the release that opened it: the chat stop button in v5.4.3, the
  *     running-task steering wheel in v5.5.0, SIX doors in v5.6.0 — the batch request,
  *     the word its owner answers a stopped batch with, the composition a phrase could have,
@@ -25,10 +25,14 @@
  *     2026-08-13, FIFTY-FIVE, 2026-08-12, FIFTY-THREE, 2026-08-06, THIRTY, 2026-08-01, and
  *     FOURTEEN, 2026-07-17). The SIXTY-FOURTH is the SETTINGS DOOR OF ONE CONNECTION: the
  *     owner connects their own Telegram bot from the window — a token in, a short-lived
- *     pairing code out, and the same door disconnects. A path outside the table is 404 BEFORE
+ *     pairing code out, and the same door disconnects. The SIXTY-FIFTH WRITES A SKILL: a
+ *     person describes an ability in the window and it lands in this machine's skill store as
+ *     a file, ready to be given to a worker. Until it existed the screen could only ASK the
+ *     forge for a draft and wait for an approval, which is not what «создать навык из окна»
+ *     means to the person doing it. A path outside the table is 404 BEFORE
  *     any auth-error detail (no route reflection). No command-exec endpoint exists or ever
  *     may — adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 64 is a test.
+ *     invariant that polices it. Object.keys(ROUTES).length === 65 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
@@ -243,27 +247,28 @@ const BUILD_INSTRUCTION_HTML =
   '</body></html>'
 
 /**
- * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-25; the FIFTY-THREE of the V5.4
- * freeze plus ten doors, eight of them declared once by the release that shipped them —
+ * ROUTES — THE FINAL FROZEN TABLE (re-frozen 2026-08-28; the FIFTY-THREE of the V5.4
+ * freeze plus eleven doors, eight of them declared once by the release that shipped them —
  * the chat stop button in v5.4.3, the running-task steering wheel in v5.5.0, in v5.6.0 the
  * batch request, the word its owner answers a stopped batch with, the composition a phrase
  * could have, the two doors of a task's WORDS (the one that proposes them and the one that
  * corrects them), and the order that stops ONE echelon of ONE phase and starts it again —
  * and two carrying no release stamp until one is actually cut: the door that CANCELS
  * a task (a person stops the work, and the row is closed only after the live child under it
- * is dead), and the door that READS THE FOLDER OF ONE PHASE — its directory as a tree, and
- * one file of it as text, both bounded, neither able to leave that directory).
- * Exactly SIXTY-FOUR entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * is dead), the door that READS THE FOLDER OF ONE PHASE — its directory as a tree, and
+ * one file of it as text, both bounded, neither able to leave that directory — and the door
+ * that WRITES A SKILL into this machine's skill store).
+ * Exactly SIXTY-FIVE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the five dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/phase/:id/files, /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic
  * asset segment (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 64) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 65) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time; the last eleven joined one release at a time, additively — nothing was
- * removed or renamed. ALL SIXTY-FOUR ARE LIVE — the table carries no stub, and the shape
+ * a time; the last twelve joined one release at a time, additively — nothing was
+ * removed or renamed. ALL SIXTY-FIVE ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  *
  * THREE OF THE TEN PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
@@ -349,6 +354,10 @@ export const ROUTES = Object.freeze({
   'GET /api/phase/:id/files': 'handlePhaseFiles',
   // ── НАСТРОЙКИ ОДНОГО ПОДКЛЮЧЕНИЯ: свой бот Telegram — подключить, выдать код пары, отключить ──
   'POST /api/connection/telegram': 'handleConnectionTelegram',
+  // ── НАПИСАТЬ НАВЫК ИЗ ОКНА: текст человека ложится в машинное хранилище и становится тем,
+  //    что можно выдать работнику. Раздача уже была дверью; написать навык было нечем, и
+  //    поэтому «создать навык» существовало только как заказ кузнице и ожидание одобрения ──
+  'POST /api/skill/create': 'handleSkillCreate',
 })
 
 /**
@@ -2042,6 +2051,10 @@ async function handleHarness({ res, config, deps }) {
     repoDir: deps.repoDir,
     fsImpl: deps.fsImpl,
     env: deps.env,
+    // The MACHINE skill store is resolved out of the home directory when the environment
+    // names none, so the injected homedir has to reach the read model — otherwise a suite
+    // that fakes a home still reads the real one and the walk depends on the machine it runs on.
+    homedir: deps.homedir,
     clock: deps.clock,
   })
   sendJson(res, 200, payload)
@@ -2153,6 +2166,42 @@ async function handleSkillAssign({ req, res, config, deps }) {
     emitSafe(deps, { event: 'harness.updated' })
     return sendJson(res, 200, { ok: true, skill: { id: b.skillId, assignedTo: b.workerIds } })
   } catch (err) {
+    return applierError(res, err)
+  }
+}
+
+/**
+ * POST /api/skill/create — body {id, description, body} → createMachineSkill.
+ *
+ * THE ONE DOOR THAT WRITES A SKILL, and it writes into the MACHINE store only — the owner's
+ * own instruction: a skill written here has to be usable under every project, and a file put
+ * into the served tree would belong to that tree alone.
+ *
+ * IT IS NOT THE FORGE DOOR AND DOES NOT PRETEND TO BE. /api/forge asks a worker to draft
+ * something and a person then approves it; that is a good road for «придумай мне навык» and a
+ * useless one for «вот текст, положи его» — which is what a person writing a skill in the
+ * window is doing. So this door takes the person's own text and answers with the PATH it was
+ * written to: the proof of this act is a file on the disk, not a status code.
+ *
+ * Everything the request contributes is TEXT. The id is checked against the applier's strict
+ * slug — no separator can appear in it, so no spelling of it leaves the store — and an id that
+ * already exists in EITHER store is a 409, never an overwrite.
+ */
+async function handleSkillCreate({ req, res, deps }) {
+  if (typeof deps.createMachineSkill !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['id', 'description', 'body']))) return undefined
+  if (typeof b.id !== 'string' || !b.id) return send400(res, 'id required')
+  if (typeof b.description !== 'string' || !b.description.trim()) return send400(res, 'description required')
+  if (typeof b.body !== 'string' || !b.body.trim()) return send400(res, 'body required')
+  try {
+    const made = deps.createMachineSkill({ id: b.id, description: b.description, body: b.body, ...configIo(deps) })
+    emitSafe(deps, { event: 'harness.updated' })
+    return sendJson(res, 201, { ok: true, skill: made })
+  } catch (err) {
+    if (err && err.name === 'SkillExistsError') return send409(res, String(err.message))
     return applierError(res, err)
   }
 }
@@ -5937,6 +5986,7 @@ export const HANDLERS = Object.freeze({
   handleForge,
   handleAgentToggle,
   handleSkillAssign,
+  handleSkillCreate,
   handleMcpToggle,
   handleAsset,
   handleProjects,

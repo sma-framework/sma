@@ -1269,10 +1269,34 @@ export interface AgentCard {
   cannot: string[]
 }
 
+/**
+ * Where a skill was found. 'project' — the tree the daemon serves. 'machine' — this machine's
+ * own skill library, which is reachable no matter which project is active.
+ */
+export type SkillSource = 'project' | 'machine'
+
 export interface SkillCard {
   id: string
   title: string
+  /** The one-line frontmatter description, capped by the daemon. '' when the file has none. */
+  description: string
+  /** Which store this card came out of — always shown, never guessed on this side. */
+  source: SkillSource
   assignedTo: string[]
+  /** Named when something about this card is worth saying out loud (e.g. a shadowed twin). */
+  problem: string | null
+}
+
+/**
+ * One of the two places the daemon looked for skills, as it actually looked: the path, whether
+ * that directory exists at all, and how many skills came out of it. This is what an empty list
+ * says out loud — «нет навыков» without a place is indistinguishable from «нет такой функции».
+ */
+export interface SkillStore {
+  source: SkillSource
+  path: string
+  present: boolean
+  count: number
 }
 
 /** Connection cards carry the NAMES of their settings and whether each is filled in. */
@@ -1348,6 +1372,8 @@ export interface TelegramLink {
 export interface HarnessPayload {
   agents: AgentCard[]
   skills: SkillCard[]
+  /** The two stores, as they were walked — the words an empty skills list explains itself with. */
+  skillStores: SkillStore[]
   mcp: McpCard[]
   drafts: DraftCard[]
   stockTeam: StockTeamCard[]
@@ -1786,6 +1812,15 @@ export interface ToggleResult {
 
 export interface OkResult {
   ok: boolean
+}
+
+/**
+ * What the create-a-skill door answers: the file it actually wrote. The PATH is the proof —
+ * a screen that says «создан» on a status code alone would say it just as cheerfully about a
+ * write that never happened.
+ */
+export interface SkillCreateResult extends OkResult {
+  skill?: { id: string; source: SkillSource; path: string }
 }
 
 /**
