@@ -92,6 +92,7 @@ import { join } from 'node:path'
 
 import { pipelineEnabled } from '../config.mjs'
 import { isOpen } from '../policy/windows.mjs'
+import { orchestratorView } from '../policy/orchestrator.mjs'
 import {
   isBatchParent,
   batchItemsOf,
@@ -2883,6 +2884,13 @@ export async function deriveState(deps = {}) {
         : null
   if (queueIdleReason) for (const q of queue) q.idleReason = queueIdleReason
 
+  // ── ВЕРХУШКА ЕДЕТ ОТДЕЛЬНЫМ КЛЮЧОМ, А НЕ СТРОКОЙ В `workers[]`. Это не оформление: экран
+  // «Команда» рисует `workers[]` карточками исполнителей и считает по ним «работают / ждут
+  // окно / свободны», а оркестратор ни к одному из этих слов не относится — он задач не берёт.
+  // Ключ присутствует ВСЕГДА и равен `null` там, где роли на машине не заведено: ключ,
+  // появляющийся только вместе с данными, читается экраном как «такого не бывает». ──
+  const orchestrator = orchestratorView(config)
+
   const payload = {
     kpis,
     queue,
@@ -2890,6 +2898,7 @@ export async function deriveState(deps = {}) {
     waves,
     awaiting,
     workers,
+    orchestrator,
     done,
     spend,
     costs,

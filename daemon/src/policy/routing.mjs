@@ -16,6 +16,13 @@
  *
  * («я хочу переставлять модели и поставщиков, а также их effort» — the founder's mandate.)
  *
+ * THE ORCHESTRATOR IS NEVER A CANDIDATE. The machine's top figure (policy/orchestrator.mjs)
+ * lives in its own config block precisely so it cannot compete for a seat with the people who
+ * write code; the filter below refuses it by name anyway, first line, because a config edited
+ * by hand can put anything in `workers[]` and a rule that holds only for tidy files is not a
+ * rule. It is not a «closed window» either: its absence never becomes a reason to wait or to
+ * spend — it is simply not one of the executors.
+ *
  * DAYTIME PRIORITY IS ABSOLUTE. A worker whose account carries
  * `dayPriorityOwner:true` is ALWAYS skipped during the founder's active hours
  * (config.activeHours, default 09–22 local). Review KILLED the earlier
@@ -46,6 +53,7 @@
  */
 
 import { DISPATCH_REASONS } from '../front/journal.mjs'
+import { isOrchestrator } from './orchestrator.mjs'
 
 /** Default lane → provider routing. Config may override via config.laneRouting. */
 export const DEFAULT_LANE_ROUTING = Object.freeze({
@@ -241,6 +249,12 @@ export function resolveRoute(task = {}, deps = {}) {
     deps.busyWorkers instanceof Set ? deps.busyWorkers : new Set(Array.isArray(deps.busyWorkers) ? deps.busyWorkers : [])
   let heldByBusy = false
   const candidates = workers.filter((w) => {
+    // ВЕРХУШКА НЕ РАЗБИРАЕТ ИНЛАЙН-ЗАДАЧИ. Оркестратор живёт отдельным блоком конфига и в этот
+    // список попасть не должен вовсе — но конфиг правят руками, и однажды его впишут сюда
+    // «чтобы был виден». Отказ стоит ПЕРВОЙ строкой фильтра, до `enabled`, провайдера и окна:
+    // иначе его участие зависело бы от порядка строк и от того, чьё окно открыто, то есть от
+    // случая. Он не кандидат ни при каком порядке и ни при каких окнах.
+    if (isOrchestrator(w)) return false
     if (!w || w.enabled === false) return false
     if (targetProvider && w.provider !== targetProvider) return false
     const protectedNow = founderActive && (w.dayPriorityOwner === true || w.account?.dayPriorityOwner === true)

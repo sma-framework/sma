@@ -119,6 +119,10 @@ Then set in it:
     "enabled": true }
   ```
 
+- `orchestrator` — **do not write it by hand.** The machine's top figure is minted while the
+  settings load and written into this file by itself; it is not a worker and never takes a task
+  off the queue. A row for it typed into `workers` is lifted out of that list on the next load.
+
 > **About mode 0600.** On win32 `chmod` is a documented no-op; the daemon still
 > attempts it and silently ignores the failure. The Windows equivalent of 0600 is
 > the user profile ACL: the file sits in `~/.sma-daemon` under your account and is

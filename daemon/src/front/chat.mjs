@@ -45,6 +45,12 @@
  *    and books its spend under a reserved task id (`chat-<ts>`), which is what makes the
  *    «Разговор» line on «Расходы» real instead of invisible.
  *
+ * ── КТО ВЕДЁТ РАЗГОВОР. Оркестратор — верхушка машины (policy/orchestrator.mjs), а не первый
+ *    попавшийся работник из очереди. Это видно и снаружи, и внутри: промпт называет его по
+ *    имени и перечисляет четыре твёрдых решения, которых он не принимает, а аккаунт для хода
+ *    спрашивается у `voiceAccount` — одного правила на всю машину, вместо прежнего «возьми
+ *    дневной аккаунт владельца», из-за которого голос в окне носил имя исполнителя.
+ *
  * THE TRANSCRIPT IS NOT THE TRUTH. History is an append-only ndjson next to the daemon's
  * config, capped by turn count. It is a record of what was said; the truth about the park is
  * the derived state, always re-read. Stored turns are DATA: they are read back, never
@@ -64,6 +70,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { REASON_LABELS, acceptanceItems, CAP_ACCEPTANCE_ITEMS } from '../queue/adapter.mjs'
+import { HARD_CALLS, ORCHESTRATOR_NAME, ORCHESTRATOR_TITLE, voiceAccount } from '../policy/orchestrator.mjs'
 import { buildClaudeArgs, buildAccountEnv } from '../runner/args.mjs'
 import { fencedBlock } from '../runner/prompt-fence.mjs'
 import { spawnWorker } from '../runner/spawn.mjs'
@@ -1590,9 +1597,44 @@ function decisionBlock(board, snapshot) {
 }
 
 /**
+ * identityBlock() → раздел «Кто отвечает»: разговор ведёт ВЕРХУШКА машины, и она называет себя.
+ *
+ * ═══ У ГОЛОСА В ОКНЕ ДОЛЖНО БЫТЬ ИМЯ, И ЭТО ИМЯ — НЕ ИМЯ РАБОТНИКА ═══
+ *
+ * Раньше ход разговора не знал о себе ничего, кроме голоса, и на прямой вопрос «а это кто
+ * такой» отвечал тем, что находил вокруг: именем аккаунта, идентификатором работника,
+ * догадкой. Отвечает оркестратор — постоянная фигура машины, а не исполнитель из очереди, и
+ * промпт говорит это первой же строкой после голоса.
+ *
+ * ТВЁРДЫЕ РЕШЕНИЯ ПЕРЕЧИСЛЕНЫ ПОИМЁННО и берутся из ОДНОГО списка (HARD_CALLS), который читает
+ * и экран «Команда». Общий закон HUMAN-ONLY уже сказан голосом; здесь названы те четыре
+ * решения, которые владелец назвал именно для верхушки, — и сказано, что с ними делают: зовут
+ * человека, а не решают за него.
+ */
+function identityBlock() {
+  return [
+    '',
+    '---',
+    '',
+    '# Кто отвечает',
+    '',
+    `Вы — ${ORCHESTRATOR_NAME}. ${ORCHESTRATOR_TITLE}`,
+    'Вы не исполнитель: задач из очереди Вы не берёте и кода не пишете. Если человек спрашивает,',
+    'кто Вы, — так и отвечайте: оркестратор этой машины. Именами работников себя не называйте.',
+    '',
+    'ТВЁРДЫЕ РЕШЕНИЯ ПРИНИМАЕТ ЧЕЛОВЕК. Их четыре, и Вы не принимаете ни одного:',
+    ...HARD_CALLS.map((c) => `- ${c.label} — ${c.words}.`),
+    '',
+    'Когда разговор упирается в любое из них, Вы зовёте человека: говорите, что решение его,',
+    'и что именно надо решить. Не решайте за него и не сообщайте, будто решение уже принято.',
+  ]
+}
+
+/**
  * buildChatPrompt({voice, text, workers, board, snapshot}) → the prompt for one conversation turn.
  *
- * Five layers, in this order: the VOICE (whichever the resolution chose), the FRAME of this
+ * Six layers now: WHO IS SPEAKING (the orchestrator, and the four calls that are not his), the
+ * VOICE (whichever the resolution chose), the FRAME of this
  * lane (the closed registry: read the derived state, propose a draft, run nothing), the
  * BOARD snapshot when the door handed one over, the SNAPSHOT of the card the conversation
  * was opened from when there is one (the card is the more specific truth, so it rides
@@ -1611,6 +1653,7 @@ export function buildChatPrompt({ voice, text, workers, board, snapshot, memory 
 
   return [
     String((voice && voice.text) || ''),
+    ...identityBlock(),
     '',
     '---',
     '',
@@ -1777,14 +1820,14 @@ function textOfLine(line) {
   return null
 }
 
-/** dayPriorityAccount(config) → the account profile of the founder's daytime-priority worker. */
-export function dayPriorityAccount(config) {
-  const workers = (config && Array.isArray(config.workers) ? config.workers : []).filter(
-    (w) => (w.provider ?? 'claude') === 'claude',
-  )
-  const owner = workers.find((w) => w.dayPriorityOwner === true) ?? workers[0]
-  return owner ? owner.account : null
-}
+/**
+ * Через ЧЕЙ аккаунт говорит эта машина — правило живёт в модуле роли (policy/orchestrator.mjs)
+ * и здесь только зовётся. Раньше оно было записано ЗДЕСЬ, и это была не мелочь: разговор брал
+ * дневной аккаунт владельца и отвечал ИМЕНЕМ работника, который на нём сидит, — отсюда и вопрос
+ * человека «а это кто такой». Отвечает теперь оркестратор; аккаунт — по-прежнему тот же, если
+ * человек не дал верхушке свой.
+ */
+export { voiceAccount }
 
 /**
  * runSession(opts) → {lines, timedOut, error}. One child, one prompt, one bounded wait. The
@@ -1867,7 +1910,7 @@ export async function dispatchFreeTurn({ text, turnId, deps = {} } = {}) {
   let env
   let prompt
   try {
-    const account = deps.account ?? dayPriorityAccount(deps.config)
+    const account = deps.account ?? voiceAccount(deps.config)
     if (!account) throw new Error('no claude account configured')
     const voice = resolvePolicyVoice({ policyDir: deps.policyDir, fsImpl: deps.fsImpl })
     prompt = buildChatPrompt({
@@ -1930,7 +1973,7 @@ export async function dispatchFreeTurn({ text, turnId, deps = {} } = {}) {
         clock,
         fsImpl: deps.fsImpl,
         event: claudeUsageFromResult(resultEvent, {
-          accountName: accountNameOf(deps.account ?? dayPriorityAccount(deps.config), null),
+          accountName: accountNameOf(deps.account ?? voiceAccount(deps.config), null),
           taskId,
           model: deps.model,
           // The conversation runs on a subscription window — its cost is what the plan

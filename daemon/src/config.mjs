@@ -58,6 +58,16 @@
  * (bad url, empty token) refuses the whole load with a named error — the daemon never
  * starts with a half-alive registry it would silently ignore.
  *
+ * ═══════════════ THE ORCHESTRATOR IS A BLOCK, NOT A WORKER ══════════════════════
+ * `orchestrator` is the machine's top figure: it answers the person in the window and it takes
+ * no inline task. It has its own top-level block for a structural reason, not a cosmetic one —
+ * `workers[]` IS the list the dispatcher chooses from, so a role kept in that list competes for
+ * a seat with the people who write code. `ensureOrchestrator` mints it at LOAD time (like
+ * `ensureDefaultProject`, and for the same reason: a new machine must get it with no manual
+ * edit), runs BEFORE validation so a hand-written row can be lifted out of `workers[]`, and is
+ * idempotent. The role's own laws — who it is, whose account it speaks through, and the four
+ * hard calls it never makes — live in `policy/orchestrator.mjs`.
+ *
  * PEER TOKENS COLLAPSE FROM DAY ONE. secretsView folds every
  * `federation.peers[].token` into '[set]'/'[unset]' in the SAME change that introduces
  * the field — a secret that lands in the schema a week before its collapse is a week of
@@ -76,6 +86,9 @@ import { join, basename, dirname } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 import { atomicWriteJson, readJsonSafe } from '../../scripts/sma/lib/fs-atomics.mjs'
+// The machine's top figure — a ROLE with its own block, never a row in the executor list.
+// Imported rather than re-described here: the mint, the guard and the words are one module.
+import { ensureOrchestrator, ORCHESTRATOR_ID } from './policy/orchestrator.mjs'
 // The ONE list of settings keys a worker profile may state for itself, imported rather
 // than re-typed here: a validator keeping its own copy would start accepting keys the
 // mirror silently drops, and nothing would say the two lists had parted.
@@ -94,6 +107,17 @@ export class InvalidProjectError extends Error {
   constructor(message) {
     super(message)
     this.name = 'InvalidProjectError'
+  }
+}
+
+/**
+ * Named error for a structurally-invalid orchestrator block. Its own name, like every other
+ * block's, because the door that maps errors to status codes reads names and not messages.
+ */
+export class InvalidOrchestratorError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'InvalidOrchestratorError'
   }
 }
 
@@ -378,9 +402,38 @@ function validateWorker(w, knownProjects) {
 }
 
 /**
+ * validateOrchestrator(o) — structural gate for the machine's top figure.
+ *
+ * The block is OPTIONAL in the file and minted at load time, so «absent» is normal and passes
+ * untouched. What is refused is a block that is not an object, one that names an id other than
+ * the reserved one (two orchestrators is not a state this product has), and an account stated
+ * without the one field an account cannot work without. A `lane` is refused BY NAME: a lane is
+ * where tasks are taken from, and the whole point of this role is that it takes none.
+ *
+ * @param {object|undefined|null} o
+ * @returns {object|undefined}
+ */
+function validateOrchestrator(o) {
+  if (o === undefined || o === null) return undefined
+  if (typeof o !== 'object' || Array.isArray(o)) throw new InvalidOrchestratorError('orchestrator block is not an object')
+  if (o.id !== undefined && o.id !== ORCHESTRATOR_ID) {
+    throw new InvalidOrchestratorError(`orchestrator id must be "${ORCHESTRATOR_ID}", got "${o.id}"`)
+  }
+  if (o.lane !== undefined) {
+    throw new InvalidOrchestratorError('orchestrator carries no "lane": it does not take inline tasks')
+  }
+  if (o.account !== undefined && o.account !== null) {
+    if (typeof o.account !== 'object' || Array.isArray(o.account) || !o.account.configDir) {
+      throw new InvalidOrchestratorError('orchestrator account is stated without "configDir"')
+    }
+  }
+  return { ...o, id: ORCHESTRATOR_ID }
+}
+
+/**
  * validateConfig(config) — returns a normalized copy; throws on any invalid worker,
- * project or federation entry. `projects` / `activeProject` / `federation` stay ABSENT
- * when the incoming config never carried them (the additive-field law): the quiet
+ * project, orchestrator or federation entry. `projects` / `activeProject` / `federation` stay
+ * ABSENT when the incoming config never carried them (the additive-field law): the quiet
  * migration, not the validator, is what mints a registry.
  */
 function validateConfig(config) {
@@ -407,11 +460,14 @@ function validateConfig(config) {
   const workers = Array.isArray(config.workers) ? config.workers.map((w) => validateWorker(w, knownProjects)) : []
   const hasFederation = config.federation !== undefined
   const federation = hasFederation ? validateFederation(config.federation) : undefined
+  const hasOrchestrator = config.orchestrator !== undefined
+  const orchestrator = hasOrchestrator ? validateOrchestrator(config.orchestrator) : undefined
   return {
     ...config,
     ...(hasProjects ? { projects } : {}),
     workers,
     ...(hasFederation ? { federation } : {}),
+    ...(hasOrchestrator ? { orchestrator } : {}),
   }
 }
 
@@ -762,18 +818,36 @@ export function loadConfig({ env = process.env, homedir = osHomedir, fsImpl, rep
 
   if (existsSync(path)) {
     const raw = JSON.parse(readFileSync(path, 'utf8'))
-    const config = validateConfig(raw)
+    // ВЕРХУШКА ПОЯВЛЯЕТСЯ САМА, И РАНЬШЕ ПРОВЕРКИ. Раньше — потому что мята ещё и ВЫНИМАЕТ
+    // оркестратора из `workers[]`, если его туда вписали рукой: строка, поднятая в роль, не
+    // должна сначала пройти гейт исполнителей и получить отказ за отсутствие полосы, которой у
+    // роли и не бывает. Мята идемпотентна, поэтому каждая следующая загрузка — чистое чтение.
+    const withRole = ensureOrchestrator(raw)
+    const config = validateConfig(withRole)
     const migrated = ensureDefaultProject(config, { repoDir, fsImpl })
-    // The quiet migration adds exactly two keys and owns exactly those two.
-    if (migrated !== config) {
-      writeConfig(migrated, { env, homedir, fsImpl, launchDir: repoDir, fields: ['projects', 'activeProject'] })
+    // Записывается и мята роли: у новой машины оркестратор обязан появиться БЕЗ ручной правки
+    // настроек, а роль, которая существует только в памяти процесса, — это не «появился».
+    //
+    // ПОЛЯ НАЗВАНЫ ПОИМЁННО, и это не формальность: запись владеет ровно тем, что сама меняет.
+    // Тихая миграция трогает реестр проектов и выбранный проект; мята роли — блок оркестратора
+    // и список исполнителей (из него роль ВЫНИМАЕТСЯ, если её вписали туда рукой). Всё
+    // прочее приходит с диска нетронутым — включая то, что человек поправил после запуска.
+    if (migrated !== config || withRole !== raw) {
+      writeConfig(migrated, {
+        env,
+        homedir,
+        fsImpl,
+        launchDir: repoDir,
+        fields: ['projects', 'activeProject', 'orchestrator', 'workers'],
+      })
     }
     return withDerivedDirs(migrated, { configPath: path, repoDir })
   }
 
-  // Bootstrap: fresh token, the default pool, its project registry, atomic write, 0600.
+  // Bootstrap: fresh token, the default pool, its orchestrator, its project registry, atomic
+  // write, 0600.
   const token = randomBytes(32).toString('hex')
-  const config = ensureDefaultProject(validateConfig(defaultConfig(token)), { repoDir, fsImpl })
+  const config = ensureDefaultProject(validateConfig(ensureOrchestrator(defaultConfig(token))), { repoDir, fsImpl })
   // The ONE write that owns the whole shape, and it is honest about why: there is no file to
   // preserve anything from — this branch is the one that creates it.
   writeConfig(config, { env, homedir, fsImpl, launchDir: repoDir, fields: Object.keys(config) })
@@ -1272,11 +1346,27 @@ export function secretsView(config, { env = process.env } = {}) {
         return view
       })()
     : undefined
+  // The top figure usually rides an executor's account and states none of its own — but when a
+  // person gives it one, that account names an env var exactly like a worker's does, and it
+  // collapses in the SAME change that lets the block exist. A field whose collapse arrives a
+  // release later is a release of leaking it into every payload.
+  const hasOrchestrator = config.orchestrator !== undefined && config.orchestrator !== null
+  const orchestrator =
+    hasOrchestrator && config.orchestrator.account
+      ? {
+          ...config.orchestrator,
+          account: {
+            ...config.orchestrator.account,
+            oauthTokenEnv: env[config.orchestrator.account.oauthTokenEnv] ? '[set]' : '[unset]',
+          },
+        }
+      : config.orchestrator
   return {
     ...config,
     token: config.token ? '[set]' : '[unset]',
     workers,
     ...(hasFederation ? { federation } : {}),
     ...(hasTelegram ? { telegram } : {}),
+    ...(hasOrchestrator ? { orchestrator } : {}),
   }
 }

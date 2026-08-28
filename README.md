@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="version 5.6.1">
-  <img src="https://img.shields.io/badge/tests-5088%2F5088-3CC0A0" alt="tests 5088/5088">
+  <img src="https://img.shields.io/badge/tests-5103%2F5103-3CC0A0" alt="tests 5103/5103">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -318,6 +318,34 @@ Every door in it is live: there is no «coming soon» handler left in the table.
   computer — a decision, stated, rather than a layout that broke. Walked live at 375 px from the
   task through to the approval, with the sideways-scroll measurement on that width in the receipt.
 
+### The orchestrator — the machine's top figure, not a worker in the queue
+
+A machine has executors: the ones who take tasks, write code and answer with a receipt. And it has
+**one who is none of those**. The orchestrator watches everything at once, leads the conversation
+in the window and directs the work — it takes **no** task off the queue and competes for a seat
+with **nobody** who writes code.
+
+That is structure, not decoration. The worker list IS the set the dispatcher chooses from, so a
+role kept in that list eventually takes work simply because of how the rows happened to fall. So
+the orchestrator is **a config block of its own**, and the dispatcher refuses it by name in the
+first line of its filter as well: two independent locks on one door, because the door is one and
+the hands are many. The suite inserts it at **every position** of the pool in turn, and it is
+never chosen once.
+
+**It appears by itself, on connection.** A new machine mints the role while the settings load —
+the same quiet step that mints the first project — and writes it to the file, with no manual edit
+at all. A row somebody typed into the worker list by hand is **lifted out** of it by that same
+step and becomes the role, losing nothing that was written into it. It owns no subscription: it
+speaks through the machine's daytime account until you give it one of its own.
+
+**The hard calls stay yours, and they are named one by one:** shipping outward, phase boundaries,
+money, seizing someone else's work. It calls the human rather than deciding for them. One list is
+read by both the conversation's prompt and the «Команда» screen, so what is on the glass and what
+is in its head are one line, not two retellings. On the team screen it stands in **a band of its
+own above the executor grid**, labelled «Верхушка», with those four calls beside its name: a
+worker card with empty fields would say something untrue about it — it has no lane, no window and
+no done-count, because all three are properties of whoever takes tasks.
+
 ### The wheel: a word for a session that is already running
 
 A running task is not a locked box. The sentence you type at a busy task has **three fates**, and
@@ -428,19 +456,11 @@ What it does instead is STOP the call. A ticket is written into that attempt's o
 
 A project is a first-class dimension now, not a separate install: one daemon runs the tasks of all your repositories, each task carries its project, and the app filters by it. Existing tasks are adopted into a project on first start — nothing to migrate by hand. Connecting one is a form rather than a hand-made HTTP request: on «Машины и проекты» you name the project's folder, press «Подключить», and the daemon reads it from there. An entry with no folder behind it is labelled «не подключён» instead of being shown as though it were live.
 
+**And the window says what has not left the machine yet.** Every project on «Машины и проекты» now carries its state against its own trunk, asked of git on the poll the screen already lives on: how many commits are **not pushed** to the remote trunk, when that remote trunk last moved, whether the working tree is holding anything uncommitted, and how many task branches are still not merged into the trunk. Measured on this product on 28.08.2026: 108 commits sat unpushed while the public repository stood four days behind the local tip, and no screen showed it — «what can we ship right now», the question that matters most before a release, was one you had to leave the window to answer. What cannot be measured is not drawn: a project with **no** remote trunk says so **in words**, because a zero reads as «everything is pushed» and that is a lie of the opposite sign; a tree git could not read is named in words too, and so is a register entry that names no folder at all.
+
 Across machines, daemons federate. You nominate one daemon as the **hub** and introduce its peers from the app: the hub mints a single-use invitation, you carry it to the second machine, and from then on the hub aggregates state — presence per machine, costs and windows per machine, every project in one window. Actions are not re-played by the hub: an approval or a new task issued from the hub travels to the owning machine as the same already-authorised call, through every door it would have passed locally. A peer opened directly still shows its own machine, with a quiet banner when the hub is unreachable — there is no single point of failure.
 
 The network between your machines is **yours, not ours**: a private mesh (WireGuard, Tailscale, or a self-hosted coordinator). **The daemon never asks to be exposed to the public internet**, and no vendor cloud appears anywhere in this design.
-
-### Skills — two stores, named on every card, and one you can write from the window
-
-A skill is a folder with a `SKILL.md` in it, and a worker can be given one. There are **two places** a skill lives, and the screen now reads both: the **project** store in the tree you are working in (`.claude/skills/`), and the **machine** store — this machine's own library (`$CLAUDE_CONFIG_DIR/skills`, else `~/.claude/skills`; `SMA_DAEMON_SKILLS` overrides both), which is there under every project you connect. Every card says which of the two it came from, because a skill whose origin is invisible is one nobody can reason about on the day two of them disagree. Nothing is pulled in from any third tree.
-
-**An empty list now says where it looked.** This screen used to answer «навыков нет» and stop — and that is how somebody whose skills sat in the machine store concluded the feature did not exist: the daemon walked one directory out of two, and a feature reading the wrong place is indistinguishable, from outside, from a feature nobody built. When there is nothing to show, the screen names both directories and whether each exists at all.
-
-**«Написать навык» writes a file, and answers with its path.** You type a name, one line about what it does, and the text itself; it lands in the **machine** store and is on the screen and assignable immediately. It is not the forge and does not pretend to be: `/api/forge` asks a worker to draft a skill and waits for your approval — the right road for «придумай мне навык», and a useless one when you already have the text. The door refuses an id that is taken in **either** store rather than overwriting somebody's skill, and the proof of the act is the path it returns — a file on a disk, not a status code. Tools are deliberately not on this screen: a connection is a reach *outward* and lives on «Подключения»; a skill is something a worker *knows*.
-
-**And giving one away now reaches the session.** «Кому дать» has always written the assignment into the roster config — and until this release that is all it did: the skill names went into the attempt's journal and nowhere else, so a worker you had given a skill to never learned it had one. The assigned skill's **text** is now looked up in whichever store holds it and carried into what the worker is started with, under a heading naming that store — so a machine skill works on a project whose tree has no skills directory at all, which is the whole point of the second store. An assigned skill whose file has since gone is named as missing rather than dropped in silence.
 
 ### Connections — Telegram: your own bot, connected from the window, and the same conversation on your phone
 
@@ -461,18 +481,6 @@ You create your **own** bot in Telegram — @BotFather, half a minute — and co
 **A stranger never reaches the brain at all.** Any other chat gets one sentence naming whose bot this is, and **nothing else happens**: the paired check runs before the message content is even looked at, so no engine call, no board snapshot and no transcript line is ever produced on a stranger's behalf. There is exactly **one** thing an unpaired chat may do — send back the pairing code the owner is looking at right now — and it is only ever considered on a daemon that has no pair yet, so a bot that already belongs to a chat cannot be taken over by anybody guessing codes. Voice, photos and documents get a polite «text only, for now», which is better than silence.
 
 **The token never leaves its module in any shape.** A Bot API address carries the credential *in its path*, so an ordinary transport failure quotes the whole thing — which is exactly how a credential ends up in a log file somebody later pastes into an issue. Every string this client produces passes one reduction first, and the credential becomes `bot[REDACTED]` by three independent rules: the literal token, its secret half, and the shape of the url whatever token it carried. The test that guards this breaks the call on purpose and reads the **words** of the error and of the log line, rather than trusting the sentence you just read.
-
-### When the work needs *you* — the bot calls you to the window, and the decision stays there
-
-Work that has stopped and cannot move without a person is the one state a board cannot fix, because a board has to be *open* to say anything. A finished task stood awaiting approval for **two days** for exactly one reason: nobody knew it was standing. Both halves of the answer had been shipped for months — the work knows when it is waiting, and the bot already talks to you in both directions — and there was simply no wire between them. There is one now.
-
-**Only the states a person is the sole way out of.** A task standing at approval: accept or return is your call and nobody else's. An attempt stopped because it needs a decision rather than another try — the turn ceiling, a missing access, a question only you can answer — the ending that has no retry behind it by construction. And a row the queue has run out of re-issues for, which will never come back on its own. **Everything else stays quiet on purpose:** an ordinary failed attempt is followed by another attempt the daemon starts itself, and a returned task is *your own keypress* putting the work back in the queue. A channel that rings about work that continues without you is a channel people stop reading — and then it is silent about everything.
-
-**A question, not an event.** The message names three things and nothing else: **what** is waiting (the task by its name and the state it is in), **what is wanted from you** (one action, and where it is taken), and **how long it has been standing** — the last one being what separates «it stopped a minute ago» from «this is its second day». A parked attempt is described in the queue's own words for a person — «raise the ceiling, cut the task in half or drop it» — never by the reason code the card carries.
-
-**No approve button, here or ever.** A decision is taken where the diffs and the receipts are visible; a button in a chat is approval taken blind. The bot **calls** — that is its whole job. This is not a rule somebody has to keep, either: the send is the same one the supervisor uses, and it puts exactly `{chat_id, text}` on the wire — a Telegram keyboard has no field to travel in.
-
-**And the boundaries that keep it from becoming noise.** One wait is **one** message: the wire is asked on every tick while the work stands and speaks once. A repeat happens only when the wait is genuinely long — **six hours** — and it says so. A refused send waits **five minutes** rather than retrying on the next tick five seconds later. And **an install with no bot connected behaves exactly as it did before any of this existed**: nothing is sent, nothing is logged, no error is produced — and the wait is *not* marked as spoken about, so connecting a bot an hour later still gets you the call instead of a silence that thinks it already spoke.
 
 ### When the daemon falls — the window says it, the supervisor lifts it, and the one who came back is the one who reports it
 

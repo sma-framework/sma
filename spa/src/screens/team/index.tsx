@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useStateQuery } from '../../api/queries'
-import type { Presence, WorkerRow } from '../../api/types'
+import type { OrchestratorRow, Presence, WorkerRow } from '../../api/types'
 import { OPEN_SCREEN_EVENT } from '../../shell/navigation'
 import type { OpenScreenDetail } from '../../shell/navigation'
 import { WorkerCard } from './WorkerCard'
@@ -19,6 +19,12 @@ import { WorkerCard } from './WorkerCard'
  * daemon a question of its own: the task in hand is a row the window already holds, and the two
  * figures under a worker's name arrive counted — `workers[].stats30d`, «сделано / не получилось»
  * over the last 30 days, measured by the daemon out of the attempt ledger.
+ *
+ * И ВЕРХУШКА ЗДЕСЬ ЖЕ, НО НЕ В ОДНОМ РЯДУ. Оркестратор приезжает своим ключом состояния и
+ * рисуется полосой НАД сеткой исполнителей: он задач не берёт, поэтому у него нет ни полосы
+ * работы, ни окна, ни счёта сделанного, и карточка работника с пустыми полями сказала бы о нём
+ * неправду. Счётчики в шапке считают по-прежнему только исполнителей — «работают / ждут окно /
+ * свободны» это слова про тех, кто берёт задачи.
  *
  * They used to be tallied HERE, by walking `data.done` — the finished rows the reading happened
  * to still be carrying. That list is capped and it is about «сделано за ночь», so the numbers
@@ -49,6 +55,51 @@ const PRESENCE_COUNTS: readonly { presence: Presence; label: string; tone: strin
   { presence: 'ждёт окно', label: 'ждут окно', tone: 'text-warn' },
   { presence: 'свободен', label: 'свободны', tone: 'text-tx2' },
 ] as const
+
+/**
+ * ВЕРХУШКА — СВОЕЙ ПОЛОСОЙ, НАД ИСПОЛНИТЕЛЯМИ И НЕ ПОХОЖЕЙ НА НИХ.
+ *
+ * Она не карточка работника с пустыми полями: у оркестратора нет ни полосы, ни окна, ни
+ * «сделано за 30 дней», потому что всё это — свойства того, кто берёт задачи. Рисовать его
+ * такой же карточкой значило бы поставить его в один ряд с исполнителями, а вопрос владельца
+ * («а это кто такой») ровно из этого и вырос.
+ *
+ * Полоса говорит три вещи и ни одной лишней: кто он, что задач не берёт и разговор ведёт он, и
+ * какие решения остаются человеку — поимённо, теми же словами, что едут в промпт разговора.
+ */
+function OrchestratorBand({ orchestrator }: { orchestrator: OrchestratorRow }) {
+  return (
+    <section className="flex flex-none flex-col gap-2.5 border-b border-bd bg-card px-7 py-4">
+      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+        <span className="rounded-[7px] border border-teal/40 bg-blue-s px-2 py-0.5 text-[10.5px] font-semibold whitespace-nowrap text-teal">
+          Верхушка
+        </span>
+        <h2 className="m-0 text-[14px] font-semibold text-tx">{orchestrator.name}</h2>
+        <span className="text-[12px] text-tx2">{orchestrator.title}</span>
+      </div>
+      <div className="text-[11.5px] text-tx2">
+        Задач из очереди не берёт и за места с исполнителями не соревнуется. Разговор в окне ведёт он.
+      </div>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[11px] text-tx3">
+        <span>Решаете Вы, не он:</span>
+        {orchestrator.hardCalls.map((c) => (
+          <span
+            key={c.id}
+            title={c.words}
+            className="rounded-[7px] border border-bd px-1.5 py-0.5 whitespace-nowrap text-tx2"
+          >
+            {c.label}
+          </span>
+        ))}
+      </div>
+      {orchestrator.account ? (
+        <div className="text-[10.5px] text-tx3">говорит через {orchestrator.account}</div>
+      ) : (
+        <div className="text-[10.5px] text-tx3">говорить нечем: аккаунта на этой машине нет</div>
+      )}
+    </section>
+  )
+}
 
 function KpiPill({ value, label, tone }: { value: number; label: string; tone: string }) {
   return (
@@ -132,6 +183,8 @@ export function Screen() {
           </span>
         </div>
       ) : null}
+
+      {data?.orchestrator ? <OrchestratorBand orchestrator={data.orchestrator} /> : null}
 
       <PathStrip workers={workers} />
 
