@@ -545,6 +545,55 @@ export function stripDerivedDirs(config, args = {}) {
 }
 
 /**
+ * normalizeFields(fields) — «что эта запись имеет право положить в файл», приведённое к
+ * списку путей. Строка — ключ верхнего уровня, массив строк — путь до листа.
+ *
+ * Отсутствие списка — ОШИБКА, и громкая: молчаливый разумный умолчательный смысл здесь
+ * может быть только один — «весь конфиг», а это ровно тот дефект, ради которого список и
+ * появился. Пустой список законен: так выглядит запись, которая только удаляет (`remove`).
+ */
+function normalizeFields(fields) {
+  if (!Array.isArray(fields)) {
+    throw new TypeError('writeConfig: "fields" is required — name the config keys THIS write owns (a key, or a path of keys)')
+  }
+  return fields.map((entry) => {
+    const path = Array.isArray(entry) ? entry : [entry]
+    if (path.length === 0 || path.some((key) => typeof key !== 'string' || key === '')) {
+      throw new TypeError('writeConfig: every entry of "fields" is a non-empty key or a path of non-empty keys')
+    }
+    return path
+  })
+}
+
+/** The value at `path`, and whether the source carries it at all (absent ≠ undefined). */
+function readPath(source, path) {
+  let node = source
+  for (const key of path) {
+    if (!node || typeof node !== 'object' || !Object.prototype.hasOwnProperty.call(node, key)) {
+      return { present: false, value: undefined }
+    }
+    node = node[key]
+  }
+  return { present: true, value: node }
+}
+
+/**
+ * Put `value` at `path` in `target`, in place, cloning the parents it passes through — the
+ * parents come from the FILE, so every sibling key on the way down survives the write.
+ */
+function writePath(target, path, value) {
+  const [head, ...rest] = path
+  if (rest.length === 0) {
+    target[head] = value
+    return
+  }
+  const child = target[head]
+  const next = child && typeof child === 'object' && !Array.isArray(child) ? { ...child } : {}
+  target[head] = next
+  writePath(next, rest, value)
+}
+
+/**
  * writeConfig(config, {env, homedir, fsImpl, launchDir}) — the ONE write path for EVERY door
  * that persists the daemon config, in this module and in the front's harness appliers alike.
  * It is READ-MODIFY-WRITE, not overwrite, and that is the whole point of it.
@@ -595,17 +644,52 @@ export function stripDerivedDirs(config, args = {}) {
  * подключённым после отключения. Поэтому удаление говорится ВСЛУХ и отдельным списком: то,
  * что названо в `remove`, вычёркивается ПОСЛЕ слияния. Ничего не названо — ничего и не
  * исчезает, и это единственный способ потерять ключ через эту дверь.
+ *
+ * ═══ И ПОЧЕМУ СЛИЯНИЯ ОКАЗАЛОСЬ МАЛО: `fields` ══════════════════════════════════════
+ *
+ * Слияние спасает ключ, О КОТОРОМ МОДЕЛЬ ЗАПИСИ НЕ ЗНАЕТ, — и ровно его. Знакомый ключ
+ * приезжает в объекте двери (он был в файле на загрузке, значит он есть в копии в памяти) и
+ * ложится поверх файла УСТАРЕВШИМ значением. Замерено 28.08.2026: в файле руками поставлено
+ * `maxConcurrentAttempts: 4`, демон отказывает в месте словами «идущих попыток 6 при потолке
+ * 6», в файле снова 6, а время записи совпадает с нажатием паузы конвейера в окне. Дверь,
+ * которая двигала ОДИН выключатель, вернула на диск весь свой снимок настроек.
+ *
+ * ПОЭТОМУ ДВЕРЬ НАЗЫВАЕТ ТО, ЧЕМ ВЛАДЕЕТ. `fields` — список путей, которые эта запись имеет
+ * право положить поверх файла: `'workers'` — ключ верхнего уровня целиком,
+ * `['pipeline','enabled']` — ОДИН лист внутри чужого блока, и тогда родитель берётся из
+ * ФАЙЛА, а не из памяти (`pipeline.maxTurns`, поправленный руками, переживает нажатие
+ * выключателя). Всё, что не названо, приходит с диска нетронутым — знакомое наравне с
+ * незнакомым, потому что записи больше не важно, знакомо оно ей или нет.
+ *
+ * ОН ОБЯЗАТЕЛЕН, И ЭТО ЕДИНСТВЕННАЯ ЗАЩИТА ОТ ВОЗВРАТА ДЕФЕКТА. Запись без `fields` — это
+ * TypeError, а не «ну, значит, весь конфиг»: новая дверь, написанная через год, спотыкается
+ * на первом же прогоне вместо того, чтобы молча стереть чью-то правку ночью. Регистры
+ * (`workers`, `projects`, `telegram`) владеют ключом ЦЕЛИКОМ намеренно — удаление записи
+ * обязано быть выразимо, а слияние вглубь не отличает «нет» от «убрали».
  */
 export function writeConfig(
   config,
-  { env = process.env, homedir = osHomedir, fsImpl, launchDir = process.cwd(), remove = [] } = {},
+  { env = process.env, homedir = osHomedir, fsImpl, launchDir = process.cwd(), fields, remove = [] } = {},
 ) {
   const io = fsImpl ?? {}
   const path = resolveConfigPath({ env, homedir })
+  const paths = normalizeFields(fields)
   const onDisk = readJsonSafe(path, { readFn: io.readFileSync ?? fsReadFileSync })
-  const current = onDisk && typeof onDisk === 'object' && !Array.isArray(onDisk) ? onDisk : {}
   const mine = stripDerivedDirs(config, { configPath: path, launchDir })
-  const merged = stripDerivedDirs({ ...current, ...mine }, { configPath: path, launchDir })
+  // NO READABLE FILE → THE CALLER'S COPY IS THE BASE, whole. There is no operator state left
+  // to preserve (the daemon cannot have loaded from a file that is not there), and writing
+  // only the named fields would leave a config carrying `workers` and no token at all — a
+  // file the next boot cannot authenticate the window against. Field-scoping protects a
+  // person's edits; it must not turn a deleted config into a fragment of one.
+  const current = onDisk && typeof onDisk === 'object' && !Array.isArray(onDisk) ? onDisk : mine
+  const overlaid = { ...current }
+  for (const fieldPath of paths) {
+    const found = readPath(mine, fieldPath)
+    // Не названного значения у двери просто нет — это «не сказано», а не «убрать»: для
+    // «убрать» существует `remove`, и оно говорится вслух.
+    if (found.present) writePath(overlaid, fieldPath, found.value)
+  }
+  const merged = stripDerivedDirs(overlaid, { configPath: path, launchDir })
   for (const key of Array.isArray(remove) ? remove : []) {
     if (typeof key === 'string' && key !== '') delete merged[key]
   }
@@ -680,14 +764,19 @@ export function loadConfig({ env = process.env, homedir = osHomedir, fsImpl, rep
     const raw = JSON.parse(readFileSync(path, 'utf8'))
     const config = validateConfig(raw)
     const migrated = ensureDefaultProject(config, { repoDir, fsImpl })
-    if (migrated !== config) writeConfig(migrated, { env, homedir, fsImpl, launchDir: repoDir })
+    // The quiet migration adds exactly two keys and owns exactly those two.
+    if (migrated !== config) {
+      writeConfig(migrated, { env, homedir, fsImpl, launchDir: repoDir, fields: ['projects', 'activeProject'] })
+    }
     return withDerivedDirs(migrated, { configPath: path, repoDir })
   }
 
   // Bootstrap: fresh token, the default pool, its project registry, atomic write, 0600.
   const token = randomBytes(32).toString('hex')
   const config = ensureDefaultProject(validateConfig(defaultConfig(token)), { repoDir, fsImpl })
-  writeConfig(config, { env, homedir, fsImpl, launchDir: repoDir })
+  // The ONE write that owns the whole shape, and it is honest about why: there is no file to
+  // preserve anything from — this branch is the one that creates it.
+  writeConfig(config, { env, homedir, fsImpl, launchDir: repoDir, fields: Object.keys(config) })
   return withDerivedDirs(config, { configPath: path, repoDir })
 }
 
@@ -718,7 +807,16 @@ export function addProject(config, { id, name, path } = {}, { env = process.env,
   const mintedId = id ?? freeProjectId(slugify(name), seen)
   const entry = validateProject({ id: mintedId, name, ...(path !== undefined ? { path } : {}) }, { seen })
   const next = { ...config, projects: [...projects, entry], activeProject: config.activeProject ?? entry.id }
-  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  // The selection is only OWNED by this door when it is the one making it: an add that lands
+  // on a registry which already has a selection must not move the file's selection back.
+  const adopting = config === null || config === undefined || config.activeProject == null
+  writeConfig(next, {
+    env,
+    homedir,
+    fsImpl,
+    fields: adopting ? ['projects', 'activeProject'] : ['projects'],
+    ...(launchDir !== undefined ? { launchDir } : {}),
+  })
   return next
 }
 
@@ -735,7 +833,7 @@ export function renameProject(config, { id, name } = {}, { env = process.env, ho
   if (idx === -1) throw new UnknownProjectError(`renameProject: unknown project "${id}"`)
   const entry = validateProject({ ...projects[idx], id: projects[idx].id, name })
   const next = { ...config, projects: projects.map((p, i) => (i === idx ? entry : p)) }
-  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  writeConfig(next, { env, homedir, fsImpl, fields: ['projects'], ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
 }
 
@@ -750,7 +848,7 @@ export function selectProject(config, { id } = {}, { env = process.env, homedir 
     throw new UnknownProjectError(`selectProject: unknown project "${id}"`)
   }
   const next = { ...config, activeProject: id }
-  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  writeConfig(next, { env, homedir, fsImpl, fields: ['activeProject'], ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
 }
 
@@ -828,7 +926,15 @@ export function pipelineMaxTurns(config) {
 export function applyPipelineToggle(config, { enabled } = {}, { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {}) {
   const current = config && typeof config.pipeline === 'object' && config.pipeline !== null ? config.pipeline : {}
   const next = { ...config, pipeline: { ...current, enabled: enabled === true } }
-  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  // ONE leaf, named: the turn ceiling beside it in the same block is not this door's to move,
+  // and a value a person put there while the daemon was running outlives this press.
+  writeConfig(next, {
+    env,
+    homedir,
+    fsImpl,
+    fields: [['pipeline', 'enabled']],
+    ...(launchDir !== undefined ? { launchDir } : {}),
+  })
   return next
 }
 
@@ -853,7 +959,13 @@ export function applyBudgetStop(config, { limit } = {}, { env = process.env, hom
   }
   const current = config && typeof config.budget === 'object' && config.budget !== null ? config.budget : {}
   const next = { ...config, budget: { ...current, monthlyApiCapEur: limit } }
-  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  writeConfig(next, {
+    env,
+    homedir,
+    fsImpl,
+    fields: [['budget', 'monthlyApiCapEur']],
+    ...(launchDir !== undefined ? { launchDir } : {}),
+  })
   return next
 }
 
@@ -911,7 +1023,7 @@ export function addAccount(
     new Set((Array.isArray(config && config.projects) ? config.projects : []).map((p) => p && p.id)),
   )
   const next = { ...config, workers: [...workers, entry] }
-  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  writeConfig(next, { env, homedir, fsImpl, fields: ['workers'], ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
 }
 
@@ -937,7 +1049,15 @@ export function addPeer(config, { id, name, url, token } = {}, { env = process.e
   const entry = { id, url, token, ...(name !== undefined ? { name } : {}) }
   const federation = validateFederation({ ...current, peers: [...current.peers, entry] })
   const next = { ...config, federation }
-  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  // The REGISTRY, and not the role beside it — «what this daemon is» stays the founder's
+  // declaration, so a role edited in the file is not reverted by a machine joining.
+  writeConfig(next, {
+    env,
+    homedir,
+    fsImpl,
+    fields: [['federation', 'peers']],
+    ...(launchDir !== undefined ? { launchDir } : {}),
+  })
   return next
 }
 
@@ -956,7 +1076,13 @@ export function removePeer(config, { id } = {}, { env = process.env, homedir = o
   }
   const federation = { ...current, peers: current.peers.filter((p) => p.id !== id) }
   const next = { ...config, federation }
-  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  writeConfig(next, {
+    env,
+    homedir,
+    fsImpl,
+    fields: [['federation', 'peers']],
+    ...(launchDir !== undefined ? { launchDir } : {}),
+  })
   return next
 }
 
@@ -1019,7 +1145,9 @@ export function applyTelegramConnect(
   delete telegram.chatId
   delete telegram.chatTitle
   const next = { ...config, telegram }
-  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  // The BLOCK, whole, on purpose: this door's whole job is to clear `chatId`/`chatTitle`, and
+  // a merge into the file cannot express «this sub-key must go».
+  writeConfig(next, { env, homedir, fsImpl, fields: ['telegram'], ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
 }
 
@@ -1065,7 +1193,9 @@ export function applyTelegramPair(
   if (title === '') delete telegram.chatTitle
   delete telegram.pairing
   const next = { ...config, telegram }
-  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  // The BLOCK, whole: spending the code IS the removal of `pairing`, and only a whole-block
+  // write says that (see applyTelegramConnect).
+  writeConfig(next, { env, homedir, fsImpl, fields: ['telegram'], ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
 }
 
@@ -1093,6 +1223,7 @@ export function applyTelegramDisconnect(
     env,
     homedir,
     fsImpl,
+    fields: ['telegram'],
     remove: ['telegram'],
     ...(launchDir !== undefined ? { launchDir } : {}),
   })
