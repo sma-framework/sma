@@ -828,7 +828,14 @@ export function deriveStyle({ memoryDir, fsImpl } = {}) {
  * `status` is always one of three words, so a screen never has to tell an absent field from a
  * false one. `resetsAt` travels as an ISO string because that is what every clock face in the
  * window already reads. `pct` is null unless the vendor itself sent a fraction — the screens
- * draw a number only when there is a number, and there is none today.
+ * draw a number only when there is a number.
+ *
+ * `source` rides ONLY when the fact was not the account's own reading: today that means
+ * `terminal` — a reading taken by a status line signed into this very account's config
+ * directory, which is how the five-hour row stopped being permanently empty. It is ABSENT for
+ * an account's own reading rather than spelled `account`, so the shape a screen has always
+ * received is the shape it still receives, and a label appears exactly where there is
+ * something to label.
  */
 function windowFact(fact) {
   const f = fact && typeof fact === 'object' ? fact : {}
@@ -841,6 +848,7 @@ function windowFact(fact) {
     // so an unknown window went on the wire as «0%», which is the one wrong answer this whole
     // change exists to stop: a zero bar is read as «the quota is free».
     pct: f.pct == null ? null : numOrNull(f.pct),
+    ...(f.source === 'terminal' ? { source: 'terminal' } : {}),
   }
 }
 

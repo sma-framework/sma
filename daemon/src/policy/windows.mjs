@@ -35,8 +35,10 @@
  * paid for, where it means what it says.
  *
  * WHAT THIS MODULE ANSWERS, per window: `status` — `open`, `exhausted` or `unknown` — plus
- * `resetsAt` when the vendor named one, and `pct` ONLY on the day the vendor starts sending
- * a utilization fraction (null until then; never a stand-in).
+ * `resetsAt` when the vendor named one, and `pct` ONLY where the vendor itself sent a
+ * utilization fraction (null everywhere else; never a stand-in). It does send one on the status
+ * line payload, and by now sometimes on the work stream too — `source` says which reading a
+ * fact came from when it was not the account's own.
  *
  * AN OBSERVATION EXPIRES. It describes a rolling window at a moment; past the reset it
  * carries, that window is gone, so the reading goes back to `unknown` rather than to a stale
@@ -52,6 +54,7 @@
  */
 
 import { atomicWriteJson, readJsonSafe } from '../../../scripts/sma/lib/fs-atomics.mjs'
+import { sameConfigDir } from '../../../scripts/sma/lib/config-dir.mjs'
 import { join } from 'node:path'
 
 /** The window names the CLI reports, as it spells them. */
@@ -75,6 +78,16 @@ const UNKNOWN = Object.freeze({ status: 'unknown', resetsAt: null, pct: null, ob
 function nameOf(account) {
   if (typeof account === 'string') return account
   return account?.name
+}
+
+/**
+ * The config directory of an account profile — the directory the daemon hands its sessions as
+ * `CLAUDE_CONFIG_DIR`, and therefore the one thing that can identify a reading as this
+ * account's. A bare account NAME carries no such fact and gets none invented for it.
+ */
+function configDirOf(account) {
+  if (!account || typeof account !== 'object') return null
+  return typeof account.configDir === 'string' && account.configDir.trim() ? account.configDir : null
 }
 
 /** Epoch-ms of a resetAt that may be a number or an ISO string; NaN when unparseable. */
@@ -138,6 +151,28 @@ function factOf(rec, keys, clock) {
 }
 
 /**
+ * The terminal snapshot, IF it was taken by a session signed into `configDir` — otherwise
+ * null, and nothing is attributed. Both halves of the check must be a real directory:
+ * an account with no `configDir` and a snapshot with no `configDir` are two absences, and two
+ * absences are not a match (sameConfigDir refuses them, and this is the one place where that
+ * refusal is the whole safety of the feature).
+ */
+function terminalRecordFor(configDir, dataDir, fsImpl) {
+  if (!configDir) return null
+  const rec = readJsonSafe(join(dataDir, 'windows', TERMINAL_WINDOWS_FILE), { readFn: fsImpl?.readFileSync })
+  return rec && sameConfigDir(rec.configDir, configDir) ? rec : null
+}
+
+/**
+ * A fact borrowed from the terminal snapshot, LABELLED as borrowed. An unknown stays exactly
+ * the shared UNKNOWN — a window nothing was heard about gains no provenance, because there is
+ * nothing to have a provenance.
+ */
+function fromTerminal(fact) {
+  return fact.status === 'unknown' ? fact : { ...fact, source: 'terminal' }
+}
+
+/**
  * windowState({account, clock, dataDir, fsImpl}) → what is known about this account's windows.
  *
  * `fiveHour` and `week` are ALWAYS present and always carry a `status` of `open`, `exhausted`
@@ -145,8 +180,26 @@ function factOf(rec, keys, clock) {
  * present ONLY when a persisted refusal has a reset time still in the future, and it outranks
  * both windows.
  *
+ * A WINDOW NOBODY REPORTED CAN STILL BE KNOWN, IF THE TERMINAL IS SIGNED INTO THIS ACCOUNT.
+ * The work stream reports whichever window is closest to biting, so consecutive spawns speak
+ * about one window and the other quietly ages out: on the founder's own machine the five-hour
+ * row had been «нет данных» for the better part of a day while a fresh reading of that very
+ * subscription — WITH the percentage the work stream never carries — sat one file away, laid
+ * down by the status line of a session running on this account. What was missing was never the
+ * measurement; it was permission to say whose it was. `configDir` is that permission (see
+ * config-dir.mjs): the daemon spawns this account's sessions with that directory, the status
+ * line records the directory it is signed into, and a match is identity rather than
+ * resemblance. So an UNKNOWN window — and only an unknown one — is filled from the terminal
+ * snapshot when the two directories are the same, and the fact says `source: 'terminal'` so
+ * every screen downstream can name where its number came from.
+ *
+ * WHAT IS NOT DONE HERE. The account's OWN reading is never displaced: it is about this
+ * account by construction, and a refusal it carries must outrank a friendlier reading of the
+ * same plan. Where the directories differ, or either side has none, nothing is attributed and
+ * the window keeps saying «unknown» — which is what a plan nobody measured looks like.
+ *
  * @param {{
- *   account: (string|{name:string}),
+ *   account: (string|{name:string, configDir?:string}),
  *   clock?: ()=>number,
  *   dataDir?: string,        // when set, the persisted readings under <dataDir>/windows/<account>.json are read
  *   fsImpl?: {readFileSync?:Function},
@@ -164,6 +217,16 @@ export function windowState({ account, clock = Date.now, dataDir, fsImpl } = {})
     accountName,
     fiveHour: factOf(rec, FIVE_HOUR_KEYS, clock),
     week: factOf(rec, WEEK_KEYS, clock),
+  }
+
+  // The terminal snapshot fills what this account has not heard about — but only when it is a
+  // reading of THIS account's subscription, and only into a window that is otherwise silent.
+  if (dataDir && (state.fiveHour.status === 'unknown' || state.week.status === 'unknown')) {
+    const terminal = terminalRecordFor(configDirOf(account), dataDir, fsImpl)
+    if (terminal) {
+      if (state.fiveHour.status === 'unknown') state.fiveHour = fromTerminal(factOf(terminal, FIVE_HOUR_KEYS, clock))
+      if (state.week.status === 'unknown') state.week = fromTerminal(factOf(terminal, WEEK_KEYS, clock))
+    }
   }
 
   // Ground-truth close: a persisted refusal whose reset time is still in the future overrides.
@@ -190,12 +253,17 @@ export const TERMINAL_WINDOWS_FILE = '_terminal.json'
  * about its subscription windows.
  *
  * WHY THIS IS A SUBJECT OF ITS OWN, AND NOT AN ACCOUNT'S READING. Claude Code pipes the window
- * percentages to the status line command it runs, and that is the one place a percentage exists
- * at all — the work stream this daemon spawns carries the window's name, health and reset, but
- * never a fraction. It is also a reading about the subscription THAT TERMINAL is signed into,
- * and nothing on that stdin names an account: attributing it to a configured worker account
- * would be a guess of exactly the kind this module exists to refuse. So it stands as itself,
- * labelled as the terminal's own, and no account row inherits it.
+ * percentages to the status line command it runs, and that is the one place a percentage
+ * reliably exists — the work stream this daemon spawns carries the window's name, health and
+ * reset, and a fraction only sometimes. It is a reading about the subscription THAT TERMINAL is
+ * signed into, and nothing IN the payload names an account, so it stands as itself, labelled as
+ * the terminal's own, and the «Расходы» screen shows it under that label.
+ *
+ * WHAT DOES NAME THE ACCOUNT IS THE CONFIG DIRECTORY BESIDE THE PAYLOAD — the one the daemon
+ * hands its own sessions, and the one the status line writes into the snapshot. `windowState`
+ * uses that match, and only that match, to fill a window an account has heard nothing about
+ * (see there). This function stays the unattributed view: it answers «what did the terminal
+ * last say», for the screen that asks exactly that question.
  *
  * It ages like every other reading: past the reset it carries, `unknown`. `observedAt` survives
  * that expiry on purpose — a screen that has to say «no fresh reading» still owes the person

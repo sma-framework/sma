@@ -40,6 +40,7 @@ import { homedir } from 'node:os'
 import { execSync } from 'node:child_process'
 
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
+import { resolveConfigDir, normalizeConfigDir } from './config-dir.mjs'
 import { BUDGET_WARN_FRACTION } from './constants.mjs'
 
 /**
@@ -367,12 +368,25 @@ export function resolveDaemonDataDir(opts = {}) {
 }
 
 /**
- * recordTerminalWindows({rateLimits, dataDir, clock, fsImpl}) — persist the terminal's own
- * window reading into the daemon's window store, atomically, in the record shape the daemon
- * already reads (`observed[<window>] = {resetsAt, utilization, at}`).
+ * recordTerminalWindows({rateLimits, dataDir, clock, fsImpl, env, homedirFn}) — persist the
+ * terminal's own window reading into the daemon's window store, atomically, in the record
+ * shape the daemon already reads (`observed[<window>] = {resetsAt, utilization, at}`).
  *
- * MERGE, NEVER REPLACE, for the reason the daemon's own writer merges: a payload that names
- * one window must not delete what is known about the other.
+ * IT ALSO WRITES DOWN WHOSE PLAN IT IS. The record carries `configDir` — the config directory
+ * this session is signed into (config-dir.mjs), which is exactly the directory the daemon
+ * hands a worker as `CLAUDE_CONFIG_DIR` when it spawns one on a configured account. That one
+ * field is the whole difference between a reading nobody may attribute and a reading the team
+ * screen can show on the rows riding that very subscription: not a guess about which account
+ * this is, but the same directory, said by both sides.
+ *
+ * MERGE, NEVER REPLACE — WITHIN ONE TERMINAL. A payload that names one window must not delete
+ * what is known about the other, for the reason the daemon's own writer merges. But a payload
+ * from a DIFFERENT config directory is a different subscription, and merging it into what the
+ * previous one left would produce a record that is half one plan and half another while
+ * claiming, in one `configDir` field, to be a single terminal's. That is the misattribution
+ * this file's identity field exists to prevent, so a change of config directory REPLACES the
+ * readings instead of joining them. Two accounts rendering status lines at once then take
+ * turns owning this file, and each still reads its own account file — the honest degradation.
  *
  * THROTTLED. A status line re-renders on every turn, and an unchanged reading rewritten
  * hundreds of times an hour is churn with no information in it. An unchanged reading is
@@ -380,21 +394,27 @@ export function resolveDaemonDataDir(opts = {}) {
  * says when it reports «last seen at», and freezing it would make a live terminal look
  * abandoned.
  *
- * @param {{rateLimits?:object, dataDir?:string|null, clock?:()=>number, fsImpl?:object}} opts
+ * @param {{rateLimits?:object, dataDir?:string|null, clock?:()=>number, fsImpl?:object, env?:object, homedirFn?:Function}} opts
  * @returns {object|null} the record as written, null when nothing was written
  */
-export function recordTerminalWindows({ rateLimits, dataDir, clock = Date.now, fsImpl } = {}) {
+export function recordTerminalWindows({ rateLimits, dataDir, clock = Date.now, fsImpl, env, homedirFn } = {}) {
   try {
     if (!dataDir || !rateLimits || typeof rateLimits !== 'object') return null
     const path = join(dataDir, 'windows', TERMINAL_WINDOWS_FILE)
     const previous = readJsonSafe(path, fsImpl?.readFileSync ? { readFn: fsImpl.readFileSync } : undefined) || {}
-    const prevObserved = previous.observed && typeof previous.observed === 'object' ? previous.observed : {}
+    const configDir = resolveConfigDir({ env, homedirFn })
+    // A record left by another signed-in account is not something to add to — see above. Two
+    // absent identities count as ONE terminal: a machine where nothing can be resolved keeps
+    // the behaviour it had before this field existed, throttle included.
+    const sameTerminal = normalizeConfigDir(previous.configDir) === normalizeConfigDir(configDir)
+    const prevObserved =
+      sameTerminal && previous.observed && typeof previous.observed === 'object' ? previous.observed : {}
     const now = clock()
     const at = new Date(now).toISOString()
 
     const observed = { ...prevObserved }
     let stored = 0
-    let changed = false
+    let changed = !sameTerminal
     for (const key of [FIVE_HOUR_KEY, SEVEN_DAY_KEY]) {
       const w = rateLimits[key]
       if (!w || typeof w !== 'object') continue
@@ -419,6 +439,11 @@ export function recordTerminalWindows({ rateLimits, dataDir, clock = Date.now, f
     }
 
     const record = { ...previous, source: 'statusline', observed, at }
+    // The identity is REWRITTEN, never inherited: carrying yesterday's `configDir` over a
+    // reading taken by a session that could not name its own would attribute this plan to an
+    // account it may not belong to — the one outcome this field exists to make impossible.
+    if (configDir) record.configDir = configDir
+    else delete record.configDir
     atomicWriteJson(path, record, {
       mkdirFn: fsImpl?.mkdirSync,
       writeFn: fsImpl?.writeFileSync,
