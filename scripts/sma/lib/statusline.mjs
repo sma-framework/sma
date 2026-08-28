@@ -40,7 +40,7 @@ import { homedir } from 'node:os'
 import { execSync } from 'node:child_process'
 
 import { atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
-import { resolveConfigDir, normalizeConfigDir } from './config-dir.mjs'
+import { resolveConfigDir, normalizeConfigDir, readAccountUuid, normalizeAccountUuid } from './config-dir.mjs'
 import { BUDGET_WARN_FRACTION } from './constants.mjs'
 
 /**
@@ -379,6 +379,15 @@ export function resolveDaemonDataDir(opts = {}) {
  * screen can show on the rows riding that very subscription: not a guess about which account
  * this is, but the same directory, said by both sides.
  *
+ * AND IT WRITES DOWN WHICH ACCOUNT THAT DIRECTORY IS SIGNED INTO. One subscription is commonly
+ * entered through TWO directories — the person's own terminal through its default one, the
+ * fleet through the separate one the daemon hands it for a history of its own — and on the
+ * directory alone those two read as strangers, so a fresh five-hour reading sat unattributed
+ * beside worker cards saying «нет данных». The vendor already records the signed-in account in
+ * each directory's own `.claude.json`, so the snapshot carries that uuid beside the directory
+ * (config-dir.mjs) and the daemon can recognise the second door of one subscription without
+ * being told by anybody which doors to treat as the same.
+ *
  * MERGE, NEVER REPLACE — WITHIN ONE TERMINAL. A payload that names one window must not delete
  * what is known about the other, for the reason the daemon's own writer merges. But a payload
  * from a DIFFERENT config directory is a different subscription, and merging it into what the
@@ -403,6 +412,10 @@ export function recordTerminalWindows({ rateLimits, dataDir, clock = Date.now, f
     const path = join(dataDir, 'windows', TERMINAL_WINDOWS_FILE)
     const previous = readJsonSafe(path, fsImpl?.readFileSync ? { readFn: fsImpl.readFileSync } : undefined) || {}
     const configDir = resolveConfigDir({ env, homedirFn })
+    // The account THIS directory is signed into, read out of the directory's own vendor file.
+    // Absent is a normal answer (a directory the vendor has not written that field into) and
+    // costs only the second identity signal — everything else about the snapshot is unchanged.
+    const accountUuid = readAccountUuid({ configDir, readFn: fsImpl?.readFileSync })
     // A record left by another signed-in account is not something to add to — see above. Two
     // absent identities count as ONE terminal: a machine where nothing can be resolved keeps
     // the behaviour it had before this field existed, throttle included.
@@ -414,7 +427,10 @@ export function recordTerminalWindows({ rateLimits, dataDir, clock = Date.now, f
 
     const observed = { ...prevObserved }
     let stored = 0
-    let changed = !sameTerminal
+    // A CHANGED IDENTITY IS A CHANGE, even when both percentages are the same as a minute ago.
+    // Otherwise the throttle would hold the new field back for up to a minute after an upgrade,
+    // and a screen would keep saying «нет данных» about a subscription already recognisable.
+    let changed = !sameTerminal || normalizeAccountUuid(previous.accountUuid) !== accountUuid
     for (const key of [FIVE_HOUR_KEY, SEVEN_DAY_KEY]) {
       const w = rateLimits[key]
       if (!w || typeof w !== 'object') continue
@@ -444,6 +460,11 @@ export function recordTerminalWindows({ rateLimits, dataDir, clock = Date.now, f
     // account it may not belong to — the one outcome this field exists to make impossible.
     if (configDir) record.configDir = configDir
     else delete record.configDir
+    // Same law for the account uuid, and for the same reason: an identity that could not be
+    // resolved this time must not be inherited from the last reading, or a plan would keep
+    // being attributed to an account that has since been signed out of.
+    if (accountUuid) record.accountUuid = accountUuid
+    else delete record.accountUuid
     atomicWriteJson(path, record, {
       mkdirFn: fsImpl?.mkdirSync,
       writeFn: fsImpl?.writeFileSync,

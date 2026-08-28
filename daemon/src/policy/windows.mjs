@@ -54,7 +54,7 @@
  */
 
 import { atomicWriteJson, readJsonSafe } from '../../../scripts/sma/lib/fs-atomics.mjs'
-import { sameConfigDir } from '../../../scripts/sma/lib/config-dir.mjs'
+import { sameConfigDir, readAccountUuid, sameAccountUuid } from '../../../scripts/sma/lib/config-dir.mjs'
 import { join } from 'node:path'
 
 /** The window names the CLI reports, as it spells them. */
@@ -82,8 +82,9 @@ function nameOf(account) {
 
 /**
  * The config directory of an account profile — the directory the daemon hands its sessions as
- * `CLAUDE_CONFIG_DIR`, and therefore the one thing that can identify a reading as this
- * account's. A bare account NAME carries no such fact and gets none invented for it.
+ * `CLAUDE_CONFIG_DIR`. It is where BOTH identity signals come from: the directory itself, and
+ * the account the vendor recorded in that directory's own files. A bare account NAME carries
+ * neither fact and gets neither invented for it.
  */
 function configDirOf(account) {
   if (!account || typeof account !== 'object') return null
@@ -151,16 +152,37 @@ function factOf(rec, keys, clock) {
 }
 
 /**
- * The terminal snapshot, IF it was taken by a session signed into `configDir` — otherwise
- * null, and nothing is attributed. Both halves of the check must be a real directory:
- * an account with no `configDir` and a snapshot with no `configDir` are two absences, and two
- * absences are not a match (sameConfigDir refuses them, and this is the one place where that
- * refusal is the whole safety of the feature).
+ * The terminal snapshot, IF it is a reading of THIS account's subscription — otherwise null,
+ * and nothing is attributed. Two signals answer that, and they rank.
+ *
+ * FIRST, THE CONFIG DIRECTORY. The daemon spawns this account's sessions with it and the
+ * status line records the one it is signed into, so equal directories are one subscription.
+ *
+ * SECOND, THE SIGNED-IN ACCOUNT, and only where the first said nothing. One subscription is
+ * routinely entered through TWO directories — the person's own terminal through the default
+ * one, the fleet through the separate one the daemon hands it so the workers keep a history of
+ * their own — and on the directory alone those two read as strangers. The vendor writes the
+ * account into each directory's own file, so each side is asked about ITSELF and the two
+ * answers are compared: same account uuid, same subscription. That is identity of the same
+ * kind as the directory, not a relaxation of it — nothing is matched on coinciding reset times
+ * and no list of «treat these as the same» is kept anywhere (see config-dir.mjs for why both
+ * of those fail silently).
+ *
+ * BOTH HALVES OF EITHER CHECK MUST BE REAL. An account with no `configDir` has no identity at
+ * all and matches nothing — not even a snapshot that has one — because there is then no file
+ * of its own to ask. A missing uuid on either side is likewise two absences rather than a
+ * match (`sameAccountUuid` refuses them, and that refusal is the whole safety of the feature).
+ * The uuid is read only when the snapshot carries one to compare against, so the common case
+ * — directories equal — never opens the vendor's account file at all.
  */
 function terminalRecordFor(configDir, dataDir, fsImpl) {
   if (!configDir) return null
   const rec = readJsonSafe(join(dataDir, 'windows', TERMINAL_WINDOWS_FILE), { readFn: fsImpl?.readFileSync })
-  return rec && sameConfigDir(rec.configDir, configDir) ? rec : null
+  if (!rec) return null
+  if (sameConfigDir(rec.configDir, configDir)) return rec
+  if (!rec.accountUuid) return null
+  const mine = readAccountUuid({ configDir, readFn: fsImpl?.readFileSync })
+  return sameAccountUuid(rec.accountUuid, mine) ? rec : null
 }
 
 /**
@@ -193,10 +215,20 @@ function fromTerminal(fact) {
  * snapshot when the two directories are the same, and the fact says `source: 'terminal'` so
  * every screen downstream can name where its number came from.
  *
- * WHAT IS NOT DONE HERE. The account's OWN reading is never displaced: it is about this
- * account by construction, and a refusal it carries must outrank a friendlier reading of the
- * same plan. Where the directories differ, or either side has none, nothing is attributed and
- * the window keeps saying «unknown» — which is what a plan nobody measured looks like.
+ * AND ONE SUBSCRIPTION HAS TWO DOORS. The person's terminal signs in through the default
+ * directory; the fleet signs into the SAME subscription through the separate directory the
+ * daemon gives it on purpose, so the workers keep a history that is not the person's. On the
+ * directory alone those two are strangers, and the five-hour row went on saying «нет данных»
+ * beside a percentage of that very plan read a minute earlier. So a second signal ranks under
+ * the first: the account the vendor recorded in each directory's own file. Same account uuid,
+ * same subscription — identity of the same kind, read from each side's own files, never a
+ * human-kept list of pairs to treat as equal and never a match on reset times that coincide.
+ *
+ * WHAT IS NOT DONE HERE. The account's OWN reading is never displaced, on either signal: it is
+ * about this account by construction, and a refusal it carries must outrank a friendlier
+ * reading of the same plan. Where neither signal matches, or either side has no identity to
+ * offer, nothing is attributed and the window keeps saying «unknown» — which is what a plan
+ * nobody measured looks like.
  *
  * @param {{
  *   account: (string|{name:string, configDir?:string}),

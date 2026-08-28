@@ -29,6 +29,14 @@
  * the attribution tests here are the point of the file: it travels on a match, and on nothing
  * else.
  *
+ * AND ONE SUBSCRIPTION IS ROUTINELY ENTERED THROUGH TWO DIRECTORIES — the person's terminal
+ * through its own, the fleet through the separate one the daemon gives it so the workers keep
+ * a history that is not his. On the directory alone those two read as strangers, and the
+ * five-hour row kept saying «нет данных» beside a fresh percentage of that very plan. So a
+ * second name ranks under the first: the account the vendor records in each directory's own
+ * `.claude.json`. Its tests are here too, and they are the same tests in shape — it travels on
+ * an identity both sides read about THEMSELVES, and on nothing weaker.
+ *
  * The rest of the file is the honesty of the empty cases, which matter as much as the number:
  * a window whose reset has passed must go quiet and name the moment of the last reading, and a
  * machine that has never reported must say so — because a zero on this screen is read as «the
@@ -36,7 +44,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -70,6 +78,27 @@ function mkDataDir(): string {
   tmps.push(dir)
   return dir
 }
+
+/**
+ * A REAL config directory on disk, signed into an account the way the vendor signs one in:
+ * `oauthAccount.accountUuid` inside that directory's own `.claude.json`. `uuid: null` builds
+ * the directory of a login that has the file but no such field — the honest absence, which
+ * must match nothing rather than match another absence.
+ */
+function mkConfigDir(uuid: string | null): string {
+  const dir = mkdtempSync(join(tmpdir(), 'sma-config-dir-'))
+  tmps.push(dir)
+  const body = uuid
+    ? { oauthAccount: { accountUuid: uuid, emailAddress: 'owner@example.test' } }
+    : { oauthAccount: { emailAddress: 'owner@example.test' } }
+  writeFileSync(join(dir, '.claude.json'), JSON.stringify(body), 'utf8')
+  return dir
+}
+
+/** The one subscription both doors lead to, spelled as the vendor spells it. */
+const ONE_SUBSCRIPTION = '11111111-2222-3333-4444-555555555555'
+/** A different subscription entirely — a second person's plan on the same machine. */
+const ANOTHER_SUBSCRIPTION = '99999999-8888-7777-6666-555555555555'
 afterEach(() => {
   while (tmps.length) rmSync(tmps.pop()!, { recursive: true, force: true })
 })
@@ -284,6 +313,121 @@ describe('the terminal window reading — provider stdin all the way to /api/sta
     expect(payload.workers[0].presence).toBe('ждёт окно') // and a refusal still stops the routing
   })
 
+  /**
+   * ═══════════ THE SECOND DOOR OF ONE SUBSCRIPTION ═══════════
+   *
+   * Measured on the owner's machine: the weekly line arrived on the worker cards and the
+   * five-hour one said «нет данных», while a five-hour reading of that same plan — percentage
+   * included — lay in the snapshot beside it. The two are not the same directory and never
+   * will be: the person's terminal signs in through its own, the fleet through the separate
+   * one the daemon hands it so the workers keep a history that is not his. Same account, same
+   * plan, two doors. The account the vendor records in each directory's own file is what says
+   * so, and it is read from each side's own file rather than declared by anybody.
+   */
+  it('reaches an account behind a DIFFERENT directory of the SAME subscription, and says it is borrowed', async () => {
+    const dataDir = mkDataDir()
+    const terminalDir = mkConfigDir(ONE_SUBSCRIPTION) // the person's own terminal
+    const fleetDir = mkConfigDir(ONE_SUBSCRIPTION) // the directory the daemon gives the fleet
+
+    recordTerminalWindows({
+      rateLimits: parseStatusStdin(VENDOR_STDIN).rateLimits,
+      dataDir,
+      clock: () => NOW,
+      env: { CLAUDE_CONFIG_DIR: terminalDir },
+    })
+
+    const payload = await stateFrom(dataDir, NOW, fleetDir)
+
+    const win = payload.workers[0].window
+    expect(win.fiveHour).toEqual({
+      status: 'open',
+      resetsAt: '2026-08-12T16:19:00.000Z',
+      pct: 7,
+      source: 'terminal', // said by another mouth, and the payload still says so
+    })
+    expect(win.week.pct).toBe(58)
+    expect(win.week.source).toBe('terminal')
+  })
+
+  it('does NOT reach an account whose directory names a DIFFERENT subscription', async () => {
+    const dataDir = mkDataDir()
+    recordTerminalWindows({
+      rateLimits: parseStatusStdin(VENDOR_STDIN).rateLimits,
+      dataDir,
+      clock: () => NOW,
+      env: { CLAUDE_CONFIG_DIR: mkConfigDir(ONE_SUBSCRIPTION) },
+    })
+
+    const payload = await stateFrom(dataDir, NOW, mkConfigDir(ANOTHER_SUBSCRIPTION))
+
+    expect(payload.workers[0].window.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null })
+    expect(payload.workers[0].window.week).toEqual({ status: 'unknown', resetsAt: null, pct: null })
+  })
+
+  /** Two absences are two absences. An account nobody can name is not the account on screen. */
+  it('does NOT match on an absent account: missing on one side, and missing on both', async () => {
+    // the snapshot has no account to offer
+    const noneOnTerminal = mkDataDir()
+    recordTerminalWindows({
+      rateLimits: parseStatusStdin(VENDOR_STDIN).rateLimits,
+      dataDir: noneOnTerminal,
+      clock: () => NOW,
+      env: { CLAUDE_CONFIG_DIR: mkConfigDir(null) },
+    })
+    expect((await stateFrom(noneOnTerminal, NOW, mkConfigDir(ONE_SUBSCRIPTION))).workers[0].window.fiveHour.pct).toBeNull()
+
+    // the account has no file naming one
+    const noneOnAccount = mkDataDir()
+    recordTerminalWindows({
+      rateLimits: parseStatusStdin(VENDOR_STDIN).rateLimits,
+      dataDir: noneOnAccount,
+      clock: () => NOW,
+      env: { CLAUDE_CONFIG_DIR: mkConfigDir(ONE_SUBSCRIPTION) },
+    })
+    expect((await stateFrom(noneOnAccount, NOW, mkConfigDir(null))).workers[0].window.fiveHour.pct).toBeNull()
+
+    // neither side says anything — and silence does not equal silence
+    const neither = mkDataDir()
+    recordTerminalWindows({
+      rateLimits: parseStatusStdin(VENDOR_STDIN).rateLimits,
+      dataDir: neither,
+      clock: () => NOW,
+      env: { CLAUDE_CONFIG_DIR: mkConfigDir(null) },
+    })
+    const payload = await stateFrom(neither, NOW, mkConfigDir(null))
+    expect(payload.workers[0].window.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null })
+    expect(payload.workers[0].window.week).toEqual({ status: 'unknown', resetsAt: null, pct: null })
+  })
+
+  /**
+   * The second signal does not buy the borrowed reading any more standing than the first one
+   * had. A refusal the account itself carries is about THIS account by construction, and a
+   * friendlier percentage of the same plan read through the other door must not talk over it —
+   * not even though the borrowed one is fresher, numbered, and looks better on a screen.
+   */
+  it('does not displace the account’s own reading — the borrowed one still only fills silence', async () => {
+    const dataDir = mkDataDir()
+    const fleetDir = mkConfigDir(ONE_SUBSCRIPTION)
+    markWindowObserved({
+      dataDir,
+      accountName: 'local-1',
+      observation: { limitType: 'five_hour', status: 'rejected', resetsAt: Date.parse('2026-08-12T16:19:00.000Z') },
+      clock: () => NOW,
+    })
+    recordTerminalWindows({
+      rateLimits: parseStatusStdin(VENDOR_STDIN).rateLimits,
+      dataDir,
+      clock: () => NOW,
+      env: { CLAUDE_CONFIG_DIR: mkConfigDir(ONE_SUBSCRIPTION) },
+    })
+
+    const win = (await stateFrom(dataDir, NOW, fleetDir)).workers[0].window
+    expect(win.fiveHour.status).toBe('exhausted') // the refusal stands
+    expect(win.fiveHour.pct).toBeNull() // undressed by somebody else's 7%
+    expect(win.fiveHour.source).toBeUndefined() // an account's own reading is unlabelled
+    expect(win.week.pct).toBe(58) // and only the silent window is filled
+  })
+
   it('goes quiet past the reset and still names the last reading — never back to zero', async () => {
     const dataDir = mkDataDir()
     recordTerminalWindows({ rateLimits: parseStatusStdin(VENDOR_STDIN).rateLimits, dataDir, clock: () => NOW })
@@ -417,6 +561,38 @@ describe('recordTerminalWindows — the durable snapshot', () => {
     })
     const onDisk = JSON.parse(readFileSync(join(dataDir, 'windows', READER_FILE), 'utf8'))
     expect(onDisk.configDir).toBe(ACCOUNT_DIR)
+  })
+
+  /**
+   * The SECOND identity, written beside the first. It is not a decoration on the record: it is
+   * the only way a reading taken through one door of a subscription can be recognised on the
+   * rows riding through the other, and it is read out of the directory's own vendor file.
+   */
+  it('writes down WHICH ACCOUNT that directory is signed into, as the vendor recorded it', () => {
+    const dataDir = mkDataDir()
+    recordTerminalWindows({
+      rateLimits: parseStatusStdin(VENDOR_STDIN).rateLimits,
+      dataDir,
+      clock: () => NOW,
+      env: { CLAUDE_CONFIG_DIR: mkConfigDir(ONE_SUBSCRIPTION) },
+    })
+    const onDisk = JSON.parse(readFileSync(join(dataDir, 'windows', READER_FILE), 'utf8'))
+    expect(onDisk.accountUuid).toBe(ONE_SUBSCRIPTION)
+  })
+
+  /**
+   * A directory the vendor never named an account in leaves the field OFF rather than
+   * inheriting the last one — an identity carried over from a previous reading would attribute
+   * this plan to an account that may since have been signed out of.
+   */
+  it('drops the account when the directory no longer names one, instead of inheriting it', () => {
+    const dataDir = mkDataDir()
+    const limits = parseStatusStdin(VENDOR_STDIN).rateLimits
+    recordTerminalWindows({ rateLimits: limits, dataDir, clock: () => NOW, env: { CLAUDE_CONFIG_DIR: mkConfigDir(ONE_SUBSCRIPTION) } })
+    recordTerminalWindows({ rateLimits: limits, dataDir, clock: () => NOW + 1000, env: { CLAUDE_CONFIG_DIR: mkConfigDir(null) } })
+
+    const onDisk = JSON.parse(readFileSync(join(dataDir, 'windows', READER_FILE), 'utf8'))
+    expect(onDisk.accountUuid).toBeUndefined()
   })
 
   it('falls back to the default config directory, the way Claude Code itself resolves it', () => {
