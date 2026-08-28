@@ -40,7 +40,7 @@
  *   - neither section may carry a secret VALUE, a credential env-var NAME or an
  *     account's local config path.
  *
- * V5.1 corpus read models (the «Память» / «Мой стиль» screens):
+ * V5.1 corpus read models (the «Память» screen and the style read model):
  *   - memory is a SURFACE: counters, tags and pointers (id + title). The body of a note
  *     never reaches the payload,
  *   - style carries the exam ledger's metrics and ONLY the already-redacted fenced
@@ -1884,7 +1884,11 @@ describe('deriveState — rules and accounts ride the EXISTING /api/state route'
   })
 })
 
-// ── the corpus read models: memory + style (the «Память» / «Мой стиль» screens) ──
+// ── the corpus read models: memory + style ──
+//
+// `memory` is read by the «Память» screen; `style` has no reader in the window since the
+// owner removed «Мой стиль» — why the read model stays anyway is written over `deriveStyle`,
+// and these tests keep guarding what it may never open.
 //
 // Both are SURFACES over local artifacts, and the whole design is in what they leave on
 // disk: `memory` counts and points (id + title), never the body of a note; `style` carries

@@ -212,9 +212,9 @@ export function sweepSparseNote(total) {
  * The list only GROWS: nothing already refused is ever taken out of it.
  *
  * The pipeline entries name the VERB together with the noun on purpose. A bare «конвейер»
- * would also refuse the navigation item «Конвейер фаз», which is a screen and not a switch —
- * and hiding a whole screen from the sweep to guard a control that is not on it buys
- * nothing.
+ * would also refuse ordinary labels that merely carry the word — «конвейер памяти» is the
+ * product's own name for the memory write path — and hiding a control from the sweep to
+ * guard a switch that is not there buys nothing.
  */
 export const DESTRUCTIVE_RE =
   /\b(delete|remove|destroy|drop|erase|wipe|purge|reset|revoke|deactivate|uninstall|logout|sign\s*out|publish|deploy|pay|buy|checkout|subscribe|confirm\s+payment|approv(?:e|ing)|accept(?:ing)?|(?:enable|disable|start|stop)\s+(?:the\s+)?(?:pipeline|engine))\b|удал|стереть|очист|сброс|отозв|выйти|выход|опубликов|выкат|оплат|купить|подтвердить\s+платёж|(?:включить|выключить)\s+конвейер|одобр|принять|принима/i

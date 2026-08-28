@@ -36,9 +36,9 @@ import {
   otherView,
   renderableAs,
   sandboxDoc,
-} from '../../spa/src/screens/pipeline/sandbox'
+} from '../../spa/src/screens/tasks/sandbox'
 
-const VIEWER = new URL('../../spa/src/screens/pipeline/ArtifactViewer.tsx', import.meta.url)
+const VIEWER = new URL('../../spa/src/screens/tasks/ArtifactViewer.tsx', import.meta.url)
 
 /** Исходник окна без блочных и строчных комментариев: утверждения про разметку — про КОД. */
 function viewerCode(): string {

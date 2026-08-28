@@ -643,7 +643,7 @@ function stateDeps(config, deps, project) {
     readReceipt: deps.readReceipt,
     execGit: deps.execGit,
     clock: deps.clock,
-    // the corpus surfaces («Память» / «Мой стиль») read the repository this daemon serves.
+    // the corpus surfaces («Память» and the style read model) read the repository this daemon serves.
     // Without the forward they would be structurally absent on every real install — the
     // derive already defaults them to {absent:true} when nothing is wired.
     repoDir: deps.repoDir,

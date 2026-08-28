@@ -273,10 +273,14 @@ carries them is **declared once and frozen** — its size is a test, and it grow
 explicit, recorded revision, so the surface cannot quietly turn into remote command execution.
 Every door in it is live: there is no «coming soon» handler left in the table.
 
-- **The phase cycle, run from the app.** An index of every phase with «N open / M answered», a
-  card per phase with its four stages and a button on each, plans and summaries opened in place,
-  and the acceptance list answered line by line. A phase is named the way *you*
-  named it in the roadmap, not by its directory. The phase's own **folder** is on that card too —
+- **The phase cycle, run from the app — from the task list, not from a screen of its own.** A
+  phase stands in the list of work beside the tasks and the batches, in the column of the stage
+  it is at, and opens **there** into its card: four stages with a button on each, plans and
+  summaries opened in place, and the acceptance list answered line by line. The separate «phase
+  pipeline» screen that used to hold an index of every phase was **removed** on 28.08.2026 — one
+  backlog carries tasks, phases and batches, and a second list of the same work was a second
+  truth to keep in step. A phase is named the way *you* named it in the roadmap, not by its
+  directory. The phase's own **folder** is on that card too —
   its directory as a tree, any file in it previewed read-only and never reaching outside
   that directory. Markdown and HTML are shown **rendered, inside a sealed frame**: an `iframe`
   with an EMPTY `sandbox` — no scripts, no origin of its own, and a policy that closes the

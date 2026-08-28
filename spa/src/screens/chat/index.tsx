@@ -207,7 +207,7 @@ export function Screen() {
   /**
    * The person's own hand — the ONLY path from a conversation to work of any kind.
    *
-   * A STAGE goes to the phase cycle's door, the very same one «Конвейер фаз» presses. It does
+   * A STAGE goes to the phase cycle's door, the very same one the phase card presses. It does
    * NOT go to the queue directly: which lane a stage runs on and what command it carries are
    * that door's business, and a second author of either would be a second way to start a
    * stage — which is precisely the thing the frozen dictionary behind that door exists to

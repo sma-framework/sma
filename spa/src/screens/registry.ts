@@ -2,7 +2,6 @@ import type { ComponentType } from 'react'
 
 import { Screen as Today } from '../screens/today'
 import { Screen as Tasks } from '../screens/tasks'
-import { Screen as Pipeline } from '../screens/pipeline'
 import { Screen as Backlog } from '../screens/backlog'
 import { Screen as Coordination } from '../screens/coordination'
 import { Screen as Search } from '../screens/search'
@@ -13,7 +12,6 @@ import { Screen as LiveStream } from '../screens/live-stream'
 import { Screen as Chat } from '../screens/chat'
 import { Screen as Costs } from '../screens/costs'
 import { Screen as Rules } from '../screens/rules'
-import { Screen as Style } from '../screens/style'
 import { Screen as Agents } from '../screens/agents'
 import { Screen as Skills } from '../screens/skills'
 import { Screen as Memory } from '../screens/memory'
@@ -41,6 +39,12 @@ import { Screen as FirstRun } from '../screens/first-run'
  * Each import above names its screen's own folder deliberately — the registry is the one
  * place where the map from a name to a folder is written down.
  *
+ * ДВА ЭКРАНА СНЯТЫ ВЛАДЕЛЬЦЕМ 28.08.2026, и здесь записано почему — чтобы их не завели заново.
+ * «Конвейер фаз» был второй точкой правды рядом с бэклогом: задачи, фазы и батчи вписаны в один
+ * бэклог, а фаза видна на «Задачах» и раскрывается там же своей карточкой — карточка и её двери
+ * живы, переехала только папка (`screens/tasks/PhaseCardView`). «Мой стиль» был витриной без
+ * провода: своих дверей у него не было, а его чтение не читал ни один промпт.
+ *
  * The screens of a release are therefore declared HERE IN ONE GO, before any of them is
  * built — exactly as the daemon declares all of its addresses in one revision. This file and
  * the three api files are the only shared ground the screens have; if each screen added its
@@ -51,7 +55,6 @@ import { Screen as FirstRun } from '../screens/first-run'
 export type ScreenId =
   | 'today'
   | 'tasks'
-  | 'pipeline'
   | 'backlog'
   | 'coordination'
   | 'search'
@@ -62,7 +65,6 @@ export type ScreenId =
   | 'chat'
   | 'costs'
   | 'rules'
-  | 'style'
   | 'agents'
   | 'skills'
   | 'memory'
@@ -97,12 +99,10 @@ export const SCREENS: readonly ScreenEntry[] = [
   { id: 'chat', title: 'Разговор', group: 'main', Screen: Chat },
   { id: 'costs', title: 'Расходы', group: 'main', Screen: Costs },
   { id: 'rules', title: 'Правила', group: 'main', Screen: Rules },
-  { id: 'style', title: 'Мой стиль', group: 'main', Screen: Style },
   // The new work of the release, APPENDED rather than woven in among the lines above: the
   // order here is the order on the glass, so interleaving them would silently rearrange a
   // sidebar a person already has habits about. Where they finally belong is a judgment for
   // whoever looks at the finished screens.
-  { id: 'pipeline', title: 'Конвейер фаз', group: 'main', Screen: Pipeline },
   { id: 'backlog', title: 'Бэклог', group: 'main', Screen: Backlog },
   { id: 'coordination', title: 'Координация', group: 'main', Screen: Coordination },
   { id: 'search', title: 'Поиск', group: 'main', Screen: Search },

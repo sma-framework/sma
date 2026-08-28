@@ -136,7 +136,7 @@ function sectionBody(text, titleRe) {
  * decision + why that get stripped into the key). Situation text is DATA, copied
  * verbatim (never interpreted).
  *
- * Exported because the «Мой стиль» read model shows the same three parts of the
+ * Exported because the style read model shows the same three parts of the
  * same drafts: ONE rule for where a decision note is cut, or the two copies drift
  * and one of them starts publishing the wrong section.
  */
