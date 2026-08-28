@@ -369,6 +369,16 @@ async function actOutage() {
       }
       if (Array.isArray(receipt.lifts) && receipt.lifts.length >= 1) pass(`подъёмов записано: ${receipt.lifts.length}`)
       else fail('в квитанции нет ни одной попытки подъёма')
+
+      // ИСХОД ПОДЪЁМА НАЗЫВАЕТ ДВЕРЬ, А НЕ ВЫЗОВ. Раньше здесь стояло «ok» — то есть «вызов
+      // запуска не бросил», — и живой прогон не отличил бы этого от настоящего подъёма. Теперь
+      // отличает: слово в квитанции пришло от двери, которая ответила на настоящем сокете.
+      const lastLift = Array.isArray(receipt.lifts) ? receipt.lifts[receipt.lifts.length - 1] : null
+      if (lastLift && lastLift.outcome === 'up' && lastLift.doorAt) {
+        pass(`исход подъёма назван дверью: ${lastLift.outcome} в ${lastLift.doorAt}`)
+      } else {
+        fail(`подъём в квитанции без исхода от двери: ${JSON.stringify(lastLift)}`)
+      }
       if (Date.parse(receipt.riseNotifiedAt) >= Date.parse(receipt.doorBackAt)) {
         pass('и по собственным часам демона «поднялся» сказано после живой двери')
       } else {

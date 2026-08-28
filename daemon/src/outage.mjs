@@ -102,6 +102,12 @@ export function readOutage({ config = {}, io = {}, fsImpl = {} } = {}) {
       fallNotifiedAt: typeof raw.fallNotifiedAt === 'string' ? raw.fallNotifiedAt : null,
       fallNotice: typeof raw.fallNotice === 'string' ? raw.fallNotice : '',
       lifts: Array.isArray(raw.lifts) ? raw.lifts.filter((l) => l && typeof l.at === 'string') : [],
+      // О НЕУДАВШЕМСЯ ПОДЪЁМЕ ГОВОРЯТ ОДИН РАЗ, И ПОМНИТ ОБ ЭТОМ ЗАПИСЬ, А НЕ ПРОЦЕСС. Сторож,
+      // перезапущенный посреди провала, обязан продолжить чужую историю: не повторять уже
+      // сказанное и не начинать заново цикл подъёмов, от которого уже отказались.
+      liftFailNotifiedAt: typeof raw.liftFailNotifiedAt === 'string' ? raw.liftFailNotifiedAt : null,
+      liftFailNotice: typeof raw.liftFailNotice === 'string' ? raw.liftFailNotice : '',
+      liftGaveUpAt: typeof raw.liftGaveUpAt === 'string' ? raw.liftGaveUpAt : null,
       path,
     }
   } catch {
@@ -151,6 +157,9 @@ export function openOutage({ config = {}, downAt, reason = '', now = Date.now, i
     fallNotifiedAt: null,
     fallNotice: '',
     lifts: [],
+    liftFailNotifiedAt: null,
+    liftFailNotice: '',
+    liftGaveUpAt: null,
   }
   const path = writeOutage({ config, marker, io, writeOpts })
   return { ...marker, path }
@@ -165,6 +174,23 @@ export function stampOutage({ config = {}, marker = {}, patch = {}, io = {}, wri
   const next = { ...marker, ...patch }
   const path = writeOutage({ config, marker: next, io, writeOpts })
   return { ...next, path }
+}
+
+/**
+ * settleLifts(lifts, doorAt, falseAlarm) — исход последней попытки, названный живой дверью.
+ *
+ * Сторож помечает ЗАПУЩЕННЫЙ подъём словом `pending` и сам называет исход только тогда, когда
+ * отпущенное время вышло, а дверь так и не ответила. Дверь, ответившая раньше этого срока, и
+ * есть исход попытки, на руках у которой она открылась, — и закрывающий провал обязан записать
+ * это, а не оставить в квитанции вечное «не знаю». Ложная тревога — исход третьего рода:
+ * дверь ответила, но тем же самым процессом, значит подъём не поднял ничего и поднимать было
+ * нечего. Три разных факта, три разных слова; ни одно из них не «ok».
+ */
+function settleLifts(lifts, doorAt, falseAlarm) {
+  if (!Array.isArray(lifts) || lifts.length === 0) return []
+  const last = lifts[lifts.length - 1]
+  if (!last || last.outcome !== 'pending') return lifts
+  return [...lifts.slice(0, -1), { ...last, outcome: falseAlarm ? 'no-need' : 'up', doorAt }]
 }
 
 /**
@@ -200,7 +226,10 @@ export function closeOutage({
     door: marker.door || doorUrl(config),
     fallNotifiedAt: marker.fallNotifiedAt ?? null,
     fallNotice: marker.fallNotice ?? '',
-    lifts: Array.isArray(marker.lifts) ? marker.lifts : [],
+    lifts: settleLifts(marker.lifts, stamp(doorBackAt), falseAlarm),
+    liftFailNotifiedAt: marker.liftFailNotifiedAt ?? null,
+    liftFailNotice: marker.liftFailNotice ?? '',
+    liftGaveUpAt: marker.liftGaveUpAt ?? null,
     roseAt: stamp(roseAt),
     doorBackAt: stamp(doorBackAt),
     riseNotifiedAt: riseNotifiedAt === null ? null : stamp(riseNotifiedAt),
@@ -246,12 +275,63 @@ export function durationWords(seconds) {
  * Три вещи, и ни одной лишней: демон не отвечает (с какого часа), молчание бота — это ТО ЖЕ
  * САМОЕ падение, а не пустой день, и подъём запущен. Слова «поднялся» здесь нет и быть не
  * может: сторож знает только про свой запуск.
+ *
+ * И ровно поэтому здесь обещано ВТОРОЕ сообщение на случай неудачи. «Поднимаю», после
+ * которого не приходит ничего, — это обещание, которое человек принимает за исход: ночью на
+ * 29.08 подъём не состоялся вовсе, а картина в телеграме осталась «упал, поднимаю».
  */
 export function fallWords(marker = {}) {
   return [
     `Демон не отвечает с ${hhmm(marker.downAt)}. Дверь ${marker.door || 'окна'} молчит${marker.reason ? ` (${marker.reason})` : ''}.`,
     'Окно и этот бот — один процесс, так что тишина здесь сейчас означает падение, а не «нечего сказать».',
-    'Поднимаю. Когда дверь ответит, о подъёме скажет сам поднявшийся демон — этим же чатом.',
+    'Поднимаю. Ответит дверь — о подъёме скажет сам вернувшийся демон, этим же чатом. Не выйдет поднять — скажу об этом отдельным сообщением, а не промолчу.',
+  ].join('\n\n')
+}
+
+/**
+ * ГДЕ ИСКАТЬ ПРИЧИНУ — ЭТО ЧАСТЬ СООБЩЕНИЯ, А НЕ ЗНАНИЕ ЧИТАТЕЛЯ. Запуск, умерший молча,
+ * оставляет свой вывод в отдельном журнале (`daemon-lift-<день>.log`); его хвост едет в
+ * сообщение целиком, потому что «смотрите логи» ночью читается как «разбирайся сам».
+ */
+function whyWords(why, logPath) {
+  const tail = String(why ?? '').trim()
+  if (tail) return `Вот что оставил сам запуск:\n\n${tail}`
+  return logPath
+    ? `Запуск не оставил ни строки — журнал ${logPath} пуст. Это и есть улика: процесс не начался.`
+    : 'Запуск не оставил ни строки: процесс, похоже, не начался вовсе.'
+}
+
+/**
+ * liftFailedWords({marker, attempt, attempts, attemptsMax, waitMs, nextInMs, why}) — ВТОРОЕ
+ * сообщение человеку: подъём не удался.
+ *
+ * Оно существует потому, что молчание после «поднимаю» хуже, чем отсутствие сторожа: на
+ * сторожа полагаются. Ночью на 29.08 человек получил «упал, поднимаю» и больше ничего — а
+ * подъём не состоялся вовсе, и демон пролежал бы до утра. Здесь названы три вещи, которых
+ * тогда не хватило: что попытка ПРОВАЛИЛАСЬ, почему (хвост вывода самого запуска) и что будет
+ * дальше — повтор с выдержкой, а не тишина.
+ */
+export function liftFailedWords({ marker = {}, attempt = {}, attempts = 1, attemptsMax = 1, waitMs = 0, nextInMs = 0, why = '' } = {}) {
+  return [
+    `Поднять не смог. Дверь ${marker.door || 'окна'} не ответила за ${durationWords(Math.round(waitMs / 1000))} после запуска (попытка ${attempts} из ${attemptsMax}).`,
+    whyWords(why, attempt.log),
+    `Повторю через ${durationWords(Math.round(nextInMs / 1000))}. Если не выйдет и с последней попытки — скажу отдельно и больше пробовать не буду.`,
+  ].join('\n\n')
+}
+
+/**
+ * liftGaveUpWords({marker, attempts, why}) — сторож перестал поднимать и зовёт человека.
+ *
+ * Бесконечный цикл подъёмов — это не настойчивость, а способ никогда не признать, что дело
+ * уже не в машине. После нескольких неудач вопрос переходит к человеку, и звать надо ЕГО, а
+ * не крутить попытки дальше в тишине.
+ */
+export function liftGaveUpWords({ marker = {}, attempts = 0, why = '', attempt = {} } = {}) {
+  return [
+    `Поднять не смог: ${attempts} ${attempts === 1 ? 'попытка' : attempts < 5 ? 'попытки' : 'попыток'}, дверь ${marker.door || 'окна'} так и молчит. Больше не пробую — дальше нужны Вы.`,
+    `Демон не отвечает с ${hhmm(marker.downAt)}.`,
+    whyWords(why, attempt.log),
+    'Руками: `npm run daemon:restart` из каталога продукта. Как только дверь ответит, о подъёме скажет сам поднявшийся демон.',
   ].join('\n\n')
 }
 

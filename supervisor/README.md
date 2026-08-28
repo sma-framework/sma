@@ -38,6 +38,15 @@ host-agnostic by design; the OS binding is a thin supervisor layer only).
   risen daemon, which says it after knocking on its OWN door (`daemon/src/outage.mjs`) and closes
   the outage with a receipt carrying every time. The decision table lives in `daemon/src/watch.mjs`
   and is proved with no process, no socket and no Telegram.
+- **But a started lift has no outcome yet, and the watchdog now waits for one.** «The spawn call did
+  not throw» is not «the daemon is coming back»: the lift is detached, so a launch that never
+  happened is invisible unless someone goes and looks at the door. A started lift is recorded as
+  `pending`; the outcome is named by the door (`up` inside the allowed window, `no-door` past it), a
+  failure is a SECOND message to the owner carrying the reason, and retries are spaced with a
+  doubling wait and capped — after the last one the watchdog stops and calls the owner instead of
+  looping. The output of every lift lands in `daemon-lift-<day>.log` beside the daemon's log, on
+  every platform: `lift-log.mjs` owns that one spawn for both the watchdog and `daemon-control.mjs`,
+  because where the output goes is a property of the lift and not of each caller.
 - **And the watchdog gets a unit of its own,** because a watchdog started from a terminal lives
   exactly as long as that terminal: `sma-daemon-watch-windows.task.xml` (at logon, two minutes
   after the daemon's own task, with `RestartOnFailure` under it) and its macOS twin
