@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="version 5.6.1">
-  <img src="https://img.shields.io/badge/tests-5086%2F5086-3CC0A0" alt="tests 5086/5086">
+  <img src="https://img.shields.io/badge/tests-5101%2F5101-3CC0A0" alt="tests 5101/5101">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -235,7 +235,7 @@ A task is the bottom of the hierarchy and the way in is the same from everywhere
 
 And it holds a number only where somebody wrote down the place that names it. That is not a detail: the verb count was watched in exactly one file — the one that was wrong the day the rule was written — while three other shipped documents named the same number with no lock at all. The first time the count moved they stayed behind and the gate printed zero, because a check that merely agrees with today, with nothing pinned, is a snapshot rather than a gate. Every place that names the verb count is watched now, each divergence naming its own file, and a place that stops naming the number is its own violation instead of a silent pass — but the general shape of the flaw survives the fix: a number in a place nobody listed is a number nobody is holding.
 
-**What is held by a run, and what is held only by tests.** The rows above about a task's project, and the worker counts over 30 days, were driven live in a browser against an isolated daemon and their screenshots are in the receipts. The truncation mark is held by tests only: the isolated home had no live attempt to open a card against, so nothing in this work pressed that mark on a screen. The aging figure is a bench recalculation, as its own paragraph says. Where a claim rests on a test rather than on a run, that is the claim being made — not a smaller version of a run.
+**What is held by a run, and what is held only by tests.** The rows above about a task's project, the worker counts over 30 days, and a worker's history — pressing the worker, the outcome beside each piece of work, phases standing apart from inline tasks — were driven live in a browser against an isolated daemon and their screenshots are in the receipts. The truncation mark is held by tests only: the isolated home had no live attempt to open a card against, so nothing in this work pressed that mark on a screen. The aging figure is a bench recalculation, as its own paragraph says. Where a claim rests on a test rather than on a run, that is the claim being made — not a smaller version of a run.
 
 **Accepting the work happens in the right tree, and a refusal says why.** The approve door merges in the tree that actually holds the branch — the connected project's, not the daemon's — and when it refuses, it names the reason in words and the card shows that reason instead of a dead button.
 
