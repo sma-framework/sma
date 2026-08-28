@@ -20,6 +20,9 @@
 import { describe, it, expect } from 'vitest'
 
 import { CHAT_TASK_ID_PREFIX, usageSeries, bookUsage, estimateUsage } from '../src/runner/usage.mjs'
+// ОБЩИЙ ЦЕННИК — тот же модуль, по которому считает командная строка (см. последний случай
+// первого раздела): цена, сверенная с ним, а не с переписанными в тест ставками.
+import { priceUsd } from '../../scripts/sma/lib/pricing.mjs'
 // Настоящий тик, настоящая очередь и настоящий маршрутизатор — для случаев в конце файла, где
 // доказывается не расчёт строки, а ПРОВОД до писателя книги: обе половины были зелены по
 // отдельности всё то время, пока оборванная попытка не оставляла в книге ничего.
@@ -97,6 +100,99 @@ describe('usageSeries — one point per day, per account, per lane', () => {
     const series = call(book([row({ costUsd: 0.12 }), row({ taskId: 'task-2', costUsd: 0.05, channel: 'api' })]))
     expect(series[0].eur).toBe(0.05)
     expect(series[0].tokensIn).toBeGreaterThan(0) // the work itself still shows, in tokens
+  })
+})
+
+/**
+ * ═══ ЧЕТЫРЕ ЧИСЛА, ИМЯ МОДЕЛИ И ЦЕНА «КАК ЕСЛИ БЫ ПО API» ═════════════════════════════════
+ *
+ * Читатель кадра возвращал все четыре числа и раньше, а точка несла два: кэш падал на пол
+ * между книгой и экраном. Без него «почему этот день дорогой» не отвечается вовсе — миллион
+ * из кэша и миллион, отправленный заново, стоят по-разному в разы, — и цена по ценнику не
+ * считается совсем. Здесь проверяется и провод, и арифметика по ОБЩЕМУ ценнику.
+ */
+describe('usageSeries — четыре числа, модель и справочная цена', () => {
+  it('несёт вход, выход, чтение и запись кэша по отдельности', () => {
+    const series = call(
+      book([
+        row({ inputTokens: 100, outputTokens: 50, cacheReadTokens: 4000, cacheWriteTokens: 200 }),
+        row({ taskId: 'task-2', inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 }),
+      ]),
+    )
+    expect(series[0]).toMatchObject({ tokensIn: 101, tokensOut: 52, cacheRead: 4003, cacheWrite: 204 })
+  })
+
+  it('называет модель, через которую прошло большинство токенов дня', () => {
+    const series = call(
+      book([
+        row({ model: 'claude-haiku-4-5', inputTokens: 10, outputTokens: 1 }),
+        row({ taskId: 'task-2', model: 'claude-opus-5', inputTokens: 1000, outputTokens: 100 }),
+      ]),
+    )
+    expect(series[0].model).toBe('claude-opus-5')
+  })
+
+  it('модели не назвал никто — честное отсутствие, а не подставленное имя', () => {
+    expect(call(book([row({ model: null })]))[0].model).toBeNull()
+  })
+
+  it('считает цену «как если бы по API» по ставкам своей модели, построчно', () => {
+    // opus: 5 / 25 / 6,25 / 0,50 за миллион → 5 + 5 + 2,5 + 1 = 13,50.
+    const series = call(
+      book([
+        row({
+          model: 'claude-opus-5',
+          inputTokens: 1_000_000,
+          outputTokens: 200_000,
+          cacheWriteTokens: 400_000,
+          cacheReadTokens: 2_000_000,
+        }),
+      ]),
+    )
+    expect(series[0].apiEquivalentEur).toBe(13.5)
+  })
+
+  it('день из двух моделей оценивается по обеим, а не по одной последней', () => {
+    // sonnet 1M входа = 2,00; haiku 1M выхода = 5,00 → 7,00. По ставкам одной модели вышло бы
+    // другое число, и именно это молча случается, когда цену считают по «модели точки».
+    const series = call(
+      book([
+        row({ model: 'claude-sonnet-5', inputTokens: 1_000_000, outputTokens: 0 }),
+        row({ taskId: 'task-2', model: 'claude-haiku-4-5', inputTokens: 0, outputTokens: 1_000_000 }),
+      ]),
+    )
+    expect(series[0].apiEquivalentEur).toBe(7)
+  })
+
+  it('модель вне ценника — цены НЕТ, а токены названы отдельно (не тихий ноль)', () => {
+    const series = call(book([row({ model: 'gpt-нечто', inputTokens: 1_000_000, outputTokens: 1_000_000 })]))
+    expect(series[0].apiEquivalentEur).toBe(0)
+    expect(series[0].unpricedTokens).toBe(2_000_000)
+  })
+
+  it('справочная цена и настоящие евро — разные поля: подписку не выставляют счётом', () => {
+    const series = call(book([row({ model: 'claude-opus-5', inputTokens: 1_000_000 })])) // без costUsd
+    expect(series[0].eur).toBe(0) // счёта не было
+    expect(series[0].apiEquivalentEur).toBe(5) // а по ценнику это стоило бы 5,00
+  })
+
+  it('считает по ТОМУ ЖЕ ценнику, что и командная строка, а не по своей копии', () => {
+    const counts = { input: 123_456, output: 7_890, cacheRead: 654_321, cacheWrite: 12_345 }
+    const series = call(
+      book([
+        row({
+          model: 'claude-opus-5',
+          inputTokens: counts.input,
+          outputTokens: counts.output,
+          cacheReadTokens: counts.cacheRead,
+          cacheWriteTokens: counts.cacheWrite,
+        }),
+      ]),
+    )
+    // Число берётся у общего модуля цен, а не переписывается сюда: тест, знающий ставки
+    // наизусть, разрешил бы демону иметь свои — лишь бы совпали в день написания.
+    const expected = Math.round((priceUsd({ model: 'claude-opus-5', ...counts }) as number) * 100) / 100
+    expect(series[0].apiEquivalentEur).toBe(expected)
   })
 })
 

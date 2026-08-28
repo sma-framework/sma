@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useStateQuery } from '../../api/queries'
 import type { CostPoint, MachineRow } from '../../api/types'
 import { BudgetDialog } from './BudgetDialog'
-import { SpendTable, formatEur, formatTokens } from './SpendTable'
+import { SpendTable, formatEur, formatTokens, rowTokens } from './SpendTable'
 import type { SpendRow } from './SpendTable'
 import { TerminalWindow } from './TerminalWindow'
 import { WindowBars } from './WindowBars'
@@ -61,6 +61,64 @@ function lastDays(count: number): string[] {
     out.push(dayKey(at))
   }
   return out
+}
+
+/**
+ * Строки таблицы, собранные из точек дня, — по полосам или по машинам, одним и тем же
+ * способом. Оба разреза складывают ОДНИ И ТЕ ЖЕ семь чисел и называют модель одним и тем же
+ * правилом; две копии этой арифметики разошлись бы на первой же правке.
+ *
+ * Ни одно число здесь не вычисляется заново: четыре счётчика и справочная цена приходят с
+ * точкой уже посчитанными — цена по ставкам той модели, через которую строка книги прошла.
+ * Экран, пересчитавший цену по своему списку, стал бы вторым мнением о том же дне.
+ */
+class Bucketed {
+  private buckets = new Map<string, { row: SpendRow; models: Map<string, number> }>()
+
+  add(key: string, label: string, p: CostPoint, extra: Partial<SpendRow> = {}) {
+    let bucket = this.buckets.get(key)
+    if (!bucket) {
+      bucket = {
+        row: {
+          key,
+          label,
+          tokensIn: 0,
+          tokensOut: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          eur: 0,
+          apiEquivalentEur: 0,
+          unpricedTokens: 0,
+          ...extra,
+        },
+        models: new Map(),
+      }
+      this.buckets.set(key, bucket)
+    }
+    const { row, models } = bucket
+    row.tokensIn += p.tokensIn ?? 0
+    row.tokensOut += p.tokensOut ?? 0
+    row.cacheRead += p.cacheRead ?? 0
+    row.cacheWrite += p.cacheWrite ?? 0
+    row.eur += p.eur ?? 0
+    row.apiEquivalentEur += p.apiEquivalentEur ?? 0
+    row.unpricedTokens = (row.unpricedTokens ?? 0) + (p.unpricedTokens ?? 0)
+    if (p.model) {
+      const tokens = (p.tokensIn ?? 0) + (p.tokensOut ?? 0) + (p.cacheRead ?? 0) + (p.cacheWrite ?? 0)
+      models.set(p.model, (models.get(p.model) ?? 0) + tokens)
+    }
+  }
+
+  /** Готовые строки, тяжёлая первой; чем работали — второй строкой, когда книга это назвала. */
+  rows(): SpendRow[] {
+    return [...this.buckets.values()]
+      .map(({ row, models }) => {
+        const named = [...models].sort((a, b) => b[1] - a[1]).map(([m]) => m)
+        const model = named.length === 0 ? null : named.length === 1 ? named[0] : named.join(', ')
+        return model ? { ...row, note: row.note ? `${row.note} · ${model}` : model } : row
+      })
+      .sort((a, b) => rowTokens(b) - rowTokens(a))
+  }
 }
 
 function Pill({ value, label, tone = 'text-tx' }: { value: string; label: string; tone?: string }) {
@@ -259,49 +317,39 @@ export function Screen() {
   /**
    * The day's lanes: one row per account for the ordinary work, and — only when something
    * was actually said — one row for the conversation, grouped by the reserved prefix.
+   *
+   * Каждая точка приносит четыре числа и справочную цену уже посчитанными — по ставкам СВОЕЙ
+   * модели, на стороне демона. Экран их только складывает: цена, пересчитанная здесь, была бы
+   * вторым мнением о том же дне, и разошлась бы с книгой в первый же день смены ставок.
    */
   const laneRows = useMemo((): SpendRow[] => {
-    const byAccount = new Map<string, SpendRow>()
-    let chat: SpendRow | null = null
-
+    const lanes = new Bucketed()
     for (const p of ofDay) {
-      const tokens = (p.tokensIn ?? 0) + (p.tokensOut ?? 0)
       if (isConversation(p)) {
-        chat = chat ?? {
-          key: CONVERSATION_PREFIX,
-          label: 'Разговор',
+        lanes.add(CONVERSATION_PREFIX, 'Разговор', p, {
           note: 'вопросы команде — считаются отдельно от задач',
-          tokens: 0,
-          eur: 0,
           conversation: true,
-        }
-        chat.tokens += tokens
-        chat.eur += p.eur ?? 0
+        })
         continue
       }
-      const row = byAccount.get(p.account) ?? { key: p.account, label: p.account, tokens: 0, eur: 0 }
-      row.tokens += tokens
-      row.eur += p.eur ?? 0
-      byAccount.set(p.account, row)
+      lanes.add(p.account, p.account, p)
     }
-
-    const lanes = [...byAccount.values()].sort((a, b) => b.tokens - a.tokens)
-    return chat ? [...lanes, chat] : lanes
+    // Разговор идёт последним — он не одна из рабочих полос, а строка про вечер.
+    const rows = lanes.rows()
+    const chat = rows.filter((r) => r.conversation)
+    return [...rows.filter((r) => !r.conversation), ...chat]
   }, [ofDay])
 
   /** The same day by machine — drawn only when there is more than one machine to tell apart. */
   const machineRows = useMemo((): SpendRow[] => {
     if (machines.length < 2) return []
     const titleOf = new Map(machines.map((m) => [m.id, m.title]))
-    const out = new Map<string, SpendRow>()
+    const out = new Bucketed()
     for (const p of ofDay) {
       const id = p.machine ?? machines[0].id
-      const row = out.get(id) ?? { key: id, label: titleOf.get(id) ?? id, tokens: 0, eur: 0 }
-      row.tokens += (p.tokensIn ?? 0) + (p.tokensOut ?? 0)
-      row.eur += p.eur ?? 0
-      out.set(id, row)
+      out.add(id, titleOf.get(id) ?? id, p)
     }
-    return [...out.values()].sort((a, b) => b.tokens - a.tokens)
+    return out.rows()
   }, [ofDay, machines])
 
   const accounts = data?.spend.accounts ?? []
