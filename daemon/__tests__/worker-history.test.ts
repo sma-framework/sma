@@ -27,13 +27,16 @@
  *   · строки очереди в чтении нет → род не выдумывается, а называется неизвестным, и остаётся
  *     слово самого подхода из леджера;
  *   · нечитаемый леджер → истории НЕТ вовсе (не пустой список): пустой читается как «он ничего
- *     не вёл», а это утверждение.
+ *     не вёл», а это утверждение;
+ *   · и ПОСЛЕДНЕЕ ЗВЕНО — что разметке передали именно эту пару и именно эту историю: звать
+ *     правильную функцию, кормя её не тем значением, можно совершенно зелёно.
  */
 
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { recordAttempt } from '../src/queue/attempt-ledger.mjs'
 import { createWorkerStats } from '../src/front/worker-stats.mjs'
@@ -236,5 +239,83 @@ describe('РОД РАБОТЫ: инлайн-задачи и фазы не сме
       { taskId: 'СВЕЖАЯ', title: null, kind: 'task', outcome: 'approved', endedAt: NOW - DAY },
     ])
     expect(groups[0].rows.map((r) => r.taskId)).toEqual(['СВЕЖАЯ', 'СТАРАЯ'])
+  })
+})
+
+/**
+ * ПОСЛЕДНЕЕ ЗВЕНО ПРОВОДА: РАЗМЕТКА, КОТОРОЙ ПЕРЕДАЛИ ИМЕННО ТО ЧИСЛО.
+ *
+ * Всё, что выше, утверждает провод ДО функции: состояние несёт пару, `statsWords` превращает
+ * её в строку, `splitHistory` раскладывает историю. Не утверждённым оставался ровно один стык —
+ * тот, на котором эта работа однажды и порвалась: разметка может звать правильную функцию и
+ * кормить её НЕ ТЕМ значением (или своим, посчитанным на месте), и всё вышеперечисленное
+ * останется зелёным. Пара, приехавшая в состоянии, доезжает до глаз только если её передали.
+ *
+ * Читается это исходником, а не DOM-ом: у окна нет прогона разметки, зато есть прецедент —
+ * `spa-narrow-wire.test.ts` сторожит свои три стыка ровно так же. И у каждого читателя здесь
+ * стоит случай на ПОДДЕЛЬНОМ плохом исходнике: проверка, чей поиск не умеет находить, зелена
+ * потому, что ничего не искала.
+ */
+describe('ПРОВОД ДО РАЗМЕТКИ: пара из состояния передана карточке и окну истории', () => {
+  const src = (relative: string) => readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
+
+  /**
+   * Значение атрибута открывающего тега — вместе с выражением в фигурных скобках.
+   *
+   * Границей значения считается пробел ВНЕ скобок: `stats={w.stats30d ?? null}` — одно
+   * выражение с пробелами внутри, и наивный разбор по первому пробелу резал бы его по `??`.
+   */
+  function propOf(source: string, component: string, prop: string): string | null {
+    const at = source.indexOf(`<${component}`)
+    if (at === -1) return null
+    const from = source.indexOf(`${prop}={`, at)
+    if (from === -1) return null
+    let depth = 0
+    let i = from + prop.length + 1
+    for (; i < source.length; i += 1) {
+      if (source[i] === '{') depth += 1
+      else if (source[i] === '}') {
+        depth -= 1
+        if (depth === 0) break
+      }
+    }
+    return source.slice(from + prop.length + 2, i)
+  }
+
+  const TEAM = src('../../spa/src/screens/team/index.tsx')
+  const CARD = src('../../spa/src/screens/team/WorkerCard.tsx')
+  const WINDOW = src('../../spa/src/screens/team/WorkerHistory.tsx')
+
+  it('карточке передана пара ИЗ СОСТОЯНИЯ, а не собранная экраном', () => {
+    expect(propOf(TEAM, 'WorkerCard', 'stats')).toContain('stats30d')
+  })
+
+  it('окну истории передана ТА ЖЕ пара — второго мнения о числе взяться неоткуда', () => {
+    expect(propOf(TEAM, 'WorkerHistory', 'stats')).toContain('stats30d')
+  })
+
+  it('обе разметки печатают её одной функцией, а не своей арифметикой', () => {
+    for (const source of [CARD, WINDOW]) {
+      expect(source).toContain("from './history'")
+      expect(source).toContain('statsWords(stats)')
+    }
+  })
+
+  it('история в окне берётся у работника из состояния и раскладывается по роду', () => {
+    expect(propOf(TEAM, 'WorkerHistory', 'worker')).toBe('opened')
+    expect(WINDOW).toContain('splitHistory(worker.history)')
+  })
+
+  it('нажатие по работнику открывает историю — обработчик присоединён к карточке', () => {
+    expect(propOf(TEAM, 'WorkerCard', 'onOpenHistory')).toContain('setOpenedId(w.id)')
+    expect(CARD).toContain('onClick={onOpenHistory}')
+  })
+
+  it('читатель умеет НЕ находить: на поддельном исходнике каждая проверка краснеет', () => {
+    const bad = '<WorkerCard worker={w} stats={null} onOpenHistory={() => {}} />'
+    expect(propOf(bad, 'WorkerCard', 'stats')).toBe('null')
+    expect(propOf(bad, 'WorkerCard', 'stats')).not.toContain('stats30d')
+    expect(propOf(bad, 'WorkerHistory', 'stats')).toBeNull()
+    expect(propOf('<WorkerCard worker={w} />', 'WorkerCard', 'stats')).toBeNull()
   })
 })
