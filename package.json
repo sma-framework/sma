@@ -55,6 +55,7 @@
     "build:spa": "npm --prefix spa run build",
     "daemon:stop": "node supervisor/daemon-control.mjs stop",
     "daemon:restart": "node supervisor/daemon-control.mjs restart",
+    "daemon:watch": "node supervisor/daemon-watch.mjs",
     "prepublishOnly": "npm run build:spa && node scripts/sma/lib/package-check.mjs --strict && node tools/verify-rebrand.mjs && node scripts/sma/lib/release-lint.mjs",
     "sma": "node scripts/sma/cli.mjs"
   },

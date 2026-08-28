@@ -108,6 +108,25 @@ export function telegramConfigured(config) {
 }
 
 /**
+ * telegramApiBase(config) → куда стучаться. По умолчанию — настоящий Bot API.
+ *
+ * ЗАЧЕМ ЭТО ВООБЩЕ ЧИТАЕТСЯ ИЗ КОНФИГА. Отправку, которая доказывается, нельзя доказать
+ * подделкой функции: живой прогон падения демона обязан прогнать НАСТОЯЩИЙ `sendMessage`
+ * через настоящий сокет и посмотреть на времена, — но слать при этом учебные сообщения в
+ * чат владельца было бы наглостью. Один шов решает оба: адрес назначения объявляется в
+ * конфиге прогона, а код отправки остаётся тем же самым, вплоть до заголовков.
+ *
+ * ЭТО НЕ ОСЛАБЛЕНИЕ. Токен всё так же читается в момент вызова и всё так же не покидает
+ * модуль ни в одной строке: `redactBotToken` работает по ФОРМЕ пути `/bot…`, какой бы хост
+ * перед ним ни стоял. Пустое или нестроковое значение — это отсутствие мнения, а не адрес:
+ * тогда действует настоящий Bot API.
+ */
+export function telegramApiBase(config) {
+  const raw = config && config.telegram ? config.telegram.apiBase : undefined
+  return typeof raw === 'string' && raw.trim() !== '' ? raw.trim().replace(/\/+$/, '') : TELEGRAM_API_BASE
+}
+
+/**
  * A deadline for one request: this module's own timer, plus the caller's signal when it has
  * one. Both abort the SAME controller, so the transport sees a single signal and the caller
  * (the polling loop, stopping) does not have to know about the timer.

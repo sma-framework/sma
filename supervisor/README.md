@@ -26,5 +26,31 @@ host-agnostic by design; the OS binding is a thin supervisor layer only).
   says so, and reports a restart by waiting on the door rather than on the spawn.
   The reasoning lives at the top of `daemon/src/control.mjs`.
 
+- **The half that watches while nobody is looking:** `daemon-watch.mjs` (`npm run daemon:watch`).
+  The two lifts above bring the daemon up and `daemon-control.mjs` takes it down again — both by
+  hand. Nothing noticed a daemon that DIED, and nothing could: the window is the daemon's own web
+  face and the Telegram polling is the same process, so one death takes both channels at once and
+  reads as silence. The watchdog knocks on the door, declares a fall only after several silences in
+  a row (the hour it records is the FIRST one), tells the owner in Telegram — there is nobody else
+  left to say it — and runs the same lift the supervisor uses. It will not resurrect a daemon that
+  was stopped on purpose: an orderly stop removes the process record and a crash leaves it behind,
+  and that difference is what it reads. It never says «it is back up»: that word belongs to the
+  risen daemon, which says it after knocking on its OWN door (`daemon/src/outage.mjs`) and closes
+  the outage with a receipt carrying every time. The decision table lives in `daemon/src/watch.mjs`
+  and is proved with no process, no socket and no Telegram.
+- **And the watchdog gets a unit of its own,** because a watchdog started from a terminal lives
+  exactly as long as that terminal: `sma-daemon-watch-windows.task.xml` (at logon, two minutes
+  after the daemon's own task, with `RestartOnFailure` under it) and its macOS twin
+  `com.sma.daemon-watch.plist` (`KeepAlive`). Both are **shipped disabled**, like every unit in
+  this folder. On the Mac the daemon's own plist already relifts it, so what the watchdog adds
+  there is the TELLING — between the death and launchd's relift both channels are silent, and
+  that silence is indistinguishable from a quiet afternoon.
+- **And the proof that the whole chain happens:** `live-outage-drill.mjs` boots a real daemon on a
+  scratch queue of its own, kills the process outright, and watches the fall, the lift, the return
+  and both messages on real sockets — the send is the real client pointed at a stand-in Bot API, so
+  nothing lands in the owner's chat. `--window` drives the built window against a deliberately dead
+  door through `ui-drive` and reads the words off the screen; `--all` runs both acts:
+  `node supervisor/live-outage-drill.mjs --all`.
+
 This directory ships with the product (root `package.json` `files[]` allowlist) so
 an adopter installing the daemon also gets the supervisor templates.
