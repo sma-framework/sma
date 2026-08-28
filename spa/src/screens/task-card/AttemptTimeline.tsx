@@ -288,11 +288,25 @@ function layerLines(attempt: TaskAttempt): string[] {
 
     if (layer.autoMemoryDir) lines.push(`авто-память проекта: ${layer.autoMemoryDir}`)
 
+    // Куда убрали прежние настройки аккаунта перед перезаписью — единственная дорога назад,
+    // если работник ушёл с чужими правилами: без неё «настройки перезаписаны» звучит как
+    // «настройки потеряны».
+    if (layer.backup) lines.push(`прежние настройки аккаунта убраны в: ${layer.backup}`)
+
     // Что сессия ПОДНЯЛА на самом деле — не то же самое, что положило зеркало, и вся
-    // ценность этой строки в разнице между двумя числами.
+    // ценность этой строки в разнице между двумя половинами. Поэтому серверы и плагины здесь
+    // названы ПОИМЁННО, а не числом: расхождение между «положили» и «загрузилось» читается по
+    // именам, а два одинаковых счётчика выглядят согласием даже тогда, когда сошлись случайно.
     const session = [
       typeof layer.initHooks === 'number' ? `хуков SessionStart ${layer.initHooks}` : null,
       typeof layer.initClaudeAiTools === 'number' ? `чужих подключений ${layer.initClaudeAiTools}` : null,
+      Array.isArray(layer.initMcpServers)
+        ? `серверы MCP: ${layer.initMcpServers.length > 0 ? layer.initMcpServers.join(', ') : '—'}`
+        : null,
+      Array.isArray(layer.initPlugins)
+        ? `плагины сессии: ${layer.initPlugins.length > 0 ? layer.initPlugins.join(', ') : '—'}`
+        : null,
+      layer.permissionMode ? `режим разрешений: ${layer.permissionMode}` : null,
     ].filter(Boolean)
     if (session.length > 0) lines.push(`в сессии: ${session.join(' · ')}`)
   }

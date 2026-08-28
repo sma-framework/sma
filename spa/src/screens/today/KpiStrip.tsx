@@ -1,5 +1,6 @@
 import type { Kpis, SpendAccount, WindowFact } from '../../api/types'
 import { WINDOW_UNKNOWN_HINT, plural, windowWords } from '../../shell/format'
+import { formatEur } from '../costs/SpendTable'
 
 /**
  * KpiStrip — the day in figures, and what each subscription window is doing.
@@ -14,14 +15,26 @@ import { WINDOW_UNKNOWN_HINT, plural, windowWords } from '../../shell/format'
  * here was worked out from this daemon's own token count — near zero on a subscription a
  * person had nearly spent in his own terminal.
  *
- * Money is deliberately absent. Sums belong to «Расходы» and are shown there once; a
- * figure repeated in two places is a figure that will one day contradict itself.
+ * ONE money figure stands here, and it is the day's paid spend. The owner asks what today
+ * cost regularly, and «Расходы» is not the screen he opens every morning — a number he has to
+ * go looking for is a number he learns about late. The old rule that kept money off this
+ * strip was really a rule against COUNTING it twice, and that rule is untouched: this figure
+ * is `kpis.spentTodayEur` — the reading's own, the same euros «Расходы» prints in its header,
+ * from one derive on the daemon's side. Nothing is added up here.
+ *
+ * What stays on «Расходы» is everything the day does not answer: the month, the ceiling, the
+ * history, and where the work went. This strip says how much, not what of.
  */
 
+/**
+ * Одна цифра дня. Под подпись отведены ДВЕ строки всегда, даже когда она умещается в одну:
+ * с пятью колонками в половине ширины длинная подпись переносится, и без этого запаса её
+ * число уезжает вниз относительно соседних — читается это как разнобой, а не как перенос.
+ */
 function Figure({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
     <div className="flex min-w-0 flex-col gap-1">
-      <span className="text-[11.5px] text-tx3">{label}</span>
+      <span className="min-h-[26px] text-[11.5px] leading-[13px] text-tx3">{label}</span>
       <span className="text-[19px] leading-none font-semibold text-tx tabular-nums">{value}</span>
       {note ? <span className="text-[11px] text-tx3">{note}</span> : null}
     </div>
@@ -49,12 +62,16 @@ export function KpiStrip({ kpis, accounts }: { kpis: Kpis | undefined; accounts:
   const queued = kpis?.queued ?? 0
   const awaiting = kpis?.awaitingApproval ?? 0
   const windowsOpen = kpis?.windowsOpen ?? 0
+  // Расход за сегодня — ЧИСЛО ЧТЕНИЯ, а не сумма, сложенная здесь: то же самое, что «Расходы»
+  // печатают в своей шапке. Ноль тут — честное измерение («платный канал сегодня молчал»), а не
+  // молчание: демон считает этот день всегда, даже когда за него не платили ни разу.
+  const spentToday = kpis?.spentTodayEur ?? 0
 
   return (
     <section className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-[18px]">
       <div className="rounded-[14px] border border-bd bg-card px-5 py-[18px] shadow-panel">
         <div className="mb-4 text-[10px] font-semibold tracking-[0.09em] text-tx3 uppercase">День в цифрах</div>
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-5 gap-4">
           <Figure
             label="Работают"
             value={`${busy} / ${total}`}
@@ -66,6 +83,11 @@ export function KpiStrip({ kpis, accounts }: { kpis: Kpis | undefined; accounts:
             label="Открыты окна"
             value={String(windowsOpen)}
             note={`${windowsOpen} ${plural(windowsOpen, 'окно принимает работу', 'окна принимают работу', 'окон принимают работу')}`}
+          />
+          <Figure
+            label="Расход за сегодня"
+            value={formatEur(spentToday)}
+            note={spentToday > 0 ? 'платный канал, сверх подписок' : 'платный канал молчал'}
           />
         </div>
       </div>
