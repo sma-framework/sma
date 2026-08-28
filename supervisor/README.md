@@ -38,6 +38,13 @@ host-agnostic by design; the OS binding is a thin supervisor layer only).
   risen daemon, which says it after knocking on its OWN door (`daemon/src/outage.mjs`) and closes
   the outage with a receipt carrying every time. The decision table lives in `daemon/src/watch.mjs`
   and is proved with no process, no socket and no Telegram.
+- **And the watchdog gets a unit of its own,** because a watchdog started from a terminal lives
+  exactly as long as that terminal: `sma-daemon-watch-windows.task.xml` (at logon, two minutes
+  after the daemon's own task, with `RestartOnFailure` under it) and its macOS twin
+  `com.sma.daemon-watch.plist` (`KeepAlive`). Both are **shipped disabled**, like every unit in
+  this folder. On the Mac the daemon's own plist already relifts it, so what the watchdog adds
+  there is the TELLING — between the death and launchd's relift both channels are silent, and
+  that silence is indistinguishable from a quiet afternoon.
 - **And the proof that the whole chain happens:** `live-outage-drill.mjs` boots a real daemon on a
   scratch queue of its own, kills the process outright, and watches the fall, the lift, the return
   and both messages on real sockets — the send is the real client pointed at a stand-in Bot API, so

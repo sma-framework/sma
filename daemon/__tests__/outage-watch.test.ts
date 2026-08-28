@@ -417,6 +417,43 @@ describe('telegramApiBase — мнение конфига, иначе насто
   })
 })
 
+// ── КТО СТОРОЖИТ СТОРОЖА ─────────────────────────────────────────────────────────
+
+describe('единицы запуска сторожа — поставляются выключенными и целят в него', () => {
+  const unit = (name: string) => readFileSync(new URL(`../../supervisor/${name}`, import.meta.url), 'utf8')
+
+  it('виндовая задача сторожа выключена и запускает daemon-watch.mjs', () => {
+    const xml = unit('sma-daemon-watch-windows.task.xml')
+    expect(xml).toContain('<Enabled>false</Enabled>')
+    expect(xml).toContain('daemon-watch.mjs')
+    // Задержка больше, чем у собственной задачи демона (PT30S): сторож, пришедший раньше
+    // конца загрузки, объявил бы падением обычную медленную машину.
+    expect(xml).toContain('<Delay>PT2M</Delay>')
+    expect(xml).toContain('<RestartOnFailure>')
+  })
+
+  it('объявление кодировки — UTF-16, как у обеих соседних задач, иначе импорт откажет', () => {
+    expect(unit('sma-daemon-watch-windows.task.xml').startsWith('<?xml version="1.0" encoding="UTF-16"?>')).toBe(true)
+  })
+
+  it('маковский близнец держит сторожа живым и целит туда же', () => {
+    const plist = unit('com.sma.daemon-watch.plist')
+    expect(plist).toContain('supervisor/daemon-watch.mjs')
+    expect(plist).toContain('<key>KeepAlive</key>')
+    expect(plist).toContain('com.sma.daemon-watch')
+  })
+
+  it('ни одна виндовая задача этой папки не приезжает включённой', () => {
+    for (const name of [
+      'sma-daemon-windows.task.xml',
+      'sma-daemon-logon-windows.task.xml',
+      'sma-daemon-watch-windows.task.xml',
+    ]) {
+      expect(unit(name)).toContain('<Enabled>false</Enabled>')
+    }
+  })
+})
+
 // ── (а) ОКНО ГОВОРИТ СЛОВАМИ ─────────────────────────────────────────────────────
 
 describe('окно при упавшем демоне — говорит, а не выглядит рабочим', () => {

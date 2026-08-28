@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.sma.daemon-watch.plist — the macOS twin of sma-daemon-watch-windows.task.xml: the
+  LaunchAgent that keeps the DAEMON WATCHDOG alive.
+
+  WHAT IT ADDS ON THIS PLATFORM, AND WHAT IT DOES NOT. com.sma.daemon.plist already carries
+  KeepAlive, so on a Mac launchd relifts the daemon on any exit by itself — half of the
+  answer was always here. What was never here is the TELLING: the window is the daemon's own
+  web face and the Telegram polling is the same process, so between the death and launchd's
+  relift both channels are silent, and a person living in the window and on their phone has
+  no way to tell that silence from a quiet afternoon. The watchdog is what says it out loud,
+  and it says it once per outage.
+
+  SO THE TWO ARE COMPLEMENTARY, NOT RIVALS. When launchd wins the race and lifts the daemon
+  before the watchdog has counted its silences, nothing is reported and nothing needs to be:
+  an outage nobody could notice is not one. When the daemon stays down, the watchdog reports
+  the fall and runs the lift itself. Either way «поднялся» is said by the risen daemon, after
+  its own door answers — see daemon/src/outage.mjs.
+
+  PLACEHOLDER CONVENTION, same as its sibling:
+    <SMA_HOME>     absolute path of the SMA clone (e.g. /Users/worker/sma)
+    <WORKER_HOME>  the auto-login worker user's home (launchd does not expand `~`)
+    Node path: /opt/homebrew/bin/node on Apple Silicon, /usr/local/bin/node on Intel.
+
+  KeepAlive true — the last turtle. A watchdog that dies is a watchdog nobody watches, and
+  launchd is the thing under it that does not.
+
+  INSTALL (owner only):
+    cp supervisor/com.sma.daemon-watch.plist ~/Library/LaunchAgents/com.sma.daemon-watch.plist
+    # edit the two placeholders in the copy, then:
+    launchctl load -w ~/Library/LaunchAgents/com.sma.daemon-watch.plist
+  UNLOAD:
+    launchctl unload -w ~/Library/LaunchAgents/com.sma.daemon-watch.plist
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.sma.daemon-watch</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/opt/homebrew/bin/node</string>
+      <string>&lt;SMA_HOME&gt;/supervisor/daemon-watch.mjs</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>&lt;WORKER_HOME&gt;/Library/Logs/sma-daemon-watch.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>&lt;WORKER_HOME&gt;/Library/Logs/sma-daemon-watch.err</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>WorkingDirectory</key>
+    <string>&lt;SMA_HOME&gt;</string>
+  </dict>
+</plist>

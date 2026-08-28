@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  sma-daemon-watch-windows.task.xml — the WATCHDOG's own unit: who watches the watcher.
+
+  THE DECLARATION SAYS UTF-16 AND THE FILE ON DISK IS UTF-8, exactly as in its two
+  siblings, and for the same measured reason — Task Scheduler takes this document as a
+  .NET string, which is UTF-16, so a declaration that says UTF-8 makes MSXML refuse with
+  «unable to switch the encoding» at the end of the first line.
+
+  WHY A THIRD TASK. The other two bring the daemon UP — at 23:30, and at logon. Neither
+  notices a daemon that DIED at three in the afternoon, and nothing else can: the window
+  is the daemon's own web face and the Telegram polling is the same process, so one death
+  takes both channels at once and reads as silence. `supervisor/daemon-watch.mjs` is what
+  notices, tells the owner and lifts — and started from a terminal it lives exactly as long
+  as that terminal does, which moves the dependency instead of removing it. This unit is
+  what removes it.
+
+  WHAT IT IS NOT. It is not a second way to start the daemon. The watchdog knocks on the
+  door and, on a fall, runs the SAME lift the tasks above run (start-daemon-windows.ps1);
+  a machine where the daemon is already answering costs it one HTTP request every fifteen
+  seconds and nothing else. Nor does it fight the owner: a daemon stopped on purpose leaves
+  no process record behind, and the watchdog reads that difference and stays out of the way.
+
+  ORDER MATTERS, AND IT IS BOUGHT WITH A DELAY. The daemon's own logon task waits 30
+  seconds; this one waits two minutes, so the ordinary boot is already serving by the time
+  the watchdog looks. Without the gap the watchdog would meet a machine that is merely slow,
+  spend its silences on it, and report a fall that never happened.
+
+  RESTARTONFAILURE IS THE LAST TURTLE. A watchdog that dies is a watchdog nobody watches,
+  and Task Scheduler is the thing under it that does not. Five attempts a minute apart: a
+  watchdog that cannot start five times running has a reason a restart will not fix, and
+  saying so in the Task Scheduler history is better than an endless quiet loop.
+
+  SHIPPED DISABLED, like both siblings: <Settings><Enabled>false</Enabled>. Registering AND
+  enabling are the machine owner's explicit decision, never a side effect of an install.
+
+  Import (owner only):
+    schtasks /Create /TN SMA-Daemon-Watch /XML supervisor\sma-daemon-watch-windows.task.xml
+  Replace <SMA_HOME> below with the absolute path of the SMA product clone before import.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>SMA daemon watchdog — notices a fallen daemon, tells the owner in Telegram and runs the supervisor's own lift. Shipped disabled.</Description>
+    <URI>\SMA-Daemon-Watch</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <!-- Two minutes: the daemon's own logon task waits 30 seconds and then has a boot to
+           finish. A watchdog that looks earlier is looking at a machine that is only slow. -->
+      <Delay>PT2M</Delay>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <!-- The same interactive token as the daemon's own tasks: the watchdog reads the
+           owner's daemon config (the door address and the bot token live there) and spawns
+           the same lift, so it must stand in the same account. No admin, no service user. -->
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <Enabled>false</Enabled>
+    <!-- One watchdog per machine. Two would declare the same fall twice and lift twice. -->
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <!-- PT0S = no time limit. A watchdog that is killed after 72 hours is not a watchdog. -->
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>5</Count>
+    </RestartOnFailure>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>node</Command>
+      <Arguments>"&lt;SMA_HOME&gt;\supervisor\daemon-watch.mjs"</Arguments>
+      <WorkingDirectory>&lt;SMA_HOME&gt;</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
