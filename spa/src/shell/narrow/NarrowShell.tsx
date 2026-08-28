@@ -3,6 +3,7 @@ import { useCallback, useRef, useState } from 'react'
 import { useStateQuery } from '../../api/queries'
 import { screenById } from '../../screens/registry'
 import type { ScreenId } from '../../screens/registry'
+import { LinkLost } from '../LinkLost'
 import { isNarrowCapable } from './narrow'
 import { NarrowMenu } from './NarrowMenu'
 import { NarrowTaskCard } from './NarrowTaskCard'
@@ -31,6 +32,13 @@ import { WideOnlyNotice } from './WideOnlyNotice'
  * Выбор проекта тоже остаётся столу: в верхней полосе имя активного проекта стоит СЛОВАМИ, а не
  * переключателем. Сменить проект — значит сменить всё, что человек видит; такое решение принимают
  * там, где видно последствия, а не одним тапом между делом.
+ *
+ * ═══════════════ А ОДНА ПОЛОСА ВСЁ-ТАКИ ПОДНИМАЕТСЯ ═══════════════
+ *
+ * Потеря связи с демоном — не сообщение о доме, а сообщение о том, что ВСЁ показанное ниже
+ * больше не обновляется. На узком экране это стоит дороже, чем на столе: рядом нет ни терминала,
+ * ни второго окна, а телефон, у которого замолчал и бот, не даёт человеку ни одного способа
+ * заметить разницу между «тихо» и «упало». Поэтому она здесь есть, и она здесь первая.
  */
 
 /** Что показано прямо сейчас. Своё хозяйство узкой рамы — стол о нём не знает и знать не должен. */
@@ -98,6 +106,8 @@ export function NarrowShell() {
         */}
         {menuOpen ? <NarrowMenu active={activeScreen} onOpen={openFromMenu} onClose={closeMenu} /> : null}
       </header>
+
+      <LinkLost pad="px-4" />
 
       <main className="flex min-w-0 flex-1 flex-col">
         {view.kind === 'tasks' ? <NarrowTasks onOpenTask={(taskId) => setView({ kind: 'task', taskId })} /> : null}

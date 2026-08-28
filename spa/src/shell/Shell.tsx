@@ -3,6 +3,7 @@ import { useStateQuery } from '../api/queries'
 import { HOME_SCREEN, screenById } from '../screens/registry'
 import type { ScreenId } from '../screens/registry'
 import { HubBanner } from './HubBanner'
+import { LinkLost } from './LinkLost'
 import { OPEN_SCREEN_EVENT, OpenedWithProvider, readOpenScreen } from './navigation'
 import type { OpenScreenDetail } from './navigation'
 import { useIsNarrow } from './narrow/narrow'
@@ -75,6 +76,12 @@ export function Shell() {
       <Sidebar active={active} onOpen={openFromSidebar} />
       <main className="flex min-w-0 flex-1 flex-col">
         <div className="h-0.5 bg-gradient-to-r from-[#243B66] via-[#1B7E9C] to-[#74DBA0]" />
+        {/*
+          ПЕРВОЙ СТОИТ ПОТЕРЯ СВЯЗИ, и стоит она выше полосы федерации нарочно: «главная машина
+          недоступна» — это сообщение о доме, а «эта дверь молчит» — о том, что всё показанное
+          ниже, включая ту самую полосу, больше не обновляется вовсе.
+        */}
+        <LinkLost />
         <HubBanner federation={state.data?.federation} />
         <OpenedWithProvider value={openedWith}>
           <Screen />

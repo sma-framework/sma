@@ -63,6 +63,7 @@ import {
 // The calling card this process leaves at the door, and the file the stop command reads to
 // prove which process is ours. Written by start(), removed by stop() — see control.mjs.
 import { writePidRecord, clearPidRecord, PID_RECORD_FILE } from './control.mjs'
+import { announceRecovery } from './outage.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
 import { resolveExpireMs } from './queue/adapter.mjs'
 import { APPROVAL_TABLE } from './queue/approval-store.mjs'
@@ -1548,6 +1549,19 @@ export function createDaemon(o = {}) {
         }
       })
       daemon.start()
+      // ── ЕСЛИ ЭТО ВОЗВРАЩЕНИЕ, А НЕ ПРОСТО ЗАПУСК, ЧЕЛОВЕК УЗНАЕТ ОБ ЭТОМ ОТ МЕНЯ ───────
+      //
+      // Сторож (supervisor/daemon-watch.mjs) оставляет запись о провале, когда дверь
+      // замолкает: он же говорит о падении, потому что сказать больше некому. А «поднялся»
+      // говорит ТОТ, КТО ПОДНЯЛСЯ, — этот процесс, и только после того, как его собственная
+      // дверь ответила на настоящий запрос. Сторож знает лишь то, что он запустил подъём;
+      // между запуском и живой дверью стоит весь этот boot, который умеет падать, и обещание
+      // в его журнале ничего не стоит.
+      //
+      // Не ждём: разбор внутри сам себе кладёт срок, глотает каждый отказ и закрывает провал
+      // квитанцией со временами. Провала не было — не делает ничего: обычный запуск не
+      // событие, и будить им человека каждый перезапуск было бы худшим видом шума.
+      void announceRecovery({ config, log: (line) => console.log(line) }).catch(() => {})
       // The link, when there is one. Not awaited: its promise is the loop's whole life, and
       // the loop swallows every refusal of its own, so nothing here can be left unhandled.
       // The flag is what a bot connected LATER inherits: `telegramRestart` starts the loop it
