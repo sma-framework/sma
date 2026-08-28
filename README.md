@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="version 5.6.1">
-  <img src="https://img.shields.io/badge/tests-5051%2F5051-3CC0A0" alt="tests 5051/5051">
+  <img src="https://img.shields.io/badge/tests-5066%2F5066-3CC0A0" alt="tests 5066/5066">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -451,6 +451,18 @@ You create your **own** bot in Telegram — @BotFather, half a minute — and co
 **A stranger never reaches the brain at all.** Any other chat gets one sentence naming whose bot this is, and **nothing else happens**: the paired check runs before the message content is even looked at, so no engine call, no board snapshot and no transcript line is ever produced on a stranger's behalf. There is exactly **one** thing an unpaired chat may do — send back the pairing code the owner is looking at right now — and it is only ever considered on a daemon that has no pair yet, so a bot that already belongs to a chat cannot be taken over by anybody guessing codes. Voice, photos and documents get a polite «text only, for now», which is better than silence.
 
 **The token never leaves its module in any shape.** A Bot API address carries the credential *in its path*, so an ordinary transport failure quotes the whole thing — which is exactly how a credential ends up in a log file somebody later pastes into an issue. Every string this client produces passes one reduction first, and the credential becomes `bot[REDACTED]` by three independent rules: the literal token, its secret half, and the shape of the url whatever token it carried. The test that guards this breaks the call on purpose and reads the **words** of the error and of the log line, rather than trusting the sentence you just read.
+
+### When the work needs *you* — the bot calls you to the window, and the decision stays there
+
+Work that has stopped and cannot move without a person is the one state a board cannot fix, because a board has to be *open* to say anything. A finished task stood awaiting approval for **two days** for exactly one reason: nobody knew it was standing. Both halves of the answer had been shipped for months — the work knows when it is waiting, and the bot already talks to you in both directions — and there was simply no wire between them. There is one now.
+
+**Only the states a person is the sole way out of.** A task standing at approval: accept or return is your call and nobody else's. An attempt stopped because it needs a decision rather than another try — the turn ceiling, a missing access, a question only you can answer — the ending that has no retry behind it by construction. And a row the queue has run out of re-issues for, which will never come back on its own. **Everything else stays quiet on purpose:** an ordinary failed attempt is followed by another attempt the daemon starts itself, and a returned task is *your own keypress* putting the work back in the queue. A channel that rings about work that continues without you is a channel people stop reading — and then it is silent about everything.
+
+**A question, not an event.** The message names three things and nothing else: **what** is waiting (the task by its name and the state it is in), **what is wanted from you** (one action, and where it is taken), and **how long it has been standing** — the last one being what separates «it stopped a minute ago» from «this is its second day». A parked attempt is described in the queue's own words for a person — «raise the ceiling, cut the task in half or drop it» — never by the reason code the card carries.
+
+**No approve button, here or ever.** A decision is taken where the diffs and the receipts are visible; a button in a chat is approval taken blind. The bot **calls** — that is its whole job. This is not a rule somebody has to keep, either: the send is the same one the supervisor uses, and it puts exactly `{chat_id, text}` on the wire — a Telegram keyboard has no field to travel in.
+
+**And the boundaries that keep it from becoming noise.** One wait is **one** message: the wire is asked on every tick while the work stands and speaks once. A repeat happens only when the wait is genuinely long — **six hours** — and it says so. A refused send waits **five minutes** rather than retrying on the next tick five seconds later. And **an install with no bot connected behaves exactly as it did before any of this existed**: nothing is sent, nothing is logged, no error is produced — and the wait is *not* marked as spoken about, so connecting a bot an hour later still gets you the call instead of a silence that thinks it already spoke.
 
 ### When the daemon falls — the window says it, the supervisor lifts it, and the one who came back is the one who reports it
 

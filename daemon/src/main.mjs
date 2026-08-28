@@ -64,6 +64,7 @@ import {
 // prove which process is ours. Written by start(), removed by stop() — see control.mjs.
 import { writePidRecord, clearPidRecord, PID_RECORD_FILE } from './control.mjs'
 import { announceRecovery } from './outage.mjs'
+import { createSummons } from './summon.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
 import { resolveExpireMs } from './queue/adapter.mjs'
 import { APPROVAL_TABLE } from './queue/approval-store.mjs'
@@ -1445,6 +1446,12 @@ export function createDaemon(o = {}) {
     // сколько демон. Без этой строки дедуп был бы «вычислен, но не подключён»: функция есть,
     // тесты зелёные, а в жизни сигнал по-прежнему кричит каждые пять секунд.
     agingMemory: o.agingMemory ?? createAgingMemory(),
+    // ЗОВ ЧЕЛОВЕКА В ТЕЛЕГРАМ — построен ЗДЕСЬ, один раз, рядом с памятью старения и по той же
+    // причине: тик обязан оставаться без состояния, а «одно ожидание — одно сообщение» без
+    // памяти между проходами не бывает. Ей передаётся ЖИВОЙ конфиг: бота подключают из окна на
+    // ходу, и зов обязан увидеть подключение без перезапуска — тот же приём, что у моста.
+    // Бот не подключён — объект собран и молчит, ровно как молчал продукт до него.
+    summon: o.summon ?? createSummons({ config, now: clock, log: (line) => console.log(`[SmaDaemon] ${line}`) }),
     // «Can this worker start at all?» — asked BEFORE the attempt, so a placeholder account
     // produces a named, recorded refusal instead of three silent burnt attempts.
     workerReady: o.workerReady ?? ((worker) => workerReadiness(worker, { fsImpl: o.fsImpl })),
