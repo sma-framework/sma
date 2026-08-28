@@ -51,6 +51,7 @@
  */
 
 import { describe, it, expect, afterEach, afterAll } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
@@ -934,10 +935,14 @@ describe('deriveState — the one-poll payload', () => {
       clock: () => NOW,
     })
 
-    expect(calls).toHaveLength(2)
+    // РОВНО ДВА чтения КАРТОЧКИ — коммиты и счёт изменений. Состояние проекта против ствола
+    // спрашивает у того же шва свой `git status` в том же каталоге; это соседний вопрос, и
+    // считать его здесь значило бы мерить не то, о чём этот случай.
+    const cardReads = calls.filter((c) => c.args[0] === 'log' || c.args[0] === 'diff')
+    expect(cardReads).toHaveLength(2)
     for (const c of calls) expect(c.opts, 'a git read with no cwd runs in the daemon’s launch directory').toMatchObject({ cwd: '/connected/project' })
     // no hard-coded trunk name anywhere in what was asked of git
-    expect(JSON.stringify(calls.map((c) => c.args))).not.toContain('main')
+    expect(JSON.stringify(cardReads.map((c) => c.args))).not.toContain('main')
     expect(payload.done[0].commits).toEqual(['abc1234 сделал дело'])
     expect(payload.done[0].diffStat).toBe('2 files changed, 9 insertions(+)')
   })
@@ -1294,6 +1299,226 @@ describe('deriveState — projects, machines and federation', () => {
     expect(serialized).not.toContain('peer-secret-value')
     expect(serialized).not.toContain('10.0.0.4')
     expect(payload.federation.role).toBe('hub')
+  })
+})
+
+// ═════════ ЧТО НЕ ОТПРАВЛЕНО: проект против своего ствола, спрошенный у НАСТОЯЩЕГО git ═══════
+//
+// ЗАМЕРЕНО 28.08.2026: в продукте лежало 108 коммитов, которых нет на origin, публичный
+// репозиторий стоял на 24.08, локальная вершина — на 28.08, и ни один экран этого не показывал.
+// Эти случаи держат обе половины предложения: число ДОЕЗЖАЕТ до ответа двери (проверяется
+// значение, а не факт вызова), и всякий неизмеренный исход говорит СЛОВАМИ, а не рисует ноль —
+// ноль читается как «всё отправлено», и это ложь противоположного знака.
+//
+// Шов git здесь НАСТОЯЩИЙ — тот же execFileSync-с-массивом, что собирает production. Поддельный
+// доказал бы разбор собственной выдумки: формат `git status --porcelain=v2 --branch` — контракт
+// git, и проверять его надо у git.
+describe('deriveState — сколько в проекте не отправлено на ствол', () => {
+  const gitDirs: string[] = []
+
+  afterAll(() => {
+    for (const d of gitDirs) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {
+        /* уборка временного каталога никогда не роняет сьют */
+      }
+    }
+  })
+
+  const realGit = (args: string[], opts: { cwd?: string } = {}) =>
+    execFileSync('git', args, { cwd: opts.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+
+  /**
+   * ПАМЯТЬ ДЕРАЙВА ЖИВЁТ ДЕСЯТЬ СЕКУНД И КЛЮЧОМ БЕРЁТ САМ ШОВ. Поэтому каждый случай берёт
+   * СВЕЖИЙ шов: два замера одного каталога через один и тот же шов — это один вопрос к git,
+   * и второй ответ был бы первым. Свежее замыкание — то же, что новый процесс демона.
+   */
+  const freshGitSeam = () => (args: string[], opts: { cwd?: string } = {}) => realGit(args, opts)
+
+  const newRepo = (prefix: string) => {
+    const dir = mkdtempSync(join(tmpdir(), prefix))
+    gitDirs.push(dir)
+    realGit(['init', '-q', '-b', 'main', '.'], { cwd: dir })
+    realGit(['config', 'user.email', 'trunk@test'], { cwd: dir })
+    realGit(['config', 'user.name', 'trunk'], { cwd: dir })
+    realGit(['config', 'core.autocrlf', 'false'], { cwd: dir })
+    return dir
+  }
+
+  const commit = (dir: string, name: string) => {
+    writeFileSync(join(dir, name), `${name}\n`)
+    realGit(['add', name], { cwd: dir })
+    realGit(['commit', '-qm', name], { cwd: dir })
+  }
+
+  /**
+   * Копия со стволом, отправленным на «удалённый», и `unpushed` коммитами поверх него.
+   *
+   * По умолчанию отправка идёт БЕЗ `-u` — ровно так стоит `main` в дереве этого продукта:
+   * upstream не настроен, а `origin/main` на месте. Именно на этой форме «у ствола нет
+   * удалённого» было бы формально верным и по делу — ложью.
+   */
+  const repoWithRemote = (prefix: string, unpushed: number, { setUpstream = false } = {}) => {
+    const bare = mkdtempSync(join(tmpdir(), `${prefix}bare-`))
+    gitDirs.push(bare)
+    realGit(['init', '-q', '--bare', '-b', 'main', '.'], { cwd: bare })
+    const dir = newRepo(prefix)
+    commit(dir, 'base.txt')
+    realGit(['remote', 'add', 'origin', bare.replace(/\\/g, '/')], { cwd: dir })
+    realGit(['push', '-q', ...(setUpstream ? ['-u'] : []), 'origin', 'main'], { cwd: dir })
+    for (let i = 0; i < unpushed; i += 1) commit(dir, `ahead-${i}.txt`)
+    return dir
+  }
+
+  const trunkOf = async (registry: any[], execGit: any) => {
+    const payload = await deriveState({
+      adapter: mkAdapter([]),
+      windows: makeWindows({}),
+      config: { ...config, projects: registry, activeProject: registry[0]?.id },
+      execGit,
+      clock: () => NOW,
+    })
+    return Object.fromEntries(payload.projects.map((p: any) => [p.id, p.trunk]))
+  }
+
+  it('число неотправленных коммитов доезжает от git до ответа двери — и это ТО ЖЕ число, что у git rev-list', async () => {
+    const dir = repoWithRemote('sma-trunk-ahead-', 3)
+
+    const byId = await trunkOf([{ id: 'sma', name: 'Продукт', path: dir }], freshGitSeam())
+    const t = byId['sma']
+
+    // не «дверь позвала git», а «дверь принесла ЗНАЧЕНИЕ»: то же самое, что отвечает git
+    const asked = Number(realGit(['rev-list', '--count', 'origin/main..main'], { cwd: dir }).trim())
+    expect(asked).toBe(3)
+    expect(t.status).toBe('measured')
+    expect(t.unpushed).toBe(asked)
+    expect(t.branch).toBe('main')
+    // upstream у этой ветки НЕ настроен — и всё равно измерено: сравнили с origin/main,
+    // и с чем именно сравнили, человек читает полем, а не додумывает
+    expect(t.remote).toBe('origin/main')
+    expect(t.note).toBeNull()
+    // когда удалённый ствол двигался последний раз — время его вершины, а не локальной
+    expect(t.remoteMovedAt).toBe(realGit(['log', '-1', '--format=%cI', 'origin/main'], { cwd: dir }).trim())
+    expect(t.dirty).toBe(false)
+    expect(t.unmergedBranches).toBe(0)
+  })
+
+  it('незакоммиченное в дереве видно, и ветки задач, не слитые в ствол, сосчитаны', async () => {
+    const dir = repoWithRemote('sma-trunk-dirty-', 0)
+    // ветка задачи со своим коммитом — не слита; вторая слита и потому не считается
+    realGit(['checkout', '-q', '-b', 'wt/R-1'], { cwd: dir })
+    commit(dir, 'task-1.txt')
+    realGit(['checkout', '-q', '-b', 'wt/R-2', 'main'], { cwd: dir })
+    commit(dir, 'task-2.txt')
+    realGit(['checkout', '-q', 'main'], { cwd: dir })
+    realGit(['merge', '-q', '--no-ff', '-m', 'слито', 'wt/R-2'], { cwd: dir })
+    writeFileSync(join(dir, 'untracked.txt'), 'ещё не в коммите\n')
+
+    const t = (await trunkOf([{ id: 'sma', name: 'Продукт', path: dir }], freshGitSeam()))['sma']
+    expect(t.status).toBe('measured')
+    expect(t.dirty).toBe(true)
+    expect(t.unmergedBranches).toBe(1)
+    // слияние ветки задачи — тоже коммит, которого на удалённом нет
+    expect(t.unpushed).toBe(Number(realGit(['rev-list', '--count', 'origin/main..main'], { cwd: dir }).trim()))
+  })
+
+  it('проект без удалённого ствола говорит СЛОВАМИ, а не рисует ноль — на оба исхода', async () => {
+    const withRemote = repoWithRemote('sma-trunk-both-', 1)
+    const alone = newRepo('sma-trunk-alone-')
+    commit(alone, 'base.txt')
+
+    const byId = await trunkOf(
+      [
+        { id: 'sma', name: 'Продукт', path: withRemote },
+        { id: 'lonely', name: 'Без удалённого', path: alone },
+      ],
+      freshGitSeam(),
+    )
+
+    // исход первый: есть куда отправлять — приезжает ЧИСЛО
+    expect(byId['sma'].status).toBe('measured')
+    expect(byId['sma'].unpushed).toBe(1)
+
+    // исход второй: отправлять НЕКУДА — приезжают слова, и ни одного нуля
+    const lonely = byId['lonely']
+    expect(lonely.status).toBe('no-remote')
+    expect(lonely.unpushed).toBeNull()
+    expect(lonely.unpushed).not.toBe(0)
+    expect(lonely.remoteMovedAt).toBeNull()
+    expect(typeof lonely.note).toBe('string')
+    expect(lonely.note.length).toBeGreaterThan(0)
+    // но дерево-то читается: грязь и ствол — факты о копии, а не об удалённом
+    expect(lonely.branch).toBe('main')
+    expect(lonely.dirty).toBe(false)
+  })
+
+  it('дерево, которое git не смог прочитать, тоже называется словами', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sma-trunk-broken-'))
+    gitDirs.push(dir)
+    // `.git` ФАЙЛОМ с мусором внутри: git отказывается независимо от того, что вокруг каталога
+    writeFileSync(join(dir, '.git'), 'это не репозиторий\n')
+
+    const t = (await trunkOf([{ id: 'sma', name: 'Продукт', path: dir }], freshGitSeam()))['sma']
+    expect(t.status).toBe('unreadable')
+    expect(typeof t.note).toBe('string')
+    expect(t.unpushed).toBeNull()
+    expect(t.dirty).toBeNull()
+  })
+
+  it('запись без папки на этой машине говорит об этом, а не отчитывается о нуле', async () => {
+    const t = (await trunkOf([{ id: 'label', name: 'Просто ярлык' }], freshGitSeam()))['label']
+    expect(t.status).toBe('not-connected')
+    expect(t.note).toContain('папк')
+    expect(t.unpushed).toBeNull()
+    expect(t.unmergedBranches).toBeNull()
+  })
+
+  it('ветка с настроенным upstream меряется по НЁМ — слово самого git старше всякого поиска', async () => {
+    const dir = repoWithRemote('sma-trunk-upstream-', 2, { setUpstream: true })
+    const t = (await trunkOf([{ id: 'sma', name: 'Продукт', path: dir }], freshGitSeam()))['sma']
+    expect(t.status).toBe('measured')
+    expect(t.remote).toBe('origin/main')
+    expect(t.unpushed).toBe(Number(realGit(['rev-list', '--count', 'origin/main..main'], { cwd: dir }).trim()))
+  })
+
+  it('удалённый ствол НАЗВАН, а сосчитать по нему не вышло — это не ноль и не «удалённого нет»', async () => {
+    // git называет upstream и отказывается считать по нему. Единственный подделанный случай:
+    // настоящий git пришлось бы ради него ломать.
+    const halfGit = (args: string[]) => {
+      if (args[1] === 'status') return '# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n'
+      if (args[0] === 'rev-list') throw new Error("fatal: bad revision 'origin/main..main'")
+      return ''
+    }
+    const t = (await trunkOf([{ id: 'sma', name: 'Продукт', path: '/any/where' }], halfGit))['sma']
+    expect(t.status).toBe('unreadable')
+    expect(t.unpushed).toBeNull()
+    expect(t.note).toContain('origin/main')
+    expect(t.branch).toBe('main')
+  })
+
+  it('демон без шва git не выдумывает состояние — он говорит, что спросить нечем', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter([]),
+      windows: makeWindows({}),
+      config: { ...config, projects: [{ id: 'sma', name: 'Продукт', path: '/any/where' }], activeProject: 'sma' },
+      clock: () => NOW,
+    })
+    expect(payload.projects[0].trunk.status).toBe('no-git')
+    expect(payload.projects[0].trunk.unpushed).toBeNull()
+  })
+
+  it('путь проекта не уезжает на провод вместе с состоянием ствола', async () => {
+    const dir = repoWithRemote('sma-trunk-secret-', 1)
+    const payload = await deriveState({
+      adapter: mkAdapter([]),
+      windows: makeWindows({}),
+      config: { ...config, projects: [{ id: 'sma', name: 'Продукт', path: dir }], activeProject: 'sma' },
+      execGit: freshGitSeam(),
+      clock: () => NOW,
+    })
+    expect(payload.projects[0].trunk.unpushed).toBe(1)
+    expect(JSON.stringify(payload.projects)).not.toContain(dir.replace(/\\/g, '\\\\'))
   })
 })
 
