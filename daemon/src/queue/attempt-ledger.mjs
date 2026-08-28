@@ -258,6 +258,22 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   // «checked and clean» and must never be renderable as one.
   'runDir',
   'parity',
+  // ── СКОЛЬКО ХОДОВ ЕЙ БЫЛО ДАНО, СКОЛЬКО ОНА ВЗЯЛА И НА ЧТО ────────────────────
+  // `turnCap` — потолок, стоявший на КОМАНДНОЙ СТРОКЕ этой попытки; `turnsUsed` — сколько
+  // ходов CLI насчитал себе сам; `turnKinds` — `{edits, runs, reads, other}`, вызовы
+  // инструментов по роду.
+  //
+  // ПОЧЕМУ ОНИ НА ДОЛГОВЕЧНОЙ СТРОКЕ, А НЕ В ЖУРНАЛЕ. Оба читателя приходят ПОСЛЕ, и
+  // восстановить эти числа тогда уже неоткуда — поток попытки к тому времени свёрнут, а
+  // копия выметена. Человеку они отвечают на вопрос, который задаёт красная карточка:
+  // поднимать потолок или резать работу — сто ходов правок и сто ходов запусков оболочки
+  // требуют разного. Демону `turnCap` отвечает, от какого числа поднимать следующий: без
+  // записанного потолка «вторая попытка идёт с бóльшим запасом» — обещание без арифметики.
+  //
+  // ЧИСЛА И ТОЛЬКО ЧИСЛА: ни команды, ни пути, ни имени файла — счётчик по роду, и всё.
+  'turnCap',
+  'turnsUsed',
+  'turnKinds',
   // ── what this row contradicts, if it contradicts anything ─────────────────────
   // `conflictsWith` names the terminal outcome ALREADY recorded for this same attempt number
   // when this row was appended — `'failed'` on a row saying `completed`, or the other way

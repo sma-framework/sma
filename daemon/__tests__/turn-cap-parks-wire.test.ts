@@ -136,6 +136,14 @@ function recordDoors(adapter: any, doors: string[]) {
   }
 }
 
+/** Записывает, с какими настройками тик позвал сборщик аргументов, и что тот вернул. */
+function recordingBuildArgs(seen: any[]) {
+  return (task: any, route: any, options: any) => {
+    seen.push({ task, route, options })
+    return { bin: 'claude', args: buildClaudeArgs({ maxTurns: 160 }), env: { ...SPAWN_ENV }, prompt: PROMPT }
+  }
+}
+
 /** Один настоящий тик над временным проектом и настоящей очередью-образцом. */
 async function runTick(over: any = {}) {
   const projectDir = mkDir('sma-cap-proj-')
@@ -144,6 +152,9 @@ async function runTick(over: any = {}) {
   writeFileSync(join(workDir, 'CLAUDE.md'), '# правила проекта\n', 'utf8')
 
   const lines: string[] = over.lines ?? [RESULT_MAX_TURNS]
+  // Прошлые попытки ТОЙ ЖЕ работы, если дело о них: реестр переживает парковку, и именно из
+  // него следующий заход узнаёт, обо что уже споткнулись.
+  for (const row of over.seedLedger ?? []) recordAttempt(ledgerDir, row)
   const c = mkClock()
   const queue = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
   await queue.enqueue(backlogTask())
@@ -163,7 +174,7 @@ async function runTick(over: any = {}) {
     routing: { resolveRoute },
     windows: () => true,
     projectDir: () => projectDir,
-    buildArgs: () => ({ bin: 'claude', args: buildClaudeArgs({}), env: { ...SPAWN_ENV }, prompt: PROMPT }),
+    buildArgs: over.buildArgs ?? (() => ({ bin: 'claude', args: buildClaudeArgs({ maxTurns: 80 }), env: { ...SPAWN_ENV }, prompt: PROMPT })),
     verbRunner: makeVerbRunner({
       preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
       worktree: {
@@ -236,6 +247,65 @@ describe('попытка, кончившаяся по потолку ходов,
     const { doors } = await runTick()
     expect(doors).toEqual(['park:turns_exhausted'])
     expect(doors.some((d) => d.startsWith('fail:'))).toBe(false)
+  })
+})
+
+// ═══════════ СЛЕДУЮЩАЯ ПОПЫТКА НЕ ИДЁТ С ТЕМ ЖЕ ПОТОЛКОМ ═══════════════════════════════════
+
+describe('потолок следующей попытки берётся от того, что уже сгорело', () => {
+  /**
+   * ЧТО ИМЕННО ЗДЕСЬ ПРОВОД. Реестр попыток переживает парковку — это единственное место, где
+   * записано, ПОД КАКИМ потолком работа уже споткнулась. Тик обязан его прочитать и передать
+   * сборщику аргументов; сборщик обязан поднять. Здесь снимается первая половина (тик правда
+   * читает и правда передаёт), вторая — в `build-args.test.ts`, где то же число становится
+   * флагом командной строки.
+   */
+  it('тик приносит сборщику потолки, которые эта работа уже сожгла', async () => {
+    const seen: any[] = []
+    await runTick({
+      buildArgs: recordingBuildArgs(seen),
+      seedLedger: [
+        { taskId: 'BL-1', attempt: 1, outcome: 'failed', failureReason: 'turns_exhausted', turnCap: 160, turnsUsed: 160 },
+      ],
+    })
+    expect(seen).toHaveLength(1)
+    expect(seen[0].options.burnedTurnCaps).toEqual([160])
+  })
+
+  it('чужая авария щедрости не даёт — поднимают только те потолки, что сгорели ходами', async () => {
+    const seen: any[] = []
+    await runTick({
+      buildArgs: recordingBuildArgs(seen),
+      seedLedger: [
+        { taskId: 'BL-1', attempt: 1, outcome: 'failed', failureReason: 'provider_error', turnCap: 240 },
+      ],
+    })
+    expect(seen[0].options.burnedTurnCaps).toEqual([])
+  })
+
+  /**
+   * И ПОТОЛОК ПОПЫТКИ ЛОЖИТСЯ НА ЕЁ СТРОКУ. Без записанного числа «следующая попытка идёт с
+   * бóльшим запасом» осталось бы обещанием без арифметики: поднимать было бы не от чего.
+   * Вместе с ним ложится разбивка по роду — то, чем человек выбирает между «поднять» и
+   * «разрезать».
+   */
+  it('строка попытки несёт свой потолок, свои ходы и их разбивку по роду', async () => {
+    const { ledgerDir } = await runTick({
+      lines: [
+        JSON.stringify({
+          type: 'assistant',
+          message: { model: 'claude', content: [{ type: 'tool_use', name: 'Bash' }, { type: 'tool_use', name: 'Edit' }] },
+        }),
+        JSON.stringify({ type: 'assistant', message: { model: 'claude', content: [{ type: 'tool_use', name: 'Read' }] } }),
+        RESULT_MAX_TURNS,
+      ],
+    })
+    const rows = readAttempts(ledgerDir, 'BL-1')
+    const row = rows.find((r: any) => r.failureReason === 'turns_exhausted')
+
+    expect(row.turnCap).toBe(80) // то, что реально стояло на командной строке этого запуска
+    expect(row.turnsUsed).toBe(80) // то, что CLI насчитал себе сам
+    expect(row.turnKinds).toEqual({ edits: 1, runs: 1, reads: 1, other: 0 })
   })
 })
 
