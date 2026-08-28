@@ -12,20 +12,20 @@ const LANE_WORD: Record<string, string> = {
 /**
  * DraftCard — a task the conversation OFFERS, and the two things a person can do with it.
  *
- * ═════════════════════ THE HANDS ARE TIED, AND IN PLAIN SIGHT ═════════════════════
+ * ═════════════════ КНОПКА — КОРОТКИЙ ПУТЬ, А НЕ ЕДИНСТВЕННЫЙ ═════════════════
  *
- * The conversation cannot put work in the queue. It has no path to it: the engine reads the
- * park and never writes, and the queue-writing verb does not appear in it at all. What it
- * can do is DRAFT — and a draft becomes a task at exactly one moment, when a person presses
- * «Создать» with their own hand.
+ * Черновик становится задачей ровно в один момент — когда человек СОГЛАСИЛСЯ. Согласиться
+ * можно двумя способами, и они равны по силе: нажать «Создать» здесь или ответить в разговоре
+ * «да». Второй способ есть потому, что на телефоне кнопок нет вовсе, а двери обязаны быть
+ * одинаковыми; первый — потому что рукой быстрее, когда карточка перед глазами.
  *
- * That is why the request behind this button is the ORDINARY one: the very same
- * POST /api/enqueue every other screen posts, sent from a click handler and from nowhere
- * else. There is no effect in this folder that enqueues, so nothing arriving in an answer —
- * however it is phrased, whoever phrased it — can cause work to start. The daemon holds its
- * own gate behind that anyway; this is the half a person can SEE.
+ * Кнопка при этом остаётся тем, чем была: обычным POST /api/enqueue из обработчика нажатия и
+ * ниоткуда больше. Эффекта, который ставит задачу сам по себе, в этой папке нет — ни ответ, ни
+ * тот, кто его надиктовал, работу отсюда не начнут. Слово «да» тоже не начинает её здесь: оно
+ * уходит обычным ходом разговора, и ставит задачу ДЕМОН, своей же дверью постановки.
  *
- * The line under the buttons says so out loud, in the founder's own words.
+ * Приёмка ни одним из двух путей не делается: «Одобрить» — отдельная рука на отдельной
+ * кнопке. Строка под кнопками говорит это вслух.
  *
  * ═══════════════ A DRAFT ARRIVES ONE OF THREE WAYS, AND SAYS WHICH ═══════════════
  *
@@ -157,7 +157,9 @@ export function DraftCard({
           </div>
         )}
 
-        <div className="mt-2.5 text-[11px] text-tx3">Черновик. Уйдёт в работу только после Вашего решения.</div>
+        <div className="mt-2.5 text-[11px] text-tx3">
+          Черновик. Уйдёт в работу по кнопке — или когда Вы ответите «да» в разговоре.
+        </div>
       </div>
     </div>
   )

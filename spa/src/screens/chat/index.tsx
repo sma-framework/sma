@@ -25,13 +25,17 @@ import type { ChatEntry } from './TurnList'
  * figures. Only an open question wakes a session, on a lane outside the queue, and that turn
  * pays for itself in public on «Расходы».
  *
- * ═════════════════════════ NOTHING STARTS BY ITSELF ═════════════════════════
+ * ═════════════════════ НИЧЕГО НЕ НАЧИНАЕТСЯ БЕЗ СОГЛАСИЯ ═════════════════════
  *
- * The one mutating thing that can come out of a conversation is a DRAFT, and a draft
- * becomes work at exactly one moment: a person presses «Создать». That press posts the
- * ordinary task request every other screen posts. There is no effect on this screen that
- * enqueues, so an answer — whatever it says, and whoever caused it to say it — cannot put
- * work in the queue. The line under the input says this where the hand is.
+ * The one mutating thing that can come out of a conversation is a DRAFT, и задачей он
+ * становится ровно тогда, когда человек согласился: нажал «Создать» — или ответил «да» в
+ * самом разговоре. Нажатие по-прежнему шлёт обычный запрос очереди, как и любой другой экран;
+ * слово уходит обычным ходом разговора, и ставит задачу демон своей дверью. На этом экране
+ * эффекта, который ставит задачу сам, нет ни для одного из двух путей — ответ, что бы в нём
+ * ни было сказано и кто бы его ни надиктовал, работу отсюда не начинает.
+ *
+ * Приёмка не делается ни словом, ни с телефона: «Одобрить» и «Вернуть» — рука человека здесь.
+ * Строка под полем ввода говорит обе половины границы там, где эта рука.
  *
  * ═══════════════════ THE BOOK SEEDS IT; THE SESSION FILLS IT ═══════════════════
  *
