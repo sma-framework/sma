@@ -108,7 +108,19 @@ export function Screen() {
   const [openedId, setOpenedId] = useState<string | null>(null)
   const opened = workers.find((w) => w.id === openedId) ?? null
 
-  /** The title of a task in hand — looked up in the rows the window already has. */
+  /**
+   * The title of a task in hand.
+   *
+   * IT COMES OFF THE WORKER'S OWN ROW FIRST, and that is the whole of this fix. The roster is
+   * the ONE list that names a claimed task, so the daemon puts that task's name on the worker
+   * (`taskTitle`) precisely because no other list carries it: `queue[]` holds rows waiting for
+   * a worker, and a task in somebody's hands has left it. The screen looked the name up THERE
+   * anyway, missed every time, and printed the routing id where a title belongs — a field
+   * computed, delivered and read by nobody, which is the same half-done shape as a number that
+   * never reaches the eye.
+   *
+   * The lookup stays as the fallback for a reading older than that field.
+   */
   const titleOf = useMemo(() => {
     const byId = new Map<string, string>()
     for (const row of data?.queue ?? []) byId.set(row.id, row.title ?? 'Без названия')
@@ -162,7 +174,7 @@ export function Screen() {
                   key={w.id}
                   worker={w}
                   laneLabel={w.lane ? (LANE_LABEL[w.lane] ?? w.lane) : null}
-                  taskTitle={w.taskId ? (titleOf.get(w.taskId) ?? null) : null}
+                  taskTitle={w.taskId ? (w.taskTitle ?? titleOf.get(w.taskId) ?? null) : null}
                   stats={w.stats30d ?? null}
                   onOpenTask={openTask}
                   onOpenHistory={() => setOpenedId(w.id)}
