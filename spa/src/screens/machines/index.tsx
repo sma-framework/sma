@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { isNotReady } from '../../api/client'
 import { useAddProject, useRenameProject, useSelectProject, useStateQuery } from '../../api/queries'
-import type { AccountEntry, DoneRow, ProjectRow, WorkerRow } from '../../api/types'
+import type { AccountEntry, DoneRow, ProjectRow, ProjectTrunk, WorkerRow } from '../../api/types'
 import { plural } from '../../shell/format'
 import { AddMachineWizard } from './AddMachineWizard'
 import { MachineRow } from './MachineRow'
@@ -44,6 +44,18 @@ import { StopParkZone } from './StopParkZone'
  * default entry every install mints carries a name and no folder at all, so the screens used
  * to show a project whose notebook they could not read one line of. A row says «не подключён»
  * when that is the case — the honest of the three states.
+ *
+ * ═════════════════ ЧТО НЕ УЕХАЛО — СТОЛБЦОМ, А НЕ ПОХОДОМ В ТЕРМИНАЛ ═════════════════
+ *
+ * Замерено 28.08: в продукте лежало 108 коммитов, которых нет на origin, и ни один экран
+ * этого не показывал — на вопрос «что мы можем выкатить прямо сейчас» из окна ответить было
+ * нельзя. Столбец «Не отправлено» отвечает: сколько коммитов не уехало, когда удалённый ствол
+ * двигался, есть ли незакоммиченное и сколько веток задач не слито.
+ *
+ * НОЛЬ ЗДЕСЬ НЕ РИСУЕТСЯ ЗРЯ. Проект без удалённого ствола, отсоединённая голова, нечитаемое
+ * дерево — всё это СЛОВА из ответа двери, а не «0 не отправлено»: ноль читается как «всё
+ * уехало», и это ложь противоположного знака. Экран не считает ничего сам — он показывает то,
+ * что дверь спросила у git.
  */
 
 /** Whether a moment falls on the day the reader is having. */
@@ -68,6 +80,57 @@ function lastEventWords(rows: DoneRow[]): string {
     ? `сегодня в ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
     : at.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
   return latest.failed ? `${when} — не получилось` : `${when} — ${latest.title ?? 'работа принята'}`
+}
+
+/** Когда это было, в словах: сегодня — по часам, иначе датой (с годом, если год не этот). */
+function whenWords(iso: string | null): string | null {
+  if (!iso) return null
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return null
+  if (isToday(iso)) return `сегодня в ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+  const sameYear = at.getFullYear() === new Date().getFullYear()
+  return at.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', ...(sameYear ? {} : { year: 'numeric' }) })
+}
+
+/**
+ * ЧТО В ЭТОМ ПРОЕКТЕ НЕ УЕХАЛО. Всё до единого числа приходит из ответа двери; здесь только
+ * слова вокруг них. Неизмеренный исход показывается СВОИМИ словами (`note`) — рисовать вместо
+ * них ноль значило бы сказать «всё отправлено» там, где отправлять было некуда.
+ */
+function TrunkCell({ trunk }: { trunk: ProjectTrunk | undefined }) {
+  if (!trunk || trunk.status !== 'measured') {
+    return (
+      <span className="truncate text-[12px] text-tx3" title={trunk?.note ?? undefined}>
+        {trunk?.note ?? 'не измерено'}
+      </span>
+    )
+  }
+
+  const unpushed = trunk.unpushed ?? 0
+  const marks: string[] = []
+  if (trunk.dirty) marks.push('есть незакоммиченное')
+  if ((trunk.unmergedBranches ?? 0) > 0) {
+    const n = trunk.unmergedBranches as number
+    marks.push(`${n} ${plural(n, 'ветка задачи', 'ветки задач', 'веток задач')} не слито`)
+  }
+  const moved = whenWords(trunk.remoteMovedAt)
+  if (moved) marks.push(`${trunk.remote ?? 'удалённый ствол'} — ${moved}`)
+
+  return (
+    <span className="flex min-w-0 flex-col gap-[2px]">
+      {unpushed > 0 ? (
+        <span className="text-[12.5px] text-tx tabular-nums">
+          <span className="font-semibold text-warn-tx">{unpushed}</span>{' '}
+          {plural(unpushed, 'коммит', 'коммита', 'коммитов')} не отправлено
+        </span>
+      ) : (
+        <span className="text-[12.5px] text-tx2">всё отправлено</span>
+      )}
+      <span className="truncate text-[11px] text-tx3" title={marks.join(' · ')}>
+        {marks.join(' · ')}
+      </span>
+    </span>
+  )
 }
 
 function Pill({ value, label }: { value: string; label: string }) {
@@ -119,7 +182,7 @@ function ProjectLine({
 
   return (
     <div
-      className={`grid grid-cols-[minmax(0,1fr)_170px_minmax(0,1fr)_130px] items-center gap-4 px-[18px] py-3 ${
+      className={`grid grid-cols-[minmax(0,1fr)_150px_minmax(0,240px)_minmax(0,1fr)_130px] items-center gap-4 px-[18px] py-3 ${
         first ? '' : 'border-t border-bd'
       } ${active ? 'bg-surf' : ''}`}
     >
@@ -167,6 +230,8 @@ function ProjectLine({
         {project.taskCounts.total} {plural(project.taskCounts.total, 'задача', 'задачи', 'задач')}
         {project.taskCounts.claimed > 0 ? ` · в работе ${project.taskCounts.claimed}` : ''}
       </span>
+
+      <TrunkCell trunk={project.trunk} />
 
       <span className="truncate text-[12.5px] text-tx3">{lastEvent}</span>
 
@@ -344,9 +409,10 @@ export function Screen() {
           <section>
             <h2 className="m-0 mb-2.5 text-[13.5px] font-semibold text-tx">Проекты на этой машине</h2>
             <div className="overflow-hidden rounded-[12px] border border-bd bg-card shadow-panel">
-              <div className="grid grid-cols-[minmax(0,1fr)_170px_minmax(0,1fr)_130px] gap-4 border-b border-bd bg-surf px-[18px] py-2.5 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">
+              <div className="grid grid-cols-[minmax(0,1fr)_150px_minmax(0,240px)_minmax(0,1fr)_130px] gap-4 border-b border-bd bg-surf px-[18px] py-2.5 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">
                 <span>Проект</span>
                 <span>Задачи</span>
+                <span>Не отправлено</span>
                 <span>Последнее событие</span>
                 <span />
               </div>

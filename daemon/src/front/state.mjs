@@ -103,7 +103,7 @@ import {
 import { readWaveHolds } from '../queue/wave-holds.mjs'
 import { readAttempts, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { attemptIdFor } from './journal.mjs'
-import { readTaskChanges, taskBranch } from './task-changes.mjs'
+import { readTaskChanges, taskBranch, TASK_BRANCH_PREFIX } from './task-changes.mjs'
 import { runsDirOf, sumRunTokens, zeroTokens, TOKEN_FIELDS, RUN_DIRS_KEEP } from '../queue/run-dir.mjs'
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../../scripts/sma/lib/write-pipeline.mjs'
@@ -402,6 +402,230 @@ function inProject(row, project) {
   return own === null || own === project
 }
 
+// ═════════ ЧТО ЛЕЖИТ НЕОТПРАВЛЕННЫМ: проект против своего ствола ═════════════════
+//
+// ЗАМЕРЕНО 28.08.2026: в продукте лежало 108 коммитов, которых нет на origin, публичный
+// репозиторий стоял на 24.08, локальная вершина — на 28.08, и НИ ОДИН экран этого не
+// показывал. Вопрос «что мы можем выкатить прямо сейчас» — главный перед выпуском, и
+// ответить на него из окна было нельзя: приходилось идти в терминал и спрашивать git руками.
+//
+// ЧЕТЫРЕ ФАКТА, И ВСЕ ЧЕТЫРЕ — ОТ GIT. Сколько коммитов не отправлено на удалённый ствол,
+// когда удалённый ствол двигался последний раз, есть ли незакоммиченное в дереве, и сколько
+// веток задач в ствол не слито. Ни один из них не выводится из другого и ни один не
+// придумывается: не смогли спросить — говорим словами.
+//
+// НОЛЬ — ЭТО УТВЕРЖДЕНИЕ, А НЕ ПУСТОЕ МЕСТО. «0 не отправлено» читается как «всё уехало», и
+// для проекта без удалённого ствола это ложь противоположного знака: отправлять было НЕКУДА,
+// а экран сказал бы, что всё в порядке. Поэтому всякий исход, кроме измеренного, несёт
+// `status` и СЛОВА (`note`), а числа остаются null — их никто не мерил.
+//
+// ЧЕМ МЕРЯЕТСЯ «НЕ ОТПРАВЛЕНО» — ОДНОЙ КОМАНДОЙ, И ЭТО `rev-list --count <удалённый>..<ствол>`.
+// `git status` умеет отвечать «+N −M» сам, но ТОЛЬКО когда у ветки настроен upstream, — а на
+// собственном дереве этого продукта (замерено 28.08) upstream у `main` не настроен, зато
+// `origin/main` на месте и 128 коммитов поверх него. Ответить на это «удалённого нет» было бы
+// формально верно и по делу — ложь. Поэтому удалённый ствол ИЩЕТСЯ: сначала тот, который
+// назвал сам git, и только потом одноимённая ветка единственного (или названного `origin`)
+// удалённого. Найденный ref едет на провод полем `remote` — что с чем сравнили, человек
+// читает, а не додумывает. Счёт при этом ОДИН на оба пути: два способа посчитать одно число
+// однажды разошлись бы, и никто бы не узнал какой.
+//
+// ЧЕТЫРЕ-ШЕСТЬ ПОДПРОЦЕССОВ НА ПРОЕКТ, И ПОТОМУ ПАМЯТЬ НА ДЕСЯТЬ СЕКУНД. Они СИНХРОННЫЕ, а
+// опрос окна идёт каждые 3 секунды через один цикл событий — тот самый счёт, который однажды
+// стоил дерайву 26 секунд (см. DONE_GIT_CACHE ниже). Память живёт ДЕСЯТЬ СЕКУНД и ключом
+// берёт САМ ШОВ git: у production он один на весь процесс, а у каждого теста свой, поэтому
+// два разных ответа git не могут попасть друг другу в чужую ячейку.
+const TRUNK_CACHE = new WeakMap() // execGit -> Map<dir, {at:number, trunk:object}>
+const TRUNK_CACHE_MS = 10_000
+
+/** Слова на каждый исход, который не измерен. Экран показывает их вместо числа. */
+const TRUNK_WORDS = Object.freeze({
+  'not-connected': 'у записи нет папки на этой машине — сравнивать нечего',
+  'no-git': 'спросить git нечем — окно собрано без него',
+  'no-remote': 'у ствола нет удалённого — отправлять некуда',
+  detached: 'голова отсоединена — ствол не назван',
+  unreadable: 'git не смог прочитать это дерево',
+})
+
+/** Одна форма ответа на все исходы: неизмеренное поле — null, и никогда 0. */
+function trunkVerdict(status, extra = {}) {
+  return {
+    status,
+    note: status === 'measured' ? null : TRUNK_WORDS[status] ?? null,
+    branch: null,
+    remote: null,
+    unpushed: null,
+    remoteMovedAt: null,
+    dirty: null,
+    unmergedBranches: null,
+    ...extra,
+  }
+}
+
+/**
+ * `git status --porcelain=v2 --branch`, прочитанный как есть: ствол, его удалённый, счёт
+ * расхождения и грязь дерева. Формат машинный и стабильный по контракту git — заголовки
+ * начинаются с «# », а любая строка записи (1/2/u/?) означает, что в дереве есть
+ * незакоммиченное. Бросает ровно то, что бросил git: «это не репозиторий» — обстоятельство,
+ * решать о нём словами — дело вызывающего.
+ *
+ * `--no-optional-locks` СТОИТ ПЕРВЫМ И НЕ УКРАШЕНИЕ. Обычный `git status` освежает индекс и
+ * берёт для этого `index.lock` — а это ЧУЖОЕ рабочее дерево, в котором человек в ту же
+ * секунду делает свой коммит, и опрос окна ходит сюда каждые несколько секунд. Читатель,
+ * который может отобрать замок у хозяина дерева, читателем быть перестал.
+ */
+function readTrunkStatus(execGit, cwd) {
+  const raw = String(execGit(['--no-optional-locks', 'status', '--porcelain=v2', '--branch'], { cwd }) || '')
+  let branch = null
+  let upstream = null
+  let dirty = false
+  for (const line of raw.split(/\r?\n/)) {
+    if (line === '') continue
+    if (line.startsWith('# branch.head ')) branch = line.slice('# branch.head '.length).trim() || null
+    else if (line.startsWith('# branch.upstream ')) upstream = line.slice('# branch.upstream '.length).trim() || null
+    else if (!line.startsWith('# ')) dirty = true
+  }
+  return { branch, upstream, dirty }
+}
+
+/**
+ * Куда этот ствол отправляют, когда git сам этого не объявил. Ветка без upstream — не редкость
+ * и не поломка: так выглядит всякая, созданную без `-u`, и именно так стоит `main` в дереве
+ * этого продукта. Ответить на это «удалённого нет» значило бы назвать 128 неотправленных
+ * коммитов пустым местом.
+ *
+ * ИСКАТЬ — НЕ ЗНАЧИТ ВЫДУМЫВАТЬ. Берётся ОДНОИМЁННАЯ ветка `origin` (или единственного
+ * удалённого, если он назван иначе), и только если она в этой копии ДЕЙСТВИТЕЛЬНО есть —
+ * git спрашивают о ней прямо. Несколько удалённых без `origin` — это выбор, которого никто
+ * не делал, и он не делается здесь: тогда удалённого ствола у нас нет.
+ */
+function findRemoteTrunk(execGit, cwd, branch) {
+  let remotes = []
+  try {
+    remotes = String(execGit(['remote'], { cwd }) || '')
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+  } catch {
+    return null
+  }
+  const named = remotes.includes('origin') ? 'origin' : remotes.length === 1 ? remotes[0] : null
+  if (named === null) return null
+  const ref = `${named}/${branch}`
+  try {
+    // `--verify --quiet`: молчит и выходит с единицей, когда такой ветки нет — шов бросает
+    return String(execGit(['rev-parse', '--verify', '--quiet', `refs/remotes/${ref}`], { cwd }) || '').trim() === ''
+      ? null
+      : ref
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Сколько коммитов ствола не доехало до удалённого — ТОТ САМЫЙ вопрос, которым это меряют
+ * руками: `git rev-list --count <удалённый>..<ствол>`. Один счёт на оба способа найти
+ * удалённый ствол: второй способ считать однажды разошёлся бы с первым.
+ */
+function countUnpushed(execGit, cwd, remoteRef, branch) {
+  try {
+    const n = Number(String(execGit(['rev-list', '--count', `${remoteRef}..${branch}`], { cwd }) || '').trim())
+    return Number.isFinite(n) ? n : null
+  } catch {
+    return null
+  }
+}
+
+/** Когда удалённый ствол двигался последний раз — время коммита, в ISO, или ничего. */
+function readRefMovedAt(execGit, cwd, ref) {
+  try {
+    return String(execGit(['log', '-1', '--format=%cI', ref], { cwd }) || '').trim() || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Сколько веток задач не слито в ствол. Префикс веток задач берётся из ОДНОГО места
+ * (task-changes.mjs) — второе написание однажды разошлось бы с тем, которое создаёт ветки.
+ * `--no-merged=<ствол>` пишется со знаком равенства намеренно: у этого ключа значение
+ * необязательное, и отдельным словом git прочитал бы ствол как ШАБЛОН имени ветки.
+ */
+function countUnmergedTaskBranches(execGit, cwd, trunk) {
+  try {
+    const out = String(
+      execGit(
+        ['for-each-ref', `--no-merged=${trunk}`, '--format=%(refname:short)', `refs/heads/${TASK_BRANCH_PREFIX}`],
+        { cwd },
+      ) || '',
+    )
+    return out
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean).length
+  } catch {
+    return null
+  }
+}
+
+/**
+ * deriveProjectTrunk(entry, execGit) → состояние ОДНОГО проекта против его ствола.
+ *
+ * Дерево читается локально даже там, где удалённого ствола нет: грязь и неслитые ветки —
+ * факты о копии, а не о сервере, и молчать о них за компанию было бы вторым враньём.
+ */
+function deriveProjectTrunk(entry, execGit) {
+  const dir = typeof entry.path === 'string' && entry.path.trim() !== '' ? entry.path.trim() : null
+  if (dir === null) return trunkVerdict('not-connected')
+  if (typeof execGit !== 'function') return trunkVerdict('no-git')
+
+  let seamCache = TRUNK_CACHE.get(execGit)
+  if (!seamCache) {
+    seamCache = new Map()
+    TRUNK_CACHE.set(execGit, seamCache)
+  }
+  const hit = seamCache.get(dir)
+  if (hit && Date.now() - hit.at < TRUNK_CACHE_MS) return hit.trunk
+
+  const trunk = measureTrunk(execGit, dir)
+  seamCache.set(dir, { at: Date.now(), trunk })
+  return trunk
+}
+
+function measureTrunk(execGit, dir) {
+  let head
+  try {
+    head = readTrunkStatus(execGit, dir)
+  } catch {
+    return trunkVerdict('unreadable')
+  }
+  if (head.branch === null || head.branch === '(detached)') return trunkVerdict('detached', { dirty: head.dirty })
+
+  const local = {
+    branch: head.branch,
+    dirty: head.dirty,
+    unmergedBranches: countUnmergedTaskBranches(execGit, dir, head.branch),
+  }
+  const remote = head.upstream ?? findRemoteTrunk(execGit, dir, head.branch)
+  if (remote === null) return trunkVerdict('no-remote', local)
+
+  // Удалённый ствол НАЗВАН, а счёт по нему не сошёлся — это не «ноль не отправлено» и не
+  // «удалённого нет»: это неизмеренное, и оно называется словами.
+  const unpushed = countUnpushed(execGit, dir, remote, head.branch)
+  if (unpushed === null) {
+    return trunkVerdict('unreadable', {
+      ...local,
+      remote,
+      note: `удалённый ствол ${remote} назван, но сосчитать по нему git не смог`,
+    })
+  }
+  return trunkVerdict('measured', {
+    ...local,
+    remote,
+    unpushed,
+    remoteMovedAt: readRefMovedAt(execGit, dir, remote),
+  })
+}
+
 /**
  * deriveProjects(rows, config) → [{id, name, connected, taskCounts}] over the WHOLE selection.
  * Counts are per project by construction, so they are computed from every row regardless
@@ -421,8 +645,12 @@ function inProject(row, project) {
  * project it cannot open is the worst of the three states, so the fact travels and the
  * screens say it. The PATH itself never does — an absolute path on the wire is a
  * disclosure, and a boolean is the whole of what a screen needs.
+ *
+ * `trunk` is the same entry read AS A CHECKOUT: what of it is not pushed yet — see
+ * deriveProjectTrunk above. It rides here rather than on a screen of its own because the
+ * list of projects is where a person already looks to ask «что у нас открыто».
  */
-function deriveProjects(rows, config) {
+function deriveProjects(rows, config, { execGit } = {}) {
   const registry = Array.isArray(config.projects) ? config.projects : []
   return registry.map((p) => {
     const mine = rows.filter((r) => projectOf(r) === p.id)
@@ -430,7 +658,13 @@ function deriveProjects(rows, config) {
     for (const r of mine) {
       if (Object.prototype.hasOwnProperty.call(taskCounts, r.status)) taskCounts[r.status] += 1
     }
-    return { id: p.id, name: p.name, connected: typeof p.path === 'string' && p.path.trim() !== '', taskCounts }
+    return {
+      id: p.id,
+      name: p.name,
+      connected: typeof p.path === 'string' && p.path.trim() !== '',
+      taskCounts,
+      trunk: deriveProjectTrunk(p, execGit),
+    }
   })
 }
 
@@ -2348,7 +2582,7 @@ export async function deriveState(deps = {}) {
   // ── projects / machines / federation — derived from the config, never stored ──
   const projectRegistry = Array.isArray(config.projects) ? config.projects : []
   const activeProject = config.activeProject ?? (projectRegistry[0] && projectRegistry[0].id) ?? null
-  const projects = deriveProjects(allRows, config)
+  const projects = deriveProjects(allRows, config, { execGit })
   const machines = deriveMachines(config)
   const machineId = machines[0].id
   const federation = {

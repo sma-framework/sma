@@ -458,6 +458,33 @@ export interface ProjectRow {
    */
   connected: boolean
   taskCounts: ProjectTaskCounts
+  /** Что в этом проекте открыто и не уехало — см. ProjectTrunk. */
+  trunk: ProjectTrunk
+}
+
+/**
+ * ЧТО В ПРОЕКТЕ НЕ ОТПРАВЛЕНО — состояние копии против её ствола, прочитанное у git.
+ *
+ * `status` — измерено ли это вообще, и почему нет. Только `measured` несёт числа; во всех
+ * остальных исходах числа НЕ ПРИДУМЫВАЮТСЯ (null), а `note` говорит словами. Ноль на экране
+ * читается как «всё отправлено», и для проекта без удалённого ствола это ложь.
+ */
+export interface ProjectTrunk {
+  status: 'measured' | 'not-connected' | 'no-git' | 'no-remote' | 'detached' | 'unreadable'
+  /** Слова вместо чисел — на всяком исходе, кроме измеренного. */
+  note: string | null
+  /** Ствол, на котором стоит копия. */
+  branch: string | null
+  /** С чем сравнивали — удалённый ствол по имени (origin/main), а не догадка о нём. */
+  remote: string | null
+  /** Сколько коммитов не отправлено на удалённый ствол. */
+  unpushed: number | null
+  /** Когда удалённый ствол двигался последний раз (ISO). */
+  remoteMovedAt: string | null
+  /** Есть ли незакоммиченное в дереве. */
+  dirty: boolean | null
+  /** Сколько веток задач ещё не слито в ствол. */
+  unmergedBranches: number | null
 }
 
 export interface MachineRow {
