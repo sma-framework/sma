@@ -32,7 +32,7 @@ const LANE_WORD: Record<string, string> = {
  * A session proposes a WORKER, checked against the roster before it left the daemon. A
  * sentence that already named its own lane proposes the LANE directly — the thing a roster
  * pick could never express. And a stage of a phase proposes neither: it carries a goal, and
- * the button behind it presses the phase cycle's own door, exactly as «Конвейер фаз» does.
+ * the button behind it presses the phase cycle's own door, exactly as the phase card does.
  * All three are the same mechanic — a card, a click, a door — and the card names which one it
  * is rather than showing a blank where a worker used to be.
  */

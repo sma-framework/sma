@@ -168,9 +168,9 @@ describe('the sweep — pressing everything, safely', () => {
       'Open backlog',
       'Next',
       'Undelete',
-      // «Конвейер фаз» is a screen in the navigation, not the switch: refusing it would
-      // hide a whole screen from the sweep to guard a control that is not there.
-      'Конвейер фаз',
+      // «Конвейер памяти» merely carries the word: refusing it would hide an ordinary
+      // control from the sweep to guard a switch that is not there.
+      'Конвейер памяти',
       'Ранее принятый черновик',
       'Acceptance criteria',
       'Approved runs',

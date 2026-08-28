@@ -59,23 +59,9 @@ const ICONS: Record<ScreenId, ReactNode> = {
       <path d="M5.6 5.8h4.8M5.6 8.4h4.8M5.6 11h2.6" strokeLinecap="round" />
     </>
   ),
-  style: (
-    <>
-      <rect x="2.6" y="2.6" width="10.8" height="10.8" rx="3" />
-      <circle cx="8" cy="8" r="2" />
-    </>
-  ),
   // The lines the release added, in the registry's own order. Each glyph says what the screen
-  // IS rather than what it does: stages in a row, a tray of things not started, two claims
-  // over the same ground, a lens, a way out, and the machine itself.
-  pipeline: (
-    <>
-      <path d="M3.6 8h8.8" strokeLinecap="round" />
-      <circle cx="3.2" cy="8" r="1.5" />
-      <circle cx="8" cy="8" r="1.5" />
-      <circle cx="12.8" cy="8" r="1.5" />
-    </>
-  ),
+  // IS rather than what it does: a tray of things not started, two claims over the same
+  // ground, a lens, a way out, and the machine itself.
   backlog: (
     <>
       <path d="M2.4 9.2 4.3 3.6h7.4l1.9 5.6v2.8a1.6 1.6 0 0 1-1.6 1.6H4a1.6 1.6 0 0 1-1.6-1.6Z" />

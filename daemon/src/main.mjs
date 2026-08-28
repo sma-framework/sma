@@ -1129,7 +1129,7 @@ export function createDaemon(o = {}) {
         attemptTurns,
         chatDir: o.chatDir ?? dataDir, // the transcript lives beside the daemon's own data
         dataDir, // the spend book the «что съело лимит» branch reads
-        policyDir: o.policyDir ?? dataDir, // where «Мой стиль» puts the distilled voice
+        policyDir: o.policyDir ?? dataDir, // where the style distillation puts the distilled voice
         windows: windowsForState,
         // The person's own terminal reports its subscription windows to its status line, and
         // that reading — unlike anything on the work stream — carries the percentage AND counts

@@ -23,9 +23,9 @@ import { useArtifactQuery } from '../../api/queries'
  *
  * ══════════════════════ WHY THIS IS NOT ONE IMPORT AWAY ═══════════════════════
  *
- * «Конвейер фаз» has a viewer of its own, and it is nearly this file. It stays there and this
- * one stays here for the reason the registry gives: a screen is built inside its own folder
- * and reaches into no neighbour. The day a third screen needs one, the answer is not a third
+ * The phase card has a viewer of its own, and it is nearly this file. It stays in «Задачи»,
+ * beside the card, and this one stays here for the reason the registry gives: a screen is
+ * built inside its own folder and reaches into no neighbour. The day a third screen needs one, the answer is not a third
  * copy — it is a move into the shell, made out loud, the way `DecisionCard` and `isOpen` were
  * moved. Two is where that conversation starts, not where it is settled.
  */

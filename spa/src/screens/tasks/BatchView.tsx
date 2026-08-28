@@ -6,7 +6,7 @@ import { LiveTimer } from '../../shell/LiveTimer'
 import { TaskPanel } from '../../shell/TaskPanel'
 import { batchStats, clockOfMs } from '../../shell/stats'
 import { plural } from '../../shell/format'
-import { doorWords } from '../pipeline/shared'
+import { doorWords } from './phase-shared'
 import { BATCH_ITEM_TONE, STATE_WORD } from './units'
 import type { UnitState } from './units'
 

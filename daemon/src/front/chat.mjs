@@ -539,7 +539,7 @@ function titleFromText(text) {
  * Every draft this builds is inert. The three task intents carry a lane and become the
  * ORDINARY task the «Создать» button has always posted. The stage intent carries
  * `data: {kind:'stage', stage, phase}` — a GOAL — and the button behind it presses the phase
- * cycle's own door, the same one «Конвейер фаз» presses. Neither path exists in this file:
+ * cycle's own door, the same one the phase card presses. Neither path exists in this file:
  * what leaves here is a description of work, and the hand that starts it is a person's.
  *
  * @param {{text?:string, kind?:string}} args
@@ -1389,7 +1389,7 @@ export const CHAT_LIMIT_TEXT =
 export const CHAT_TIMEOUT_TEXT =
   'Ход шёл слишком долго и был остановлен. Спросите короче — или задайте тот же вопрос про одну задачу.'
 
-/** The owner's distilled voice, when «Мой стиль» has produced one, lives under this name. */
+/** The owner's distilled voice, when the style distillation has produced one, lives here. */
 export const DISTILLED_POLICY_FILE = 'distilled-policy.md'
 
 /** The neutral base voice ships with the product, beside the policy modules. */
@@ -1415,7 +1415,7 @@ export const CHAT_DECISION_NOTE_CAP = 500
  * inevitably say something the system does not actually do.
  *
  * Resolution, in order, with no switch for the human to find:
- *   1. the OWNER'S distilled prompt, if «Мой стиль» has already produced one;
+ *   1. the OWNER'S distilled prompt, if the style distillation has already produced one;
  *   2. otherwise the NEUTRAL BASE that ships with the product — the same frame and the same
  *      HUMAN-ONLY boundaries, minus the owner's style, because there is no style yet.
  * A fresh install is therefore never mute, and the day the distillate appears it wins on its

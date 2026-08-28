@@ -78,7 +78,9 @@
  * pointers for the corpus (never a note's body), metrics and already-redacted quotes for the
  * snapshot (never a transcript, never the exam's answer key). Both degrade to {absent:true}
  * on a machine that has none of it — a fresh install with no style is the normal case, not
- * an error case.
+ * an error case. `style` СЕГОДНЯ НИКТО НЕ ЧИТАЕТ — экран, который его показывал, снят
+ * владельцем 28.08.2026; кто его читатель и почему счёт всё же остаётся, сказано словами над
+ * `deriveStyle`.
  *
  * Every collaborator (adapter, ledger reader, the window-state function, usageReader,
  * the git/receipt readers, clock) is dependency-injected, so tests derive from fixtures
@@ -800,6 +802,19 @@ function readDecisionDrafts(io, memoryDir) {
  *
  * A metric the artifacts do not carry is OMITTED rather than invented: an install that has
  * never been graded has no matchRate, and a fresh machine has no style at all.
+ *
+ * КТО ЭТО ЧИТАЕТ СЕГОДНЯ — НИКТО, И ЭТО СКАЗАНО ЗДЕСЬ ВСЛУХ. Единственным читателем был экран
+ * «Мой стиль», и владелец снял его 28.08.2026 словами «мой стиль вообще не работает… убери
+ * пока экран»: витрина без провода — ни одной своей двери, и ни один промпт этих чисел не
+ * читал (`resolvePolicyVoice` в chat.mjs берёт готовый дистиллят с диска, а не этот счёт).
+ *
+ * ПОЧЕМУ СЧЁТ ВСЁ РАВНО ОСТАЁТСЯ. Артефакты под ним живые: экзамен продолжает оцениваться, а
+ * дистилляция — писать черновики решений, и голос беседы уже сегодня встаёт на их результат.
+ * Снят ЭКРАН, а не обучение. Цена сказана честно: это чтение двух файлов на КАЖДОМ чтении
+ * состояния, то есть на каждом опросе окна, ради поля, которое сейчас никто не открывает.
+ * Поэтому решение временное: появится читатель (строка стиля в промпте или вернувшийся экран)
+ * — он назовётся здесь; не появится — удаляются вместе и эта функция, и поле `style` в
+ * payload, и типы под него.
  *
  * @param {{memoryDir?:string, fsImpl?:object}} [args]
  * @returns {object}

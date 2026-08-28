@@ -80,7 +80,7 @@ export interface PaletteAction {
 
 /**
  * Every act that exists as a button on a built screen. Ordered the way a working day is:
- * the work, the conveyor, the corpus, the shared checkout, the release, then the household.
+ * the work, the phases, the corpus, the shared checkout, the release, then the household.
  *
  * A row here is a PROMISE that the named screen has that button. Adding one for a screen
  * that does not have it yet would put an act in the window's index of acts before the act
@@ -112,7 +112,12 @@ export const PALETTE_ACTIONS: readonly PaletteAction[] = [
    *
    * Третий — исключение из правила «строка обещает кнопку», и оно названо вслух: двери
    * создания фазы в окне НЕТ (решение владельца — фаза заводится не кнопкой окна), поэтому
-   * строка обещает ровно то, что даёт, — экран, на котором фазы живут.
+   * строка обещает ровно то, что даёт, — экран, на котором фазы видно.
+   *
+   * Экран этот теперь один на все три вида работы: отдельный «Конвейер фаз» снят владельцем
+   * 28.08.2026, и фаза стоит в общем списке «Задач» своим столбиком стадии, а карточка фазы
+   * раскрывается там же. Поэтому все четыре фазовые строки ведут на «Задачи»: строка палитры
+   * обязана открывать то место, где действие действительно делается.
    */
   {
     id: 'new-task',
@@ -129,26 +134,26 @@ export const PALETTE_ACTIONS: readonly PaletteAction[] = [
   {
     id: 'new-phase',
     title: 'Новая фаза',
-    hint: '«Конвейер фаз» — фазы заводятся не из окна, здесь их видно и здесь они двигаются по стадиям',
-    door: { via: 'screen', screen: 'pipeline' },
+    hint: '«Задачи» — фазы заводятся не из окна: здесь их видно и здесь они двигаются по стадиям',
+    door: { via: 'screen', screen: 'tasks' },
   },
   {
     id: 'phase-stage',
     title: 'Запустить стадию фазы',
-    hint: '«Конвейер фаз» → карточка фазы → стадия',
-    door: { via: 'screen', screen: 'pipeline' },
+    hint: '«Задачи» → карточка фазы → стадия',
+    door: { via: 'screen', screen: 'tasks' },
   },
   {
     id: 'phase-answer',
     title: 'Ответить на отложенный вопрос',
-    hint: '«Конвейер фаз» → карточка фазы → вопросы, которые ждут ответа',
-    door: { via: 'screen', screen: 'pipeline' },
+    hint: '«Задачи» → карточка фазы → вопросы, которые ждут ответа',
+    door: { via: 'screen', screen: 'tasks' },
   },
   {
     id: 'phase-uat',
     title: 'Отметить строку приёмки',
-    hint: '«Конвейер фаз» → карточка фазы → приёмка',
-    door: { via: 'screen', screen: 'pipeline' },
+    hint: '«Задачи» → карточка фазы → приёмка',
+    door: { via: 'screen', screen: 'tasks' },
   },
   {
     id: 'memory-apply',

@@ -8,7 +8,13 @@ import { isOpen } from '../../shell/DecisionCard'
 import { refusalWords, STAGE_LABEL, STAGE_ORDER } from '../../shell/format'
 
 /**
- * shared.ts — the words this screen uses, and the ONE place it touches anything but a hook.
+ * phase-shared.ts — the words the phase card uses, and the ONE place it touches anything but
+ * a hook.
+ *
+ * Файл переехал сюда вместе с карточкой фазы, когда владелец снял отдельный экран со списком
+ * фаз (28.08.2026): фаза раскрывается на «Задачах», значит и слова фазы живут в папке «Задач».
+ * Имя с приставкой `phase-` — чтобы в папке, где уже есть своя раскладка, было видно, чьи это
+ * слова.
  *
  * ═════════════════ THE SCREEN CALLS NO DOOR. IT MOUNTS HOOKS. ═════════════════
  *
@@ -44,12 +50,6 @@ export const STATUS_WORD: Record<PhaseStageStatus, string> = {
   none: 'не начата',
   'in-progress': 'идёт',
   done: 'готово',
-}
-
-export const STATUS_TONE: Record<PhaseStageStatus, string> = {
-  none: 'bg-idle-s text-idle-tx',
-  'in-progress': 'bg-blue-s text-blue-d',
-  done: 'bg-ok-s text-ok-tx',
 }
 
 /**
