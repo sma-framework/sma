@@ -318,6 +318,34 @@ Every door in it is live: there is no «coming soon» handler left in the table.
   computer — a decision, stated, rather than a layout that broke. Walked live at 375 px from the
   task through to the approval, with the sideways-scroll measurement on that width in the receipt.
 
+### The orchestrator — the machine's top figure, not a worker in the queue
+
+A machine has executors: the ones who take tasks, write code and answer with a receipt. And it has
+**one who is none of those**. The orchestrator watches everything at once, leads the conversation
+in the window and directs the work — it takes **no** task off the queue and competes for a seat
+with **nobody** who writes code.
+
+That is structure, not decoration. The worker list IS the set the dispatcher chooses from, so a
+role kept in that list eventually takes work simply because of how the rows happened to fall. So
+the orchestrator is **a config block of its own**, and the dispatcher refuses it by name in the
+first line of its filter as well: two independent locks on one door, because the door is one and
+the hands are many. The suite inserts it at **every position** of the pool in turn, and it is
+never chosen once.
+
+**It appears by itself, on connection.** A new machine mints the role while the settings load —
+the same quiet step that mints the first project — and writes it to the file, with no manual edit
+at all. A row somebody typed into the worker list by hand is **lifted out** of it by that same
+step and becomes the role, losing nothing that was written into it. It owns no subscription: it
+speaks through the machine's daytime account until you give it one of its own.
+
+**The hard calls stay yours, and they are named one by one:** shipping outward, phase boundaries,
+money, seizing someone else's work. It calls the human rather than deciding for them. One list is
+read by both the conversation's prompt and the «Команда» screen, so what is on the glass and what
+is in its head are one line, not two retellings. On the team screen it stands in **a band of its
+own above the executor grid**, labelled «Верхушка», with those four calls beside its name: a
+worker card with empty fields would say something untrue about it — it has no lane, no window and
+no done-count, because all three are properties of whoever takes tasks.
+
 ### The wheel: a word for a session that is already running
 
 A running task is not a locked box. The sentence you type at a busy task has **three fates**, and

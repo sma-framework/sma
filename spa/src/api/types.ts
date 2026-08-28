@@ -269,6 +269,30 @@ export interface WorkerRow {
   machine?: string
 }
 
+/** Одно твёрдое решение, которое принимает человек: имя машине, слова — человеку. */
+export interface OrchestratorHardCall {
+  id: string
+  label: string
+  words: string
+}
+
+/**
+ * ОРКЕСТРАТОР — верхушка машины, и он приезжает СВОИМ ключом, а не строкой в `workers[]`.
+ *
+ * У него нет ни полосы, ни окна, ни «сделано за 30 дней»: всё это — свойства того, кто берёт
+ * задачи, а он их не берёт. У него есть имя, одна строка о том, кто он, аккаунт, через который
+ * он говорит (или `null`, когда говорить нечем), и поимённый список решений, которых он не
+ * принимает. `null` вместо всего блока означает «роли на этой машине не заведено» — так
+ * отвечает старый демон, и окно скажет это словами, а не нарисует пустую карточку.
+ */
+export interface OrchestratorRow {
+  id: string
+  name: string
+  title: string
+  account: string | null
+  hardCalls: OrchestratorHardCall[]
+}
+
 /** What the checks said. Every field may be null: an unread receipt never guesses. */
 export interface ReceiptSummary {
   testsPassed: number | null
@@ -796,6 +820,8 @@ export interface StatePayload {
    */
   waves: WaveRow[]
   workers: WorkerRow[]
+  /** Верхушка машины. `null` — роли на этой машине не заведено (или демон её ещё не знает). */
+  orchestrator: OrchestratorRow | null
   done: DoneRow[]
   spend: Spend
   costs: Costs

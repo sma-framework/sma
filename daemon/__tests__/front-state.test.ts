@@ -270,7 +270,7 @@ describe('deriveState — the one-poll payload', () => {
       'kpis',
       'machines',
       'memory',
-
+      'orchestrator',
       'projectMemory',
       'projects',
       'queue',
@@ -1898,7 +1898,7 @@ describe('deriveState — the federation aggregator seam', () => {
       'kpis',
       'machines',
       'memory',
-
+      'orchestrator',
       'projectMemory',
       'projects',
       'queue',
@@ -2629,6 +2629,7 @@ describe('deriveState — projectMemory rides the SAME route, additively', () =>
         'kpis',
         'machines',
         'memory',
+        'orchestrator',
         'projectMemory',
         'projects',
         'queue',
