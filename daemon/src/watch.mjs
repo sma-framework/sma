@@ -38,12 +38,32 @@
  * не реализуется и не имитируется: увидев живую дверь, сторож просто закрывает свою часть
  * работы и молчит.
  *
- * Каждый шов — стук, часы, сон, запуск подъёма, отправка, файловый ввод-вывод — внедряется,
- * поэтому вся таблица решений проверяется без процесса, без сокета и без телеграма.
+ * ═════════════ НО «ЗАПУСТИЛ ПОДЪЁМ» И «ПОДНЯЛ» — ТОЖЕ РАЗНЫЕ ФАКТЫ ═══════════════
+ * Ночью на 29.08 сторож отработал безупречно по каждому пункту выше: заметил молчание за
+ * тридцать секунд, написал владельцу, запустил подъём и записал попытку. Через десять минут
+ * дверь всё ещё молчала, а в журнале скрипта подъёма не было НИ ОДНОЙ строки — процесс не
+ * начался вовсе. Слово «ok» в записи означало лишь, что вызов запуска не бросил исключения:
+ * запуск отделён от родителя, вывод выброшен, и провал старта был невидим по построению.
+ * Сторож считал дело сделанным и уходил ждать, а человеку было сказано «падение» и не сказано,
+ * что подъём не состоялся. Без человека демон пролежал бы до утра.
+ *
+ * Отсюда три правила этого файла, и все три проверяются подделкой запуска, которая молча
+ * ничего не делает:
+ *   1. ЗАПУЩЕННЫЙ ПОДЪЁМ НЕ ИМЕЕТ ИСХОДА. Он лежит в записи со словом `pending`, и исход ему
+ *      называет ДВЕРЬ: ответила в отпущенный срок — `up`, не ответила — `no-door`. «Вызов не
+ *      бросил» исходом не считается ни при каких обстоятельствах.
+ *   2. НЕУДАЧА — ЭТО ВТОРОЕ СООБЩЕНИЕ ЧЕЛОВЕКУ, с причиной, взятой из вывода самого запуска.
+ *      Молчание после «поднимаю» хуже, чем отсутствие сторожа, потому что на сторожа полагаются.
+ *   3. ПОВТОР — С ВЫДЕРЖКОЙ И С ПОТОЛКОМ. Несколько неудач подряд — это уже вопрос не к
+ *      машине, а к человеку, и звать надо его, а не крутить цикл до утра.
+ *
+ * Каждый шов — стук, часы, сон, запуск подъёма, отправка, чтение его вывода, файловый
+ * ввод-вывод — внедряется, поэтому вся таблица решений проверяется без процесса, без сокета
+ * и без телеграма.
  */
 
 import { doorUrl, liftCommand, probeDoor, readPidRecord } from './control.mjs'
-import { closeOutage, fallWords, notifyOwner, openOutage, stampOutage } from './outage.mjs'
+import { closeOutage, fallWords, liftFailedWords, liftGaveUpWords, notifyOwner, openOutage, stampOutage } from './outage.mjs'
 
 /** Как часто спрашивают дверь. Пятнадцать секунд — минута на объявление провала. */
 export const POLL_MS = 15000
@@ -87,6 +107,27 @@ export const KNOCK_PATH = '/'
 export const LIFT_COOLDOWN_MS = 120000
 
 /**
+ * СКОЛЬКО ЗАПУЩЕННЫЙ ПОДЪЁМ ЖДЁТ ЖИВОЙ ДВЕРИ, прежде чем его назовут неудавшимся.
+ *
+ * Это ровно та величина, которой у сторожа не было: он записывал исход в момент запуска и
+ * потому не мог записать ничего, кроме намерения. Полторы минуты — с запасом на boot демона
+ * (десятки секунд) и на виндовую обёртку, которая перед стартом ещё крутит свою подготовку.
+ * Ошибиться в большую сторону дешевле: лишняя минута ожидания стоит минуты, а «не удался»,
+ * объявленный над ещё загружающимся демоном, стоит ложного сообщения и лишнего процесса.
+ */
+export const LIFT_DOOR_WAIT_MS = 90000
+
+/**
+ * СКОЛЬКО РАЗ ПОДРЯД СТОРОЖ ПРОБУЕТ ПОДНЯТЬ, прежде чем позвать человека.
+ *
+ * Три — и это не «мало», а признание границы: подъём, не сработавший трижды с растущей
+ * выдержкой, не сработает и в сотый раз, потому что дело уже не в гонке и не в занятом порте.
+ * Сторож, крутящий цикл до утра, выглядит занятым и не делает ничего; единственное полезное
+ * действие в этой точке — разбудить того, кто может открыть журнал.
+ */
+export const LIFT_ATTEMPTS_MAX = 3
+
+/**
  * Каждое состояние, в котором может закончиться один круг сторожа, замкнутым списком.
  *
  *   up          дверь отвечает — сторожить нечего
@@ -95,9 +136,10 @@ export const LIFT_COOLDOWN_MS = 120000
  *   declared    провал объявлен: человеку сказано, подъём запущен
  *   lifting     провал продолжается, подъём повторён после выдержки
  *   down        провал продолжается, до следующей попытки ещё рано
+ *   abandoned   попытки исчерпаны: человеку сказано, что поднять не вышло, и сторож ждёт его
  *   stopped     двери нет и записи нет — демона погасили штатно, не лезем
  */
-export const PHASES = Object.freeze(['up', 'back', 'suspect', 'declared', 'lifting', 'down', 'stopped'])
+export const PHASES = Object.freeze(['up', 'back', 'suspect', 'declared', 'lifting', 'down', 'abandoned', 'stopped'])
 
 /**
  * createWatch(deps) → {tick, run, stop, state}.
@@ -111,6 +153,9 @@ export function createWatch({
   readRecord = (cfg) => readPidRecord({ config: cfg }),
   lift = liftCommand(),
   spawnLift,
+  // Вывод запущенного подъёма, как его нашли на диске. Пустая строка — законный ответ («ничего
+  // не оставил»), и она сама по себе улика: процесс, не написавший ни строки, не начинался.
+  readLiftOutput = () => '',
   notify = (o) => notifyOwner(o),
   openOutageImpl = (o) => openOutage(o),
   stampOutageImpl = (o) => stampOutage(o),
@@ -122,6 +167,8 @@ export function createWatch({
   missesToDeclare = MISSES_TO_DECLARE,
   timeoutMissesToDeclare = TIMEOUT_MISSES_TO_DECLARE,
   liftCooldownMs = LIFT_COOLDOWN_MS,
+  liftDoorWaitMs = LIFT_DOOR_WAIT_MS,
+  liftAttemptsMax = LIFT_ATTEMPTS_MAX,
 } = {}) {
   const where = doorUrl(config)
   let misses = 0
@@ -134,26 +181,149 @@ export function createWatch({
   let saidStopped = false
   let running = false
 
+  /** «90 с», «2 мин» — время так, как его читают в журнале. */
+  function secs(ms) {
+    const s = Math.round(ms / 1000)
+    return s < 120 ? `${s} с` : `${Math.round(s / 60)} мин`
+  }
+
   /**
-   * Подъём — тем же путём, что и супервизор (liftCommand), и его исход ложится В ЗАПИСЬ.
-   * Список попыток на маркере — это то, что потом читает квитанция: «поднимал трижды» и
-   * «поднимал однажды» — разные истории одного и того же провала.
+   * Подъём — тем же путём, что и супервизор (liftCommand), и он ложится В ЗАПИСЬ БЕЗ ИСХОДА.
+   *
+   * `outcome: 'pending'` — это и есть починка ночи на 29.08. Всё, что известно в этот момент:
+   * вызов запуска не бросил исключения. Над отделённым от родителя процессом это не значит
+   * ровно ничего — ни того, что процесс пошёл, ни того, что он прожил секунду. Исход назовёт
+   * дверь, и назовёт его ниже, в `settleLift`. Единственный исход, который МОЖНО назвать
+   * здесь, — `no-spawn`: вызов бросил, и дальше ждать нечего.
+   *
+   * Список попыток на маркере — то, что потом читает квитанция: «поднимал трижды и не поднял»
+   * и «поднял с первого раза» — разные истории одного и того же провала.
    */
   function doLift() {
     const at = new Date(now()).toISOString()
-    let ok = true
+    let outcome = 'pending'
     let error = ''
+    let logPath = ''
     try {
-      spawnLift(lift)
+      const started = spawnLift(lift)
+      logPath = String((started && started.log) || '')
     } catch (err) {
-      ok = false
+      outcome = 'no-spawn'
       error = String((err && err.message) || err)
     }
     lastLiftAt = now()
-    const attempt = { at, cmd: `${lift.cmd} ${lift.args.join(' ')}`, ok, ...(error ? { error } : {}) }
+    const attempt = {
+      at,
+      cmd: `${lift.cmd} ${lift.args.join(' ')}`,
+      outcome,
+      ...(logPath ? { log: logPath } : {}),
+      ...(error ? { error } : {}),
+    }
     outage = stampOutageImpl({ config, marker: outage, patch: { lifts: [...(outage.lifts ?? []), attempt] } })
-    log(ok ? `подъём запущен: ${attempt.cmd}` : `подъём НЕ запустился: ${error}`)
-    return ok
+    log(
+      outcome === 'pending'
+        ? `подъём ЗАПУЩЕН (${attempt.cmd}) — это ещё не «поднял»: жду живой двери ${secs(liftDoorWaitMs)}.`
+        : `подъём НЕ запустился: ${error}`,
+    )
+    return attempt
+  }
+
+  /** Последняя попытка, исход которой ещё не назван. Их не может быть двух: см. `settleLift`. */
+  function pendingLift() {
+    const lifts = (outage && outage.lifts) || []
+    const last = lifts[lifts.length - 1]
+    return last && last.outcome === 'pending' ? last : null
+  }
+
+  /** Отпущенное запуску время вышло, а дверь всё молчит — исход уже определён. */
+  function liftOverdue(attempt) {
+    const startedAt = Date.parse((attempt && attempt.at) || '')
+    return !Number.isFinite(startedAt) || now() - startedAt >= liftDoorWaitMs
+  }
+
+  /**
+   * ВЫДЕРЖКА МЕЖДУ ПОПЫТКАМИ РАСТЁТ, а считается от последней попытки ПО ЗАПИСИ, а не по
+   * памяти процесса: сторож, поднятый посреди чужого провала, обязан продолжить чужой счёт, а
+   * не начать долбить дверь заново с нуля. Растёт она потому, что вторая попытка через ту же
+   * минуту после первой — это не терпение, а тот же удар, повторённый громче: если первый
+   * подъём проиграл гонку за порт или упёрся в незакрывшийся сокет, второму нужно больше
+   * времени, чем первому, а не столько же.
+   */
+  function liftBackoffMs(attempts) {
+    return liftCooldownMs * 2 ** Math.max(0, attempts - 1)
+  }
+
+  function lastLiftAtOnRecord() {
+    const lifts = (outage && outage.lifts) || []
+    const last = lifts[lifts.length - 1]
+    const at = last ? Date.parse(last.at) : NaN
+    return Number.isFinite(at) ? at : lastLiftAt
+  }
+
+  /**
+   * settleLift(attempt) — назвать исход запущенного подъёма: дверь молчала дольше отпущенного,
+   * значит подъём НЕ УДАЛСЯ. Причина берётся из вывода САМОГО ЗАПУСКА, потому что «дверь не
+   * ответила» — это наблюдение, а не причина; причина лежит там, куда написал умерший старт.
+   */
+  function settleLift(attempt) {
+    const why = String(readLiftOutput(attempt.log || '') || '').trim()
+    const settled = { ...attempt, outcome: 'no-door', ...(why ? { tail: why } : {}) }
+    outage = stampOutageImpl({
+      config,
+      marker: outage,
+      patch: { lifts: [...((outage && outage.lifts) || []).slice(0, -1), settled] },
+    })
+    return { settled, why }
+  }
+
+  /**
+   * tellLiftFailed(attempt, why) → true, если попытки исчерпаны и сторож зовёт человека.
+   *
+   * ВТОРОЕ СООБЩЕНИЕ — ОБЯЗАТЕЛЬНОЕ. Человеку сказали «упал, поднимаю»; если подъём не вышел,
+   * а второго сообщения нет, картина у него остаётся ложной, и полагается он на неё сильнее,
+   * чем полагался бы на пустоту. Говорится оно ОДИН раз за провал (шум обесценивает и первое),
+   * и ещё один раз — когда попытки кончились: это уже не отчёт, а вызов человека.
+   */
+  async function tellLiftFailed(attempt, why) {
+    const attempts = ((outage && outage.lifts) || []).length
+    const at = new Date(now()).toISOString()
+    if (attempts >= liftAttemptsMax) {
+      const said = await notify({ config, text: liftGaveUpWords({ marker: outage, attempts, why, attempt }) })
+      outage = stampOutageImpl({
+        config,
+        marker: outage,
+        patch: {
+          liftGaveUpAt: at,
+          liftFailNotifiedAt: said.sent ? at : (outage.liftFailNotifiedAt ?? null),
+          liftFailNotice: said.reason,
+        },
+      })
+      log(
+        `подъём не удался ${attempts} раза подряд — больше не пробую, дальше это к человеку.${said.sent ? ' Сказал ему.' : ` Сказать в телеграм не вышло: ${said.reason}`}`,
+      )
+      return true
+    }
+    if (!outage.liftFailNotifiedAt && !outage.liftFailNotice) {
+      const said = await notify({
+        config,
+        text: liftFailedWords({
+          marker: outage,
+          attempt,
+          attempts,
+          attemptsMax: liftAttemptsMax,
+          waitMs: liftDoorWaitMs,
+          nextInMs: liftBackoffMs(attempts),
+          why,
+        }),
+      })
+      outage = stampOutageImpl({
+        config,
+        marker: outage,
+        patch: { liftFailNotifiedAt: said.sent ? at : null, liftFailNotice: said.reason },
+      })
+      if (!said.sent) log(`о неудавшемся подъёме сказать в телеграм не вышло: ${said.reason}`)
+    }
+    return false
   }
 
   async function tick() {
@@ -236,12 +406,59 @@ export function createWatch({
         },
       })
       if (!said.sent) log(`о падении сказать в телеграм не вышло: ${said.reason}`)
-      doLift()
+
+      // ОТ ПОДЪЁМА УЖЕ ОТКАЗАЛИСЬ — И ЭТО РЕШЕНИЕ ПОДХВАТЫВАЕТСЯ, А НЕ ОТМЕНЯЕТСЯ. Иначе
+      // перезапуск сторожа обнулял бы потолок попыток, и «не крутить цикл до утра» держалось бы
+      // ровно на том, что сторожа не перезапускали, — то есть ни на чём.
+      if (outage.liftGaveUpAt) {
+        log(`провал с ${outage.downAt} уже отдан человеку: подъём не удался и повторять его я не буду.`)
+        return { phase: 'abandoned', misses, door, outage }
+      }
+
+      // ПОДХВАЧЕННЫЙ ПРОВАЛ МОЖЕТ НЕСТИ ЧУЖУЮ НЕЗАВЕРШЁННУЮ ПОПЫТКУ. Сторож, умерший вместе с
+      // терминалом, оставил её со словом `pending` и исхода уже не назовёт. Дверь молчит прямо
+      // сейчас — значит та попытка её не открыла, и это записывается МОЛЧА: человек секунду
+      // назад получил сообщение о падении, и «не смог» о чужой попытке, про которую ему не
+      // говорили, был бы шумом. Чужая попытка, ещё не выработавшая своё время, уважается: два
+      // подъёма одновременно — это гонка за один порт, а не удвоенная надежда.
+      const inherited = pendingLift()
+      if (inherited) {
+        if (!liftOverdue(inherited)) return { phase: 'declared', misses, door, outage }
+        settleLift(inherited)
+      }
+      const first = doLift()
+      if (first.outcome === 'no-spawn') await tellLiftFailed(first, first.error)
       return { phase: 'declared', misses, door, outage }
     }
 
-    if (now() - lastLiftAt >= liftCooldownMs) {
-      doLift()
+    // ── провал уже объявлен: у сторожа остаётся ровно одно дело — довести подъём до исхода ──
+
+    // Попытки кончились и человек позван. Крутить цикл дальше — значит выглядеть занятым и не
+    // делать ничего; ждём того, кто может открыть журнал.
+    if (outage.liftGaveUpAt) return { phase: 'abandoned', misses, door, outage }
+
+    const pending = pendingLift()
+    if (pending) {
+      // Отпущенное время ещё идёт: демон может быть в середине boot'а, и объявить его неудачей
+      // сейчас — та же поспешность, что объявить падением одно молчание.
+      if (!liftOverdue(pending)) return { phase: 'down', misses, door, outage }
+      const { settled, why } = settleLift(pending)
+      log(
+        `подъём НЕ УДАЛСЯ: дверь ${where} не ответила за ${secs(liftDoorWaitMs)} после запуска. ` +
+          (why
+            ? `Вывод запуска: ${why}`
+            : `Запуск не оставил ни строки${settled.log ? ` в ${settled.log}` : ''} — похоже, процесс не начался вовсе.`),
+      )
+      if (await tellLiftFailed(settled, why)) return { phase: 'abandoned', misses, door, outage }
+    }
+
+    if (now() - lastLiftAtOnRecord() >= liftBackoffMs(((outage && outage.lifts) || []).length)) {
+      const attempt = doLift()
+      // Бросок на самом вызове — исход, известный сразу: ждать двери от процесса, который не
+      // запустился, нечего, и человеку об этом говорят тем же вторым сообщением.
+      if (attempt.outcome === 'no-spawn' && (await tellLiftFailed(attempt, attempt.error))) {
+        return { phase: 'abandoned', misses, door, outage }
+      }
       return { phase: 'lifting', misses, door, outage }
     }
     return { phase: 'down', misses, door, outage }

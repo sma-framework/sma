@@ -25,11 +25,12 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, openSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { loadConfig, resolveConfigPath } from '../daemon/src/config.mjs'
 import { stopDaemon, restartDaemon, liftCommand, exitCodeFor } from '../daemon/src/control.mjs'
+import { spawnLiftLogged } from './lift-log.mjs'
 
 const USAGE = [
   'Управление демоном:',
@@ -46,24 +47,14 @@ function say(line) {
 
 /**
  * spawnLift(lift) — start the supervisor's own lift DETACHED, so this command can report on
- * the door and exit while the daemon goes on living. stdout/stderr of the posix lift land in
- * the same rotating daily log the Windows wrapper writes: a boot that dies must leave its
- * reason somewhere, and «inherited from a terminal that has closed» is nowhere.
+ * the door and exit while the daemon goes on living. stdout/stderr land in the daily LIFT log
+ * (`daemon-lift-<day>.log`) on every platform, Windows included: a boot that dies must leave
+ * its reason somewhere, and both «inherited from a terminal that has closed» and «the .ps1
+ * keeps its own log» are nowhere when the .ps1 is the thing that never started. One lift for
+ * the whole product — see supervisor/lift-log.mjs.
  */
 function spawnLift(lift, logDir) {
-  const stdio = (() => {
-    if (process.platform === 'win32') return 'ignore' // the .ps1 owns its own log file
-    try {
-      mkdirSync(logDir, { recursive: true })
-      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-      const fd = openSync(join(logDir, `daemon-${stamp}.log`), 'a')
-      return ['ignore', fd, fd]
-    } catch {
-      return 'ignore'
-    }
-  })()
-  const child = spawn(lift.cmd, lift.args, { cwd: lift.cwd, detached: true, stdio, windowsHide: true })
-  child.unref()
+  return spawnLiftLogged({ spawn, lift, logDir })
 }
 
 async function main(argv) {

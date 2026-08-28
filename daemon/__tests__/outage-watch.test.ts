@@ -39,6 +39,7 @@ import {
   stampOutage,
 } from '../src/outage.mjs'
 import { createWatch, KNOCK_PATH, KNOCK_TIMEOUT_MS } from '../src/watch.mjs'
+import { noteLift, openLiftLog, spawnLiftLogged, tailLiftLog } from '../../supervisor/lift-log.mjs'
 import { probeDoor } from '../src/control.mjs'
 import { telegramApiBase, TELEGRAM_API_BASE } from '../src/telegram/client.mjs'
 import { ApiError } from '../../spa/src/api/client'
@@ -345,6 +346,322 @@ describe('сторож — молчание двери превращается 
     expect(round.outage!.fallNotifiedAt).toBeNull()
     expect(round.outage!.fallNotice).toBe('бот не подключён')
     expect(lifts).toHaveLength(1)
+  })
+})
+
+// ── «ПОДЪЁМ ЗАПУЩЕН» И «ПОДЪЁМ УДАЛСЯ» — РАЗНЫЕ ФАКТЫ ────────────────────────────
+//
+// НОЧЬ НА 29.08, живьём. Демон умер. Сторож отработал безупречно: заметил молчание за тридцать
+// секунд, написал владельцу, запустил подъём и записал попытку со словом «ok». Через десять
+// минут дверь всё ещё молчала, а в журнале скрипта подъёма не было НИ ОДНОЙ строки — процесс
+// не начался вовсе. «ok» означало лишь, что вызов запуска не бросил исключения; над отделённым
+// от родителя процессом с выброшенным выводом провал старта невидим по построению. Человеку
+// было сказано «падение» и не сказано, что подъём не состоялся, — и картина в телеграме до
+// утра оставалась «упал, поднимаю».
+//
+// Проверяется всё это ПОДДЕЛКОЙ ЗАПУСКА, КОТОРАЯ МОЛЧА НИЧЕГО НЕ ДЕЛАЕТ: вызов возвращается
+// без исключения, дверь не отвечает никогда. Ровно та ночь, только на часах, которые двигает
+// прогон.
+
+describe('сторож — запущенный подъём доводится до исхода, а не до слова «ok»', () => {
+  function deadLift({
+    config = scratchConfig(),
+    clock = clockFrom(T0),
+    output = '',
+    spawnThrows = false,
+    notifyFails = false,
+  }: {
+    config?: Record<string, unknown>
+    clock?: ReturnType<typeof clockFrom>
+    output?: string
+    spawnThrows?: boolean
+    notifyFails?: boolean
+  } = {}) {
+    const sent: Array<{ text: string; at: number }> = []
+    const lifts: number[] = []
+    const lines: string[] = []
+    const watch = createWatch({
+      config,
+      // дверь молчит ВСЕГДА: сколько ни поднимай, никто не отвечает
+      probe: async () => ({ answered: false, status: 0, state: null, reason: 'ECONNREFUSED', kind: 'refused' }),
+      readRecord: () => ({ pid: 4242, bind: '127.0.0.1', port: 7791, startedAt: '', path: '' }),
+      lift: { cmd: 'подъём', args: ['раз'], cwd: '.' },
+      spawnLift: () => {
+        if (spawnThrows) throw new Error('powershell не найден')
+        lifts.push(clock.now())
+        return { log: '/logs/daemon-lift-20260829.log' }
+      },
+      readLiftOutput: () => output,
+      notify: async ({ text }: { text: string }) => {
+        sent.push({ text, at: clock.now() })
+        return notifyFails ? { sent: false, reason: 'телеграм отказал' } : { sent: true, reason: '' }
+      },
+      now: clock.now,
+      log: (l: string) => lines.push(l),
+      missesToDeclare: 1,
+      liftCooldownMs: 120000,
+      liftDoorWaitMs: 90000,
+      liftAttemptsMax: 3,
+    })
+    return { watch, sent, lifts, lines, config, clock }
+  }
+
+  it('запущенный подъём лежит в записи БЕЗ исхода: «ok» не выдумывается на пустом месте', async () => {
+    const w = deadLift()
+    const declared = await w.watch.tick()
+    expect(declared.phase).toBe('declared')
+    expect(declared.outage!.lifts).toHaveLength(1)
+    expect(declared.outage!.lifts[0].outcome).toBe('pending')
+    expect(declared.outage!.lifts[0].ok).toBeUndefined() // слова, стоившего той ночи, больше нет
+  })
+
+  it('подъём, не породивший живой двери, получает исход «не удался» — и он ложится на диск', async () => {
+    const w = deadLift()
+    await w.watch.tick()
+    w.clock.advance(90000) // отпущенное время вышло, дверь всё молчит
+    const round = await w.watch.tick()
+
+    expect(round.outage!.lifts[0].outcome).toBe('no-door')
+    // исход обязан пережить сторожа: его читает и поднявшийся, и следующий сторож
+    expect((readOutage({ config: w.config })!.lifts[0] as { outcome: string }).outcome).toBe('no-door')
+    expect(w.lines.join(' ')).toContain('подъём НЕ УДАЛСЯ')
+  })
+
+  it('исход не объявляется раньше срока: демон в середине boot’а — ещё не провалившийся подъём', async () => {
+    const w = deadLift()
+    await w.watch.tick()
+    w.clock.advance(60000) // меньше отпущенного
+    const round = await w.watch.tick()
+    expect(round.phase).toBe('down')
+    expect(round.outage!.lifts[0].outcome).toBe('pending')
+    expect(w.sent).toHaveLength(1) // и человека вторым сообщением пока не тревожат
+  })
+
+  it('после неудачи уходит ВТОРОЕ сообщение человеку — с причиной из вывода самого запуска', async () => {
+    const w = deadLift({ output: 'Program «node» not found' })
+    await w.watch.tick()
+    expect(w.sent).toHaveLength(1)
+    expect(w.sent[0].text).toContain('Демон не отвечает')
+
+    w.clock.advance(90000)
+    await w.watch.tick()
+
+    expect(w.sent).toHaveLength(2)
+    expect(w.sent[1].text).toContain('Поднять не смог')
+    expect(w.sent[1].text).toContain('Program «node» not found')
+    expect(w.sent[1].text).toContain('Повторю через')
+  })
+
+  it('и о втором сообщении человеку обещано в первом: «не выйдет — скажу», а не тишина', () => {
+    expect(fallWords({ downAt: new Date(T0).toISOString(), door: 'http://127.0.0.1:7791' })).toContain(
+      'скажу об этом отдельным сообщением',
+    )
+  })
+
+  it('запуск не оставил ни строки — это и сказано человеку: пустой журнал сам по себе улика', async () => {
+    const w = deadLift({ output: '' })
+    await w.watch.tick()
+    w.clock.advance(90000)
+    await w.watch.tick()
+
+    expect(w.sent[1].text).toContain('не оставил ни строки')
+    expect(w.sent[1].text).toContain('daemon-lift-20260829.log') // и назван файл, в котором её нет
+  })
+
+  it('о неудаче говорится один раз за провал, а не на каждом круге', async () => {
+    const w = deadLift()
+    await w.watch.tick()
+    for (let i = 0; i < 6; i += 1) {
+      w.clock.advance(90000)
+      await w.watch.tick()
+    }
+    // два сообщения о неудаче на один провал — это шум, обесценивающий и первое
+    expect(w.sent.filter((m) => m.text.includes('Поднять не смог')).length).toBeLessThanOrEqual(2)
+  })
+
+  it('повтор идёт с ВЫДЕРЖКОЙ, и выдержка растёт: второй удар не бьёт в ту же секунду', async () => {
+    const w = deadLift()
+    await w.watch.tick() // T0: провал объявлен, подъём 1
+    expect(w.lifts).toHaveLength(1)
+
+    w.clock.advance(90000) // T0+90 с: исход первого назван, но выдержка ещё идёт
+    expect((await w.watch.tick()).phase).toBe('down')
+    expect(w.lifts).toHaveLength(1)
+
+    w.clock.advance(30000) // T0+2 мин: выдержка вышла
+    expect((await w.watch.tick()).phase).toBe('lifting')
+    expect(w.lifts).toHaveLength(2)
+
+    w.clock.advance(90000) // исход второго
+    expect((await w.watch.tick()).phase).toBe('down')
+    w.clock.advance(90000) // на прежней выдержке подъём был бы уже здесь
+    expect((await w.watch.tick()).phase).toBe('down')
+    expect(w.lifts).toHaveLength(2)
+
+    w.clock.advance(60000) // а он там, где удвоенная: 4 мин после второй попытки
+    expect((await w.watch.tick()).phase).toBe('lifting')
+    expect(w.lifts).toHaveLength(3)
+  })
+
+  it('после трёх неудач сторож ЗОВЁТ ЧЕЛОВЕКА и перестаёт крутить цикл', async () => {
+    const w = deadLift()
+    await w.watch.tick()
+    for (const step of [90000, 30000, 90000, 150000, 90000]) {
+      w.clock.advance(step)
+      await w.watch.tick()
+    }
+    expect(w.lifts).toHaveLength(3)
+    expect(w.sent).toHaveLength(3)
+    expect(w.sent[2].text).toContain('Больше не пробую')
+    expect(w.sent[2].text).toContain('npm run daemon:restart')
+
+    // и дальше — ни одной попытки и ни одного слова, сколько ни жди
+    for (let i = 0; i < 5; i += 1) {
+      w.clock.advance(600000)
+      expect((await w.watch.tick()).phase).toBe('abandoned')
+    }
+    expect(w.lifts).toHaveLength(3)
+    expect(w.sent).toHaveLength(3)
+    expect(readOutage({ config: w.config })!.liftGaveUpAt).not.toBeNull()
+  })
+
+  it('сторож, перезапущенный после отказа, не начинает цикл заново', async () => {
+    const first = deadLift()
+    await first.watch.tick()
+    for (const step of [90000, 30000, 90000, 150000, 90000]) {
+      first.clock.advance(step)
+      await first.watch.tick()
+    }
+    expect(first.lifts).toHaveLength(3)
+
+    const second = deadLift({ config: first.config, clock: clockFrom(T0 + 3600000) })
+    const round = await second.watch.tick()
+    expect(round.phase).toBe('abandoned')
+    expect(second.lifts).toHaveLength(0) // потолок попыток живёт в записи, а не в памяти процесса
+  })
+
+  it('бросок на самом вызове — исход, известный сразу: ждать двери не от кого', async () => {
+    const w = deadLift({ spawnThrows: true })
+    const round = await w.watch.tick()
+    expect(round.outage!.lifts[0].outcome).toBe('no-spawn')
+    expect(w.sent).toHaveLength(2)
+    expect(w.sent[1].text).toContain('Поднять не смог')
+    expect(w.sent[1].text).toContain('powershell не найден')
+  })
+
+  it('телеграм отказал на неудавшемся подъёме — отказ назван и второй раз не повторяется', async () => {
+    const w = deadLift({ notifyFails: true })
+    await w.watch.tick()
+    w.clock.advance(90000)
+    await w.watch.tick()
+    const marker = readOutage({ config: w.config })!
+    expect(marker.liftFailNotifiedAt).toBeNull()
+    expect(marker.liftFailNotice).toBe('телеграм отказал')
+  })
+
+  it('дверь, ответившая в отпущенный срок, и есть исход: квитанция несёт «up», а не «не знаю»', () => {
+    const config = scratchConfig()
+    const opened = openOutage({ config, downAt: T0, now: () => T0 })
+    const stamped = stampOutage({
+      config,
+      marker: opened,
+      patch: { lifts: [{ at: new Date(T0 + 1000).toISOString(), cmd: 'подъём', outcome: 'pending' }] },
+    })
+    const { receipt } = closeOutage({
+      config,
+      marker: stamped,
+      doorBackAt: T0 + 40000,
+      roseAt: T0 + 39000,
+      now: () => T0 + 40000,
+    })
+    expect(receipt.lifts[0].outcome).toBe('up')
+    expect(receipt.lifts[0].doorAt).toBe(new Date(T0 + 40000).toISOString())
+  })
+
+  it('ложная тревога называет подъём своим словом: поднимать было нечего', () => {
+    const config = scratchConfig()
+    const opened = openOutage({ config, downAt: T0, now: () => T0 })
+    const stamped = stampOutage({
+      config,
+      marker: opened,
+      patch: { lifts: [{ at: new Date(T0 + 1000).toISOString(), cmd: 'подъём', outcome: 'pending' }] },
+    })
+    const { receipt } = closeOutage({
+      config,
+      marker: stamped,
+      doorBackAt: T0 + 40000,
+      falseAlarm: true,
+      now: () => T0 + 40000,
+    })
+    expect(receipt.lifts[0].outcome).toBe('no-need')
+  })
+})
+
+// ── ВЫВОД ЗАПУСКА: ЕСТЬ КУДА ПИСАТЬ И ЕСТЬ ГДЕ ПРОЧЕСТЬ ──────────────────────────
+
+describe('журнал запусков — вывод подъёма попадает в файл, а не выбрасывается', () => {
+  const scratchLogDir = () => join(mkdtempSync(join(tmpdir(), 'sma-lift-')), 'logs')
+
+  it('у запуска есть свой дневной файл — на любой платформе, без развилки «а на Windows в никуда»', () => {
+    const logDir = scratchLogDir()
+    const opened = openLiftLog(logDir, { at: new Date(T0) })
+    expect(opened.log).toBe(join(logDir, 'daemon-lift-20260828.log'))
+    expect(opened.stdio).not.toBe('ignore')
+    expect(Array.isArray(opened.stdio)).toBe(true)
+    opened.close()
+    expect(existsSync(opened.log)).toBe(true)
+  })
+
+  it('ошибка запуска приходит СОБЫТИЕМ, а не броском, — и всё равно ложится в журнал', () => {
+    const logDir = scratchLogDir()
+    const handlers: Record<string, (...a: unknown[]) => void> = {}
+    // Так `spawn` и сообщает о несостоявшемся запуске: не исключением, которое можно поймать
+    // вокруг вызова, а событием потом. Отсюда и «ok» той ночи — ловить было нечего.
+    const fakeSpawn = () => ({
+      on(ev: string, fn: (...a: unknown[]) => void) {
+        handlers[ev] = fn
+        return this
+      },
+      unref() {},
+    })
+    const { log } = spawnLiftLogged({
+      spawn: fakeSpawn as never,
+      lift: { cmd: 'powershell', args: ['-File', 'start-daemon-windows.ps1'], cwd: '.' },
+      logDir,
+      at: new Date(T0),
+    })
+    handlers.error(new Error('spawn powershell ENOENT'))
+
+    const tail = tailLiftLog(log)
+    expect(tail).toContain('ЗАПУСК НЕ СОСТОЯЛСЯ')
+    expect(tail).toContain('ENOENT')
+    expect(tail).toContain('powershell -File start-daemon-windows.ps1') // видно, ЧТО не запустилось
+  })
+
+  it('хвост ограничен: сообщение, не влезающее в экран телефона, — то же молчание, только длиннее', () => {
+    const logDir = scratchLogDir()
+    const opened = openLiftLog(logDir, { at: new Date(T0) })
+    opened.close()
+    for (let i = 0; i < 40; i += 1) noteLift(opened.log, `строка ${i}`)
+    const tail = tailLiftLog(opened.log)
+    expect(tail.split('\n')).toHaveLength(12)
+    expect(tail).toContain('строка 39')
+    expect(tail).not.toContain('строка 27')
+  })
+
+  it('ни один запуск подъёма больше не решает сам, что на Windows вывод не нужен', () => {
+    // Развилка `if (win32) return 'ignore'` стояла в обоих запусках под предлогом «.ps1 ведёт
+    // журнал сам». Ведёт — если запустилась; ночью на 29.08 не запустилась именно она.
+    for (const name of ['daemon-watch.mjs', 'daemon-control.mjs']) {
+      const src = readFileSync(new URL(`../../supervisor/${name}`, import.meta.url), 'utf8')
+      expect(src).not.toContain("'ignore'")
+      expect(src).toContain('spawnLiftLogged')
+    }
+  })
+
+  it('файла нет — пустая строка, а не бросок: журнал это удобство, а не условие подъёма', () => {
+    expect(tailLiftLog(join(scratchLogDir(), 'нет-такого.log'))).toBe('')
+    expect(tailLiftLog('')).toBe('')
   })
 })
 
