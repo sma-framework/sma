@@ -74,12 +74,29 @@ import { resolveWorkerBin } from './resolve-bin.mjs'
 
 import { pipelineMaxTurns } from '../config.mjs'
 import { stageCommand } from '../policy/phase-cycle.mjs'
+import { taskTurnCap } from '../policy/turn-budget.mjs'
 
 /** The route named no worker this spawn could run as. */
 export class NoWorkerForRouteError extends Error {
   constructor(message) {
     super(message)
     this.name = 'NoWorkerForRouteError'
+  }
+}
+
+/**
+ * КАЖДЫЙ ЧЕСТНЫЙ ПОТОЛОК ЭТОЙ РАБОТЫ УЖЕ СГОРЕЛ — запускать нечего.
+ *
+ * Бросается вместо того, чтобы поставить на командную строку число, которое уже проиграло.
+ * Это оборона в глубину, а не основная тропа: тик отказывает раньше, ДО провизии копии, и
+ * ставит работу человеку с названными вариантами. Но сборщик — последний отрезок дороги до
+ * процесса, и он не имеет права молча выдать повтор известного исхода, если проверку выше
+ * когда-нибудь обойдут.
+ */
+export class TurnCapExhaustedError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'TurnCapExhaustedError'
   }
 }
 
@@ -279,6 +296,26 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
     // naming a model nobody asked for would itself be the substitution the guard exists to catch.
     const { model, effort } = expectedModelEffort({ worker, task })
 
+    // ── (3b) HOW FAR THIS ATTEMPT MAY WALK ──────────────────────────────────────
+    // Не одно число на всю работу. База — настройка человека; во сколько раз больше неё
+    // получит ЭТА работа, решает `taskTurnCap` по объявленным полям задачи, и он же
+    // отказывается выдать потолок, который для этой задачи уже сгорел. Считается ДО сборки
+    // массива, чтобы отказ стоил ноль процессов.
+    const turnBudget = taskTurnCap({
+      base: pipelineMaxTurns(config),
+      task,
+      // Потолки, которые эта задача уже сожгла. Их приносит тик из реестра попыток — только
+      // он знает, где реестр лежит; здесь они просто число за числом.
+      burnedCaps: Array.isArray(options.burnedTurnCaps) ? options.burnedTurnCaps : [],
+    })
+    if (turnBudget.cap === null) {
+      throw new TurnCapExhaustedError(
+        `buildArgs: task "${task.id}" already burned a ceiling of ${turnBudget.escalatedFrom} turns and the ` +
+          `limit of all raises (${turnBudget.ceiling}) leaves nothing bigger to hand it — this work needs a ` +
+          'person to cut it up, not another attempt under a ceiling that has already failed',
+      )
+    }
+
     // ── (4) THE ARGUMENT ARRAY ──────────────────────────────────────────────────
     const argOpts = {}
     if (model !== null) argOpts.model = model
@@ -313,10 +350,11 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
         // number that turns that into a stop — and a stop only exists if the number is HERE, in
         // the argument array of the spawn, rather than in a field somebody means to read later.
         //
-        // It comes from config, and this line is the last stretch of road between the person who
-        // set it and the process that has to obey it. The resolver refuses anything that is not
-        // a whole positive number, so a malformed file cannot put junk on a command line.
-        maxTurns: pipelineMaxTurns(config),
+        // ЧИСЛО ТЕПЕРЬ НЕ ОДНО НА ВСЁ. Настройка человека осталась базой; сколько получит эта
+        // работа — посчитано выше по её объявленному размеру и по потолкам, которые она уже
+        // сожгла. Эта строка по-прежнему остаётся последним отрезком дороги между решением и
+        // процессом, который обязан ему подчиниться.
+        maxTurns: turnBudget.cap,
         // WHAT WOKE THIS ATTEMPT, AND WHETHER IT MAY CONTINUE THE PREVIOUS SESSION — decided by
         // the tick, which is the only place that knows, and DELIVERED HERE so the builder's own
         // fresh-session lock finally stands on the path a task takes.

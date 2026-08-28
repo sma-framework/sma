@@ -356,6 +356,45 @@ describe('deriveState — the one-poll payload', () => {
   })
 
   /**
+   * НА ЧТО УШЛИ ХОДЫ — В ДВЕРИ СОСТОЯНИЯ, а не только в транскрипте.
+   *
+   * «Сожжено сто шестьдесят» не говорит, поднимать потолок или резать работу. Сто ходов
+   * правок — работе не хватило места; сто ходов запусков оболочки — доказательство, которое
+   * не сходится, и оно просит отдельной задачи. Ровно эта разница один раз и стоила ночи:
+   * код был написан за шестнадцать минут, а следующий час ушёл на попытку доказать его живым
+   * прогоном — сто семнадцать запусков оболочки против тридцати одной правки.
+   */
+  it('разбивка ходов по роду видна в двери состояния — и у карточки с повтором тоже', async () => {
+    const rows = [
+      { id: 'BL-cap', status: 'failed', lane: 'prod', title: 'не влезла', failure_reason: 'turns_exhausted', attempt: 1, completedAt: NOW },
+      { id: 'BL-red', status: 'failed', lane: 'prod', title: 'красные тесты', failure_reason: 'tests_red', attempt: 1, completedAt: NOW },
+    ]
+    const kinds = { edits: 31, runs: 117, reads: 40, other: 4 }
+    const ledger = (id: string) => [
+      { taskId: id, attempt: 1, workerId: 'max-1', failureReason: id === 'BL-cap' ? 'turns_exhausted' : 'tests_red', turnCap: 160, turnsUsed: 160, turnKinds: kinds },
+    ]
+    const payload = await deriveState({ adapter: mkAdapter(rows), ledger, windows: makeWindows({}), config, clock: () => NOW })
+    const byId = Object.fromEntries(payload.done.map((d: any) => [d.id, d]))
+
+    expect(byId['BL-cap'].failed.spent).toEqual({ cap: 160, used: 160, kinds })
+    // РАЗБИВКА — У ВСЯКОЙ КРАСНОЙ КАРТОЧКИ, а не только у той, что упёрлась в потолок:
+    // попытка, съевшая сто шестьдесят ходов и упавшая на тестах, и упавшая на третьем —
+    // разные события, а экран показывал их одинаково.
+    expect(byId['BL-red'].failed.spent).toEqual({ cap: 160, used: 160, kinds })
+  })
+
+  it('попытка, которая о ходах молчит, молчит и на карточке — нулей вместо «неизвестно» нет', async () => {
+    const rows = [
+      { id: 'BL-old', status: 'failed', lane: 'prod', title: 'старая строка', failure_reason: 'turns_exhausted', attempt: 1, completedAt: NOW },
+    ]
+    const ledger = () => [{ taskId: 'BL-old', attempt: 1, workerId: 'max-1', failureReason: 'turns_exhausted' }]
+    const payload = await deriveState({ adapter: mkAdapter(rows), ledger, windows: makeWindows({}), config, clock: () => NOW })
+    const failed = payload.done[0].failed
+
+    expect(failed.spent).toBeNull()
+  })
+
+  /**
    * СКОЛЬКО ЗАНЯЛО — the length of a finished task, from the two marks the ledger already had.
    *
    * The list printed «—» in the length column of every completed task, and the reading was one

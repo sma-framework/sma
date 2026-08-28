@@ -99,7 +99,8 @@ import { createHash } from 'node:crypto'
 import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, mkdirSync as fsMkdirSync, writeFileSync as fsWriteFileSync, rmSync as fsRmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import { pipelineEnabled } from './config.mjs'
+import { pipelineEnabled, pipelineMaxTurns } from './config.mjs'
+import { taskTurnCap, burnedTurnCapsOf, turnKindOf, emptyTurnKinds } from './policy/turn-budget.mjs'
 import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS, failureAwaitsAPerson, ATTEMPTS_EXHAUSTED, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
@@ -337,6 +338,74 @@ function wakeSpawnOptions(deps, task) {
     /* an unreadable ledger means a fresh session — never a wedged attempt */
   }
   return { wakeKind: 'return' }
+}
+
+/**
+ * turnBudgetFor(deps, config, task) → сколько ходов получит ЭТА попытка, и по каким признакам.
+ *
+ * ГДЕ ЛЕЖИТ ПАМЯТЬ О СГОРЕВШИХ ПОТОЛКАХ, ЗНАЕТ ТОЛЬКО ТИК. Реестр попыток — его шов; решение,
+ * какое число из тех потолков что-то значит, принадлежит `policy/turn-budget.mjs`. Поэтому
+ * здесь только чтение строк и передача их как есть: развилка живёт в одном месте, а не в
+ * двух, где второе однажды тихо разойдётся с первым.
+ *
+ * FAIL-OPEN И В ПРАВИЛЬНУЮ СТОРОНУ: нечитаемый реестр означает «ничего не горело», то есть
+ * потолок по размеру работы. Обратное — считать нечитаемый реестр пожаром — останавливало бы
+ * работу из-за сбоя диска, а не из-за самой работы.
+ *
+ * @returns {{cap:number|null, size:string, signals:object, escalatedFrom:number|null, ceiling:number, burnedCaps:number[]}}
+ */
+function turnBudgetFor(deps, config, task) {
+  let rows = []
+  try {
+    rows = (deps.ledger && typeof deps.ledger.readAttempts === 'function' && deps.ledger.readAttempts(task.id)) || []
+  } catch {
+    rows = []
+  }
+  const burnedCaps = burnedTurnCapsOf(rows)
+  return { ...taskTurnCap({ base: pipelineMaxTurns(config), task, burnedCaps }), burnedCaps }
+}
+
+/**
+ * turnSpendOf(lines) → `{turns, kinds}` — СКОЛЬКО ХОДОВ УШЛО И НА ЧТО.
+ *
+ * ЗАЧЕМ РАЗБИВКА. «Сожжено сто ходов» не говорит человеку, поднимать потолок или дробить
+ * работу, а это ровно тот выбор, который ему предлагается. Сто ходов правок — работа, которой
+ * не хватило места. Сто ходов запусков оболочки — доказательство, которое не сходится, и оно
+ * заслуживает своей задачи, а не большего потолка на ту же. Разница видна только по роду.
+ *
+ * ЧТО СЧИТАЕТСЯ. `turns` — число с финального кадра CLI (его собственная арифметика; наша
+ * рядом была бы вторым счётом, расходящимся с первым). Роды считаются по ВЫЗОВАМ
+ * инструментов в кадрах помощника: имя инструмента приходит полем, и разбор текста команды
+ * здесь был бы догадкой о том, что она делает.
+ *
+ * ПОЧЕМУ СУММА РОДОВ НЕ РАВНА `turns`. Один ход может позвать несколько инструментов, а может
+ * не позвать ни одного. Это две РАЗНЫЕ меры одного прогона, и подгонять одну под другую
+ * значило бы соврать в обеих; карточка называет их порознь.
+ *
+ * @param {string[]} lines — поток попытки, как он собран
+ * @returns {{turns:number|null, kinds:{edits:number, runs:number, reads:number, other:number}}}
+ */
+export function turnSpendOf(lines) {
+  const kinds = emptyTurnKinds()
+  let turns = null
+  if (!Array.isArray(lines)) return { turns, kinds }
+  for (const line of lines) {
+    if (typeof line !== 'string') continue
+    const { event, frame } = parseClaudeFrame(line)
+    if (!event || !frame) continue
+    if (event.type === 'result') {
+      // Последний терминальный кадр говорит за прогон — как и у распознавателя потолка выше.
+      if (Number.isFinite(event.numTurns)) turns = event.numTurns
+      continue
+    }
+    if (event.type !== 'assistant') continue
+    const content = frame.message && Array.isArray(frame.message.content) ? frame.message.content : []
+    for (const block of content) {
+      if (!block || block.type !== 'tool_use') continue
+      kinds[turnKindOf(block.name)] += 1
+    }
+  }
+  return { turns, kinds }
 }
 
 /**
@@ -798,6 +867,29 @@ function argMaxTurns(args) {
   if (at < 0) return null
   const n = Number(args[at + 1])
   return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/**
+ * turnRecordOf(args, lines) → поля ходов для строки реестра: `{turnCap, turnsUsed, turnKinds}`.
+ *
+ * ОДНО ВЫРАЖЕНИЕ НА ОБА ПУТИ ЗАПУСКА. Потолок читается с ТОЙ ЖЕ командной строки, что и у
+ * распознавателя упора выше (`argMaxTurns`), а не из настроек: настройка — это утверждение о
+ * запуске, а массив аргументов — его чтение, и следующая попытка поднимает потолок именно от
+ * прочитанного числа. Потолка на строке нет — ключ не пишется вовсе: отсутствие остаётся
+ * отсутствием, а не превращается в ноль, который читался бы как «ходов не давали».
+ *
+ * @param {string[]} args — массив аргументов запуска, как он был собран
+ * @param {string[]} lines — поток попытки
+ * @returns {{turnCap?:number, turnsUsed?:number, turnKinds:object}}
+ */
+function turnRecordOf(args, lines) {
+  const cap = argMaxTurns(args)
+  const { turns, kinds } = turnSpendOf(lines)
+  return {
+    ...(cap === null ? {} : { turnCap: cap }),
+    ...(turns === null ? {} : { turnsUsed: turns }),
+    turnKinds: kinds,
+  }
 }
 
 /**
@@ -3526,6 +3618,24 @@ export async function tick(deps = {}) {
         return result
       }
 
+      // (4d) СКОЛЬКО ХОДОВ ПОЛУЧИТ ЭТА ПОПЫТКА — И ЕСТЬ ЛИ ЧТО ЕЙ ДАТЬ.
+      //
+      // Спрашивается ЗДЕСЬ, до провизии копии и до всякого процесса, потому что единственный
+      // отрицательный ответ этой функции означает «запускать нельзя»: всякий потолок, который
+      // мы готовы оплатить, эта работа уже сожгла. Запуск с числом, которое уже проиграло, —
+      // оплаченный повтор известного исхода; отказ здесь стоит ноль процессов и ноль минут
+      // подписки, а человеку на карточку едут его три выхода и число сожжённых ходов.
+      const turnBudget = turnBudgetFor(deps, config, task)
+      if (turnBudget.cap === null) {
+        const detail =
+          `работа уже сожгла потолок в ${turnBudget.escalatedFrom} ходов, а предел всех подъёмов ` +
+          `(${turnBudget.ceiling}) не оставляет большего — нужен человек: разбить задачу или отменить`
+        writeLog(deps, { type: 'task.refused', taskId: task.id, reason: 'turns_exhausted', detail })
+        await failTask(deps, task, { reason: 'turns_exhausted', route, now: now(), envelope, from: fleetState })
+        result.failed = { taskId: task.id, reason: 'turns_exhausted', detail }
+        return result
+      }
+
       // (5) WHERE THE WORKER STANDS. Code work gets a per-task worktree on its own
       // branch (`wt/<taskId>`, EXPECTED_BASE guard on) so two tasks can never edit one tree.
       // A DOCUMENTARY stage stands in the project checkout itself — its whole product is the
@@ -3787,6 +3897,10 @@ export async function tick(deps = {}) {
       const spec = buildArgs(task, route, {
         ...SPAWN_OPTIONS,
         ...wake,
+        // ПОТОЛКИ, КОТОРЫЕ ЭТА РАБОТА УЖЕ СОЖГЛА. Прочитаны выше, из реестра попыток — шва,
+        // о котором сборщик аргументов не знает и знать не должен. Он берёт числа и решает
+        // ими одну вещь: следующий потолок обязан быть строго больше всякого сгоревшего.
+        burnedTurnCaps: turnBudget.burnedCaps,
         // ЧТО ПРОШЛАЯ ПОПЫТКА ОСТАВИЛА СЛЕДУЮЩЕЙ. Читается здесь, потому что только тик знает,
         // где лежит каталог прогона прошлой попытки; заворачивается в забор строителем, потому
         // что забор живёт там. Дописать забор здесь было бы нечем: его в этом файле нет вовсе.
@@ -3981,6 +4095,12 @@ export async function tick(deps = {}) {
       // ceiling this very spawn was handed, so the reading is of the command line that ran and
       // not of a setting somebody believes it carried.
       const turnCapHit = turnCapHitOf(streamLines, argMaxTurns(spec.args))
+      // И ЧЕМ ЭТА ПОПЫТКА ЗАНЯЛА СВОИ ХОДЫ. Считается для КАЖДОЙ попытки, а не только для той,
+      // что упёрлась: человек, решающий «поднять потолок или разрезать работу», сравнивает
+      // сгоревшую попытку с теми, что уложились, — а сравнивать не с чем, если мерили только
+      // упавшую. Потолок берётся с командной строки, которая правда была: число из настроек
+      // было бы утверждением о запуске вместо его чтения.
+      const turnSpend = turnRecordOf(spec.args, streamLines)
 
       // (7a) WHAT IT COST — read off this attempt's own stream, before any gate decides its
       // fate. A refused attempt still spent the tokens, so the book is written for every
@@ -4108,10 +4228,10 @@ export async function tick(deps = {}) {
           infraReason ?? (gate.receiptRef ? (noteWritten ? lessonReason : 'no_journal') : gate.reason)
         if (reason) {
           if (gate.detail) writeLog(deps, { type: 'task.refused', taskId: task.id, reason, detail: gate.detail })
-          await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+          await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
           result.failed = { taskId: task.id, reason, ...(gate.detail ? { detail: gate.detail } : {}) }
         } else {
-          await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+          await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
           result.completed = task.id
         }
         return result
@@ -4133,7 +4253,7 @@ export async function tick(deps = {}) {
         // fall through to the code gate, which would call a finished answer «нет квитанции»
         // and send a person looking for a receipt nobody was ever going to write.
         writeLog(deps, { type: 'task.refused', taskId: task.id, reason: 'no_lesson', detail: lessonEval.reason })
-        await failTask(deps, task, { reason: 'no_lesson', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+        await failTask(deps, task, { reason: 'no_lesson', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
         result.failed = { taskId: task.id, reason: 'no_lesson' }
         return result
       }
@@ -4141,7 +4261,7 @@ export async function tick(deps = {}) {
         // NEVER SILENT: an outcome that skipped the code gate says so in the operator's log,
         // so «the worker answered» can never be mistaken for «the worker's code passed».
         writeLog(deps, { type: 'task.answered', taskId: task.id, receiptRef: answered.receiptRef })
-        await completeTask(deps, task, { receiptRef: answered.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+        await completeTask(deps, task, { receiptRef: answered.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
         result.completed = task.id
         return result
       }
@@ -4290,7 +4410,7 @@ export async function tick(deps = {}) {
       })
 
       if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten && lessonOk) {
-        await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+        await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
         result.completed = task.id
       } else {
         // WHO ENDED THE RUN rides with the rest. The door to «done» above is untouched: an
@@ -4307,7 +4427,7 @@ export async function tick(deps = {}) {
           journalComplete: noteWritten,
           lessonComplete: lessonOk,
         })
-        await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+        await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
         result.failed = { taskId: task.id, reason }
       }
       return result
@@ -4400,6 +4520,19 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     writeLog(deps, { type: 'task.refused', taskId: task.id, lane: task.lane, reason: noPermit.reason, detail: noPermit.detail })
     await failTask(deps, task, { reason: noPermit.reason, route, now: now(), envelope, from: fleetState })
     result.failed = { taskId: task.id, reason: noPermit.reason, detail: noPermit.detail }
+    return result
+  }
+
+  // И СКОЛЬКО ХОДОВ ЕЙ ПОЛОЖЕНО — тот же вопрос, тем же выражением, что и на пути кода. Полоса
+  // кузницы тоже платится подпиской, и повтор известного исхода стоит здесь ровно столько же.
+  const turnBudget = turnBudgetFor(deps, config, task)
+  if (turnBudget.cap === null) {
+    const detail =
+      `работа уже сожгла потолок в ${turnBudget.escalatedFrom} ходов, а предел всех подъёмов ` +
+      `(${turnBudget.ceiling}) не оставляет большего — нужен человек: разбить задачу или отменить`
+    writeLog(deps, { type: 'task.refused', taskId: task.id, reason: 'turns_exhausted', detail })
+    await failTask(deps, task, { reason: 'turns_exhausted', route, now: now(), envelope, from: fleetState })
+    result.failed = { taskId: task.id, reason: 'turns_exhausted', detail }
     return result
   }
 
@@ -4539,6 +4672,9 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     ...SPAWN_OPTIONS,
     ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
     ...envelopeSpawnOptions(envelope),
+    // Тот же список сгоревших потолков, что и на пути кода: два места, где живёт одно правило,
+    // однажды разойдутся, а одно выражение — нет.
+    burnedTurnCaps: turnBudget.burnedCaps,
     // The SAME one function the code path calls — see its own note about the last time these
     // two points each carried a private copy of a spawn decision.
     ...gateSpawnOptions(deps, config, task),
@@ -4587,6 +4723,10 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // forge attempt still spent the tokens; the forge lane booked nothing at all until now, so
   // «Расходы» answered zero to a night of real sessions.
   const attemptTokens = bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
+
+  // И СКОЛЬКО ХОДОВ УШЛО И НА ЧТО — тем же выражением, что и на пути кода: полоса кузницы
+  // создаёт попытку, значит попытка кузницы обязана тот же счёт, что и всякая другая.
+  const turnSpend = turnRecordOf(spec.args, streamLines)
 
   // The forge lane creates an attempt, so the forge lane owes a note like any other lane.
   // THE STREAM IS NOT TEXT: the markers live inside JSON frames, so the raw lines are
@@ -4642,7 +4782,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   })
 
   if (exit.spawnError) {
-    await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+    await failTask(deps, task, { reason: 'runtime_offline', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
     result.failed = { taskId: task.id, reason: 'runtime_offline' }
     return result
   }
@@ -4661,7 +4801,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
         `провайдер оборвал прогон (${forgeAbort.reason}${forgeAbort.status ? ` ${forgeAbort.status}` : ''})` +
         `${forgeAbort.said ? `: ${forgeAbort.said}` : ''}`,
     })
-    await failTask(deps, task, { reason: 'provider_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+    await failTask(deps, task, { reason: 'provider_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
     result.failed = { taskId: task.id, reason: 'provider_error' }
     return result
   }
@@ -4669,7 +4809,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   // (7) EXIT GATE = deterministic draft lint + committed-on-branch assertion (NOT reverify).
   const drafts = listCommittedDrafts(deps.execGit, branch, worktreePath, kind)
   if (drafts.length !== 1) {
-    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
     result.failed = { taskId: task.id, reason: 'agent_error', detail: 'draft not committed (expected exactly one)' }
     return result
   }
@@ -4683,7 +4823,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   if (!envelopeAllows(envelope, { action: 'write', path: draftPath })) {
     const detail = `draft path is outside the lane's declared write scope: ${draftPath}`
     writeLog(deps, { type: 'task.refused', taskId: task.id, lane: task.lane, reason: 'agent_error', detail })
-    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
     result.failed = { taskId: task.id, reason: 'agent_error', detail }
     return result
   }
@@ -4691,14 +4831,14 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
   const lint = lintDraft({ kind, filePath: join(worktreePath, draftPath), fsImpl: deps.fsImpl })
   if (!lint.passed) {
     const failed = lint.checks.filter((c) => !c.ok).map((c) => c.name).join(',')
-    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+    await failTask(deps, task, { reason: 'agent_error', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
     result.failed = { taskId: task.id, reason: 'agent_error', detail: `lint failed: ${failed}` }
     return result
   }
 
   if (!noteWritten) {
     // Certified draft, unexplained attempt — the same gate, the same named failure.
-    await failTask(deps, task, { reason: 'no_journal', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+    await failTask(deps, task, { reason: 'no_journal', branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
     result.failed = { taskId: task.id, reason: 'no_journal' }
     return result
   }
@@ -4712,7 +4852,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     sha256: lint.sha256,
     fsImpl: deps.fsImpl,
   })
-  await completeTask(deps, task, { receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow })
+  await completeTask(deps, task, { receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
   result.completed = task.id
   return result
 }
@@ -4722,7 +4862,7 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
  * `from` names the fine state the task was really in; omitting it (the preflight-«built»
  * door) writes the row with no transition fields rather than an invented pair.
  */
-async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from, sessionId, startedAt, worktree }) {
+async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from, sessionId, startedAt, worktree, turns }) {
   const { adapter, ledger, report, journal } = deps
   // THE VERDICT FIRST, THE ROW SECOND. The five parity receipts are computed here rather than
   // where the receipt file is written, because the ledger row below is appended BEFORE that
@@ -4811,6 +4951,9 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
       // THE COPY THIS ATTEMPT RAN IN — see the same block on failTask below: it is written
       // on BOTH outcomes or it is worth nothing.
       ...worktreeFields(worktree),
+      // И СКОЛЬКО ХОДОВ ЭТО СТОИЛО — на обоих исходах по той же причине. Попытка, которая
+      // уложилась, — единственная мерка, с которой человек может сравнить ту, что не влезла.
+      ...turnFields(turns),
       ...attemptStamp(deps, task, { from, to: from ? 'PRODUCED' : undefined, actor: 'worker', envelope }),
     })
   }
@@ -4879,6 +5022,25 @@ function worktreeFields(worktree) {
   }
 }
 
+/**
+ * ПОЛЯ ХОДОВ, готовые к раскрытию в строку реестра — ОДНО выражение на обе двери.
+ *
+ * Отсутствие остаётся отсутствием. Попытка, отказанная до всякого процесса (нет исполнителя,
+ * конверт не пускает, потолок исчерпан), ходов не тратила вовсе, и нули на её строке читались
+ * бы как измерение: «прогон был, и он ничего не сделал». Ключей у неё нет — это правда.
+ *
+ * @param {{turnCap?:number, turnsUsed?:number, turnKinds?:object}|null|undefined} turns
+ * @returns {object} fields to spread into `recordAttempt`
+ */
+function turnFields(turns) {
+  if (!turns || typeof turns !== 'object') return {}
+  return {
+    ...(Number.isFinite(turns.turnCap) ? { turnCap: turns.turnCap } : {}),
+    ...(Number.isFinite(turns.turnsUsed) ? { turnsUsed: turns.turnsUsed } : {}),
+    ...(turns.turnKinds && typeof turns.turnKinds === 'object' ? { turnKinds: turns.turnKinds } : {}),
+  }
+}
+
 /** The changed-file half of a copy's row: present when git answered, absent when it did not,
  *  and carrying the two overflow counters only when the ceiling actually cut something. */
 function changedFields(changed) {
@@ -4891,7 +5053,7 @@ function changedFields(changed) {
   }
 }
 
-async function failTask(deps, task, { reason, receiptRef, branch, route, now, envelope, from, sessionId, startedAt, worktree }) {
+async function failTask(deps, task, { reason, receiptRef, branch, route, now, envelope, from, sessionId, startedAt, worktree, turns }) {
   const { adapter, ledger, report } = deps
   // THE VERDICT FIRST, THE ROW SECOND. The five parity receipts are computed here rather than
   // where the receipt file is written, because the ledger row below is appended BEFORE that
@@ -4974,6 +5136,12 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
         // a person needs to undo a try that went wrong — and until now they lived only in
         // the operator's log, which does not survive a restart or a month.
         ...worktreeFields(worktree),
+        // ПОТОЛОК, ПОД КОТОРЫМ ШЛА ЭТА ПОПЫТКА, И ЧЕМ ОНА ЗАНЯЛА СВОИ ХОДЫ. На этой строке
+        // они несут двойную службу. Человеку они говорят, поднимать потолок или резать
+        // работу: сто ходов правок и сто ходов запусков оболочки — разные диагнозы. Демону
+        // потолок говорит, от какого числа поднимать следующий, — без записанного числа
+        // «следующая попытка идёт с бóльшим запасом» было бы обещанием без арифметики.
+        ...turnFields(turns),
         ...attemptStamp(deps, task, { from, to: from ? 'RETRYABLE' : undefined, actor: 'supervisor', envelope }),
       })
     } catch (err) {

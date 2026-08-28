@@ -787,10 +787,19 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     // `mcpConfig`, `memoryHarvest`, `runDir`, `parity`, `conflictsWith`) keep their distance
     // from the end and every tail-relative pin below is untouched. The one pin that reached
     // back PAST the insertion point is re-pinned in the same commit, in the case that owns it.
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(34)
+    //
+    // RE-PINNED AGAIN, and again with the reason in words: the row gained the three keys that
+    // say HOW MANY TURNS the attempt was given, how many it took and on what — `turnCap`,
+    // `turnsUsed`, `turnKinds`. They sit behind `runDir`/`parity`, with the rest of the
+    // evidence about the run itself, and ahead of `conflictsWith`, which is written by the
+    // door rather than by a caller and stays last. Every tail-relative pin below moved by
+    // three and is re-pinned in the case that owns it — nobody may shift this block without
+    // reading why it is where it is.
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(37)
     expect(ALLOWED_ATTEMPT_KEYS.at(-1)).toBe('conflictsWith')
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-4, -1)).toEqual(['turnCap', 'turnsUsed', 'turnKinds'])
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(34) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(37) // no duplicate name
   })
 
   /**
@@ -802,7 +811,7 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
    * чисто». A row that left no directory carries neither key — absence, not an empty shape.
    */
   it('carries runDir and parity last — the evidence of the try and the verdict over it', () => {
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-3, -1)).toEqual(['runDir', 'parity'])
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-6, -4)).toEqual(['runDir', 'parity'])
     const runDir = 'C:/work/project/.sma/runs/BL-RUN_1'
     recordAttempt(dir, { taskId: 'BL-RUN', attempt: 1, outcome: 'completed', runDir, parity: null })
     const [row] = readAttempts(dir, 'BL-RUN')
@@ -830,7 +839,7 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     expect(ALLOWED_ATTEMPT_KEYS).toContain('memoryHarvest')
     // It closes the part of the row written by the APPROVAL; the two run-directory keys were
     // appended behind it, so what the contract pins is that order, not «last member».
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-4)[0]).toBe('memoryHarvest')
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-7)[0]).toBe('memoryHarvest')
     const harvest = { at: '2026-08-19T10:00:00.000Z', by: 'approve', mode: 'untracked', copied: ['drafts/lesson-r-9-a.md'], applied: ['lesson-r-9-a'], drafted: ['approach-r-9-1'], refused: [], ok: true }
     recordAttempt(dir, { taskId: 'BL-HARVEST', attempt: 1, memoryHarvest: harvest })
     const [row] = readAttempts(dir, 'BL-HARVEST')
@@ -848,12 +857,12 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     // end. The order is still the contract — the copy, then what happened inside it, then the
     // session — and the four are asserted right here rather than somewhere else, so nobody can
     // shift this block again without reading why it is where it is.
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-16, -10)).toEqual(COPY_KEYS)
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-10, -6)).toEqual(CHANGED_KEYS)
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-19, -13)).toEqual(COPY_KEYS)
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-13, -9)).toEqual(CHANGED_KEYS)
     expect(ALLOWED_ATTEMPT_KEYS.slice(0, 18)[17]).toBe('reconstructed')
     // What the account actually held when this attempt ran, and which servers it was given.
     // Both are digests of a decision, not the decision's contents — the row stays a record.
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-6, -4)).toEqual(['personalLayer', 'mcpConfig'])
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-9, -7)).toEqual(['personalLayer', 'mcpConfig'])
   })
 
   // The eighteenth key, added with the live attempt log. It is NOT a stamp field either: a

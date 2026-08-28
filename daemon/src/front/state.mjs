@@ -3156,6 +3156,25 @@ function doneGitFacts(taskId, execGit, gitOpts) {
   return entry
 }
 
+/**
+ * turnSpentOf(attempt) → `{cap, used, kinds}` со строки попытки, или `null`.
+ *
+ * ТРИ ЧИСЛА, КОТОРЫЕ НЕЛЬЗЯ ПОСЧИТАТЬ ПОЗЖЕ. Поток попытки к моменту чтения свёрнут, копия
+ * выметена — если попытка не записала, сколько ей дали и сколько она взяла, ответа больше нет
+ * нигде. Поэтому здесь только ЧТЕНИЕ строки: ни одного числа эта функция не выводит сама.
+ *
+ * `null` вместо нулей, когда строка молчит. Ноль на экране читается как измерение — «попытка
+ * не сделала ни хода», — а молчание строки означает «никто не мерил». Разные утверждения.
+ */
+function turnSpentOf(attempt) {
+  if (!attempt || typeof attempt !== 'object') return null
+  const cap = Number.isFinite(attempt.turnCap) ? attempt.turnCap : null
+  const used = Number.isFinite(attempt.turnsUsed) ? attempt.turnsUsed : null
+  const kinds = attempt.turnKinds && typeof attempt.turnKinds === 'object' ? { ...attempt.turnKinds } : null
+  if (cap === null && used === null && kinds === null) return null
+  return { cap, used, kinds }
+}
+
 function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machineId }) {
   const attempts = readTaskAttempts(r.id)
   const last = attempts.length ? attempts[attempts.length - 1] : null
@@ -3200,6 +3219,11 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machi
       reason,
       reasonLabel: reason ? REASON_LABELS[reason] ?? null : null,
       attemptsCount: attempts.length || (Number.isFinite(r.attempt) ? r.attempt : 0),
+      // НА ЧТО УШЛИ ХОДЫ — у КАЖДОЙ красной карточки, а не только у той, что упёрлась в
+      // потолок. Попытка, съевшая девяносто ходов и упавшая на красных тестах, и попытка,
+      // упавшая на третьем, — разные события, и до сих пор экран показывал их одинаково.
+      // Читается с последней попытки: строка реестра пишется ею же и её потолком.
+      spent: turnSpentOf(last),
     }
   }
   return out
