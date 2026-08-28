@@ -585,14 +585,30 @@ export function stripDerivedDirs(config, args = {}) {
  * `launchDir` defaults to this process's own cwd — the same directory `withDerivedDirs`
  * falls back to — so a caller that forgets it still compares against a launch directory and
  * never against a served repoDir.
+ *
+ * ═══ И КАК ПОСЛЕ ЭТОГО ВООБЩЕ ЧТО-НИБУДЬ УДАЛИТЬ: `remove` ═══════════════════════════
+ *
+ * Слияние поверх файла отвечает «absent» и «deleted» одинаково — ключ, которого нет в
+ * приехавшем объекте, считается несказанным и достаётся из файла. Для настроек это ровно то,
+ * что нужно; для отключения — беда: «отключить бота» означает, что блока связи в файле не
+ * должно остаться, а он возвращался из старого содержимого, и на экране бот выглядел
+ * подключённым после отключения. Поэтому удаление говорится ВСЛУХ и отдельным списком: то,
+ * что названо в `remove`, вычёркивается ПОСЛЕ слияния. Ничего не названо — ничего и не
+ * исчезает, и это единственный способ потерять ключ через эту дверь.
  */
-export function writeConfig(config, { env = process.env, homedir = osHomedir, fsImpl, launchDir = process.cwd() } = {}) {
+export function writeConfig(
+  config,
+  { env = process.env, homedir = osHomedir, fsImpl, launchDir = process.cwd(), remove = [] } = {},
+) {
   const io = fsImpl ?? {}
   const path = resolveConfigPath({ env, homedir })
   const onDisk = readJsonSafe(path, { readFn: io.readFileSync ?? fsReadFileSync })
   const current = onDisk && typeof onDisk === 'object' && !Array.isArray(onDisk) ? onDisk : {}
   const mine = stripDerivedDirs(config, { configPath: path, launchDir })
   const merged = stripDerivedDirs({ ...current, ...mine }, { configPath: path, launchDir })
+  for (const key of Array.isArray(remove) ? remove : []) {
+    if (typeof key === 'string' && key !== '') delete merged[key]
+  }
   atomicWriteJson(path, merged, {
     mkdirFn: io.mkdirSync,
     writeFn: io.writeFileSync,
@@ -1070,7 +1086,16 @@ export function applyTelegramDisconnect(
 ) {
   const next = { ...config }
   delete next.telegram
-  writeConfig(next, { env, homedir, fsImpl, ...(launchDir !== undefined ? { launchDir } : {}) })
+  // СКАЗАНО ВСЛУХ: без этого списка запись слила бы блок обратно из файла — «нет ключа» и
+  // «ключ убрали» для слияния одно и то же, а для отключения это разница между «бот отключён»
+  // и «на экране он всё ещё подключён».
+  writeConfig(next, {
+    env,
+    homedir,
+    fsImpl,
+    remove: ['telegram'],
+    ...(launchDir !== undefined ? { launchDir } : {}),
+  })
   return next
 }
 
