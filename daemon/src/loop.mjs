@@ -100,7 +100,7 @@ import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync 
 import { dirname, join } from 'node:path'
 
 import { pipelineEnabled } from './config.mjs'
-import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS, failureAwaitsAPerson, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
+import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS, failureAwaitsAPerson, ATTEMPTS_EXHAUSTED, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
@@ -3080,6 +3080,58 @@ async function deriveAging(deps, now) {
   }
 }
 
+/**
+ * СКОЛЬКО ЗОВОВ ЗА ОДИН ПРОХОД. Зов уходит по сети, а тик обязан вернуться к раздаче работы;
+ * пять забытых на приёмке работ не должны занимать проход целиком. Остальные позовутся
+ * следующим проходом — через пять секунд, а не через смену.
+ */
+const SUMMONS_PER_TICK = 3
+
+/**
+ * callWaiting(deps, now) — ЗОВ ЧЕЛОВЕКА К РАБОТЕ, КОТОРУЮ БЕЗ НЕГО НИКТО НЕ ДВИНЕТ.
+ *
+ * Читается свежим на каждом проходе, ровно как сигнал старения рядом, и по той же причине:
+ * состояние ожидания принадлежит очереди, а не этому процессу. Здесь — только приёмка: строка
+ * стоит завершённой и ждёт, чтобы её приняли или вернули, и вывести её оттуда может ТОЛЬКО
+ * человек. Два других повода (работник упёрся; очередь исчерпала перевыдачи) — события, а не
+ * состояния, и зовут о себе там, где случаются, — в `failTask`.
+ *
+ * ВЕСЬ ЗАПРЕТ НА ШУМ ЖИВЁТ В `summon`, а не здесь: этот проход честно зовёт про каждую стоящую
+ * работу на каждом тике, и молчание — решение зова. Так дедуп нельзя обойти вторым проводом.
+ *
+ * Fail-open целиком: нечитаемый список стоит одного несказанного слова, а тик, умерший на нём,
+ * стоит всей раздачи работы.
+ */
+async function callWaiting(deps, now) {
+  const { adapter, summon, journal } = deps
+  if (!summon || typeof summon.raise !== 'function') return
+  let rows = []
+  try {
+    rows = await adapter.list({ status: 'awaiting_approval' })
+  } catch {
+    return
+  }
+  if (typeof summon.keepOnly === 'function') summon.keepOnly('approval', rows.map((r) => r && r.id))
+  let called = 0
+  for (const row of rows) {
+    if (!row || !row.id) continue
+    if (called >= SUMMONS_PER_TICK) break
+    try {
+      // КОГДА ОЖИДАНИЕ НАЧАЛОСЬ — с момента, когда работа ОСТАНОВИЛАСЬ и стала должна человеку
+      // слово, а не с постановки в очередь: это разные факты, и «сколько стоит» считают от
+      // первого. Метку пишут оба хранилища очереди; там, где её нет, остаётся мерка постановки.
+      const since = toEpochMs(row.completedAt ?? row.enqueuedAt)
+      const out = await summon.raise({ kind: 'approval', taskId: row.id, title: row.title, since })
+      if (out && out.sent) {
+        called += 1
+        if (typeof journal === 'function') journal({ type: 'summon', kind: 'approval', taskId: row.id })
+      }
+    } catch (err) {
+      if (typeof journal === 'function') journal({ type: 'summon-error', taskId: row.id, error: String((err && err.message) || err) })
+    }
+  }
+}
+
 /** Intake per cadence — enqueue NEW ready backlog items; last-scan is threaded THROUGH the
  *  tick (deps.intake.lastScanAt in, result.intake.scannedAt out) so the tick stays stateless. */
 async function runIntake(deps, now, result) {
@@ -3198,7 +3250,13 @@ export async function tick(deps = {}) {
     // (2b) aging signal — derived fresh, nothing stored (runs whether or not we claim).
     await deriveAging(deps, now())
 
-    // (2c) WHICH ECHELONS THEIR OWNER STOPPED — read from the register, never remembered by
+    // (2c) ЗОВ ЧЕЛОВЕКА к работе, которая стоит на приёмке. Рядом со старением и по тому же
+    // праву: оба сигнала — про работу, которая ЖДЁТ, и оба ходят на каждом проходе независимо
+    // от того, взял ли этот проход хоть одну задачу. Разница между ними в адресате: старение
+    // говорит очереди «эта строка залежалась», а зов говорит человеку «без вас не поедет».
+    await callWaiting(deps, now())
+
+    // (2d) WHICH ECHELONS THEIR OWNER STOPPED — read from the register, never remembered by
     // this process: a stop is a word somebody said, and a restart must find it exactly where he
     // left it. Read once and used for BOTH halves of the order below: the waiting rows are not
     // handed out, and the live ones are asked to finish their step and stand. Fail-open — an
@@ -4907,6 +4965,27 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
   }, task)
   if (typeof report === 'function') {
     await report({ event: 'task.failed', taskId: task.id, title: task.title, lane: task.lane, receiptVerdict: receiptRef ? 'red' : undefined, branch, attempt: task.attempt })
+  }
+  // ═══ И ЗОВ ЧЕЛОВЕКА — НО НЕ НА КАЖДЫЙ ПРОВАЛ ═══════════════════════════════════════════
+  //
+  // Ровно два конца из всех отсюда упираются в человека, и оба уже названы выше по этой же
+  // функции. Попытка, за которой повтора нет по устройству (`failureAwaitsAPerson`), стоит до
+  // решения: поднять ограничение, разрезать работу или отменить. И строка, у которой очередь
+  // исчерпала перевыдачи, — сама она больше не поедет. Всякий ДРУГОЙ провал молчит намеренно:
+  // за ним стоит следующая попытка, которую заведёт демон, и звать человека к работе, которая
+  // и без него продолжится, — это ровно тот шум, из-за которого канал перестают читать.
+  //
+  // Зов не ждёт своего успеха и никогда не роняет попытку: провал уже записан выше — и в
+  // очередь, и в реестр, и в исход попытки, — а сообщение о нём вторично по отношению ко всем
+  // трём. Молчание зова стоит одного несказанного слова; исключение отсюда стоило бы попытке
+  // её собственного конца.
+  const summonKind = awaitsPerson ? 'parked' : reason === ATTEMPTS_EXHAUSTED ? 'stopped' : null
+  if (summonKind && deps.summon && typeof deps.summon.raise === 'function') {
+    try {
+      await deps.summon.raise({ kind: summonKind, taskId: task.id, title: task.title, reason, since: now })
+    } catch (err) {
+      writeLog(deps, { type: 'summon-error', taskId: task.id, error: String((err && err.message) || err) })
+    }
   }
 }
 
