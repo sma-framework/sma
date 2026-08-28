@@ -1448,14 +1448,17 @@ export type ChatTurnKind =
   | 'task-prod'
   | 'task-research'
   | 'task-debug'
+  /** «да» человека: согласие с последним черновиком — единственный ход, который ставит задачу. */
+  | 'consent'
 
 /**
  * What an answer IS: a fact taken from the read models, prose from the free lane, a
- * PROPOSED task, or a turn the person ENDED with the Стоп button ('stopped' — the text
- * they sent comes back to the composer, never an apology for a "failure" they ordered).
- * Only the draft grows a button, and that button is a person's.
+ * PROPOSED task, a task ACTUALLY PUT IN after the person said «да» ('created' — the card
+ * beside it is a real queue row, not an offer), or a turn the person ENDED with the Стоп
+ * button ('stopped' — the text they sent comes back to the composer, never an apology for a
+ * "failure" they ordered). Приёмки среди них нет: одобрение — рука человека на кнопке.
  */
-export type ChatAnswerKind = 'fact' | 'text' | 'draft' | 'decision' | 'stopped'
+export type ChatAnswerKind = 'fact' | 'text' | 'draft' | 'decision' | 'created' | 'stopped'
 
 /** The grey link-card an answer carries beside its sentence. */
 export interface ChatTaskRef {
