@@ -39,6 +39,7 @@ import {
   applyStockTeamToggle,
   createMachineSkill,
   resolveMachineSkillsDir,
+  resolveMachineAgentsDir,
   resolveWorkerContext,
   STOCK_TEAM_TARGET,
   MissingDefinitionFileError,
@@ -590,10 +591,29 @@ tools: Read
 Тело личного агента.
 `
 
+/** A shipped definition that lives in the MACHINE store — the swarm of the person, not of the tree. */
+const STOCK_SCOUT = `---
+name: sma-scout
+description: Ищет по дереву и не правит.
+lane: research
+provider: claude
+tools: Read, Grep
+---
+Тело определения разведчика.
+`
+
 /** No frontmatter fence at all — must be reported, never dropped and never thrown on. */
 const BROKEN_DEF = 'просто текст без рамки\nвторая строка\n'
 
-/** A project-local install: <repo>/.claude/agents (editable) + <repo>/.claude/sma-core/agents (pristine). */
+/**
+ * A project-local install: <repo>/.claude/agents (editable) + <repo>/.claude/sma-core/agents
+ * (pristine), and NOTHING in the machine store — these cases are about the project's own tree.
+ *
+ * The `/repo` prefix on every key is load-bearing rather than decorative: fakeFs matches paths
+ * by SUFFIX, and the machine store's default is `<home>/.claude/agents`, which ends with the
+ * same characters. Unprefixed, the fake would serve the project's files to the machine walk as
+ * well and every id would come back shadowed by its own self.
+ */
 function localInstall({
   planner = STOCK_PLANNER,
   extraFiles = {},
@@ -601,16 +621,16 @@ function localInstall({
 }: { planner?: string; extraFiles?: Record<string, string>; extraAgents?: string[] } = {}) {
   return fakeFs({
     files: {
-      '.claude/agents/sma-planner.md': planner,
-      '.claude/agents/sma-verifier.md': STOCK_VERIFIER,
-      '.claude/sma-core/agents/sma-planner.md': STOCK_PLANNER,
-      '.claude/sma-core/agents/sma-verifier.md': STOCK_VERIFIER,
+      '/repo/.claude/agents/sma-planner.md': planner,
+      '/repo/.claude/agents/sma-verifier.md': STOCK_VERIFIER,
+      '/repo/.claude/sma-core/agents/sma-planner.md': STOCK_PLANNER,
+      '/repo/.claude/sma-core/agents/sma-verifier.md': STOCK_VERIFIER,
       ...extraFiles,
     },
     dirs: {
-      '.claude/agents': ['sma-planner.md', 'sma-verifier.md', ...extraAgents],
-      '.claude/sma-core/agents': ['sma-planner.md', 'sma-verifier.md'],
-      '.claude/skills': [],
+      '/repo/.claude/agents': ['sma-planner.md', 'sma-verifier.md', ...extraAgents],
+      '/repo/.claude/sma-core/agents': ['sma-planner.md', 'sma-verifier.md'],
+      '/repo/.claude/skills': [],
     },
   })
 }
@@ -733,10 +753,10 @@ describe('readStockTeam — the roster that actually arrived with the install', 
     const crlf = (s: string) => s.replace(/\n/g, '\r\n')
     const { fs } = fakeFs({
       files: {
-        '.claude/agents/sma-planner.md': crlf(STOCK_PLANNER),
-        '.claude/sma-core/agents/sma-planner.md': STOCK_PLANNER,
+        '/repo/.claude/agents/sma-planner.md': crlf(STOCK_PLANNER),
+        '/repo/.claude/sma-core/agents/sma-planner.md': STOCK_PLANNER,
       },
-      dirs: { '.claude/agents': ['sma-planner.md'], '.claude/sma-core/agents': ['sma-planner.md'] },
+      dirs: { '/repo/.claude/agents': ['sma-planner.md'], '/repo/.claude/sma-core/agents': ['sma-planner.md'] },
     })
     const entry = readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })[0]
     expect(entry.problem).toBe(null)
@@ -759,9 +779,276 @@ describe('readStockTeam — the roster that actually arrived with the install', 
     expect(wire).not.toContain('.claude')
     for (const entry of team) {
       expect(Object.keys(entry).sort()).toEqual(
-        ['description', 'enabled', 'forked', 'id', 'origin', 'problem', 'stockUpdate', 'title', 'tools'].sort(),
+        ['description', 'enabled', 'forked', 'id', 'origin', 'problem', 'source', 'stockUpdate', 'title', 'tools'].sort(),
       )
     }
+  })
+})
+
+/**
+ * ═══════ ТОТ ЖЕ ЗАЗОР, ЧТО У НАВЫКОВ, ТОЛЬКО ЭКРАНОМ ЛЕВЕЕ ═══════
+ *
+ * Каталог агентов выбирался гонкой: первый существующий из трёх и побеждал. Значит проект,
+ * у которого есть хоть какой-нибудь `.claude/agents/`, прятал ВЕСЬ рой машины, а проект без
+ * него — показывал рой машины и терял связь с деревом. Владелец 27.08: «нужно посадить рой на
+ * машину, а не на проект». Ниже — форма, уже сделанная для навыков: два хранилища, названный
+ * источник, объяснённая пустота, и провод, а не наличие файла.
+ */
+describe('the agents of the PROJECT and the agents of the MACHINE', () => {
+  const bothStores = ({ project = ['sma-planner.md'], machine = ['sma-scout.md'] } = {}) =>
+    fakeFs({
+      files: {
+        '/repo/.claude/agents/sma-planner.md': STOCK_PLANNER,
+        '/repo/.claude/sma-core/agents/sma-planner.md': STOCK_PLANNER,
+        '/machine/agents/sma-scout.md': STOCK_SCOUT,
+        '/machine/sma-core/agents/sma-scout.md': STOCK_SCOUT,
+        '/machine/agents/sma-planner.md': STOCK_PLANNER_EDITED,
+      },
+      dirs: {
+        '/repo/.claude/agents': project,
+        '/repo/.claude/sma-core/agents': ['sma-planner.md'],
+        '/machine/agents': machine,
+        '/machine/sma-core/agents': ['sma-scout.md'],
+        '/repo/.claude/skills': [],
+      },
+    })
+
+  const machineEnv = { SMA_DAEMON_AGENTS: '/machine/agents' }
+
+  it('a MACHINE-store agent is on the roster under ANY active project — including one that already has its own agents directory', () => {
+    const { fs } = bothStores()
+    const team = readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: machineEnv, homedir: NO_HOME })
+    // BOTH, not «whichever directory existed first» — that race is the whole defect.
+    expect(team.map((e: any) => e.id)).toEqual(['sma-planner', 'sma-scout'])
+    expect(team.find((e: any) => e.id === 'sma-planner').source).toBe('project')
+    expect(team.find((e: any) => e.id === 'sma-scout').source).toBe('machine')
+    // and the machine agent is a full card, not a stub: shipped, unforked, with its tools read
+    expect(team.find((e: any) => e.id === 'sma-scout')).toMatchObject({
+      origin: 'sma',
+      forked: false,
+      tools: ['Read', 'Grep'],
+    })
+  })
+
+  it('a project with NO agents directory of its own still sees the whole machine swarm', () => {
+    const { fs } = fakeFs({
+      files: { '/machine/agents/sma-scout.md': STOCK_SCOUT },
+      dirs: { '/machine/agents': ['sma-scout.md'] },
+    })
+    const team = readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: machineEnv, homedir: NO_HOME })
+    expect(team.map((e: any) => e.id)).toEqual(['sma-scout'])
+    expect(team[0].source).toBe('machine')
+  })
+
+  it('an id in BOTH stores is ONE card — the project copy wins and the shadowed twin is NAMED', () => {
+    const { fs } = bothStores({ machine: ['sma-scout.md', 'sma-planner.md'] })
+    const team = readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: machineEnv, homedir: NO_HOME })
+    expect(team.map((e: any) => e.id)).toEqual(['sma-planner', 'sma-scout'])
+    const planner = team.find((e: any) => e.id === 'sma-planner')
+    expect(planner.source).toBe('project')
+    // the project copy is the pristine one, so the machine's edited twin must not make it forked
+    expect(planner.forked).toBe(false)
+    // the wording is the skills screen's, word for word — one shadowing sentence, not two
+    expect(planner.problem).toContain('machine')
+    expect(planner.problem).toContain('project')
+  })
+
+  it('the payload says WHERE it looked — both stores, their paths, and whether each exists', async () => {
+    const { fs } = bothStores()
+    const out = await readHarness({
+      config: { workers: [] },
+      registry: { servers: [] },
+      adapter: { list: async () => [] },
+      repoDir: '/repo',
+      fsImpl: fs,
+      env: machineEnv,
+      homedir: NO_HOME,
+    })
+    expect(out.agentStores).toEqual([
+      { source: 'project', path: join('/repo', '.claude', 'agents'), present: true, count: 1 },
+      { source: 'machine', path: '/machine/agents', present: true, count: 1 },
+    ])
+  })
+
+  it('an absent store is reported as absent rather than passed over in silence', async () => {
+    const { fs } = fakeFs({
+      files: { '/machine/agents/sma-scout.md': STOCK_SCOUT },
+      dirs: { '/machine/agents': ['sma-scout.md'] },
+    })
+    const out = await readHarness({
+      config: { workers: [] },
+      registry: { servers: [] },
+      adapter: { list: async () => [] },
+      repoDir: '/repo',
+      fsImpl: fs,
+      env: machineEnv,
+      homedir: NO_HOME,
+    })
+    expect(out.agentStores.map((s: any) => [s.source, s.present, s.count])).toEqual([
+      ['project', false, 0],
+      ['machine', true, 1],
+    ])
+  })
+
+  it('resolveMachineAgentsDir: the override wins, then CLAUDE_CONFIG_DIR, then the home — the skills order exactly', () => {
+    expect(resolveMachineAgentsDir({ env: { SMA_DAEMON_AGENTS: '/tmp/swarm' }, homedir: NO_HOME })).toBe('/tmp/swarm')
+    expect(resolveMachineAgentsDir({ env: { CLAUDE_CONFIG_DIR: '/opt/cfg' }, homedir: NO_HOME })).toBe(
+      join('/opt/cfg', 'agents'),
+    )
+    expect(resolveMachineAgentsDir({ env: {}, homedir: NO_HOME })).toBe(join('/home/nobody', '.claude', 'agents'))
+    // and the override still wins when both are set
+    expect(
+      resolveMachineAgentsDir({ env: { SMA_DAEMON_AGENTS: '/tmp/swarm', CLAUDE_CONFIG_DIR: '/opt/cfg' }, homedir: NO_HOME }),
+    ).toBe('/tmp/swarm')
+  })
+
+  it('the toggle builds a profile from a MACHINE definition, and records NO repo-relative roleFile for it', () => {
+    const { fs, lastWritten } = bothStores()
+    const config = {
+      workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/m2' }, enabled: true }],
+    }
+    const next = applyAgentToggle({
+      config,
+      id: 'sma-scout',
+      enabled: true,
+      repoDir: '/repo',
+      launchDir: '/repo',
+      fsImpl: fs,
+      env: { ...machineEnv, SMA_DAEMON_CONFIG: '/cfg.json' },
+      homedir: NO_HOME,
+    })
+    const scout = next.workers.find((w: any) => w.id === 'sma-scout')
+    expect(scout).toMatchObject({ lane: 'research', provider: 'claude', enabled: true })
+    // an out-of-tree path in this field would be a broken join downstream, so there is none
+    expect(scout.roleFile).toBeUndefined()
+    expect(lastWritten().workers.map((w: any) => w.id)).toEqual(['max-2', 'sma-scout'])
+  })
+
+  it('an id in NEITHER store is refused, and the refusal names both places it looked', () => {
+    const { fs } = bothStores()
+    expect(() =>
+      applyAgentToggle({
+        config: { workers: [{ id: 'max-2', provider: 'claude', account: { configDir: '/m2' } }] },
+        id: 'nobody',
+        enabled: true,
+        repoDir: '/repo',
+        launchDir: '/repo',
+        fsImpl: fs,
+        env: { ...machineEnv, SMA_DAEMON_CONFIG: '/cfg.json' },
+        homedir: NO_HOME,
+      }),
+    ).toThrow(MissingDefinitionFileError)
+    try {
+      applyAgentToggle({
+        config: { workers: [{ id: 'max-2', provider: 'claude', account: { configDir: '/m2' } }] },
+        id: 'nobody',
+        enabled: true,
+        repoDir: '/repo',
+        launchDir: '/repo',
+        fsImpl: fs,
+        env: { ...machineEnv, SMA_DAEMON_CONFIG: '/cfg.json' },
+        homedir: NO_HOME,
+      })
+    } catch (err: any) {
+      expect(err.message).toContain(join('/repo', '.claude', 'agents', 'nobody.md'))
+      expect(err.message).toContain(join('/machine/agents', 'nobody.md'))
+    }
+  })
+
+  it('the team switch activates SHIPPED definitions from BOTH stores, and never the machine twin of a project id', () => {
+    // the project's `sma-planner` is the user's OWN here (no pristine beside it), so the switch
+    // must leave that id alone entirely — not reach past it for the machine's shipped copy.
+    const { fs } = fakeFs({
+      files: {
+        '/repo/.claude/agents/sma-planner.md': OWN_HELPER,
+        '/machine/agents/sma-planner.md': STOCK_PLANNER,
+        '/machine/sma-core/agents/sma-planner.md': STOCK_PLANNER,
+        '/machine/agents/sma-scout.md': STOCK_SCOUT,
+        '/machine/sma-core/agents/sma-scout.md': STOCK_SCOUT,
+      },
+      dirs: {
+        '/repo/.claude/agents': ['sma-planner.md'],
+        '/machine/agents': ['sma-planner.md', 'sma-scout.md'],
+        '/machine/sma-core/agents': ['sma-planner.md', 'sma-scout.md'],
+      },
+    })
+    const config = {
+      workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/m2' }, enabled: true }],
+    }
+    const next = applyStockTeamToggle({
+      config,
+      enabled: true,
+      repoDir: '/repo',
+      launchDir: '/repo',
+      fsImpl: fs,
+      env: { ...machineEnv, SMA_DAEMON_CONFIG: '/cfg.json' },
+      homedir: NO_HOME,
+    })
+    expect(next.workers.map((w: any) => w.id).sort()).toEqual(['max-2', 'sma-scout'])
+    const scout = next.workers.find((w: any) => w.id === 'sma-scout')
+    expect(scout.enabled).toBe(true)
+    expect(typeof scout.stockDigest).toBe('string')
+  })
+})
+
+/**
+ * ПРОВОД, А НЕ НАЛИЧИЕ ФАЙЛА. Карточка, которая только показывает агента, ничего не доказывает:
+ * до 27.08 работник из хранилища машины не имел поля `roleFile` (его и негде взять — путь
+ * раскрывается относительно репозитория), а роль выдавалась ТОЛЬКО по этому полю. Значит экран
+ * говорил «включён», а сессия не получала ни строки роли. Здесь проверяется именно стык.
+ */
+describe('resolveWorkerContext — роль агента МАШИНЫ доезжает до работника', () => {
+  const machineFs = () =>
+    fakeFs({
+      files: { '/machine/agents/sma-scout.md': STOCK_SCOUT },
+      dirs: { '/machine/agents': ['sma-scout.md'] },
+    }).fs
+
+  it('a worker with NO roleFile gets its role looked up BY ID in the machine store', () => {
+    const ctx = resolveWorkerContext({
+      worker: { id: 'sma-scout', skills: [] },
+      repoDir: '/repo',
+      fsImpl: machineFs(),
+      env: { SMA_DAEMON_AGENTS: '/machine/agents' },
+      homedir: NO_HOME,
+    })
+    expect(ctx.rolePreamble).toContain('Тело определения разведчика')
+    // the store is NAMED, so the caller can say where the role came from instead of assuming
+    expect(ctx.roleSource).toBe('machine')
+    expect(ctx.roleRef).toBe(join('/machine/agents', 'sma-scout.md'))
+  })
+
+  it('a PIN that does not resolve stays unresolved — no other file is quietly loaded for it', () => {
+    // roleFile names a file that is not there; the id `sma-scout` IS there in the machine store.
+    // Substituting it would hand the worker a role nobody pinned.
+    const ctx = resolveWorkerContext({
+      worker: { id: 'sma-scout', roleFile: '.claude/agents/gone.md', skills: [] },
+      repoDir: '/repo',
+      fsImpl: machineFs(),
+      env: { SMA_DAEMON_AGENTS: '/machine/agents' },
+      homedir: NO_HOME,
+    })
+    expect(ctx.rolePreamble).toBeUndefined()
+    expect(ctx.roleSource).toBeUndefined()
+  })
+
+  it('a project definition still wins over a machine twin of the same id', () => {
+    const { fs } = fakeFs({
+      files: {
+        '/repo/.claude/agents/sma-scout.md': STOCK_PLANNER,
+        '/machine/agents/sma-scout.md': STOCK_SCOUT,
+      },
+      dirs: { '/repo/.claude/agents': ['sma-scout.md'], '/machine/agents': ['sma-scout.md'] },
+    })
+    const ctx = resolveWorkerContext({
+      worker: { id: 'sma-scout', skills: [] },
+      repoDir: '/repo',
+      fsImpl: fs,
+      env: { SMA_DAEMON_AGENTS: '/machine/agents' },
+      homedir: NO_HOME,
+    })
+    expect(ctx.roleSource).toBe('project')
+    expect(ctx.rolePreamble).toContain('Тело определения планировщика')
   })
 })
 
@@ -785,8 +1072,9 @@ describe('readHarness — the stockTeam key is ADDITIVE (modules 8/9/12 keep the
     // A daemon nobody connected one to still gets the key, reading 'off'.
     // `skillStores` joined by the SAME rule: the two directories the skills walk actually
     // looked in, so an empty skills list can name them instead of saying nothing.
+    // `agentStores` is that key one screen over — the agents walk had the identical hole.
     expect(Object.keys(out).sort()).toEqual(
-      ['agents', 'drafts', 'mcp', 'skillStores', 'skills', 'stockTeam', 'telegram'].sort(),
+      ['agentStores', 'agents', 'drafts', 'mcp', 'skillStores', 'skills', 'stockTeam', 'telegram'].sort(),
     )
     expect(out.telegram).toMatchObject({ status: 'off', tokenTail: null, code: null, chat: null })
     expect(Array.isArray(out.stockTeam)).toBe(true)

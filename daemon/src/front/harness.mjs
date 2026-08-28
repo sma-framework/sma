@@ -51,15 +51,37 @@
  * id (a strict slug, so no path segment of it can ever leave that directory), a one-line
  * description and a body: TEXT into a markdown file, never a config value and never a command.
  *
+ * ═══════════════════════ THE TWO AGENT STORES ════════════════════════════════════
+ * An agent is a definition file, and it lives in the SAME two places a skill does:
+ *   - THE PROJECT STORE, `<repo>/.claude/agents/` — the definitions of the tree being served.
+ *   - THE MACHINE STORE, `<CLAUDE_CONFIG_DIR|~/.claude>/agents/` (SMA_DAEMON_AGENTS wins) —
+ *     the swarm of the person at this keyboard, available under EVERY project.
+ * This used to be ONE store chosen by a race: the first of those directories that existed won
+ * outright, so a project with any `.claude/agents/` at all hid the machine's whole swarm, and a
+ * project with none had no swarm to show. The consequence is the one the skills screen already
+ * lived through — a person opens a new project and the product looks like it has no agents,
+ * while the same roster has to be copied into every tree and the copies drift apart in silence.
+ * So both are walked, project first, EVERY card names the store it came from, and the read
+ * model returns the stores themselves — path, presence, count — so an empty list can say WHERE
+ * it looked. An id present in both is ONE card: the project's copy wins (it is nearer to the
+ * work) and its card names the machine twin it passed over.
+ *
+ * The precedence is the read model's, the writer's and the wire's alike — `findAgentFile` is
+ * the ONE lookup, so a card the window shows is a card the toggle can act on and a role the
+ * spawn actually carries. A machine definition records NO `roleFile` on its profile (that field
+ * is resolved repo-relative), which is exactly why the wire may not depend on it: the worker's
+ * role is looked up by id in both stores, the way an assigned skill already is.
+ *
  * ═══════════════════════ THE STOCK TEAM ══════════════════════════════════════════
  * `readStockTeam` is the SECOND read model in this module and it answers a different
  * question than `agents` does. `agents` is the PIPELINE: the worker profiles the roster
  * config declares. The stock team is what ARRIVED — every definition file the installer
- * wrote into `<config>/agents/`, whether or not the roster config has ever heard of it,
- * beside the user's own definitions in the same directory.
+ * wrote into either agents store, whether or not the roster config has ever heard of it,
+ * beside the user's own definitions in the same directories.
  *
  * Fork state is a CONTENT DIGEST comparison, never a modification time: the installer also
- * leaves a pristine copy of every shipped definition at `<config>/sma-core/agents/<id>.md`,
+ * leaves a pristine copy of every shipped definition beside each store, at
+ * `<store>/../sma-core/agents/<id>.md`,
  * so «edited» is «the editable copy no longer digests to the pristine one». A reinstall
  * rewrites mtimes and would otherwise report the whole roster as edited.
  *
@@ -80,7 +102,7 @@ import {
   readdirSync as fsReaddirSync,
 } from 'node:fs'
 import { homedir as osHomedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { atomicWriteJson, atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 // The config writer is IMPORTED, never re-implemented: this file used to carry its own
@@ -442,37 +464,91 @@ function definitionDigest(text) {
   return createHash('sha256').update(String(text ?? '').replace(/\r\n/g, '\n')).digest('hex')
 }
 
+/** Where a definition was found: the served tree, or this machine's own swarm. */
+export const AGENT_SOURCES = Object.freeze(['project', 'machine'])
+
+/** The extension a definition file wears — one spelling, shared by every walker here. */
+const AGENT_FILE_EXT = '.md'
+
 /**
- * resolveStockTeamDirs({repoDir, env, homedir, fsImpl}) → {configDir, agentsDir,
- * pristineDir, names, projectLocal} for the install that actually exists, or null when no
- * agents directory does. Both installer layouts are covered, in the env-then-homedir order
- * resolveMcpRegistryPath already uses: the project-local `<repo>/.claude` first (the
- * installer's default), then $CLAUDE_CONFIG_DIR, then ~/.claude. The probe is a readdir,
- * because that is the call whose success actually means «the roster is here».
+ * resolveMachineAgentsDir({env, homedir}) — the MACHINE store: the swarm of the person at
+ * this keyboard, reachable under every project. SMA_DAEMON_AGENTS wins (the SMA_DAEMON_SKILLS
+ * precedent, and what a test or a drive points somewhere harmless with); else
+ * $CLAUDE_CONFIG_DIR/agents; else ~/.claude/agents. Deliberately the SAME env-then-homedir
+ * order resolveMachineSkillsDir walks — one machine, one idea of where its own things live.
  *
- * @param {{repoDir?:string, env?:object, homedir?:Function, fsImpl?:object}} [opts]
- * @returns {{configDir:string, agentsDir:string, pristineDir:string, names:string[], projectLocal:boolean}|null}
+ * @param {{env?:object, homedir?:Function}} [opts]
+ * @returns {string}
  */
-export function resolveStockTeamDirs({ repoDir, env = process.env, homedir = osHomedir, fsImpl } = {}) {
-  const projectDir = join(repoDir ?? '.', '.claude')
-  const candidates = [projectDir]
-  const override = env.CLAUDE_CONFIG_DIR
-  if (override && String(override).trim()) candidates.push(String(override).trim())
-  candidates.push(join(homedir(), '.claude'))
-  for (const configDir of candidates) {
-    const agentsDir = join(configDir, 'agents')
-    const names = listDirSafe(agentsDir, fsImpl)
-    if (names) {
-      return {
-        configDir,
-        agentsDir,
-        pristineDir: join(configDir, 'sma-core', 'agents'),
-        names,
-        projectLocal: configDir === projectDir,
-      }
+export function resolveMachineAgentsDir({ env = process.env, homedir = osHomedir } = {}) {
+  const override = env.SMA_DAEMON_AGENTS
+  if (override && String(override).trim()) return String(override).trim()
+  const configDir = env.CLAUDE_CONFIG_DIR
+  if (configDir && String(configDir).trim()) return join(String(configDir).trim(), 'agents')
+  return join(homedir(), '.claude', 'agents')
+}
+
+/**
+ * agentStorePaths({repoDir, env, homedir}) → the two directories a definition may live in, in
+ * the order they are searched — project first, because the tree being worked in is nearer than
+ * the machine's library. Exported because the WINDOW shows them: an empty list has to name
+ * where it looked, and a path invented a second time on the front would name somewhere else.
+ *
+ * `pristine` is the installer's untouched copy of the store beside it, and it is derived from
+ * the store rather than from a config directory: `~/.claude/agents` → `~/.claude/sma-core/
+ * agents`, `/opt/cfg/agents` → `/opt/cfg/sma-core/agents`. One rule covers both install
+ * layouts AND the override, so fork state is decided the same way wherever a definition sits.
+ *
+ * @param {{repoDir?:string, env?:object, homedir?:Function}} [opts]
+ * @returns {Array<{source:string, path:string, pristine:string}>}
+ */
+export function agentStorePaths({ repoDir, env = process.env, homedir = osHomedir } = {}) {
+  const machine = resolveMachineAgentsDir({ env, homedir })
+  return [
+    {
+      source: 'project',
+      path: join(repoDir ?? '.', '.claude', 'agents'),
+      pristine: join(repoDir ?? '.', '.claude', 'sma-core', 'agents'),
+    },
+    { source: 'machine', path: machine, pristine: join(dirname(machine), 'sma-core', 'agents') },
+  ]
+}
+
+/**
+ * findAgentFile({agentId, repoDir, fsImpl, env, homedir}) → {source, path, content, pristine,
+ * roleFile} for the store the definition is ACTUALLY in, or null. THE ONE LOOKUP, and the
+ * findSkillFile precedent exactly: the toggle's profile builder, the team switch and the
+ * worker's role preamble all ask it, so «which file is this agent» has a single answer and a
+ * card the window shows can never be a card its own button 404s on.
+ *
+ * `roleFile` is the repo-relative path to record on a profile — and it is `null` for a machine
+ * definition ON PURPOSE: that field is resolved repo-relative downstream, so an out-of-tree
+ * path there would be a broken join rather than a preamble.
+ *
+ * @param {{agentId:string, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function}} args
+ * @returns {{source:string, path:string, content:string, pristine:(string|null), roleFile:(string|null)}|null}
+ */
+export function findAgentFile({ agentId, repoDir, fsImpl, env = process.env, homedir = osHomedir } = {}) {
+  if (typeof agentId !== 'string' || !agentId) return null
+  const name = `${agentId}${AGENT_FILE_EXT}`
+  for (const { source, path, pristine } of agentStorePaths({ repoDir, env, homedir })) {
+    const file = join(path, name)
+    const content = readFileSafe(file, fsImpl)
+    if (content == null) continue
+    return {
+      source,
+      path: file,
+      content,
+      pristine: readFileSafe(join(pristine, name), fsImpl),
+      roleFile: source === 'project' ? `.claude/agents/${name}` : null,
     }
   }
   return null
+}
+
+/** Two things worth saying about one card are both said — a note never silences a note. */
+function joinProblems(existing, added) {
+  return existing ? `${existing} · ${added}` : added
 }
 
 /** `tools:` is written as a comma line in the shipped definitions and as a list in some — both become an array. */
@@ -486,7 +562,7 @@ function toolsOf(fm) {
 }
 
 /** One stock-team card. Explicit-pick: no body, no path, no env value — ever. */
-function stockEntry({ id, content, pristine, worker }) {
+function stockEntry({ id, source, content, pristine, worker }) {
   const { frontmatter: fm } = readFrontmatter(content)
   const shipped = pristine != null
   const forked = shipped ? definitionDigest(content) !== definitionDigest(pristine) : false
@@ -502,6 +578,7 @@ function stockEntry({ id, content, pristine, worker }) {
     description: fm ? String(fm.description ?? '').slice(0, STOCK_DESCRIPTION_CAP) : '',
     tools: toolsOf(fm),
     enabled: !!(worker && worker.enabled !== false),
+    source,
     origin: shipped ? 'sma' : 'yours',
     forked,
     stockUpdate,
@@ -512,35 +589,71 @@ function stockEntry({ id, content, pristine, worker }) {
 }
 
 /**
- * readStockTeam({config, repoDir, fsImpl, env, homedir}) → the whole roster that arrived
- * with the install, one entry per definition file, INCLUDING ids the roster config has
+ * scanAgentStores({config, repoDir, fsImpl, env, homedir}) → {team, stores}.
+ *
+ * BOTH stores are walked, project first, and every card says which one it came out of. An id
+ * present in both is ONE card — the project's, because the tree being worked in is nearer than
+ * the machine's library — and it carries a `problem` naming the copy that was passed over: a
+ * shadowing that nobody is told about is indistinguishable from an agent that vanished.
+ *
+ * `stores` is the walk itself, reported: each store's path, whether that directory exists at
+ * all, and how many definitions came out of it. That is what an empty screen says out loud.
+ */
+function scanAgentStores({ config, repoDir, fsImpl, env, homedir }) {
+  const workers = config && Array.isArray(config.workers) ? config.workers : []
+  const byWorker = new Map(workers.filter((w) => w && w.id).map((w) => [String(w.id), w]))
+  const out = []
+  const byId = new Map()
+  const stores = []
+  for (const { source, path, pristine } of agentStorePaths({ repoDir, env, homedir })) {
+    const names = listDirSafe(path, fsImpl)
+    let count = 0
+    for (const name of names ?? []) {
+      if (!name.endsWith(AGENT_FILE_EXT)) continue
+      const content = readFileSafe(join(path, name), fsImpl)
+      if (content == null) continue // a directory or an unreadable entry — not a definition
+      count += 1
+      const id = name.slice(0, -AGENT_FILE_EXT.length)
+      const already = byId.get(id)
+      if (already) {
+        already.problem = joinProblems(
+          already.problem,
+          `такое же определение лежит и в хранилище «${source}» — действует то, что найдено в «${already.source}»`,
+        )
+        continue
+      }
+      const card = stockEntry({
+        id,
+        source,
+        content,
+        pristine: readFileSafe(join(pristine, name), fsImpl),
+        worker: byWorker.get(id),
+      })
+      byId.set(id, card)
+      out.push(card)
+    }
+    stores.push({ source, path, present: names !== null, count })
+  }
+  out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  return { team: out, stores }
+}
+
+/**
+ * readStockTeam({config, repoDir, fsImpl, env, homedir}) → the whole roster reachable from
+ * here, one entry per definition file across BOTH stores, INCLUDING ids the roster config has
  * never heard of. Each card carries id, title, a short description, the declared tools,
- * whether the roster config enables it, whether it is a shipped SMA definition or the
- * user's own, whether it is forked, and whether a newer shipped version is available.
+ * whether the roster config enables it, WHICH STORE it came out of, whether it is a shipped
+ * SMA definition or the user's own, whether it is forked, and whether a newer shipped version
+ * is available.
  *
  * A definition that fails to parse comes back with a named `problem` — the scan is never
  * broken by one bad file, and a missing agents directory is an empty list, not a throw.
  *
  * @param {{config?:object, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function}} [args]
- * @returns {Array<{id:string, title:string, description:string, tools:string[], enabled:boolean, origin:string, forked:boolean, stockUpdate:string, problem:(string|null)}>}
+ * @returns {Array<{id:string, title:string, description:string, tools:string[], enabled:boolean, source:string, origin:string, forked:boolean, stockUpdate:string, problem:(string|null)}>}
  */
 export function readStockTeam({ config, repoDir, fsImpl, env = process.env, homedir = osHomedir } = {}) {
-  const roots = resolveStockTeamDirs({ repoDir, env, homedir, fsImpl })
-  if (!roots) return []
-  const workers = config && Array.isArray(config.workers) ? config.workers : []
-  const byId = new Map(workers.filter((w) => w && w.id).map((w) => [String(w.id), w]))
-
-  const out = []
-  for (const name of roots.names) {
-    if (!name.endsWith('.md')) continue
-    const content = readFileSafe(join(roots.agentsDir, name), fsImpl)
-    if (content == null) continue // a directory or an unreadable entry — not a definition
-    const id = name.slice(0, -3)
-    const pristine = readFileSafe(join(roots.pristineDir, name), fsImpl)
-    out.push(stockEntry({ id, content, pristine, worker: byId.get(id) }))
-  }
-  out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-  return out
+  return scanAgentStores({ config, repoDir, fsImpl, env, homedir }).team
 }
 
 /** MCP card: env-var NAMES with '[set]'/'[unset]' status — NEVER the value (secretsView). */
@@ -559,7 +672,8 @@ function mcpEntry(server, env) {
 
 /**
  * readHarness({config, registry, adapter, repoDir, fsImpl, env, homedir, clock}) → ONE
- * explicit-pick payload {agents, skills, skillStores, mcp, drafts, stockTeam, telegram}. Agents
+ * explicit-pick payload {agents, skills, skillStores, agentStores, mcp, drafts, stockTeam,
+ * telegram}. Agents
  * join profile + roleFile frontmatter; skills walk BOTH stores (project + machine) with the
  * store named on every card and per-profile assignment joined in; mcp exposes env-var
  * NAMES with '[set]'/'[unset]' only (values NEVER appear); drafts are the forge tasks awaiting
@@ -577,17 +691,18 @@ function mcpEntry(server, env) {
  * could not do before: say where it looked. A directory path is not a secret — the assign
  * door already names one in its refusals — and without it «навыков нет» reads as «этого в
  * продукте нет», which is what actually happened to a person whose skills were in the other
- * store.
+ * store. `agentStores` is the same key for the same reason, one screen over: the agents screen
+ * had the identical hole and it was found the same way.
  *
  * @param {{config:object, registry?:object, adapter?:object, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function, clock?:Function}} args
- * @returns {Promise<{agents:Array, skills:Array, skillStores:Array, mcp:Array, drafts:Array, stockTeam:Array, telegram:object}>}
+ * @returns {Promise<{agents:Array, skills:Array, skillStores:Array, agentStores:Array, mcp:Array, drafts:Array, stockTeam:Array, telegram:object}>}
  */
 export async function readHarness({ config, registry, adapter, repoDir, fsImpl, env = process.env, homedir = osHomedir, clock } = {}) {
   const cfg = config ?? {}
   const agents = (cfg.workers ?? []).map((w) => agentEntry(w, repoDir, fsImpl))
   const { skills, stores: skillStores } = scanSkills(cfg, repoDir, fsImpl, env, homedir)
   const mcp = ((registry && registry.servers) || []).map((s) => mcpEntry(s, env))
-  const stockTeam = readStockTeam({ config: cfg, repoDir, fsImpl, env, homedir })
+  const { team: stockTeam, stores: agentStores } = scanAgentStores({ config: cfg, repoDir, fsImpl, env, homedir })
 
   let drafts = []
   if (adapter && typeof adapter.list === 'function') {
@@ -608,7 +723,7 @@ export async function readHarness({ config, registry, adapter, repoDir, fsImpl, 
       }))
   }
 
-  return { agents, skills, skillStores, mcp, drafts, stockTeam, telegram: telegramLinkView(cfg, { now: (clock ?? Date.now)() }) }
+  return { agents, skills, skillStores, agentStores, mcp, drafts, stockTeam, telegram: telegramLinkView(cfg, { now: (clock ?? Date.now)() }) }
 }
 
 // ── the two-step activation appliers (config/registry writes, atomic) ──
@@ -636,22 +751,24 @@ export async function readHarness({ config, registry, adapter, repoDir, fsImpl, 
  * Build a new profile from an APPROVED definition file + pool defaults (never request text).
  *
  * `source` lets a caller that has ALREADY located the definition hand over its content and
- * the repo-relative roleFile to record (applyStockTeamToggle, which reads the installed
- * roster out of a config directory that is not always the project's). Absent, the project's
- * own `.claude/agents/<id>.md` is read — the path applyAgentToggle has always used.
+ * the repo-relative roleFile to record (applyStockTeamToggle, which walks both stores itself).
+ * Absent, BOTH STORES are searched by id through findAgentFile — the same lookup the read
+ * model and the wire use, so an agent the window offers is an agent this can build a profile
+ * from. Searching only the project tree is what made a machine agent a card whose one button
+ * answered «no such definition file».
  * A profile whose definition lives outside the repo carries NO roleFile: that field is
  * resolved as repo-relative by resolveWorkerContext, so an out-of-tree path there would be
- * a broken join rather than a preamble.
+ * a broken join rather than a preamble — the role is looked up by id instead.
  */
-function profileFromDefinition(id, enabled, config, repoDir, fsImpl, source) {
-  const src = source ?? {
-    content: readFileSafe(join(repoDir ?? '.', '.claude', 'agents', `${id}.md`), fsImpl),
-    roleFile: `.claude/agents/${id}.md`,
-  }
-  const content = src.content
+function profileFromDefinition(id, enabled, config, repoDir, fsImpl, source, env = process.env, homedir = osHomedir) {
+  const src = source ?? findAgentFile({ agentId: id, repoDir, fsImpl, env, homedir })
+  const content = src && src.content
   if (content == null) {
+    const looked = agentStorePaths({ repoDir, env, homedir })
+      .map((s) => join(s.path, `${id}${AGENT_FILE_EXT}`))
+      .join(' and ')
     throw new MissingDefinitionFileError(
-      `no definition file .claude/agents/${id}.md — approve-merge the forged draft before toggling (two-step activation)`,
+      `no definition file for agent "${id}" — looked in ${looked}; approve-merge the forged draft before toggling (two-step activation)`,
     )
   }
   const fm = readFrontmatter(content).frontmatter || {}
@@ -730,10 +847,11 @@ export function applyAgentModel({ config, id, model, effort, launchDir, fsImpl, 
 
 /**
  * applyAgentToggle({config, id, enabled, repoDir, launchDir, fsImpl, env, homedir}) → the
- * updated config. An EXISTING profile: flip its `enabled`. A NEW id: the definition file
- * `.claude/agents/<id>.md` MUST exist (already approve-merged) — the profile is built from
- * the FILE's fields + pool defaults, the request contributing only id + enabled. Written
- * atomically. Unknown id with no file → MissingDefinitionFileError.
+ * updated config. An EXISTING profile: flip its `enabled`. A NEW id: a definition file
+ * `<id>.md` MUST exist in ONE OF THE TWO STORES (already approve-merged, or the person's own
+ * machine swarm) — the profile is built from the FILE's fields + pool defaults, the request
+ * contributing only id + enabled. Written atomically. An id in neither store →
+ * MissingDefinitionFileError naming both places it looked.
  *
  * `repoDir` is READ from (the definition file); `launchDir` is the write-time derive
  * baseline — see writeConfig above. They are different facts and may not be swapped.
@@ -748,7 +866,7 @@ export function applyAgentToggle({ config, id, enabled, repoDir, launchDir, fsIm
   if (idx !== -1) {
     nextWorkers = workers.map((w, i) => (i === idx ? { ...w, enabled: !!enabled } : w))
   } else {
-    const profile = profileFromDefinition(id, enabled, config, repoDir, fsImpl)
+    const profile = profileFromDefinition(id, enabled, config, repoDir, fsImpl, undefined, env, homedir)
     nextWorkers = [...workers, profile]
   }
   const nextConfig = { ...config, workers: nextWorkers }
@@ -768,9 +886,15 @@ export function applyAgentToggle({ config, id, enabled, repoDir, launchDir, fsIm
  * Nothing installs, nothing is fetched: the roster it switches on is the one the installer
  * already wrote. With no installed definitions at all it refuses by name and writes nothing.
  *
- * Only SHIPPED definitions are touched — the ones with a pristine counterpart under
- * `<config>/sma-core/agents/`. The user's own agents in the same directory are not swept up
- * by a switch labelled «the SMA team», in either direction.
+ * Only SHIPPED definitions are touched — the ones with a pristine counterpart beside their own
+ * store. The user's own agents in the same directories are not swept up by a switch labelled
+ * «the SMA team», in either direction.
+ *
+ * BOTH STORES are walked with the read model's precedence, and the shadowing rule is applied
+ * to the ID rather than to the shipped-ness: an id already seen in the project store is done
+ * with, shipped or not. Otherwise a switch would activate the machine's copy of a name the
+ * screen shows as the user's own project agent — the window and the act disagreeing about
+ * which file a card is.
  *
  * On activation each profile records `stockDigest`: the digest of TODAY's pristine copy,
  * beside `enabled`. That is the baseline readStockTeam reads back to answer «is a newer
@@ -785,24 +909,32 @@ export function applyStockTeamToggle({ config, enabled, repoDir, launchDir, fsIm
   if (!config || !Array.isArray(config.workers)) {
     throw new UnknownProfileError('applyStockTeamToggle: config.workers required')
   }
-  const roots = resolveStockTeamDirs({ repoDir, env, homedir, fsImpl })
   const shipped = []
-  for (const name of roots ? roots.names : []) {
-    if (!name.endsWith('.md')) continue
-    const pristine = readFileSafe(join(roots.pristineDir, name), fsImpl)
-    if (pristine == null) continue // the user's own agent — not part of the shipped team
-    const content = readFileSafe(join(roots.agentsDir, name), fsImpl)
-    if (content == null) continue
-    shipped.push({
-      id: name.slice(0, -3),
-      content,
-      stockDigest: definitionDigest(pristine),
-      roleFile: roots.projectLocal ? `.claude/agents/${name}` : null,
-    })
+  const seen = new Set()
+  for (const { source, path, pristine } of agentStorePaths({ repoDir, env, homedir })) {
+    for (const name of listDirSafe(path, fsImpl) ?? []) {
+      if (!name.endsWith(AGENT_FILE_EXT)) continue
+      const content = readFileSafe(join(path, name), fsImpl)
+      if (content == null) continue
+      const id = name.slice(0, -AGENT_FILE_EXT.length)
+      if (seen.has(id)) continue // the nearer store already answered for this id
+      seen.add(id)
+      const pristineText = readFileSafe(join(pristine, name), fsImpl)
+      if (pristineText == null) continue // the user's own agent — not part of the shipped team
+      shipped.push({
+        id,
+        content,
+        stockDigest: definitionDigest(pristineText),
+        roleFile: source === 'project' ? `.claude/agents/${name}` : null,
+      })
+    }
   }
   if (shipped.length === 0) {
+    const looked = agentStorePaths({ repoDir, env, homedir })
+      .map((s) => s.path)
+      .join(' and ')
     throw new MissingDefinitionFileError(
-      'no installed SMA definitions under <config>/agents — nothing to switch on until the install put them there (two-step activation)',
+      `no installed SMA definitions in ${looked} — nothing to switch on until the install put them there (two-step activation)`,
     )
   }
 
@@ -817,10 +949,16 @@ export function applyStockTeamToggle({ config, enabled, repoDir, launchDir, fsIm
     // A worker is only CREATED when switching on: switching off has nothing to add.
     for (const s of shipped) {
       if (known.has(s.id)) continue
-      const profile = profileFromDefinition(s.id, true, config, repoDir, fsImpl, {
-        content: s.content,
-        roleFile: s.roleFile,
-      })
+      const profile = profileFromDefinition(
+        s.id,
+        true,
+        config,
+        repoDir,
+        fsImpl,
+        { content: s.content, roleFile: s.roleFile },
+        env,
+        homedir,
+      )
       nextWorkers.push({ ...profile, stockDigest: s.stockDigest })
     }
   }
@@ -963,10 +1101,20 @@ export function applyMcpToggle({ registry, serverId, enabled, homedir = osHomedi
 const SKILLS_PREAMBLE_CAP = 16 * 1024
 
 /**
- * resolveWorkerContext({worker, repoDir, fsImpl, env, homedir}) → {rolePreamble?,
- * skillsPreamble?, skillsList}. The merged roleFile body (capped 8 KB) becomes the
+ * resolveWorkerContext({worker, repoDir, fsImpl, env, homedir}) → {rolePreamble?, roleSource?,
+ * roleRef?, skillsPreamble?, skillsList}. The definition body (capped 8 KB) becomes the
  * rolePreamble the loop prepends to an ENABLED agent's task prompt — this is what makes
  * «включён» real in a session.
+ *
+ * THE ROLE IS FOUND THE WAY A SKILL IS. A profile built from a PROJECT definition carries a
+ * repo-relative `roleFile` pin and that pin is honoured first and alone — a pin that does not
+ * resolve stays unresolved, because quietly loading some other file for the same worker would
+ * be a substitution nobody asked for. A profile built from a MACHINE definition carries no pin
+ * at all (there is no repo-relative path to write), so its role is looked up BY ID in both
+ * stores through findAgentFile. Without that lookup the machine store was a place agents could
+ * be listed from and never actually work from: the card said «включён» and the session was
+ * handed no role whatsoever. `roleSource` names the store the body came from, so the caller can
+ * say where the role was taken rather than assume.
  *
  * AND THE ASSIGNED SKILLS TRAVEL THE SAME ROAD, WITH THEIR TEXT. Until this they travelled as
  * names into the journal and nowhere else: a person gave a worker a skill through «Кому дать»,
@@ -980,16 +1128,28 @@ const SKILLS_PREAMBLE_CAP = 16 * 1024
  * dropped: an instruction the person believes was given must not disappear in silence.
  *
  * @param {{worker:object, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function}} args
- * @returns {{rolePreamble?:string, skillsPreamble?:string, skillsList:string[]}}
+ * @returns {{rolePreamble?:string, roleSource?:string, roleRef?:string, skillsPreamble?:string, skillsList:string[]}}
  */
 export function resolveWorkerContext({ worker, repoDir, fsImpl, env = process.env, homedir = osHomedir } = {}) {
   const skillsList = worker && Array.isArray(worker.skills) ? worker.skills.slice() : []
   let rolePreamble
+  let roleSource
+  let roleRef
   if (worker && worker.roleFile) {
     const content = readFileSafe(join(repoDir ?? '.', worker.roleFile), fsImpl)
     if (content) {
       const { body } = readFrontmatter(content)
       rolePreamble = String(body || content).slice(0, ROLE_PREAMBLE_CAP)
+      roleSource = 'project'
+      roleRef = worker.roleFile
+    }
+  } else if (worker && worker.id) {
+    const found = findAgentFile({ agentId: String(worker.id), repoDir, fsImpl, env, homedir })
+    if (found) {
+      const { body } = readFrontmatter(found.content)
+      rolePreamble = String(body || found.content).slice(0, ROLE_PREAMBLE_CAP)
+      roleSource = found.source
+      roleRef = found.roleFile ?? found.path
     }
   }
 
@@ -1010,7 +1170,7 @@ export function resolveWorkerContext({ worker, repoDir, fsImpl, env = process.en
   }
 
   return {
-    ...(rolePreamble ? { rolePreamble } : {}),
+    ...(rolePreamble ? { rolePreamble, roleSource, roleRef } : {}),
     ...(skillsPreamble ? { skillsPreamble } : {}),
     skillsList,
   }
