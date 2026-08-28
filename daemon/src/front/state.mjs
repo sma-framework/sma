@@ -2862,7 +2862,10 @@ export async function deriveState(deps = {}) {
     workersTotal: workersCfg.length,
     queued: queuedRows.length,
     awaitingApproval: awaitingRows.length,
-    spentTodayEur: round2(todayUsd),
+    // СИНОНИМ `costs.apiFallback.todayEur`, и взят ИЗ НЕГО, а не посчитан второй раз. Число
+    // одно, экранов у него может быть много, но выражение должно остаться одно: два
+    // `round2(todayUsd)` рядом — это две правки, из которых однажды сделают одну.
+    spentTodayEur: spend.apiFallback.todayEur,
     windowsOpen,
     seatsBusy,
     seatsTotal,
