@@ -24,7 +24,31 @@
  * alive right now». No durable row can answer that honestly — a row says a task is active, not
  * that a process still exists. Memory dies with the process, and that is exactly correct: a
  * daemon that restarted has no children, so its house starts empty and its ceiling is free.
+ *
+ * WHY THE CEILING IS READ HERE TOO. The house is asked for both numbers a person needs — how
+ * many seats there are and how many are taken — so it is the house that says what the ceiling
+ * IS. The reading used to live in the tick, where it was reachable by nobody else: the screen
+ * that wanted to state «занято X из N» would have had to spell the setting a second time, and
+ * two spellings of one number is how a screen ends up disagreeing with the machine it watches.
  */
+
+/**
+ * СКОЛЬКО ПОПЫТОК ЭТОТ ДЕМОН ВЕДЁТ ОДНОВРЕМЕННО. Умолчание — ОДНА, и это осознанно: до сих пор
+ * потолка не было вовсе, а единственная известная авария этого класса стоила трёх параллельных
+ * процессов на одну подписку. У кого работников несколько и они не мешают друг другу — поднимает
+ * число настройкой; молчание настройки означает безопасный пол, а не «сколько получится».
+ *
+ * ОДНО ЧТЕНИЕ НА ВЕСЬ ДЕМОН. Тик спрашивает его перед тем, как взять место; дверь состояния —
+ * чтобы назвать человеку общее число мест. Настройка, прочитанная в двух местах, однажды
+ * читается по-разному, и разойдутся ровно потолок и его подпись на экране.
+ *
+ * @param {object} config
+ * @returns {number} потолок мест, минимум 1
+ */
+export function concurrencyCap(config) {
+  const raw = Number(config && config.maxConcurrentAttempts)
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 1
+}
 
 /**
  * createInFlight() → the house of running attempts.

@@ -104,6 +104,9 @@ import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS, failureAwa
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
+// Потолок мест читает ДОМ ИДУЩИХ ПОПЫТОК, а не тик: одно чтение настройки на весь демон —
+// его же спрашивает дверь состояния, чтобы назвать человеку «занято X из N».
+import { concurrencyCap } from './queue/in-flight.mjs'
 // ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
 // belongs to the module that owns the row's key list, and a second copy of the number here
 // would be a second ceiling waiting to drift away from the first.
@@ -1101,6 +1104,24 @@ function writeLog(deps, entry) {
     deps.journal(entry)
   } catch {
     /* narration never wedges a tick */
+  }
+}
+
+/**
+ * ЗВОНОК В ЖИВОЙ ПОТОК. Рядом с журналом и по той же причине, что и он: тик рассказывает о
+ * себе через переданный ему шов, а не тянется за хабом сам. Разница между двумя швами — в
+ * адресате. Журнал читает тот, кто потом разбирает случившееся; живой поток смотрит человек,
+ * который прямо сейчас ждёт, когда же поедет его задача.
+ *
+ * Кадр — ПОДСКАЗКА, а не истина: в нём имя события и числа, за точной картиной экран идёт в
+ * опрос. Демон, которому шов не передали, звонит в никуда и работает как раньше.
+ */
+function ringLive(deps, frame) {
+  if (typeof deps.emitEvent !== 'function') return
+  try {
+    deps.emitEvent(frame)
+  } catch {
+    /* a bell that fails to ring never wedges a tick */
   }
 }
 
@@ -3160,17 +3181,6 @@ async function runIntake(deps, now, result) {
 }
 
 /**
- * СКОЛЬКО ПОПЫТОК ЭТОТ ДЕМОН ВЕДЁТ ОДНОВРЕМЕННО. Умолчание — ОДНА, и это осознанно: до сих пор
- * потолка не было вовсе, а единственная известная авария этого класса стоила трёх параллельных
- * процессов на одну подписку. У кого работников несколько и они не мешают друг другу — поднимает
- * число настройкой; молчание настройки означает безопасный пол, а не «сколько получится».
- */
-function concurrencyCap(config) {
-  const raw = Number(config && config.maxConcurrentAttempts)
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 1
-}
-
-/**
  * tick(deps) — ONE stateless pass. deps: {adapter, ledger, config, routing, windows,
  * buildArgs, spawnWorker, verbRunner, report, clock, journal, intake?, workerReady?}.
  * Returns a summary {idle, sweep?, claimed?, completed?, failed?, intake?}.
@@ -3298,6 +3308,11 @@ export async function tick(deps = {}) {
           type: 'tick.concurrency_cap',
           detail: `идущих попыток ${inFlight.size()} при потолке ${cap} — задача в этом проходе не берётся`,
         })
+        // …И ТО ЖЕ САМОЕ — ЧЕЛОВЕКУ, В ЖИВОЙ ПОТОК. Отказ в месте жил только в журнале демона,
+        // то есть был виден лишь тому, кто уже пошёл его искать. Снаружи это выглядело как
+        // «доска пустая, работники свободны, а ничего не едет» — ровно та немота, из-за которой
+        // ошибку с потолком не могли уличить весь день. Кадр несёт два числа и ни слова больше.
+        ringLive(deps, { event: 'seats.full', inFlight: inFlight.size(), cap })
         result.idle = true
         result.concurrencyCap = { inFlight: inFlight.size(), cap }
         return result

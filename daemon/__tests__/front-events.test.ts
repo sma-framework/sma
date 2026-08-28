@@ -83,16 +83,20 @@ describe('events.mjs — EVENT_TYPES', () => {
     expect(EVENT_TYPES).toContain('spend.updated')
   })
 
-  it('the frozen vocabulary is EXACTLY twenty-one types with no duplicates', () => {
+  it('the frozen vocabulary is EXACTLY twenty-two types with no duplicates', () => {
     // TWENTY since 10.08.2026: `ship.published` was being emitted by the release handler into
     // a vocabulary that did not contain it, so the hub dropped it and the one frame a person
     // would actually notice — «опубликовано» — never rang. Declaring it is the fix.
     // TWENTY-ONE since 25.08.2026: `chat.stage` — where a live conversation turn is, so the
     // window stops answering into the void. It was declared under the same two absolute bans
     // as `chat.reply`, and the frame test below is what holds it to them.
-    expect(EVENT_TYPES).toHaveLength(21)
-    expect(new Set(EVENT_TYPES).size).toBe(21)
-    for (const t of ['chat.reply', 'machine.presence', 'project.updated', 'import.updated', 'ship.published', 'chat.stage']) {
+    // TWENTY-TWO since 28.08.2026: `seats.full` — мест больше нет, задача в этом проходе не
+    // берётся. Единственный отказ, которого в остальных списках не видно ничем: очередь стоит,
+    // работники не шевелятся, ни одна строка не меняет состояния. Пока он жил только в журнале
+    // демона, ошибку в настройке потолка нечем было уличить — она прожила целый день.
+    expect(EVENT_TYPES).toHaveLength(22)
+    expect(new Set(EVENT_TYPES).size).toBe(22)
+    for (const t of ['chat.reply', 'machine.presence', 'project.updated', 'import.updated', 'ship.published', 'chat.stage', 'seats.full']) {
       expect(EVENT_TYPES).toContain(t)
     }
   })

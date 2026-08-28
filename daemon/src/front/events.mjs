@@ -46,9 +46,11 @@
  */
 
 /**
- * The frozen event vocabulary — the SPA contract. NINETEEN types (re-frozen 2026-08-06, the
- * single revision of the V5.4 release; the previous freezes were FOURTEEN, 2026-08-01, and
- * TEN before that). Emitting an unlisted event is a no-op — which is precisely why the whole
+ * The frozen event vocabulary — the SPA contract. TWENTY-TWO types (re-frozen 2026-08-28, when
+ * the house of running attempts got a bell of its own; the count before that was twenty-one, and
+ * the list has only ever grown by declaration — the V5.4 revision of 2026-08-06, the fourteen of
+ * 2026-08-01 and the ten before them). Emitting an unlisted
+ * event is a no-op — which is precisely why the whole
  * vocabulary is declared HERE, in one revision, ahead of the emit points: a type that has not
  * been declared does not fail loudly when someone emits it, it is silently dropped, and the
  * screen that was waiting for it simply never updates.
@@ -92,6 +94,12 @@ export const EVENT_TYPES = Object.freeze([
   // and the words of a conversation belong to the one who asked for them. The prose still
   // rides the answer of the request that asked.
   'chat.stage',
+  // МЕСТ БОЛЬШЕ НЕТ, объявлено 28.08.2026. Отказ в месте — единственное решение демона, из-за
+  // которого задача НЕ едет при полной тишине во всех остальных списках: очередь не двинулась,
+  // работник не сменил занятость, ни одна задача не поменяла состояние. Пока это жило только в
+  // журнале, снаружи потолок был неотличим от поломки — и ошибку в его настройке нечем было
+  // уличить. Кадр несёт два числа, занято и всего, и ничего кроме них.
+  'seats.full',
 ])
 
 /**
@@ -131,11 +139,14 @@ const EVENT_FIELDS = Object.freeze({
   // same class of field as `phase.stage`'s stage), and the order the frames were written in.
   // NEVER a syllable of the question or of the reply.
   'chat.stage': ['turnId', 'stage', 'seq'],
+  // Два числа и ничего больше: сколько мест занято прямо сейчас и сколько их всего. Ни имени
+  // задачи, которой отказали, ни работника — кто именно ждёт, читается с экрана по опросу.
+  'seats.full': ['inFlight', 'cap'],
 })
 
 /** Fields serialised as a boolean / a number; everything else is stringified. */
 const BOOLEAN_FIELDS = new Set(['online'])
-const NUMBER_FIELDS = new Set(['count', 'seq'])
+const NUMBER_FIELDS = new Set(['count', 'seq', 'inFlight', 'cap'])
 
 /** Dedup window for the touch→task.running hint (mirrors the loop's 30s touch throttle). */
 const RUNNING_DEDUP_MS = 30000

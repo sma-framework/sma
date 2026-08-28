@@ -434,6 +434,54 @@ describe('the production composition root is COMPLETE', () => {
   })
 
   /**
+   * ОДИН ДОМ НА ОБЕ СТОРОНЫ — тик и дверь состояния.
+   *
+   * Потолок мест снаружи не был виден ничем: на экране не было ни числа мест, ни числа
+   * занятых, и ошибка в его настройке прожила целый день просто потому, что уличить её было
+   * нечем. Теперь дверь состояния называет оба числа — и берёт «занято» у того, кто места
+   * раздаёт. Ценность этого держится на ОДНОМ объекте: два дома отвечали бы двери «свободно»
+   * ровно тогда, когда тику отказано в месте, и подпись на экране объясняла бы машину,
+   * которой нет. Проверяется не «поле заполнено», а ТОЖДЕСТВО — грепом такое не увидеть.
+   */
+  it('joins ONE house of running attempts to BOTH sides — the tick and the state door', () => {
+    const ofTick: any = park.tickDeps.inFlight
+    const ofDoor: any = park.front.deps.inFlight
+    expect(ofDoor, 'the state door must be handed the house, or the screen can never say «занято X из N»').toBeTruthy()
+    expect(ofDoor, 'ONE house, or the door counts a different machine than the one refusing seats').toBe(ofTick)
+    const seat = ofTick.reserve(9)
+    expect(ofDoor.size(), 'a seat taken by the tick must be visible to the door THE SAME INSTANT').toBe(1)
+    ofTick.release(seat)
+    expect(ofDoor.size(), 'and a released one must free it there too').toBe(0)
+  })
+
+  /**
+   * КОЛОКОЛ ТИКА ДОЛЖЕН БЫТЬ ПРИВЯЗАН К ХАБУ.
+   *
+   * Отказ в месте звонит в живой поток через переданный шов. Не привязанный к хабу, он был бы
+   * ровно тем классом дефекта, ради которого написан этот файл: код есть, тест зелёный, звонок
+   * уходит в никуда — и человек снова смотрит на остановившийся конвейер без единого слова о
+   * причине.
+   */
+  it('joins the tick BELL to the hub — a bell wired to nothing is silence with extra steps', () => {
+    expect(typeof park.tickDeps.emitEvent, 'the tick must be handed a way to ring the live stream').toBe('function')
+    const seen: string[] = []
+    const res: any = {
+      destroyed: false,
+      writableEnded: false,
+      writeHead() {},
+      write: (t: string) => seen.push(t),
+      end() {},
+    }
+    const client = park.hub.addClient(res)
+    park.tickDeps.emitEvent({ event: 'seats.full', inFlight: 2, cap: 2 })
+    park.hub.removeClient(client)
+    const wire = seen.join('')
+    expect(wire, 'what the tick rings must reach an open client of THIS daemon').toContain('event: seats.full')
+    expect(wire, 'both numbers must survive the frozen field pick').toContain('"inFlight":2')
+    expect(wire, 'both numbers must survive the frozen field pick').toContain('"cap":2')
+  })
+
+  /**
    * THE MONEY RULE MUST REACH THE DISPATCHER.
    *
    * `shouldApiFallback` decides two things nothing else decides: whether a task that names

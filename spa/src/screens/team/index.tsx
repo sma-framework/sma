@@ -59,6 +59,41 @@ function KpiPill({ value, label, tone }: { value: number; label: string; tone: s
   )
 }
 
+/**
+ * МЕСТА ОДНОВРЕМЕННОЙ РАБОТЫ — «занято X из N», словами, на экране, где человек управляет флотом.
+ *
+ * ЗАЧЕМ ЭТО ЗДЕСЬ. Потолок мест — настройка, действие которой снаружи не было видно ничем: доска
+ * показывала занятых работников, но нигде не было сказано, сколько мест ВСЕГО и сколько из них
+ * свободно. Ошибка в этой настройке поэтому и прожила целый день — её нечем было уличить: место
+ * молча не выдавалось, задача молча не бралась, и всё это выглядело как «почему-то не едет».
+ *
+ * ОБА ЧИСЛА ПРИЕЗЖАЮТ СЧИТАННЫМИ. Экран их не выводит: занятые места считает тот, кто их
+ * раздаёт, потолок читается там же, где его читает тик. Пересчитать занятость по карточкам
+ * работников было бы вторым мнением о том же — а два мнения об одном числе означают, что однажды
+ * человек перестанет верить обоим.
+ *
+ * НЕЧЕМ СКАЗАТЬ — НЕ ГОВОРИМ. `seatsBusy === null` (демон без дома идущих попыток) не рисует
+ * ничего: ноль здесь прочитался бы как «все места свободны», то есть как измерение.
+ */
+function SeatsPill({ busy, total }: { busy: number | null; total: number }) {
+  if (busy === null || !Number.isFinite(total)) return null
+  const full = busy >= total
+
+  return (
+    <div
+      className={`flex flex-none items-baseline gap-2 rounded-[9px] border px-3.5 py-1.5 shadow-panel ${
+        full ? 'border-warn-s bg-warn-s' : 'border-bd bg-card'
+      }`}
+      title="Сколько задач демон ведёт одновременно. Пока все места заняты, следующая задача ждёт."
+    >
+      <span className={`text-[13px] font-semibold tabular-nums ${full ? 'text-warn-tx' : 'text-tx'}`}>
+        {`занято ${busy} из ${total}`}
+      </span>
+      <span className="text-[11.5px] text-tx2">{full ? 'мест — новые задачи ждут' : 'мест'}</span>
+    </div>
+  )
+}
+
 function PathStrip({ workers }: { workers: WorkerRow[] }) {
   const staffed = LANE_ORDER.filter((lane) => workers.some((w) => w.lane === lane))
   if (staffed.length === 0) return null
@@ -120,6 +155,7 @@ export function Screen() {
             tone={p.tone}
           />
         ))}
+        <SeatsPill busy={data?.kpis?.seatsBusy ?? null} total={data?.kpis?.seatsTotal ?? Number.NaN} />
       </header>
 
       {state.isError ? (
