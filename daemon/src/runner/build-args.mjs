@@ -27,7 +27,9 @@
  *     account to run under, and inventing one would spend money from a profile nobody chose;
  *   - a worker id that is not in config, or a worker with no account block;
  *   - a model/effort that does not match the profile — that guard is imported, not rewritten;
- *   - a task carrying a stage envelope this daemon has no command for (see stagePromptOf).
+ *   - a task carrying a stage envelope this daemon has no command for (see stagePromptOf);
+ *   - a Codex spawn whose fresh home carries no login and whose environment names no API key:
+ *     it would answer 401 inside the child, where no screen out here can name the cause.
  * Each throw is caught by the tick's own catch and becomes a NAMED task failure, which is the
  * behaviour the rest of the loop is built around: a refusal on the record beats a crash.
  *
@@ -56,9 +58,16 @@ import {
   buildTaskPrompt,
   assertProfileParity,
   expectedModelEffort,
+  codexSandboxFor,
+  seedCodexHome,
+  CodexHomeError,
+  CODEX_AUTH_FILE,
 } from './args.mjs'
 import { readFileSync } from 'node:fs'
+import { homedir as osHomedir } from 'node:os'
 import { join } from 'node:path'
+
+import { expandHome } from './readiness.mjs'
 
 import { pipelineMaxTurns } from '../config.mjs'
 import { stageCommand } from '../policy/phase-cycle.mjs'
@@ -179,15 +188,46 @@ function readAccountSettings(configDir, readFile) {
 }
 
 /**
+ * The name of the environment variable that authenticates a Codex session WITHOUT a login
+ * file. It is the one honest reason a home with no `auth.json` may still be spawned into.
+ */
+const CODEX_API_KEY_ENV = 'OPENAI_API_KEY'
+
+/**
+ * codexAuthSources(account, env) → where this account's Codex login might be, best first.
+ *
+ * A FRESH HOME REPLACES `~/.codex`, IT DOES NOT EXTEND IT, so the login has to be carried in
+ * or the run answers 401 and never learns it is on a subscription. The order is the order of
+ * how specific the claim is:
+ *   1. `account.codexAuthFile` — the operator said it outright; nothing overrides that.
+ *   2. `<configDir>/auth.json` — the account's OWN login, mirrored into its own directory,
+ *      exactly where the Claude lane keeps that account's `settings.json`.
+ *   3. `$CODEX_HOME/auth.json` — the home the DAEMON itself was started with, if any.
+ *   4. `~/.codex/auth.json` — where `codex login` puts it. Last, and deliberately present:
+ *      the fleet runs as the person who logged in, and a fleet that refuses to start because
+ *      nobody hand-copied a file into a mirror directory is a fleet nobody can switch on.
+ * The tilde is resolved on the way, for the same reason the home path is.
+ */
+function codexAuthSources(account, env, homedir) {
+  const out = []
+  if (account && account.codexAuthFile) out.push(expandHome(String(account.codexAuthFile), homedir))
+  if (account && account.configDir) out.push(join(expandHome(String(account.configDir), homedir), CODEX_AUTH_FILE))
+  if (env && env.CODEX_HOME) out.push(join(expandHome(String(env.CODEX_HOME), homedir), CODEX_AUTH_FILE))
+  const personal = (env && (env.HOME || env.USERPROFILE)) || homedir()
+  if (personal) out.push(join(String(personal), '.codex', CODEX_AUTH_FILE))
+  return out
+}
+
+/**
  * createBuildArgs({config, env, fsImpl}) → the `buildArgs(task, route, options)` the tick wants.
  *
  * `fsImpl` exists so the settings read above can be exercised without a real home directory:
  * the suite injects a reader, production passes nothing and gets `node:fs`.
  *
- * @param {{config?:object, env?:object, fsImpl?:object}} [deps]
+ * @param {{config?:object, env?:object, fsImpl?:object, homedir?:Function}} [deps]
  * @returns {(task:object, route:object, options?:object) => {bin:string, args:string[], env:object, prompt:string, workerId:string, provider:string}}
  */
-export function createBuildArgs({ config = {}, env = process.env, fsImpl } = {}) {
+export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedir = osHomedir } = {}) {
   const readFile = (fsImpl && fsImpl.readFileSync) || readFileSync
   return function buildArgs(task, route, options = {}) {
     if (!task || typeof task !== 'object') {
@@ -241,7 +281,13 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl } = {})
     let args
     if (isCodex) {
       bin = CODEX_BIN
-      args = buildCodexArgs(argOpts)
+      // THE ENVELOPE REACHES THIS LANE TOO — as a sandbox, because that is the only shape
+      // its CLI has for the question. The other lane hands the same grant over as
+      // `--allowedTools`; here the grant that includes an editor and a shell becomes
+      // `workspace-write`, and a grant that includes neither becomes `read-only`. One
+      // derivation, so the checker and the worker cannot end up bounded by two different
+      // readings of one envelope.
+      args = buildCodexArgs({ ...argOpts, sandbox: codexSandboxFor(options.allowedTools) })
     } else {
       bin = CLAUDE_BIN
       // The live attempt log is the reason for this flag: without it a session that delegates
@@ -318,7 +364,47 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl } = {})
       // composer does not know where an attempt directory lives and must not start guessing —
       // the tick computes both with the modules that own those layouts and hands them here.
       gate: options.gate,
+      homedir,
     })
+
+    // ── (5a) AND FOR CODEX, THE HOME IS ACTUALLY MADE ───────────────────────────
+    //
+    // THE GAP THIS CLOSES. `buildAccountEnv` above names a fresh per-task CODEX_HOME in the
+    // child's environment, and until this block nothing anywhere created or seeded it —
+    // `codexConfigSeed` had not one caller in the product. So the sentence «native memories
+    // are off for every Codex task» was true of a source comment and of nothing on any disk,
+    // and, far more expensively, the fresh home carried NO LOGIN: a fresh CODEX_HOME replaces
+    // the operator's own rather than extending it, and a live run against an empty one
+    // answers 401 and walks off to the public API endpoint without ever knowing it was on a
+    // subscription. Both are wire failures, not logic failures, which is why the fix is a
+    // call at the seam and not a cleverer function.
+    //
+    // IT HAPPENS HERE, in the composer, for the reason `readAccountSettings` lives here: the
+    // guard and the builders stay pure over data, and the disk stays with the one function
+    // that already touches it.
+    //
+    // NO LOGIN AND NO KEY → A NAMED REFUSAL, not a spawn. The tick turns a throw here into a
+    // recorded task failure with a reason on the card. The alternative is a session that
+    // starts, burns a window and dies inside the child process on an authentication error no
+    // screen out here can name — which is precisely the failure class this file was written
+    // to end.
+    if (isCodex) {
+      const seeded = seedCodexHome({
+        home: spawnEnv.CODEX_HOME,
+        authSources: codexAuthSources(worker.account, env, homedir),
+        fsImpl,
+      })
+      // ASKED OF THE ENVIRONMENT THE CHILD WILL ACTUALLY HAVE, not of the daemon's own: those
+      // two differ by exactly the secret-stripping above, and a key present here and stripped
+      // there would be a refusal we chose not to make about a 401 we would then get anyway.
+      if (!seeded.authPath && !spawnEnv[CODEX_API_KEY_ENV]) {
+        throw new CodexHomeError(
+          `buildArgs: the fresh Codex home ${seeded.home} has no ${CODEX_AUTH_FILE} and the environment names no ` +
+            `${CODEX_API_KEY_ENV} — a session started in it would answer 401 and spend a window saying so. ` +
+            'Point account.codexAuthFile at this account\'s login, or mirror it into the account directory.',
+        )
+      }
+    }
 
     // ── (6) THE PROMPT — two shapes, and which one is decided by the envelope ────
     //

@@ -26,6 +26,9 @@
  *   usage.mjs (honest per-account booking):
  *   - Test 7: claudeUsageFromResult maps the fixture result → a stream-result row w/ cost.
  *   - Test 8: codexUsageFromFinal with token fields → a codex-final row.
+ *   - Test 8b: the CACHE WRITE is read off the frame rather than hard-zeroed — this provider
+ *             does report it (`cache_write_input_tokens`), and a zero written over a number the
+ *             frame carried is a lost measurement, not caution.
  *   - Test 9: codexUsageFromFinal WITHOUT token fields → a source:'estimate' row (never $0-blind).
  *   - Test 10: bookUsage + readUsage round-trip sums per account within the rolling window.
  */
@@ -44,6 +47,7 @@ import {
   readUsage,
   claudeUsageFromResult,
   codexUsageFromFinal,
+  codexTokensFromFinal,
   estimateUsage,
 } from '../src/runner/usage.mjs'
 
@@ -306,6 +310,34 @@ describe('usage.mjs — honest per-account booking', () => {
     expect(row.source).toBe('codex-final')
     expect(row.inputTokens).toBe(3400)
     expect(row.outputTokens).toBe(1200)
+  })
+
+  /**
+   * ═══════ ЧЕТВЁРТОЕ ЧИСЛО ЧИТАЕТСЯ ИЗ КАДРА, А НЕ СТАВИТСЯ НУЛЁМ ═══════
+   *
+   * Здесь стоял жёсткий `cacheWrite: 0` с объяснением, что этот поставщик про запись кэша не
+   * говорит. Кадр `turn.completed` у codex-cli 0.150.1 её сообщает — `cache_write_input_tokens`
+   * рядом с `cached_input_tokens`. Ноль вместо присланного поля — не осторожность, а
+   * потерянное измерение: попытка, залившая в кэш миллион, и попытка, не залившая ничего,
+   * выглядели в квитанции одинаково.
+   */
+  it('codexTokensFromFinal reads the cache WRITE the frame actually carries', () => {
+    const frame = parseCodexEvent(JSON.stringify({
+      type: 'turn.completed',
+      usage: {
+        input_tokens: 13_070,
+        cached_input_tokens: 11_008,
+        cache_write_input_tokens: 1_920,
+        output_tokens: 5,
+      },
+    }))
+    expect(codexTokensFromFinal(frame)).toEqual({ input: 13_070, output: 5, cacheRead: 11_008, cacheWrite: 1_920 })
+  })
+
+  it('a frame that carries no cache write is still an honest zero, and camelCase reads too', () => {
+    expect(codexTokensFromFinal({ usage: { input_tokens: 10, output_tokens: 2 } }).cacheWrite).toBe(0)
+    expect(codexTokensFromFinal({ usage: { cacheWriteInputTokens: 7 } }).cacheWrite).toBe(7)
+    expect(codexTokensFromFinal({}).cacheWrite).toBe(0)
   })
 
   it('codexUsageFromFinal WITHOUT token fields → a source:estimate row (never $0-blind)', () => {

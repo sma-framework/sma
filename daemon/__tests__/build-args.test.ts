@@ -17,6 +17,10 @@
  * spend from.
  */
 
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, it, expect } from 'vitest'
 
 import { createBuildArgs, NoWorkerForRouteError, UnknownStageError, CLAUDE_BIN, CODEX_BIN } from '../src/runner/build-args.mjs'
@@ -85,6 +89,27 @@ const settingsFs = (content: string = MIRRORED_SETTINGS): any => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const build = (cfg: any = CONFIG, env: any = ENV, fsImpl: any = settingsFs()): any =>
   createBuildArgs({ config: cfg, env, fsImpl })
+
+/**
+ * A REAL account directory with a REAL login in it. The Codex cases below are wire cases —
+ * they assert what is on the disk and in the argv of the spec — so this fixture builds an
+ * account under the OS temp directory rather than describing one. `HOME`/`USERPROFILE` are
+ * pointed at an empty directory on purpose: the login fallbacks must never reach the personal
+ * `~/.codex` of whoever is running the suite.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const codexFixture = (opts: { login?: boolean } = {}): any => {
+  const root = mkdtempSync(join(tmpdir(), 'sma-buildargs-codex-'))
+  const accountDir = join(root, 'pro-1')
+  mkdirSync(accountDir, { recursive: true })
+  if (opts.login !== false) writeFileSync(join(accountDir, 'auth.json'), '{"tokens":{"id_token":"subscription"}}')
+  return {
+    root,
+    accountDir,
+    cfg: { workers: [{ ...codexWorker, account: { ...codexWorker.account, configDir: accountDir } }] },
+    env: { HOME: join(root, 'empty-home'), USERPROFILE: join(root, 'empty-home') },
+  }
+}
 
 describe('buildArgs — the spec the tick spawns', () => {
   it('assembles a Claude session: binary, base args, account env and the task prompt', () => {
@@ -259,7 +284,8 @@ describe('buildArgs — the spec the tick spawns', () => {
   })
 
   it('routes a Codex worker to the other CLI, with a per-task CODEX_HOME', () => {
-    const spec = build()(task({ lane: 'research' }), route({ workerId: 'pro-1', provider: 'codex' }))
+    const { cfg, env } = codexFixture()
+    const spec = build(cfg, env)(task({ lane: 'research' }), route({ workerId: 'pro-1', provider: 'codex' }))
 
     expect(spec.bin).toBe(CODEX_BIN)
     expect(spec.args.slice(0, 2)).toEqual(['exec', '--json'])
@@ -267,6 +293,88 @@ describe('buildArgs — the spec the tick spawns', () => {
     expect(String(spec.env.CODEX_HOME)).toContain('codex-tasks')
     expect(String(spec.env.CODEX_HOME)).toContain('T-0001')
     expect(spec.env.CLAUDE_CONFIG_DIR).toBeUndefined()
+  })
+})
+
+/**
+ * ═══════ ПОЛОСА КОДЕКСА: ПРОВОД, А НЕ ВЫЧИСЛЕНИЕ ═══════
+ *
+ * Всё, что здесь утверждается, — про диск и про argv настоящего спека, а не про то, что
+ * функция была позвана. Причина ровно та же, по которой в этом файле утверждается потолок
+ * ходов: `codexConfigSeed()` был написан, покрыт делом и НЕ ИМЕЛ НИ ОДНОГО ВЫЗЫВАЮЩЕГО —
+ * среда называла ребёнку свежий дом, никто его не создавал, и «родная память выключена»
+ * было правдой про исходник и неправдой про любой запуск. Второй файл в том доме важнее
+ * первого: свежий CODEX_HOME ЗАМЕНЯЕТ личный `~/.codex` вместе с логином, и пустой дом
+ * отвечает 401, уходя на публичную точку API, — то есть сессия не знает, что она на подписке.
+ */
+describe('buildArgs — the Codex home is created, seeded and authenticated', () => {
+  const codexRoute = () => route({ workerId: 'pro-1', provider: 'codex' })
+  const codexTask = () => task({ lane: 'research' })
+
+  it('the directory named in the environment EXISTS on disk afterwards, and carries the memories-off config', () => {
+    const { cfg, env } = codexFixture()
+    const spec = build(cfg, env)(codexTask(), codexRoute())
+
+    const home = String(spec.env.CODEX_HOME)
+    expect(existsSync(home)).toBe(true)
+    const toml = readFileSync(join(home, 'config.toml'), 'utf8')
+    expect(toml).toContain('memories = false')
+    expect(toml).toContain('approval_policy = "never"')
+  })
+
+  it('the login lands in THAT home — the one the spawn environment names, not a neighbour', () => {
+    const { cfg, env, accountDir } = codexFixture()
+    const spec = build(cfg, env)(codexTask(), codexRoute())
+
+    const home = String(spec.env.CODEX_HOME)
+    expect(existsSync(join(home, 'auth.json'))).toBe(true)
+    expect(readFileSync(join(home, 'auth.json'), 'utf8')).toBe(readFileSync(join(accountDir, 'auth.json'), 'utf8'))
+  })
+
+  it('two tasks of one account get two homes, each with its own seeded pair', () => {
+    const { cfg, env } = codexFixture()
+    const a = build(cfg, env)(task({ id: 'T-A', lane: 'research' }), codexRoute())
+    const b = build(cfg, env)(task({ id: 'T-B', lane: 'research' }), codexRoute())
+
+    expect(a.env.CODEX_HOME).not.toBe(b.env.CODEX_HOME)
+    for (const home of [String(a.env.CODEX_HOME), String(b.env.CODEX_HOME)]) {
+      expect(existsSync(join(home, 'config.toml'))).toBe(true)
+      expect(existsSync(join(home, 'auth.json'))).toBe(true)
+    }
+  })
+
+  it('no login anywhere and no key in the environment → a NAMED refusal, never a 401 inside the child', () => {
+    const { cfg, env } = codexFixture({ login: false })
+    expect(() => build(cfg, env)(codexTask(), codexRoute())).toThrow(/401|auth\.json/i)
+  })
+
+  it('an API key in the environment is the one honest reason a home with no login may still spawn', () => {
+    const { cfg, env } = codexFixture({ login: false })
+    const spec = build(cfg, { ...env, OPENAI_API_KEY: 'sk-live' })(codexTask(), codexRoute())
+    expect(existsSync(join(String(spec.env.CODEX_HOME), 'config.toml'))).toBe(true)
+  })
+
+  /**
+   * ПЕСОЧНИЦА ВИДНА В argv НАСТОЯЩЕГО СПЕКА, а не выводится читателем постфактум: у
+   * `codex exec` нет флага одобрений вовсе, и это единственное место, где границу запуска
+   * можно прочитать. Грант конверта приезжает сюда тем же путём, что и в соседнюю полосу.
+   */
+  it('the sandbox the envelope amounts to is IN THE ARGUMENT ARRAY of the spawn', () => {
+    const { cfg, env } = codexFixture()
+    const editor = build(cfg, env)(codexTask(), codexRoute(), {
+      allowedTools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'Skill'],
+    })
+    const reader = build(cfg, env)(codexTask(), codexRoute(), { allowedTools: ['Read', 'Grep', 'Glob'] })
+    const nobody = build(cfg, env)(codexTask(), codexRoute())
+
+    const modeOf = (args: string[]) => args[args.indexOf('--sandbox') + 1]
+    expect(modeOf(editor.args)).toBe('workspace-write')
+    expect(modeOf(reader.args)).toBe('read-only')
+    expect(modeOf(nobody.args)).toBe('read-only')
+
+    // and the tool flags of the OTHER lane never appear here — this CLI has none
+    expect(editor.args).not.toContain('--allowedTools')
+    expect(editor.args).toContain('--strict-config')
   })
 })
 

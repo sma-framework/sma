@@ -123,10 +123,16 @@ export function claudeTokensFromResult(resultEvent = {}) {
 /**
  * codexTokensFromFinal(finalEvent) → те же четыре числа с финального кадра Codex.
  *
- * ЗАПИСЬ КЭША У ЭТОГО ПОСТАВЩИКА НЕ СООБЩАЕТСЯ ВОВСЕ — его `usage` знает про кэш только
- * прочитанное. Ноль здесь означает «поставщик про это не говорит», и это ровно тот случай,
- * когда ноль честнее пропуска: четвёрка полей у попытки одна на обоих поставщиков, иначе
- * читателю пришлось бы знать, чьей попытке принадлежит квитанция, прежде чем её прочесть.
+ * ЗАПИСЬ КЭША ЭТОТ ПОСТАВЩИК СООБЩАЕТ — И ЕЁ ЧИТАЮТ. Здесь стоял жёсткий ноль с объяснением,
+ * что «его `usage` знает про кэш только прочитанное». Это перестало быть правдой: кадр
+ * `turn.completed` у codex-cli 0.150.1 несёт `cache_write_input_tokens` рядом с
+ * `cached_input_tokens` — проверено живым прогоном. Ноль, записанный вместо поля, которое
+ * поставщик прислал, — не осторожность, а потерянное измерение: попытка, залившая в кэш
+ * миллион, и попытка, не залившая ничего, выглядели в квитанции одинаково.
+ *
+ * НОЛЬ ОСТАЁТСЯ ЧЕСТНЫМ ОТВЕТОМ, но теперь он означает то, что означает у соседа сверху:
+ * поле в кадре либо не пришло, либо пришло нулём. Догадок по-прежнему нет — что кадр сказал,
+ * то и записано.
  *
  * @param {{usage?:object}} finalEvent — parseCodexEvent output for a `turn.completed` frame
  * @returns {{input:number, output:number, cacheRead:number, cacheWrite:number}}
@@ -137,7 +143,9 @@ export function codexTokensFromFinal(finalEvent = {}) {
     input: num(usage.input_tokens ?? usage.inputTokens),
     output: num(usage.output_tokens ?? usage.outputTokens),
     cacheRead: num(usage.cached_input_tokens ?? usage.cachedInputTokens ?? usage.cache_read_input_tokens),
-    cacheWrite: 0,
+    // ОБА НАПИСАНИЯ, как и у всех полей выше: кадр приходит от внешней командной строки,
+    // и читатель, знающий одно написание, молча возвращает ноль на потоке, который сказал всё.
+    cacheWrite: num(usage.cache_write_input_tokens ?? usage.cacheWriteInputTokens),
   }
 }
 

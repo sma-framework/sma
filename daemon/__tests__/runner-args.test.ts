@@ -1,10 +1,11 @@
 /**
  * Tests for daemon/src/runner/args.mjs.
  *
- * Pure arg-builders for both worker lanes + the forbidden-flag guard + per-account
- * env assembly + the task-prompt DoD builder (11). No I/O,
- * no child spawn — every function here is a pure transform, so the whole suite is a
- * table of input→arg-array assertions.
+ * Arg-builders for both worker lanes + the forbidden-flag guard + per-account
+ * env assembly + the task-prompt DoD builder (11). No child spawn, and every builder is a
+ * pure transform, so most of this suite is a table of input→arg-array assertions — with two
+ * deliberate exceptions that WRITE ONE FILE EACH and are therefore asserted against a real
+ * temporary directory: the per-spawn MCP config, and the fresh Codex home.
  *
  *   Claude arg-builder (hooks-enforced lane):
  *   - Test 1:  base command line is exactly the headless stream-json shape.
@@ -20,8 +21,14 @@
  *              (Paperclip PF-4).
  *
  *   Codex arg-builder (exit-gate lane):
- *   - Test 9:  base is `exec --json … -`; effort maps to `-c model_reasoning_effort=<E>`.
- *   - Test 10: the forbidden-flag guard holds on the Codex lane too.
+ *   - Test 9:  base is `exec --json --strict-config --sandbox <mode> … -`; effort maps to
+ *              `-c model_reasoning_effort=<E>`.
+ *   - Test 10: the forbidden-flag guard holds on the Codex lane too — including the sandbox
+ *              mode that lifts the boundary entirely, which travels as a VALUE, not a flag.
+ *   - Test 10a: the envelope's tool grant becomes the sandbox (this CLI has no per-tool flag):
+ *              a reader runs read-only, an editor runs workspace-write, an absent grant is narrow.
+ *   - Test 10b: THE FRESH HOME IS REALLY MADE — the assertions look at the FILESYSTEM, because
+ *              the seed function had no caller at all and the isolation existed only in prose.
  *
  *   Per-account env assembly (Multica #3130):
  *   - Test 11: a Claude account gets CLAUDE_CONFIG_DIR + OAuth token BY NAME from env
@@ -65,7 +72,7 @@
  *              content, and it is the SAME function both prompt builders use.
  */
 
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -78,6 +85,9 @@ import {
   isResumableSessionId,
   buildMcpConfigFile,
   codexConfigSeed,
+  codexSandboxFor,
+  seedCodexHome,
+  CODEX_APPROVAL_POLICY,
   ForbiddenFlagError,
   ProfileParityError,
   TERMINAL_PARITY_PATHS,
@@ -175,11 +185,45 @@ describe('buildClaudeArgs (hooks-enforced lane)', () => {
 })
 
 describe('buildCodexArgs (exit-gate lane)', () => {
-  it('base is `exec --json … -`; effort maps to -c model_reasoning_effort', () => {
-    expect(buildCodexArgs({})).toEqual(['exec', '--json', '-'])
-    expect(buildCodexArgs({ model: 'gpt-5-codex', effort: 'high', resumeThreadId: 'th_abc' })).toEqual([
-      'exec', '--json', '--model', 'gpt-5-codex', '-c', 'model_reasoning_effort=high', 'resume', 'th_abc', '-',
+  it('base is `exec --json --strict-config --sandbox … -`; effort maps to -c model_reasoning_effort', () => {
+    expect(buildCodexArgs({})).toEqual(['exec', '--json', '--strict-config', '--sandbox', 'read-only', '-'])
+    expect(buildCodexArgs({ model: 'gpt-5-codex', effort: 'high', resumeThreadId: 'th_abc', sandbox: 'workspace-write' })).toEqual([
+      'exec', '--json', '--strict-config', '--sandbox', 'workspace-write',
+      '--model', 'gpt-5-codex', '-c', 'model_reasoning_effort=high', 'resume', 'th_abc', '-',
     ])
+  })
+
+  /**
+   * ═══════ ПОЛИТИКА ЭТОЙ ПОЛОСЫ ЕДЕТ ПЕСОЧНИЦЕЙ, ПОТОМУ ЧТО ЕХАТЬ БОЛЬШЕ НЕЧЕМ ═══════
+   *
+   * У `codex exec` нет флага одобрений вовсе — `-a` живёт только у корневой команды, — поэтому
+   * границу несут ровно две вещи: файл конфигурации в доме задачи и этот флаг. Флаг ставится
+   * ВСЕГДА, даже когда режим совпал с умолчанием CLI: граница, оставленная умолчанию, не
+   * читается по аргументам запуска, а именно по ним в этом продукте потом отвечают на вопрос
+   * «под чем шла эта попытка».
+   */
+  it('no sandbox named → the narrow one; a boundary is not defaulted open', () => {
+    expect(buildCodexArgs({})).toContain('read-only')
+    expect(buildCodexArgs({ sandbox: undefined })[4]).toBe('read-only')
+  })
+
+  it('the third mode — full access — is refused by the same named error as a permissions-skip', () => {
+    expect(() => buildCodexArgs({ sandbox: 'danger-full-access' })).toThrow(ForbiddenFlagError)
+    expect(() => buildCodexArgs({ sandbox: 'nonsense' })).toThrow(/unknown sandbox/i)
+  })
+
+  /**
+   * ОДНО РЕШЕНИЕ НА ДВЕ ПОЛОСЫ. У этого CLI нет пофлажного гранта инструментов, поэтому тот же
+   * конверт, который соседняя полоса отдаёт как `--allowedTools`, здесь становится песочницей:
+   * проверяющему — read-only, правящему код — workspace-write. Грант, которого никто не давал,
+   * даёт узкий режим, а не широкий.
+   */
+  it('the envelope grant becomes the sandbox: readers look, editors write, nobody defaults wide', () => {
+    expect(codexSandboxFor(['Read', 'Grep', 'Glob'])).toBe('read-only')
+    expect(codexSandboxFor(['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'Skill'])).toBe('workspace-write')
+    expect(codexSandboxFor([])).toBe('read-only')
+    expect(codexSandboxFor(undefined)).toBe('read-only')
+    expect(codexSandboxFor(null as never)).toBe('read-only')
   })
 
   it('the forbidden-flag guard holds on the Codex lane', () => {
@@ -230,8 +274,114 @@ describe('buildAccountEnv (Multica #3130)', () => {
     expect(a.CODEX_HOME).toBeTruthy()
     expect(b.CODEX_HOME).toBeTruthy()
     expect(a.CODEX_HOME).not.toBe(b.CODEX_HOME)
-    // the memories-off config seed the spawn writes into the fresh home
-    expect(codexConfigSeed()).toMatchObject({ features: { memories: false } })
+    // the memories-off seed the spawn writes into the fresh home — in the format the CLI
+    // actually parses. It used to be a JSON object, and `config.json` is a file codex never opens.
+    expect(codexConfigSeed()).toContain('memories = false')
+    expect(codexConfigSeed()).toContain('[features]')
+    expect(codexConfigSeed()).toContain(`approval_policy = "${CODEX_APPROVAL_POLICY}"`)
+  })
+
+  /**
+   * ТИЛЬДА РАЗВОРАЧИВАЕТСЯ, ПОТОМУ ЧТО ТЕПЕРЬ ЭТОТ КАТАЛОГ КТО-ТО СОЗДАЁТ. Пока путь был
+   * только строкой для ребёнка, неразвёрнутая `~` была невидима: CLI молча заводил себе
+   * пустой дом. Засевающий, получив ту же строку, сделал бы папку с именем «~» рядом с cwd
+   * демона и положил бы в неё логин аккаунта.
+   */
+  it('the account dir a person wrote with a tilde becomes a real path in the environment', () => {
+    const env = buildAccountEnv({
+      account: { name: 'pro-1', configDir: '~/.sma-accounts/pro-1' },
+      provider: 'codex',
+      taskId: 'T-9',
+      homedir: () => join('/home', 'founder'),
+    })
+    expect(String(env.CODEX_HOME).replace(/\\/g, '/')).toBe('/home/founder/.sma-accounts/pro-1/codex-tasks/T-9')
+    expect(String(env.CODEX_HOME)).not.toContain('~')
+  })
+})
+
+/**
+ * ═══════ ДОМ КОДЕКСА: НЕ ВЫЗОВ, А ДИСК ═══════
+ *
+ * `codexConfigSeed()` не имел НИ ОДНОГО вызывающего во всём продукте: среда называла ребёнку
+ * свежий CODEX_HOME, и никто этот каталог не создавал и не засевал. Поэтому проверки ниже
+ * смотрят на файловую систему, а не на то, что функция была позвана: утверждение «родная
+ * память кодекса выключена» ровно один раз оказалось правдой про исходник и неправдой про
+ * любой диск.
+ *
+ * И ВТОРОЙ ФАЙЛ ВАЖНЕЕ ПЕРВОГО. Свежий CODEX_HOME не дополняет личный `~/.codex`, а ЗАМЕНЯЕТ
+ * его — вместе с auth.json. Прогон в пустом доме отвечает 401 и уходит на публичную точку API,
+ * то есть сессия даже не знает, что она на подписке.
+ */
+describe('seedCodexHome — the fresh home is really made, and really carries a login', () => {
+  const homeUnder = (dir: string) => join(dir, 'codex-tasks', 'T-0001')
+
+  it('creates the directory and writes the config the CLI actually reads', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-codex-home-'))
+    const home = homeUnder(root)
+    expect(existsSync(home)).toBe(false)
+
+    const seeded = seedCodexHome({ home, authSources: [] })
+
+    expect(existsSync(home)).toBe(true)
+    expect(seeded.configPath).toBe(join(home, 'config.toml'))
+    const toml = readFileSync(seeded.configPath, 'utf8')
+    expect(toml).toContain('memories = false')
+    expect(toml).toContain('approval_policy = "never"')
+    // and NOT the shape nobody reads
+    expect(existsSync(join(home, 'config.json'))).toBe(false)
+  })
+
+  it('copies the FIRST login that exists — into the very home the environment names', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-codex-auth-'))
+    const accountDir = join(root, 'account')
+    mkdirSync(accountDir, { recursive: true })
+    const login = join(accountDir, 'auth.json')
+    writeFileSync(login, '{"tokens":{"id_token":"live-subscription"}}')
+
+    const home = homeUnder(root)
+    const seeded = seedCodexHome({ home, authSources: [join(root, 'nowhere', 'auth.json'), login] })
+
+    expect(seeded.authSource).toBe(login)
+    expect(seeded.authPath).toBe(join(home, 'auth.json'))
+    expect(readFileSync(join(home, 'auth.json'), 'utf8')).toContain('live-subscription')
+  })
+
+  it('copies rather than links — the home is thrown away with the task, the login is not', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-codex-copy-'))
+    const login = join(root, 'auth.json')
+    writeFileSync(login, '{"v":1}')
+    const home = homeUnder(root)
+    seedCodexHome({ home, authSources: [login] })
+
+    writeFileSync(join(home, 'auth.json'), '{"v":"the session wrote here"}')
+    expect(readFileSync(login, 'utf8')).toBe('{"v":1}')
+  })
+
+  it('no candidate exists → no auth file, and NO throw: whether that may spawn is the composer\'s call', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-codex-noauth-'))
+    const home = homeUnder(root)
+    const seeded = seedCodexHome({ home, authSources: [join(root, 'absent.json')] })
+    expect(seeded.authPath).toBeNull()
+    expect(seeded.authSource).toBeNull()
+    expect(existsSync(join(home, 'config.toml'))).toBe(true)
+  })
+
+  it('an unreadable candidate is an absent one, never a crash on the way to a spawn', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-codex-badfs-'))
+    const home = homeUnder(root)
+    const seeded = seedCodexHome({
+      home,
+      authSources: ['/whatever'],
+      fsImpl: {
+        mkdirSync,
+        writeFileSync,
+        renameSync,
+        existsSync: () => {
+          throw new Error('EACCES')
+        },
+      },
+    })
+    expect(seeded.authPath).toBeNull()
   })
 })
 
