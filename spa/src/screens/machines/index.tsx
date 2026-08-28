@@ -98,23 +98,18 @@ function whenWords(iso: string | null): string | null {
  * них ноль значило бы сказать «всё отправлено» там, где отправлять было некуда.
  */
 function TrunkCell({ trunk }: { trunk: ProjectTrunk | undefined }) {
+  // СЛОВА НЕ ОБРЕЗАЮТСЯ. Обрезанное «у ствола нет удалённого — отправлять не…» не отвечает ни
+  // на что: именно эти слова стоят вместо числа, и прочитать их надо целиком, а не навести на
+  // них курсор.
   if (!trunk || trunk.status !== 'measured') {
-    return (
-      <span className="truncate text-[12px] text-tx3" title={trunk?.note ?? undefined}>
-        {trunk?.note ?? 'не измерено'}
-      </span>
-    )
+    return <span className="text-[12px] leading-[1.35] text-tx3">{trunk?.note ?? 'не измерено'}</span>
   }
 
   const unpushed = trunk.unpushed ?? 0
   const marks: string[] = []
+  if (trunk.remoteMovedAt) marks.push(`${trunk.remote ?? 'удалённый ствол'} — ${whenWords(trunk.remoteMovedAt)}`)
   if (trunk.dirty) marks.push('есть незакоммиченное')
-  if ((trunk.unmergedBranches ?? 0) > 0) {
-    const n = trunk.unmergedBranches as number
-    marks.push(`${n} ${plural(n, 'ветка задачи', 'ветки задач', 'веток задач')} не слито`)
-  }
-  const moved = whenWords(trunk.remoteMovedAt)
-  if (moved) marks.push(`${trunk.remote ?? 'удалённый ствол'} — ${moved}`)
+  if ((trunk.unmergedBranches ?? 0) > 0) marks.push(`не слито веток: ${trunk.unmergedBranches}`)
 
   return (
     <span className="flex min-w-0 flex-col gap-[2px]">
@@ -126,9 +121,7 @@ function TrunkCell({ trunk }: { trunk: ProjectTrunk | undefined }) {
       ) : (
         <span className="text-[12.5px] text-tx2">всё отправлено</span>
       )}
-      <span className="truncate text-[11px] text-tx3" title={marks.join(' · ')}>
-        {marks.join(' · ')}
-      </span>
+      <span className="text-[11px] leading-[1.35] text-tx3">{marks.join(' · ')}</span>
     </span>
   )
 }
@@ -182,7 +175,7 @@ function ProjectLine({
 
   return (
     <div
-      className={`grid grid-cols-[minmax(0,1fr)_150px_minmax(0,240px)_minmax(0,1fr)_130px] items-center gap-4 px-[18px] py-3 ${
+      className={`grid grid-cols-[minmax(0,1fr)_130px_minmax(0,270px)_minmax(0,1fr)_130px] items-center gap-4 px-[18px] py-3 ${
         first ? '' : 'border-t border-bd'
       } ${active ? 'bg-surf' : ''}`}
     >
@@ -409,7 +402,7 @@ export function Screen() {
           <section>
             <h2 className="m-0 mb-2.5 text-[13.5px] font-semibold text-tx">Проекты на этой машине</h2>
             <div className="overflow-hidden rounded-[12px] border border-bd bg-card shadow-panel">
-              <div className="grid grid-cols-[minmax(0,1fr)_150px_minmax(0,240px)_minmax(0,1fr)_130px] gap-4 border-b border-bd bg-surf px-[18px] py-2.5 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">
+              <div className="grid grid-cols-[minmax(0,1fr)_130px_minmax(0,270px)_minmax(0,1fr)_130px] gap-4 border-b border-bd bg-surf px-[18px] py-2.5 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">
                 <span>Проект</span>
                 <span>Задачи</span>
                 <span>Не отправлено</span>
