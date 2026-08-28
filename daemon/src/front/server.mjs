@@ -668,6 +668,10 @@ function stateDeps(config, deps, project) {
     // hub-only: the federation merge that fills machines[] and pours in the peers' rows.
     // Absent on a standalone daemon, where the derive is byte-identical to before.
     aggregator: deps.aggregator,
+    // ДОМ ИДУЩИХ ПОПЫТОК — тот же самый объект, который тик спрашивает про место перед
+    // захватом. Пересылается сюда, а не пересчитывается: «занято» на экране обязано быть тем
+    // же числом, по которому машина отказывает в месте, иначе экран объясняет не ту машину.
+    inFlight: deps.inFlight,
   }
 }
 

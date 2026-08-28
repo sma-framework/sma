@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="version 5.6.1">
-  <img src="https://img.shields.io/badge/tests-5144%2F5144-3CC0A0" alt="tests 5144/5144">
+  <img src="https://img.shields.io/badge/tests-5095%2F5095-3CC0A0" alt="tests 5095/5095">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -318,34 +318,6 @@ Every door in it is live: there is no «coming soon» handler left in the table.
   computer — a decision, stated, rather than a layout that broke. Walked live at 375 px from the
   task through to the approval, with the sideways-scroll measurement on that width in the receipt.
 
-### The orchestrator — the machine's top figure, not a worker in the queue
-
-A machine has executors: the ones who take tasks, write code and answer with a receipt. And it has
-**one who is none of those**. The orchestrator watches everything at once, leads the conversation
-in the window and directs the work — it takes **no** task off the queue and competes for a seat
-with **nobody** who writes code.
-
-That is structure, not decoration. The worker list IS the set the dispatcher chooses from, so a
-role kept in that list eventually takes work simply because of how the rows happened to fall. So
-the orchestrator is **a config block of its own**, and the dispatcher refuses it by name in the
-first line of its filter as well: two independent locks on one door, because the door is one and
-the hands are many. The suite inserts it at **every position** of the pool in turn, and it is
-never chosen once.
-
-**It appears by itself, on connection.** A new machine mints the role while the settings load —
-the same quiet step that mints the first project — and writes it to the file, with no manual edit
-at all. A row somebody typed into the worker list by hand is **lifted out** of it by that same
-step and becomes the role, losing nothing that was written into it. It owns no subscription: it
-speaks through the machine's daytime account until you give it one of its own.
-
-**The hard calls stay yours, and they are named one by one:** shipping outward, phase boundaries,
-money, seizing someone else's work. It calls the human rather than deciding for them. One list is
-read by both the conversation's prompt and the «Команда» screen, so what is on the glass and what
-is in its head are one line, not two retellings. On the team screen it stands in **a band of its
-own above the executor grid**, labelled «Верхушка», with those four calls beside its name: a
-worker card with empty fields would say something untrue about it — it has no lane, no window and
-no done-count, because all three are properties of whoever takes tasks.
-
 ### The wheel: a word for a session that is already running
 
 A running task is not a locked box. The sentence you type at a busy task has **three fates**, and
@@ -429,6 +401,8 @@ npm run daemon:restart     # stop, then the SAME lift the supervisor performs
 **Always-on wiring** — a launchd job on macOS, a Scheduled Task on Windows — is written up in the [supervisor/](supervisor/) checklists, together with the smoke run that proves the loop end to end before you leave it running overnight.
 
 **Your day, not a dashboard.** *Today* opens on what the fleet did overnight and what is waiting on you; the board holds every task; the team screen shows each worker with its lane and its window; the live stream is the work as it happens; costs read straight from the spend book, per day, per lane and per account. Those lines are WORKERS' attempts: your own window — the terminal session you are typing in — runs on a subscription, and its tokens can be counted, but a subscription has **no price in money** by design, so the book never invents a dollar figure for it. The app is built for a desktop screen (1440 px and up) — the phone still waits for its own design pass, and every release so far has shipped without it rather than pretending otherwise.
+
+**How many tasks run at once is a number you can SEE.** The daemon takes a seat before it claims a task and gives it back when the attempt ends; how many seats there are is a setting — `maxConcurrentAttempts`, a safe floor of one where the file says nothing. That ceiling used to work in total silence: no screen said how many seats exist or how many are taken, so a ceiling behaving differently from what a person believed looked exactly like a conveyor stopped for no reason. The team screen now states it in words — **«занято X из N»** — and both numbers come from the one thing that hands the seats out, never from counting busy workers a second time: two counts of one number agree right up to the moment the ceiling misbehaves, which is the only moment the number is worth having. A refused seat also **rings in the live stream** now, carrying both figures on the row, instead of living only in the daemon's log where you had to already suspect it to go looking. A daemon wired without that seat-keeper says «nothing to report» rather than showing a comfortable zero.
 
 **Every task card answers WHY.** The decision journal rides the same attempt ledger the receipts do, in four layers: the dispatcher's own reasons (why this lane, this worker, this window — structured codes from a closed vocabulary, never free text), the worker's mandatory approach note (what it chose, what it rejected, which rules and memories shaped it), and the memory trace — what the session actually did, not what its role file claimed: whether it opened the memory index, which notes it read, how many times it called the loader, which reflexes fired and from which source that is known, what it read out of the account's own notebook (counted apart from the project's corpus, because the two are not the same memory), what lesson it left behind and whether it left an approach note. That layer is written for **every** attempt, a failed one included. An attempt without its note is as incomplete as one without its receipt — and so is an attempt without a lesson. **And the fourth layer is you.** A correction typed over running work — «no, not like that» — used to reach the worker through a delivery file beside the daemon and vanish from the story: the card showed the run as though nobody had steered it. The door that accepts your word now writes it into the same journal — when you said it, which of the three fates you sent it with (interrupt now / after the turn / say it now), and the sentence itself — and the task's live flow carries a line for it. Your text is DATA: it is stored capped, it reaches the screen as a text node, and nothing on the way reads it as an instruction. The delivery file stays exactly what it was — the queue of what has not been handed over yet — because «what is still undelivered» and «what was said, and when» are two different questions.
 

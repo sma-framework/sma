@@ -49,6 +49,9 @@ export const EVENT_LABEL: Record<EventName, string> = {
   // Этап живого хода разговора. Имя этапа приезжает рядом, в опознавательных полях кадра, —
   // слов разговора в кадре нет, и эта строка не пытается сделать вид, что они там были.
   'chat.stage': 'Разговор продвинулся',
+  // Мест нет: задачу не взяли не потому, что что-то сломалось, а потому что потолок держит.
+  // Числа приезжают рядом, в полях кадра, и печатаются ниже словами «занято X из N».
+  'seats.full': 'Мест нет — задача ждёт',
 }
 
 /** The mark in the margin: what kind of news this is, at a glance. */
@@ -57,6 +60,8 @@ const SIGN: Partial<Record<EventName, { mark: string; tone: string }>> = {
   'task.failed': { mark: '✗', tone: 'text-err-tx' },
   'task.returned': { mark: '↩', tone: 'text-warn-tx' },
   'task.awaiting_approval': { mark: '●', tone: 'text-blue' },
+  // Отказ, а не поломка: работа не поехала потому, что мест нет. Знак предупреждения, не ошибки.
+  'seats.full': { mark: '⊘', tone: 'text-warn-tx' },
 }
 
 export function EventRow({ frame, onOpen }: { frame: EventFrame; onOpen: (frame: EventFrame) => void }) {
@@ -75,6 +80,11 @@ export function EventRow({ frame, onOpen }: { frame: EventFrame; onOpen: (frame:
   if (frame.version) meta.push(frame.version)
   if (typeof frame.online === 'boolean') meta.push(frame.online ? 'на связи' : 'выключена')
   if (typeof frame.count === 'number') meta.push(`${frame.count}`)
+  // Два числа отказа — теми же словами, что и на «Команде», чтобы строка ленты и экран флота
+  // читались как одно сообщение, а не как два разных повода.
+  if (typeof frame.inFlight === 'number' && typeof frame.cap === 'number') {
+    meta.push(`занято ${frame.inFlight} из ${frame.cap}`)
+  }
 
   return (
     <button

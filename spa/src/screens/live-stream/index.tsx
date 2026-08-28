@@ -29,8 +29,11 @@ import { EVENT_LABEL, EventRow } from './EventRow'
 /** How many frames the feed keeps in hand. Older ones fall off the end. */
 const FEED_CAP = 300
 
-/** The order the filter offers the fourteen kinds in — the working ones first. */
+/** The order the filter offers the fifteen kinds in — the working ones first. */
 const FILTER_ORDER: readonly EventName[] = [
+  // Мест нет — первым: это единственная строка, объясняющая ТИШИНУ. Все остальные звонки
+  // говорят, что что-то сдвинулось; эта одна говорит, почему не сдвинулось ничего.
+  'seats.full',
   'task.queued',
   'task.claimed',
   'task.running',
@@ -52,6 +55,9 @@ function targetOf(frame: EventFrame): OpenScreenDetail | null {
   if (frame.taskId) return { screen: 'task-card', taskId: frame.taskId }
   switch (frame.event) {
     case 'worker.presence':
+    // Мест нет → на «Команду»: там же, где сидят работники, написано «занято X из N», то есть
+    // ровно тот счёт, из-за которого в месте и отказали.
+    case 'seats.full':
       return { screen: 'team' }
     case 'spend.updated':
       return { screen: 'costs' }

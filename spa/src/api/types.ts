@@ -536,6 +536,14 @@ export interface Kpis {
   awaitingApproval: number
   spentTodayEur: number
   windowsOpen: number
+  /**
+   * Сколько мест одновременной работы занято ПРЯМО СЕЙЧАС — счётом того, кто места и раздаёт.
+   * `null` — демону нечем сказать (дом идущих попыток ему не подключён); ноль здесь означал бы
+   * «все места свободны», то есть измерение, а не молчание.
+   */
+  seatsBusy: number | null
+  /** Сколько мест всего — потолок одновременных попыток, тем же чтением настройки, что и у тика. */
+  seatsTotal: number
 }
 
 // ── the routing policy, as the reading carries it ───────────────────────────────────
@@ -1483,6 +1491,10 @@ export interface EventFrame {
   step?: string
   /** `ship.published` — the version that went out. Never a token, never a url. */
   version?: string
+  /** `seats.full` — сколько мест занято в тот момент, когда в месте было отказано. */
+  inFlight?: number
+  /** `seats.full` — сколько их всего, тем же чтением настройки, по которому вынесен отказ. */
+  cap?: number
 }
 
 // ── projects and machines (declared routes, filled by their own work) ───────────────

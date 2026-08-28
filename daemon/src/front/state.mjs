@@ -102,6 +102,10 @@ import {
   REASON_LABELS,
 } from '../queue/adapter.mjs'
 import { readWaveHolds } from '../queue/wave-holds.mjs'
+// ПОТОЛОК МЕСТ читается ТЕМ ЖЕ выражением, которым его читает тик перед тем, как отказать в
+// месте: у дома идущих попыток. Своё чтение настройки здесь означало бы подпись под экраном,
+// которая однажды разойдётся с поведением машины.
+import { concurrencyCap } from '../queue/in-flight.mjs'
 import { readAttempts, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { attemptIdFor } from './journal.mjs'
 import { readTaskChanges, taskBranch, TASK_BRANCH_PREFIX } from './task-changes.mjs'
@@ -2548,6 +2552,7 @@ function deriveWaves(rows, holds, { machineId } = {}) {
  *   project?: string,                     // optional filter — narrows tasks, never the lists
  *   hubReachable?: boolean,               // hub-probe seam; absent = true
  *   aggregator?: (payload:object)=>object, // hub-only federation merge; absent = local only
+ *   inFlight?: {size:()=>number},         // ДОМ ИДУЩИХ ПОПЫТОК — сколько мест занято прямо сейчас
  * }} deps
  * @returns {Promise<object>}
  */
@@ -2837,6 +2842,21 @@ export async function deriveState(deps = {}) {
 
   // ── kpis ──
   const windowsOpen = workers.filter((w) => isOpen(w.window, () => now)).length
+  // ── МЕСТА: сколько их всего и сколько занято прямо сейчас ──
+  //
+  // ОБА ЧИСЛА БЕРУТСЯ У ТОГО, КТО МЕСТАМИ РАСПОРЯЖАЕТСЯ. Занятые — у дома идущих попыток
+  // (`deps.inFlight.size()`), тем же счётом, по которому тик отказывает в месте; общее — из
+  // `concurrencyCap`, тем же чтением настройки, по которому он этот отказ выносит. Пересчитать
+  // занятость по карточкам работников было бы вторым мнением: карточка говорит, что у
+  // работника в руках строка очереди, а место занимает ПРОХОД ТИКА — и как раз тогда, когда
+  // потолок начнёт себя вести не так, как думает человек, эти два счёта и разойдутся.
+  //
+  // ЗАНЯТО — `null`, А НЕ НОЛЬ, когда дома не передали. Ноль читается как «мест полно, всё
+  // свободно», то есть как измерение; отсутствие дома — это «сказать нечем». Потолок при этом
+  // называется всегда: он есть у любого демона, даже у того, чей дом не подключён.
+  const seatsTotal = concurrencyCap(config)
+  const seatsBusy =
+    deps.inFlight && typeof deps.inFlight.size === 'function' ? deps.inFlight.size() : null
   const kpis = {
     workersBusy: workers.filter((w) => !!w.taskId).length,
     workersTotal: workersCfg.length,
@@ -2844,6 +2864,8 @@ export async function deriveState(deps = {}) {
     awaitingApproval: awaitingRows.length,
     spentTodayEur: round2(todayUsd),
     windowsOpen,
+    seatsBusy,
+    seatsTotal,
   }
 
   // ── the settings read models — the SAME route, a fuller payload ──
