@@ -3,8 +3,11 @@
  * per-account env assembly + the task-prompt DoD builder.
  *
  * WHAT IT IS: the ONLY place that turns a routed task into the exact argument ARRAY
- * a worker CLI child is spawned with, and the exact ENV that child runs under. Pure
- * functions, no I/O, no child spawn — spawn.mjs consumes these builders and never
+ * a worker CLI child is spawned with, and the exact ENV that child runs under. No child
+ * spawn, and every builder is pure — with TWO named exceptions that write ONE file each
+ * into a directory the caller owns, because the thing they produce is a PATH the command
+ * line carries: `buildMcpConfigFile` and `seedCodexHome`. Both take an injectable `fsImpl`,
+ * so the suite exercises them without a real home. spawn.mjs consumes these builders and never
  * assembles an ad-hoc arg array anywhere else (key_links contract). The command
  * shapes are code-verified from the Paperclip claude-local adapter (MIT, HEAD
  * 3a727bf7, 2026-07-15) and the Codex teardown — PATTERN provenance, our implementation.
@@ -71,12 +74,14 @@
  * должно быть правдой, чтобы работа считалась сделанной; reverify проверит именно это»),
  * NEVER an instruction to the daemon itself.
  *
- * Node built-ins only; every function is pure so tests never spawn a real CLI. Zero deps.
+ * Node built-ins only; nothing here spawns a CLI, and the two file-writing exceptions named
+ * at the top take an injectable `fsImpl`, so tests touch no real home. Zero deps.
  */
 
+import { copyFileSync as fsCopyFileSync, existsSync as fsExistsSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { atomicWriteJson } from '../../../scripts/sma/lib/fs-atomics.mjs'
+import { atomicWriteJson, atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 import { APPROACH_MARKERS, LESSON_MARKERS } from '../front/journal.mjs'
 // THE ONE READING PATH for what a task promises. Imported rather than re-derived here: a
 // prompt that split the promise into criteria its own way would judge the worker by a
@@ -86,6 +91,10 @@ import { APPROACH_MARKERS, LESSON_MARKERS } from '../front/journal.mjs'
 // увидит в окне контекст, которого работник не получил.
 import { acceptanceItems, taskContextOf } from '../queue/adapter.mjs'
 import { fencedBlock } from './prompt-fence.mjs'
+// `~/.sma-accounts/…` is what a person writes in the config, and until a directory is
+// actually CREATED nobody notices that the tilde was never resolved. One reader for that
+// notation across the product — a second one would resolve a home the other does not.
+import { expandHome } from './readiness.mjs'
 
 /** Named error for any attempt to reach the permissions-skip flag (both guard vectors). */
 export class ForbiddenFlagError extends Error {
@@ -506,21 +515,91 @@ export function buildMcpConfigFile({ servers, taskDir, fsImpl } = {}) {
 
 // ── Codex lane (research/drafts/paperwork, exit-gate enforcement) ──────────────
 
-const CODEX_OPTION_KEYS = new Set(['model', 'effort', 'resumeThreadId'])
+const CODEX_OPTION_KEYS = new Set(['model', 'effort', 'resumeThreadId', 'sandbox'])
 
 /**
- * buildCodexArgs(opts) → the headless Codex argument array. Base is `exec --json … -`
- * (prompt on stdin). effort maps to `-c model_reasoning_effort=<E>`; resume takes a
- * thread_id recovered from the JSONL stream. Same forbidden-flag guard as the Claude lane.
+ * THE SANDBOX POLICIES A CODEX SPAWN MAY STAND IN — and the one that is missing on purpose.
  *
- * @param {{model?:string, effort?:string, resumeThreadId?:string}} [opts]
+ * This lane has no per-tool grant. Where the Claude CLI takes `--allowedTools` and refuses
+ * everything else, `codex exec` bounds a session by SANDBOX: `read-only` lets it look,
+ * `workspace-write` lets it change the copy it stands in. So the sandbox IS this lane's
+ * translation of the capability envelope — the same decision, said in the only language the
+ * other CLI understands (see codexSandboxFor below).
+ *
+ * `danger-full-access` is the CLI's third mode and is ABSENT from this list deliberately: it
+ * lifts the boundary entirely, which is the same class of request as the permissions-skip
+ * flag the guard at the top of this module exists to make unreachable. It is refused with the
+ * SAME named error, and by an explicit check rather than by `assertCleanArgs` — that scan
+ * matches produced arguments starting with `--dangerous`, and this one travels as a VALUE.
+ */
+export const CODEX_SANDBOXES = Object.freeze(['read-only', 'workspace-write'])
+
+/** No sandbox named → the narrower of the two. A boundary is not something to default open. */
+export const CODEX_SANDBOX_DEFAULT = 'read-only'
+
+/**
+ * The tools whose grant means the session is expected to CHANGE the copy it stands in.
+ * `Bash` is one of them: a lane holding the shell holds every writing command inside it, and
+ * a read-only sandbox would refuse the very commit the attempt is judged by.
+ */
+const CODEX_WRITING_TOOLS = Object.freeze(['Edit', 'Write', 'NotebookEdit', 'Bash'])
+
+/**
+ * codexSandboxFor(allowedTools) → the sandbox an envelope's tool grant amounts to.
+ *
+ * ONE DECISION, NOT TWO. The Claude lane delivers the envelope's grant as `--allowedTools`;
+ * this lane cannot, because its CLI has no such flag. Deriving the sandbox from the SAME list
+ * keeps the two lanes saying one thing: a checker granted only reading tools runs `read-only`,
+ * a worker granted the editor and the shell runs `workspace-write`. A grant nobody made —
+ * an absent, empty or unreadable list — is the narrow mode, never the wide one.
+ *
+ * @param {string[]|null|undefined} allowedTools
+ * @returns {'read-only'|'workspace-write'}
+ */
+export function codexSandboxFor(allowedTools) {
+  const list = Array.isArray(allowedTools) ? allowedTools.map((t) => String(t)) : []
+  return list.some((t) => CODEX_WRITING_TOOLS.includes(t)) ? 'workspace-write' : CODEX_SANDBOX_DEFAULT
+}
+
+/**
+ * buildCodexArgs(opts) → the headless Codex argument array. Base is
+ * `exec --json --strict-config --sandbox <mode> … -` (prompt on stdin). effort maps to
+ * `-c model_reasoning_effort=<E>`; resume takes a thread_id recovered from the JSONL stream.
+ * Same forbidden-flag guard as the Claude lane.
+ *
+ * WHY THE SANDBOX IS ALWAYS ON THE COMMAND LINE, even when it is the default. `codex exec`
+ * has NO approvals flag at all — the root command's `-a` does not exist here — so the only
+ * two places a policy can travel are the config file in the task's own home and this one
+ * flag. A boundary that is left to the CLI's default is a boundary nobody can read off the
+ * spawn afterwards, and this product's own rule for the other lane's refusal list is that
+ * what a run stood under must be visible in the argument array it ran with.
+ *
+ * WHY `--strict-config`. The config file in that home is written by US, into a directory
+ * created fresh for this task, so the only thing this flag can ever refuse is our own seed.
+ * That is exactly what makes it worth carrying: the seed's whole job is to switch the CLI's
+ * native memory OFF, and a key this version of the CLI stopped recognising would otherwise be
+ * ignored in silence — memories back on, the run still green, and nothing anywhere saying so.
+ * Verified against codex-cli 0.150.1: the seed below passes the flag.
+ *
+ * @param {{model?:string, effort?:string, resumeThreadId?:string, sandbox?:string}} [opts]
  * @returns {string[]}
  */
 export function buildCodexArgs(opts = {}) {
   validateOptions(opts, CODEX_OPTION_KEYS, 'buildCodexArgs')
-  const { model, effort, resumeThreadId } = opts
+  const { model, effort, resumeThreadId, sandbox } = opts
 
-  const args = ['exec', '--json']
+  const mode = sandbox === undefined || sandbox === null ? CODEX_SANDBOX_DEFAULT : String(sandbox)
+  if (/danger/i.test(mode)) {
+    throw new ForbiddenFlagError(
+      `buildCodexArgs: sandbox "${mode}" lifts the boundary entirely — structurally refused, ` +
+        `this lane runs ${CODEX_SANDBOXES.join(' or ')} and nothing else`,
+    )
+  }
+  if (!CODEX_SANDBOXES.includes(mode)) {
+    throw new Error(`buildCodexArgs: unknown sandbox "${mode}" (expected ${CODEX_SANDBOXES.join(' | ')})`)
+  }
+
+  const args = ['exec', '--json', '--strict-config', '--sandbox', mode]
   if (model !== undefined) args.push('--model', String(model))
   if (effort !== undefined) args.push('-c', `model_reasoning_effort=${String(effort)}`)
   if (resumeThreadId !== undefined) args.push('resume', String(resumeThreadId))
@@ -531,14 +610,116 @@ export function buildCodexArgs(opts = {}) {
 
 // ── per-account env assembly (Multica #3130) ───────────────────────────────────
 
+/** The two files a fresh Codex home must carry before a session may start in it. */
+export const CODEX_CONFIG_FILE = 'config.toml'
+export const CODEX_AUTH_FILE = 'auth.json'
+
 /**
- * codexConfigSeed() → the config object the spawn writes into a FRESH per-task
- * CODEX_HOME so native memories are OFF for every Codex task (Multica #3130 — they
- * force `features.memories=false` per task; we do the same). Pure data.
- * @returns {{features:{memories:boolean}}}
+ * The approval policy a headless Codex session runs under. `never` because there is nobody
+ * at this keyboard to approve anything — the same fact HEADLESS_ENV states to the session
+ * itself. It travels in the config file and NOT as a flag because `codex exec` has none:
+ * the root command's `-a` is not among its options.
+ */
+export const CODEX_APPROVAL_POLICY = 'never'
+
+/**
+ * codexConfigSeed() → the TEXT of the `config.toml` a spawn writes into a FRESH per-task
+ * CODEX_HOME. Pure; the writing is seedCodexHome's job.
+ *
+ * WHY TOML AND NOT AN OBJECT. This function used to return `{features:{memories:false}}`, and
+ * it had NOT ONE CALLER in the whole product — so the statement «native memories are off for
+ * every Codex task» was true of this source file and of nothing else. A JSON object was also
+ * the wrong shape to have returned: the CLI reads `config.toml`, and a `config.json` beside it
+ * is a file nobody opens. Both halves of that gap close here — the text is the format the
+ * reader actually parses, and seedCodexHome puts it on the disk the child will stand in.
+ *
+ * WHAT IT SAYS, and why each line is worth a file:
+ *   - `approval_policy` — see above: there is no flag for it on this subcommand.
+ *   - `[features] memories = false` — a FRESH home already carries no memories, but the CLI
+ *     would start writing its own during the run and a home is only fresh once. The lesson a
+ *     worker leaves belongs in the project's corpus, through the pipeline a person approves;
+ *     a second, private memory nobody staged is exactly the thing this product refuses.
+ *
+ * Verified against codex-cli 0.150.1: this text passes `--strict-config`.
+ *
+ * @returns {string}
  */
 export function codexConfigSeed() {
-  return { features: { memories: false } }
+  return [
+    '# SMA — written fresh for THIS task; never shared with another and never hand-edited.',
+    `approval_policy = "${CODEX_APPROVAL_POLICY}"`,
+    '',
+    '[features]',
+    'memories = false',
+    '',
+  ].join('\n')
+}
+
+/** A Codex home that cannot be seeded — named, so the tick records a reason instead of a 401. */
+export class CodexHomeError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'CodexHomeError'
+  }
+}
+
+/**
+ * seedCodexHome({home, authSources, fsImpl}) → `{home, configPath, authPath, authSource}`.
+ *
+ * CREATES the per-task CODEX_HOME on disk and puts two files in it. Until this existed the
+ * directory was NAMED in the child's environment and never made, which is a different and
+ * worse thing than not isolating at all: the CLI creates the home it is pointed at, so every
+ * task ran in an EMPTY one — no config, and, far more expensively, no credentials.
+ *
+ * THE CREDENTIAL IS THE WHOLE POINT OF THE SECOND FILE. A fresh CODEX_HOME does not extend
+ * the operator's own `~/.codex`, it REPLACES it — `auth.json` included. A live run against an
+ * empty home answers `401 Missing bearer or basic authentication` and goes to the public API
+ * endpoint, i.e. the session does not even know it is on a subscription. So the account's own
+ * login is COPIED in, from the first candidate that exists, and the copy lands in the same
+ * directory the environment names — never a neighbouring one that merely looks like it.
+ *
+ * Copied rather than linked or read: a link would let a session write back into the login it
+ * was lent, and this home is thrown away with the task.
+ *
+ * NO CANDIDATE EXISTS → `authPath: null`, and this function does NOT throw. Whether a home
+ * with no login may still be spawned into is the caller's call, not this writer's: a key in
+ * the child's environment is another way to be authenticated, and only the composer sees that
+ * environment. It refuses by name; see build-args.mjs.
+ *
+ * @param {{home:string, authSources?:string[], fsImpl?:object}} args
+ * @returns {{home:string, configPath:string, authPath:(string|null), authSource:(string|null)}}
+ */
+export function seedCodexHome({ home, authSources, fsImpl } = {}) {
+  if (!home || String(home).trim() === '') throw new CodexHomeError('seedCodexHome: a home path is required')
+  const dir = String(home)
+  const existsFn = (fsImpl && fsImpl.existsSync) || fsExistsSync
+  const copyFn = (fsImpl && fsImpl.copyFileSync) || fsCopyFileSync
+
+  const configPath = join(dir, CODEX_CONFIG_FILE)
+  atomicWriteRaw(configPath, codexConfigSeed(), {
+    mkdirFn: fsImpl && fsImpl.mkdirSync,
+    writeFn: fsImpl && fsImpl.writeFileSync,
+    renameFn: fsImpl && fsImpl.renameSync,
+  })
+
+  let authPath = null
+  let authSource = null
+  for (const candidate of Array.isArray(authSources) ? authSources : []) {
+    if (typeof candidate !== 'string' || candidate.trim() === '') continue
+    let there = false
+    try {
+      there = existsFn(candidate)
+    } catch {
+      there = false // an unreadable path is an absent one, never a crash on the way to a spawn
+    }
+    if (!there) continue
+    authPath = join(dir, CODEX_AUTH_FILE)
+    copyFn(candidate, authPath)
+    authSource = candidate
+    break
+  }
+
+  return { home: dir, configPath, authPath, authSource }
 }
 
 /**
@@ -548,14 +729,15 @@ export function codexConfigSeed() {
  *   Claude account: CLAUDE_CONFIG_DIR (isolation) + CLAUDE_CODE_OAUTH_TOKEN read from
  *     `env` BY THE NAME account.oauthTokenEnv (unset name → no token key) + SMA_SPEND_LOGS_DIR.
  *   Codex account: a FRESH per-task CODEX_HOME under the account dir (two tasks → two
- *     dirs) — never account-shared; the caller seeds it with codexConfigSeed().
+ *     dirs) — never account-shared, and `~` resolved because the composer then CREATES it
+ *     and seeds it (seedCodexHome).
  *   useApiFallback: the API key (read from `env` by apiKeyEnv name) is added
  *     as ANTHROPIC_API_KEY — it takes precedence over subscription auth, the whole switch.
  *   EVERY account, both lanes: HEADLESS_ENV=1 — there is nobody at the keyboard of a session
  *     the daemon starts, and a workflow that hits a blocking checkpoint has to know it.
  *   `gate`: the two PATHS the parking gate needs — see the block below.
  *
- * @param {{account:object, provider?:string, baseEnv?:object, env?:object, useApiFallback?:boolean, apiKeyEnv?:string, taskId?:string, gate?:{runDir?:string, redirectsFile?:string}}} opts
+ * @param {{account:object, provider?:string, baseEnv?:object, env?:object, useApiFallback?:boolean, apiKeyEnv?:string, taskId?:string, gate?:{runDir?:string, redirectsFile?:string}, homedir?:Function}} opts
  * @returns {object}
  */
 export function buildAccountEnv({
@@ -567,6 +749,7 @@ export function buildAccountEnv({
   apiKeyEnv = 'ANTHROPIC_API_KEY',
   taskId,
   gate,
+  homedir,
 } = {}) {
   if (!account || typeof account !== 'object') throw new Error('buildAccountEnv: account is required')
   const prov = provider ?? account.provider
@@ -579,7 +762,14 @@ export function buildAccountEnv({
   if (prov === 'codex') {
     if (!taskId) throw new Error('buildAccountEnv: a Codex account requires a taskId for a FRESH per-task CODEX_HOME')
     // per-task, never account-shared (Multica #3130 — CODEX_HOME reuse leaked context)
-    out.CODEX_HOME = join(account.configDir, 'codex-tasks', String(taskId))
+    //
+    // AND THE TILDE IS RESOLVED HERE, because from now on somebody CREATES this directory.
+    // The shipped config writes account dirs as `~/.sma-accounts/…`; while the path was only
+    // ever handed to a child as a string, an unresolved tilde was invisible — the CLI made
+    // its own empty home and nobody looked. A seeder given the same string would have made a
+    // folder literally named «~» next to whatever the daemon's cwd happened to be, and put
+    // the account's login inside it.
+    out.CODEX_HOME = join(expandHome(account.configDir, homedir), 'codex-tasks', String(taskId))
   } else {
     out.CLAUDE_CONFIG_DIR = account.configDir
     if (account.oauthTokenEnv) {
