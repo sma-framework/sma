@@ -68,6 +68,9 @@ import { homedir as osHomedir } from 'node:os'
 import { join } from 'node:path'
 
 import { expandHome } from './readiness.mjs'
+// HOW a named program is started on this operating system — the last step of the composition,
+// and the only one that is about the machine rather than about the task. See step (7).
+import { resolveWorkerBin } from './resolve-bin.mjs'
 
 import { pipelineMaxTurns } from '../config.mjs'
 import { stageCommand } from '../policy/phase-cycle.mjs'
@@ -224,10 +227,14 @@ function codexAuthSources(account, env, homedir) {
  * `fsImpl` exists so the settings read above can be exercised without a real home directory:
  * the suite injects a reader, production passes nothing and gets `node:fs`.
  *
- * @param {{config?:object, env?:object, fsImpl?:object, homedir?:Function}} [deps]
+ * `nodePath` is the interpreter a Windows npm shim is translated into (step 7). It defaults to
+ * the binary this daemon is already running under — the one node we know exists on this
+ * machine — and is injectable so the suite can assert the translation without one.
+ *
+ * @param {{config?:object, env?:object, fsImpl?:object, homedir?:Function, nodePath?:string}} [deps]
  * @returns {(task:object, route:object, options?:object) => {bin:string, args:string[], env:object, prompt:string, workerId:string, provider:string}}
  */
-export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedir = osHomedir } = {}) {
+export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedir = osHomedir, nodePath = process.execPath } = {}) {
   const readFile = (fsImpl && fsImpl.readFileSync) || readFileSync
   return function buildArgs(task, route, options = {}) {
     if (!task || typeof task !== 'object') {
@@ -433,6 +440,28 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
     // Стадия конспекта не получает: её промпт — замороженная команда, а не данные задачи.
     const prompt =
       stagePromptOf(task) ?? buildTaskPrompt({ task, continuationSummary: options.continuationSummary })
+
+    // ── (7) AND HOW THAT PROGRAM IS STARTED ON THIS OPERATING SYSTEM ────────────
+    //
+    // LAST, AND DELIBERATELY AFTER EVERY GUARD. Everything above decides WHAT the CLI is asked
+    // to do — the flags, the parity assertion, the envelope's boundary — and all of it is about
+    // the CLI's own argument array, which this step does not touch. What it decides is the one
+    // remaining question: can this machine start that program by name at all.
+    //
+    // On every POSIX machine the answer is yes and nothing happens here. On Windows a CLI
+    // installed through npm is a `.cmd` SHIM rather than a program: `CreateProcess` will not run
+    // a batch file, Node refuses to spawn one without a shell (CVE-2024-27980), and a shell is
+    // what spawn.mjs forbids. The Codex lane was correct in every other part — home created,
+    // seeded, authenticated, sandbox on the command line, the CLI accepting every argument —
+    // and could not start one task, answering `spawn codex ENOENT`; the Claude lane worked
+    // throughout for one accidental reason, that it ships as a real `.exe`. So the shim is
+    // translated into the argument vector it would itself have built: node, and the script it
+    // names. No shell is involved, and the CLI receives exactly the arguments assembled above.
+    const started = resolveWorkerBin({ name: bin, env, fsImpl, execPath: nodePath })
+    if (started.prefixArgs.length > 0) {
+      bin = started.bin
+      args = [...started.prefixArgs, ...args]
+    }
 
     // `accountName` rides out because the SUBSCRIPTION, not the worker, is what a rate-limit
     // reading on the coming stream describes — and the caller reading that stream would

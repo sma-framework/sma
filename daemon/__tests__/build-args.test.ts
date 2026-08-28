@@ -108,6 +108,14 @@ const codexFixture = (opts: { login?: boolean } = {}): any => {
     accountDir,
     cfg: { workers: [{ ...codexWorker, account: { ...codexWorker.account, configDir: accountDir } }] },
     env: { HOME: join(root, 'empty-home'), USERPROFILE: join(root, 'empty-home') },
+    // ONE `fsImpl` SERVES EVERY DISK THIS COMPOSER TOUCHES — the account mirror, the Codex home
+    // and the binary resolution — so a fake that answers only one of them silently disables the
+    // others. These cases are about real files, so the reader answers the mirror from the fake
+    // and delegates everything else to the disk the fixture actually built.
+    fsImpl: {
+      readFileSync: (p: string, enc: string) =>
+        String(p).replace(/\\/g, '/').endsWith('settings.json') ? MIRRORED_SETTINGS : readFileSync(p, enc as never),
+    },
   }
 }
 
@@ -284,8 +292,8 @@ describe('buildArgs — the spec the tick spawns', () => {
   })
 
   it('routes a Codex worker to the other CLI, with a per-task CODEX_HOME', () => {
-    const { cfg, env } = codexFixture()
-    const spec = build(cfg, env)(task({ lane: 'research' }), route({ workerId: 'pro-1', provider: 'codex' }))
+    const { cfg, env, fsImpl } = codexFixture()
+    const spec = build(cfg, env, fsImpl)(task({ lane: 'research' }), route({ workerId: 'pro-1', provider: 'codex' }))
 
     expect(spec.bin).toBe(CODEX_BIN)
     expect(spec.args.slice(0, 2)).toEqual(['exec', '--json'])
@@ -312,8 +320,8 @@ describe('buildArgs — the Codex home is created, seeded and authenticated', ()
   const codexTask = () => task({ lane: 'research' })
 
   it('the directory named in the environment EXISTS on disk afterwards, and carries the memories-off config', () => {
-    const { cfg, env } = codexFixture()
-    const spec = build(cfg, env)(codexTask(), codexRoute())
+    const { cfg, env, fsImpl } = codexFixture()
+    const spec = build(cfg, env, fsImpl)(codexTask(), codexRoute())
 
     const home = String(spec.env.CODEX_HOME)
     expect(existsSync(home)).toBe(true)
@@ -323,8 +331,8 @@ describe('buildArgs — the Codex home is created, seeded and authenticated', ()
   })
 
   it('the login lands in THAT home — the one the spawn environment names, not a neighbour', () => {
-    const { cfg, env, accountDir } = codexFixture()
-    const spec = build(cfg, env)(codexTask(), codexRoute())
+    const { cfg, env, fsImpl, accountDir } = codexFixture()
+    const spec = build(cfg, env, fsImpl)(codexTask(), codexRoute())
 
     const home = String(spec.env.CODEX_HOME)
     expect(existsSync(join(home, 'auth.json'))).toBe(true)
@@ -332,9 +340,9 @@ describe('buildArgs — the Codex home is created, seeded and authenticated', ()
   })
 
   it('two tasks of one account get two homes, each with its own seeded pair', () => {
-    const { cfg, env } = codexFixture()
-    const a = build(cfg, env)(task({ id: 'T-A', lane: 'research' }), codexRoute())
-    const b = build(cfg, env)(task({ id: 'T-B', lane: 'research' }), codexRoute())
+    const { cfg, env, fsImpl } = codexFixture()
+    const a = build(cfg, env, fsImpl)(task({ id: 'T-A', lane: 'research' }), codexRoute())
+    const b = build(cfg, env, fsImpl)(task({ id: 'T-B', lane: 'research' }), codexRoute())
 
     expect(a.env.CODEX_HOME).not.toBe(b.env.CODEX_HOME)
     for (const home of [String(a.env.CODEX_HOME), String(b.env.CODEX_HOME)]) {
@@ -344,13 +352,13 @@ describe('buildArgs — the Codex home is created, seeded and authenticated', ()
   })
 
   it('no login anywhere and no key in the environment → a NAMED refusal, never a 401 inside the child', () => {
-    const { cfg, env } = codexFixture({ login: false })
-    expect(() => build(cfg, env)(codexTask(), codexRoute())).toThrow(/401|auth\.json/i)
+    const { cfg, env, fsImpl } = codexFixture({ login: false })
+    expect(() => build(cfg, env, fsImpl)(codexTask(), codexRoute())).toThrow(/401|auth\.json/i)
   })
 
   it('an API key in the environment is the one honest reason a home with no login may still spawn', () => {
-    const { cfg, env } = codexFixture({ login: false })
-    const spec = build(cfg, { ...env, OPENAI_API_KEY: 'sk-live' })(codexTask(), codexRoute())
+    const { cfg, env, fsImpl } = codexFixture({ login: false })
+    const spec = build(cfg, { ...env, OPENAI_API_KEY: 'sk-live' }, fsImpl)(codexTask(), codexRoute())
     expect(existsSync(join(String(spec.env.CODEX_HOME), 'config.toml'))).toBe(true)
   })
 
@@ -360,12 +368,12 @@ describe('buildArgs — the Codex home is created, seeded and authenticated', ()
    * можно прочитать. Грант конверта приезжает сюда тем же путём, что и в соседнюю полосу.
    */
   it('the sandbox the envelope amounts to is IN THE ARGUMENT ARRAY of the spawn', () => {
-    const { cfg, env } = codexFixture()
-    const editor = build(cfg, env)(codexTask(), codexRoute(), {
+    const { cfg, env, fsImpl } = codexFixture()
+    const editor = build(cfg, env, fsImpl)(codexTask(), codexRoute(), {
       allowedTools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'Skill'],
     })
-    const reader = build(cfg, env)(codexTask(), codexRoute(), { allowedTools: ['Read', 'Grep', 'Glob'] })
-    const nobody = build(cfg, env)(codexTask(), codexRoute())
+    const reader = build(cfg, env, fsImpl)(codexTask(), codexRoute(), { allowedTools: ['Read', 'Grep', 'Glob'] })
+    const nobody = build(cfg, env, fsImpl)(codexTask(), codexRoute())
 
     const modeOf = (args: string[]) => args[args.indexOf('--sandbox') + 1]
     expect(modeOf(editor.args)).toBe('workspace-write')
@@ -375,6 +383,49 @@ describe('buildArgs — the Codex home is created, seeded and authenticated', ()
     // and the tool flags of the OTHER lane never appear here — this CLI has none
     expect(editor.args).not.toContain('--allowedTools')
     expect(editor.args).toContain('--strict-config')
+  })
+
+  /**
+   * ═══════ И ПОСЛЕДНЕЕ: МОЖЕТ ЛИ ЭТА МАШИНА ВООБЩЕ ЗАПУСТИТЬ НАЗВАННУЮ ПРОГРАММУ ═══════
+   *
+   * Полоса была исправна во всех остальных частях — дом создан, засеян, с логином, песочница в
+   * argv, CLI принимает каждый аргумент, — и не запускала НИ ОДНОЙ задачи: `spawn codex`
+   * отвечал ENOENT. На Windows CLI, поставленный через npm, — это `.cmd` ШИМ, а не программа:
+   * пакетный файл не запускается без оболочки, а оболочку запрещает договор безопасного
+   * ребёнка. Соседняя полоса работала всё это время по одной случайной причине — её CLI
+   * поставляется настоящим `.exe`.
+   *
+   * Утверждается СПЕК, а не резолвер: у резолвера свой сьют, а здесь вопрос другой — доехал ли
+   * его ответ до того, чем тик сейчас будет спавнить.
+   */
+  it('an npm shim on PATH reaches the SPEC as node plus the script, with the CLI arguments behind it', () => {
+    const { cfg, env, fsImpl } = codexFixture()
+    const binDir = mkdtempSync(join(tmpdir(), 'sma-buildargs-shim-'))
+    const scriptDir = join(binDir, 'node_modules', 'codex', 'bin')
+    mkdirSync(scriptDir, { recursive: true })
+    writeFileSync(join(scriptDir, 'codex.js'), '// entry point')
+    // npm's own shim shape, including the line that names the interpreter as a PROGRAM: a file
+    // that merely quotes a `node_modules` path names no interpreter and is left alone.
+    writeFileSync(
+      join(binDir, 'codex.cmd'),
+      '@ECHO off\r\nSET dp0=%~dp0\r\nSET "_prog=node"\r\n"%_prog%"  "%dp0%\\node_modules\\codex\\bin\\codex.js" %*\r\n',
+    )
+
+    const spec = build(cfg, { ...env, PATH: binDir }, fsImpl)(codexTask(), codexRoute())
+
+    expect(spec.bin).toBe(process.execPath)
+    expect(spec.args[0]).toBe(join(scriptDir, 'codex.js'))
+    // the CLI's own command line is untouched, and still ends on stdin
+    expect(spec.args.slice(1, 3)).toEqual(['exec', '--json'])
+    expect(spec.args[spec.args.length - 1]).toBe('-')
+  })
+
+  it('with nothing resolvable on PATH the spec names the CLI plainly, exactly as before', () => {
+    const { cfg, env, fsImpl } = codexFixture()
+    const spec = build(cfg, env, fsImpl)(codexTask(), codexRoute())
+
+    expect(spec.bin).toBe(CODEX_BIN)
+    expect(spec.args.slice(0, 2)).toEqual(['exec', '--json'])
   })
 })
 

@@ -42,7 +42,7 @@
  *
  * Usage:
  *   node tools/codex-lane-drill.mjs [--model <m>] [--effort <e>] [--lane <l>]
- *                                   [--prompt <text>] [--bin <path>] [--dry]
+ *                                   [--prompt <text>] [--dry]
  *
  * Exit code 0 when every check passed; 1 otherwise, with the failure named.
  */
@@ -67,15 +67,6 @@ const MODEL = flag('model', 'gpt-5.6-sol')
 const EFFORT = flag('effort', 'max')
 const PROMPT = flag('prompt', 'Ответь ровно одним словом: готов')
 const LANE = flag('lane', 'research')
-/**
- * `--bin` IS THE DRILL'S ESCAPE HATCH AND IT IS NOT A PRODUCT SETTING. The composer names the
- * binary `codex` and leaves WHERE it lives to PATH — which is right everywhere the CLI is a
- * directly executable file, and wrong on a Windows machine where the npm distribution is a
- * `.cmd` shim that a shell-less spawn cannot start (see the ENOENT note below). Overriding it
- * here lets the drill still answer everything ELSE it was written to answer on such a machine;
- * it does not make the daemon able to start that lane, and the transcript says which one ran.
- */
-const BIN = flag('bin', null)
 
 const failures = []
 const say = (mark, line) => console.log(`${mark} ${line}`)
@@ -168,15 +159,18 @@ if (DRY) {
 }
 
 // ── (4) + (5) THE LIVE TURN ───────────────────────────────────────────────────
-const spawnBin = BIN ?? spec.bin
-console.log(`\n   spawning ${spawnBin}${BIN ? ' (--bin override; the composer named "' + spec.bin + '")' : ''}…`)
+// THE PROGRAM THE COMPOSER RESOLVED, AND NOTHING ELSE. This drill used to carry a `--bin`
+// escape hatch so it could still answer its other questions on a machine where the CLI was an
+// npm shim the daemon could not start. It is gone on purpose: a drill that can be pointed at a
+// working binary by hand proves the lane runs for whoever passed the flag, not for the daemon.
+console.log(`\n   spawning ${spec.bin}…`)
 const lines = []
 let finalFrame = null
 let answer = null
 
 const exitCode = await new Promise((resolve) => {
   spawnWorker({
-    bin: spawnBin,
+    bin: spec.bin,
     args: spec.args,
     cwd: process.cwd(),
     env: spec.env,
@@ -198,17 +192,16 @@ const exitCode = await new Promise((resolve) => {
     },
     onError: (err) => {
       bad(`the child never started: ${err && err.message}`)
-      // THE ONE FAILURE THAT IS NOT ABOUT THIS LANE AT ALL, named here because a bare ENOENT
-      // reads as «codex is not installed» and sends the reader looking in the wrong place.
-      // On Windows the npm distribution of this CLI is a `.cmd` shim, and a shim is a batch
-      // file: `CreateProcess` will not run one, and Node refuses to spawn `.cmd` without a
-      // shell on purpose (CVE-2024-27980). A shell is exactly what spawn.mjs forbids. So the
-      // binary has to be named as something directly executable — which is a decision about
-      // the spawn layer, not about the Codex home this drill is otherwise measuring.
+      // A BARE ENOENT SENDS THE READER TO THE WRONG PLACE — it reads as «the CLI is not
+      // installed». On Windows an npm-installed CLI is a `.cmd` shim rather than a program, and
+      // a shell-less spawn cannot start a batch file (Node refuses `.cmd` without a shell,
+      // CVE-2024-27980; a shell is what the safe-child contract forbids). `resolve-bin.mjs`
+      // translates such a shim into node plus the script it names — so an ENOENT HERE means
+      // that translation did not happen, which is a fact about this machine's installation and
+      // is worth saying in the transcript rather than leaving to be re-derived.
       if (err && String(err.code) === 'ENOENT' && process.platform === 'win32') {
-        console.log('  note on Windows `codex` on PATH is an npm .cmd shim, which a shell-less spawn cannot start;')
-        console.log('  note `claude` runs because it ships as a real .exe. Point the worker at an executable, or')
-        console.log('  note teach the spawn layer to resolve a shim — the safe-child contract forbids doing it with a shell.')
+        console.log('  note the composer handed back a bare name it could not resolve to an executable or an npm shim;')
+        console.log('  note check that the CLI is on PATH for THIS process, and that its .cmd shim names a node script.')
       }
       resolve(1)
     },
