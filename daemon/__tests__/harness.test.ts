@@ -23,6 +23,11 @@
 
 import { describe, it, expect } from 'vitest'
 import { Readable } from 'node:stream'
+// The wire case at the bottom of this file is the ONE that may touch a disk: a create door is
+// judged by the file it left, not by its status code, so that case uses a real temp directory.
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   loadMcpRegistry,
@@ -32,11 +37,15 @@ import {
   applySkillAssign,
   applyMcpToggle,
   applyStockTeamToggle,
+  createMachineSkill,
+  resolveMachineSkillsDir,
   resolveWorkerContext,
   STOCK_TEAM_TARGET,
   MissingDefinitionFileError,
   UnknownProfileError,
   UnknownSkillError,
+  SkillExistsError,
+  InvalidSkillError,
   InvalidMcpRegistryError,
   UnknownMcpServerError,
 } from '../src/front/harness.mjs'
@@ -148,9 +157,14 @@ describe('readHarness — the explicit-pick SPA payload', () => {
     ],
   }
 
+  // EVERY read below names the machine store explicitly. Without it the store resolves out of
+  // the real home directory, and the fake fs matches paths by SUFFIX — so `~/.claude/skills`
+  // answered the project store's fixture and the walk depended on the machine running the suite.
+  const NO_MACHINE = { SMA_DAEMON_SKILLS: '/machine/skills' }
+
   it('joins agent profile + roleFile can/cannot; exposes enabled per profile', async () => {
     const { fs } = fakeFs({ files: { '.claude/agents/creator.md': ROLE_CREATOR }, dirs: { '.claude/skills': [] } })
-    const out = await readHarness({ config, registry, adapter, repoDir: '/repo', fsImpl: fs, env: {} })
+    const out = await readHarness({ config, registry, adapter, repoDir: '/repo', fsImpl: fs, env: NO_MACHINE })
     const creator = out.agents.find((a: any) => a.id === 'creator')
     expect(creator.title).toBe('Создатель')
     expect(creator.can).toContain('собирать черновики определений')
@@ -160,7 +174,7 @@ describe('readHarness — the explicit-pick SPA payload', () => {
 
   it('MCP cards carry env-var NAMES with [set]/[unset] — never the value', async () => {
     const { fs } = fakeFs({ dirs: { '.claude/skills': [] } })
-    const out = await readHarness({ config, registry, adapter, repoDir: '/repo', fsImpl: fs, env: { TWITTER_TOKEN: 'secret-value' } })
+    const out = await readHarness({ config, registry, adapter, repoDir: '/repo', fsImpl: fs, env: { ...NO_MACHINE, TWITTER_TOKEN: 'secret-value' } })
     const card = out.mcp[0]
     expect(card.envStatus).toEqual({ TWITTER_TOKEN: '[set]', MISSING_TOKEN: '[unset]' })
     // the secret value never appears anywhere in the payload
@@ -169,16 +183,94 @@ describe('readHarness — the explicit-pick SPA payload', () => {
 
   it('skills scan the tree + per-profile assignment; drafts come from the awaiting-approval forge tasks', async () => {
     const { fs } = fakeFs({
-      files: { '.claude/agents/creator.md': ROLE_CREATOR, '.claude/skills/twitter-digest/SKILL.md': SKILL_DIGEST },
-      dirs: { '.claude/skills': ['twitter-digest'] },
+      files: { '.claude/agents/creator.md': ROLE_CREATOR, '/repo/.claude/skills/twitter-digest/SKILL.md': SKILL_DIGEST },
+      dirs: { '/repo/.claude/skills': ['twitter-digest'] },
     })
-    const out = await readHarness({ config, registry, adapter, repoDir: '/repo', fsImpl: fs, env: {} })
+    const out = await readHarness({ config, registry, adapter, repoDir: '/repo', fsImpl: fs, env: NO_MACHINE })
     const skill = out.skills.find((s: any) => s.id === 'twitter-digest')
     expect(skill.title).toBe('twitter-digest')
+    expect(skill.source).toBe('project')
     expect(skill.assignedTo).toEqual(['creator'])
     // only the forge task surfaces as a draft, with its kind + path
     expect(out.drafts).toHaveLength(1)
     expect(out.drafts[0]).toMatchObject({ id: 'F-1', kind: 'agent', draftPath: '.claude/agents/twitter-parser.md' })
+  })
+})
+
+/**
+ * THE TWO STORES.
+ *
+ * The defect these cover is not «the screen is missing». The screen existed, walked skills,
+ * drew a card for each and knew who held it — and looked empty, because it read ONE directory
+ * (the served tree) while the person's skills were in the other (this machine's own library).
+ * A feature that is present and reads the wrong place is indistinguishable, from the outside,
+ * from a feature that was never built, and that is exactly the conclusion the person reached.
+ */
+describe('readHarness — the skills of the PROJECT and the skills of the MACHINE', () => {
+  const config = { workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/m2' }, enabled: true }] }
+
+  const MACHINE_SKILL = `---
+name: release-notes
+description: Как собрать заметки к релизу.
+---
+тело машинного навыка
+`
+
+  it('a MACHINE-store skill is visible under ANY active project — including one with no skills directory at all', async () => {
+    const { fs } = fakeFs({
+      files: { '/machine/skills/release-notes/SKILL.md': MACHINE_SKILL },
+      dirs: { '/machine/skills': ['release-notes'] },
+    })
+    // TWO different trees, neither of which carries a `.claude/skills` — the readdir throws for
+    // both, exactly as it does in a project that never had one.
+    for (const repoDir of ['/product', '/some/other/project']) {
+      const out = await readHarness({ config, repoDir, fsImpl: fs, env: { SMA_DAEMON_SKILLS: '/machine/skills' } })
+      expect(out.skills.map((s: any) => s.id)).toEqual(['release-notes'])
+      expect(out.skills[0].source).toBe('machine')
+      expect(out.skills[0].description).toBe('Как собрать заметки к релизу.')
+    }
+  })
+
+  it('the payload says WHERE it looked — both stores, their paths, and whether each exists', async () => {
+    const { fs } = fakeFs({ dirs: { '/machine/skills': [] } })
+    const out = await readHarness({ config, repoDir: '/product', fsImpl: fs, env: { SMA_DAEMON_SKILLS: '/machine/skills' } })
+    expect(out.skills).toEqual([])
+    expect(out.skillStores).toHaveLength(2)
+    const project = out.skillStores.find((s: any) => s.source === 'project')
+    const machine = out.skillStores.find((s: any) => s.source === 'machine')
+    // the served tree has no such directory at all — said as `present: false`, not as an empty count
+    expect(project).toMatchObject({ present: false, count: 0 })
+    expect(String(project.path).replace(/\\/g, '/')).toBe('/product/.claude/skills')
+    expect(machine).toMatchObject({ path: '/machine/skills', present: true, count: 0 })
+  })
+
+  it('an id in BOTH stores is ONE card — the project copy wins and the shadowed twin is named', async () => {
+    const { fs } = fakeFs({
+      files: {
+        '/product/.claude/skills/release-notes/SKILL.md': `---\nname: release-notes\ndescription: проектная версия\n---\nтело\n`,
+        '/machine/skills/release-notes/SKILL.md': MACHINE_SKILL,
+      },
+      dirs: { '/product/.claude/skills': ['release-notes'], '/machine/skills': ['release-notes'] },
+    })
+    const out = await readHarness({ config, repoDir: '/product', fsImpl: fs, env: { SMA_DAEMON_SKILLS: '/machine/skills' } })
+    expect(out.skills).toHaveLength(1)
+    expect(out.skills[0].source).toBe('project')
+    expect(out.skills[0].description).toBe('проектная версия')
+    // the copy that was passed over is SAID, never silently dropped
+    expect(out.skills[0].problem).toMatch(/machine/)
+  })
+
+  it('a folder with no SKILL.md is not a skill and not a problem — it is simply not one', async () => {
+    const { fs } = fakeFs({ dirs: { '/machine/skills': ['README', 'notes'] } })
+    const out = await readHarness({ config, repoDir: '/product', fsImpl: fs, env: { SMA_DAEMON_SKILLS: '/machine/skills' } })
+    expect(out.skills).toEqual([])
+    expect(out.skillStores.find((s: any) => s.source === 'machine')).toMatchObject({ present: true, count: 0 })
+  })
+
+  it('resolveMachineSkillsDir: the override wins, then CLAUDE_CONFIG_DIR, then the home', () => {
+    expect(resolveMachineSkillsDir({ env: { SMA_DAEMON_SKILLS: '/x/skills', CLAUDE_CONFIG_DIR: '/y' } })).toBe('/x/skills')
+    expect(resolveMachineSkillsDir({ env: { CLAUDE_CONFIG_DIR: '/y' } }).replace(/\\/g, '/')).toBe('/y/skills')
+    expect(resolveMachineSkillsDir({ env: {}, homedir: () => '/home/me' }).replace(/\\/g, '/')).toBe('/home/me/.claude/skills')
   })
 })
 
@@ -250,6 +342,94 @@ describe('applySkillAssign — replace + unassign, existing workers only', () =>
     expect(() =>
       applySkillAssign({ config: baseConfig(), skillId: 'no-skill', workerIds: [], repoDir: '/repo', fsImpl: fs2, env: { SMA_DAEMON_CONFIG: '/cfg.json' } }),
     ).toThrow(UnknownSkillError)
+  })
+
+  /**
+   * A CARD THE WINDOW SHOWS MUST BE A CARD THE WINDOW CAN ACT ON. While this applier looked
+   * only in the served tree, every machine-store skill on the screen answered 404 to the one
+   * button it had — the card was real and its «Кому дать» was not.
+   */
+  it('a skill that lives in the MACHINE store can be assigned too', () => {
+    const { fs } = fakeFs({ files: { '/machine/skills/release-notes/SKILL.md': '---\nname: release-notes\ndescription: d\n---\nтело\n' } })
+    const next = applySkillAssign({
+      config: baseConfig(),
+      skillId: 'release-notes',
+      workerIds: ['max-2'],
+      repoDir: '/repo',
+      fsImpl: fs,
+      env: { SMA_DAEMON_CONFIG: '/cfg.json', SMA_DAEMON_SKILLS: '/machine/skills' },
+    })
+    expect(next.workers.find((w: any) => w.id === 'max-2').skills).toContain('release-notes')
+  })
+
+  it('a skill in NEITHER store is refused, and the refusal names both places it looked', () => {
+    const { fs } = fakeFs({})
+    let message = ''
+    try {
+      applySkillAssign({
+        config: baseConfig(),
+        skillId: 'nowhere',
+        workerIds: [],
+        repoDir: '/repo',
+        fsImpl: fs,
+        env: { SMA_DAEMON_CONFIG: '/cfg.json', SMA_DAEMON_SKILLS: '/machine/skills' },
+      })
+    } catch (err: any) {
+      message = String(err.message).replace(/\\/g, '/')
+    }
+    expect(message).toContain('/repo/.claude/skills/nowhere/SKILL.md')
+    expect(message).toContain('/machine/skills/nowhere/SKILL.md')
+  })
+})
+
+/**
+ * createMachineSkill — the ONE writer, and the promises it keeps.
+ *
+ * The owner's order was «если мы через этот фронт создаём скилл, то люди могут его ставить
+ * своим агентам». Two halves: the file has to be REAL (so the proof of this act is a path on a
+ * disk, not a 200), and it has to be in the store that every project can see.
+ */
+describe('createMachineSkill — a skill written from the window', () => {
+  const env = { SMA_DAEMON_SKILLS: '/machine/skills' }
+
+  it('writes SKILL.md into the MACHINE store and answers with the path it wrote', () => {
+    const { fs, writes } = fakeFs({})
+    const made = createMachineSkill({ id: 'release-notes', description: 'Как собрать заметки.', body: 'Шаг один.', env, fsImpl: fs })
+    expect(made).toMatchObject({ id: 'release-notes', source: 'machine' })
+    expect(made.path.replace(/\\/g, '/')).toBe('/machine/skills/release-notes/SKILL.md')
+    // and the bytes are a skill the SAME reader recognises — frontmatter fence, name, description
+    const written = writes[writes.length - 1].content
+    expect(written.startsWith('---\nname: release-notes\ndescription: Как собрать заметки.\n---\n')).toBe(true)
+    expect(written).toContain('Шаг один.')
+  })
+
+  it('an id that already exists in EITHER store is refused — a create never overwrites', () => {
+    const { fs, writes } = fakeFs({ files: { '/machine/skills/taken/SKILL.md': '---\nname: taken\ndescription: d\n---\nx\n' } })
+    expect(() => createMachineSkill({ id: 'taken', description: 'd', body: 'b', env, fsImpl: fs })).toThrow(SkillExistsError)
+    expect(writes).toHaveLength(0) // nothing was written on the way to the refusal
+  })
+
+  it('an id that could name a path segment is refused before anything is joined', () => {
+    const { fs, writes } = fakeFs({})
+    for (const bad of ['../escape', 'a/b', 'Upper', '-leading', '', 'имя']) {
+      expect(() => createMachineSkill({ id: bad, description: 'd', body: 'b', env, fsImpl: fs })).toThrow(InvalidSkillError)
+    }
+    expect(writes).toHaveLength(0)
+  })
+
+  it('an empty body or an empty description is refused — a card with nothing to say is not a skill', () => {
+    const { fs } = fakeFs({})
+    expect(() => createMachineSkill({ id: 'ok', description: 'd', body: '   ', env, fsImpl: fs })).toThrow(InvalidSkillError)
+    expect(() => createMachineSkill({ id: 'ok', description: '  ', body: 'b', env, fsImpl: fs })).toThrow(InvalidSkillError)
+  })
+
+  it('a description carrying newlines cannot grow a second frontmatter key', () => {
+    const { fs, writes } = fakeFs({})
+    createMachineSkill({ id: 'ok', description: 'первая\nlane: forge\nвторая', body: 'тело', env, fsImpl: fs })
+    const written = writes[writes.length - 1].content
+    const fence = written.slice(4, written.indexOf('\n---', 3))
+    expect(fence.split('\n').filter((l: string) => l.trim() !== '')).toHaveLength(2) // name + description, and nothing else
+    expect(fence).toContain('description: первая lane: forge вторая')
   })
 })
 
@@ -339,6 +519,42 @@ describe('resolveWorkerContext — the role/skills preamble that makes «вкл�
     const ctx = resolveWorkerContext({ worker: { id: 'max-2', skills: [] }, repoDir: '/repo', fsImpl: fs })
     expect(ctx.rolePreamble).toBeUndefined()
     expect(ctx.skillsList).toEqual([])
+    expect(ctx.skillsPreamble).toBeUndefined()
+  })
+
+  /**
+   * THE ASSIGNMENT HAS TO REACH THE SESSION, or «дать навык работнику» is a row in a config
+   * file. It used to be exactly that: the skill names went into the journal and nowhere else,
+   * and the worker they were given to never learned it had them.
+   */
+  it('an assigned skill travels WITH ITS TEXT, from either store, naming the store it came from', () => {
+    const { fs } = fakeFs({
+      files: {
+        '/repo/.claude/skills/twitter-digest/SKILL.md': SKILL_DIGEST,
+        '/machine/skills/release-notes/SKILL.md': '---\nname: release-notes\ndescription: d\n---\nтело машинного навыка\n',
+      },
+    })
+    const ctx = resolveWorkerContext({
+      worker: { id: 'max-2', skills: ['twitter-digest', 'release-notes'] },
+      repoDir: '/repo',
+      fsImpl: fs,
+      env: { SMA_DAEMON_SKILLS: '/machine/skills' },
+    })
+    expect(ctx.skillsPreamble).toContain('twitter-digest (источник: дерево проекта)')
+    expect(ctx.skillsPreamble).toContain('release-notes (источник: хранилище машины)')
+    expect(ctx.skillsPreamble).toContain('тело машинного навыка')
+  })
+
+  it('an assigned skill whose file is gone is NAMED as missing, never silently dropped', () => {
+    const { fs } = fakeFs({})
+    const ctx = resolveWorkerContext({
+      worker: { id: 'max-2', skills: ['vanished'] },
+      repoDir: '/repo',
+      fsImpl: fs,
+      env: { SMA_DAEMON_SKILLS: '/machine/skills' },
+    })
+    expect(ctx.skillsPreamble).toContain('vanished')
+    expect(ctx.skillsPreamble).toContain('не найден')
   })
 })
 
@@ -564,10 +780,14 @@ describe('readHarness — the stockTeam key is ADDITIVE (modules 8/9/12 keep the
       env: {},
       homedir: NO_HOME,
     })
-    // `telegram` joined the payload the same way `stockTeam` did — ADDITIVELY: the five keys
-    // above keep their shape byte for byte, and the sixth is the state of the owner's own bot.
+    // `telegram` joined the payload the same way `stockTeam` did — ADDITIVELY: the keys above
+    // keep their shape byte for byte, and the new one is the state of the owner's own bot.
     // A daemon nobody connected one to still gets the key, reading 'off'.
-    expect(Object.keys(out).sort()).toEqual(['agents', 'drafts', 'mcp', 'skills', 'stockTeam', 'telegram'].sort())
+    // `skillStores` joined by the SAME rule: the two directories the skills walk actually
+    // looked in, so an empty skills list can name them instead of saying nothing.
+    expect(Object.keys(out).sort()).toEqual(
+      ['agents', 'drafts', 'mcp', 'skillStores', 'skills', 'stockTeam', 'telegram'].sort(),
+    )
     expect(out.telegram).toMatchObject({ status: 'off', tokenTail: null, code: null, chat: null })
     expect(Array.isArray(out.stockTeam)).toBe(true)
     expect(out.stockTeam.map((e: any) => e.id).sort()).toEqual(['sma-planner', 'sma-verifier'])
@@ -674,14 +894,17 @@ async function call(front: any, opts: any) {
 }
 
 describe('POST /api/agent/toggle — the stock team rides the EXISTING door (no route added)', () => {
-  it('the route table is still exactly sixty-four entries and carries no stock-team route', () => {
+  it('the route table carries no stock-team route (the reserved target rides the agent door)', () => {
     // V5.4 freeze (53) + chat/stop + redirect + the batch request + the word answering a stopped
     // batch + the two doors of a task's words (proposed by the system, corrected by its owner)
     // + the composition a phrase could have (proposed too — and putting it in is another door)
     // + the order that stops ONE echelon of ONE phase and starts it again
     // + the door a person cancels a task through
-    // + the door that reads the folder of one phase (its tree, and one file of it as text).
-    expect(Object.keys(ROUTES)).toHaveLength(64)
+    // + the door that reads the folder of one phase (its tree, and one file of it as text)
+    // + the door that WRITES a skill into this machine's store.
+    // The size itself is pinned once, in front-auth.test.ts — repeating the number here made
+    // an unrelated door's arrival look like a stock-team regression. What this case is about
+    // is the ABSENCE of a stock-team route, and that is what it now says.
     expect(Object.keys(ROUTES).filter((k) => /stock/i.test(k))).toEqual([])
   })
 
@@ -755,5 +978,113 @@ describe('buildClaudeArgs mcpConfigPath + buildMcpConfigFile — enabled entries
     // the registry's env NAMES stay with the daemon: the file carries what to run, nothing else
     expect(written.mcpServers.twitter).toEqual({ type: 'stdio', command: 'npx', args: ['twitter-mcp'] })
     expect(JSON.stringify(written)).not.toContain('TWITTER_TOKEN')
+  })
+})
+
+/**
+ * THE WIRE, ON A REAL DISK.
+ *
+ * Every case above runs against a fake fs, which is right for the rules and useless for the
+ * one question this feature is judged by: does pressing the button leave a FILE. So this one
+ * uses the real door, the real applier and a real temporary directory, and it does not believe
+ * the 201 — it opens the disk, reads the bytes back, and then asks the read model whether the
+ * new skill is on the screen. A door that answers ok and writes nothing is exactly the failure
+ * this suite is here to make impossible.
+ */
+describe('POST /api/skill/create → a file on the disk → a card in the window (the wire)', () => {
+  it('writes SKILL.md, and the harness read model then shows it as a machine-store skill', async () => {
+    const store = mkdtempSync(join(tmpdir(), 'sma-skills-'))
+    try {
+      const env = { SMA_DAEMON_SKILLS: store }
+      const front = createFrontServer({
+        config: { token: TOKEN, workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/m2' }, enabled: true }] },
+        deps: { createMachineSkill, readHarness, env, repoDir: join(store, 'no-such-project') },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/skill/create',
+        body: { id: 'release-notes', description: 'Как собрать заметки к релизу.', body: 'Шаг один: прочитать журнал.' },
+      })
+      expect(res.statusCode).toBe(201)
+      const answered = JSON.parse(res.body).skill
+
+      // (1) THE DISK — not the status code.
+      const onDisk = readFileSync(join(store, 'release-notes', 'SKILL.md'), 'utf8')
+      expect(onDisk).toContain('name: release-notes')
+      expect(onDisk).toContain('Шаг один: прочитать журнал.')
+      expect(answered.path.replace(/\\/g, '/')).toBe(join(store, 'release-notes', 'SKILL.md').replace(/\\/g, '/'))
+
+      // (2) AND THE WINDOW — under a project whose tree has no skills directory at all.
+      const harness = await call(front, { method: 'GET', url: '/api/harness' })
+      expect(harness.statusCode).toBe(200)
+      const payload = JSON.parse(harness.body)
+      const card = payload.skills.find((s: any) => s.id === 'release-notes')
+      expect(card).toMatchObject({ source: 'machine', description: 'Как собрать заметки к релизу.' })
+
+      // (3) AND IT CAN BE GIVEN AWAY — the card's one button reaches a real applier.
+      const cfg = { workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/m2' }, enabled: true }] }
+      const writes: Array<{ path: string; content: string }> = []
+      const recorder = {
+        existsSync: () => false,
+        readFileSync: (p: string) => readFileSync(p, 'utf8'),
+        readdirSync: (p: string) => readdirSync(p).map(String),
+        mkdirSync: () => {},
+        writeFileSync: (p: string, c: string) => writes.push({ path: String(p), content: String(c) }),
+        renameSync: () => {},
+      }
+      const next = applySkillAssign({
+        config: cfg,
+        skillId: 'release-notes',
+        workerIds: ['max-2'],
+        repoDir: join(store, 'no-such-project'),
+        fsImpl: recorder,
+        env: { ...env, SMA_DAEMON_CONFIG: join(store, 'cfg.json') },
+      })
+      expect(next.workers[0].skills).toEqual(['release-notes'])
+
+      // (4) AND THE ASSIGNMENT REACHES THE LAUNCH: the skill's own text is in what the worker
+      //     is started with, not merely in a config field somebody could read later.
+      const ctx = resolveWorkerContext({ worker: next.workers[0], repoDir: join(store, 'no-such-project'), fsImpl: recorder, env })
+      expect(ctx.skillsPreamble).toContain('Шаг один: прочитать журнал.')
+    } finally {
+      rmSync(store, { recursive: true, force: true })
+    }
+  })
+
+  it('the same id twice is a 409 and the file on disk is untouched', async () => {
+    const store = mkdtempSync(join(tmpdir(), 'sma-skills-'))
+    try {
+      const front = createFrontServer({
+        config: { token: TOKEN, workers: [] },
+        deps: { createMachineSkill, env: { SMA_DAEMON_SKILLS: store } },
+      })
+      const body = { id: 'once', description: 'первый', body: 'первое тело' }
+      expect((await call(front, { method: 'POST', url: '/api/skill/create', body })).statusCode).toBe(201)
+      const again = await call(front, {
+        method: 'POST',
+        url: '/api/skill/create',
+        body: { id: 'once', description: 'второй', body: 'второе тело' },
+      })
+      expect(again.statusCode).toBe(409)
+      expect(readFileSync(join(store, 'once', 'SKILL.md'), 'utf8')).toContain('первое тело')
+    } finally {
+      rmSync(store, { recursive: true, force: true })
+    }
+  })
+
+  it('a key nobody declared is refused before the applier is reached', async () => {
+    let reached = false
+    const front = createFrontServer({
+      config: { token: TOKEN, workers: [] },
+      deps: { createMachineSkill: () => { reached = true; return { id: 'x', source: 'machine', path: '/x' } } },
+    })
+    const res = await call(front, {
+      method: 'POST',
+      url: '/api/skill/create',
+      body: { id: 'x', description: 'd', body: 'b', path: '/etc/passwd' },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(reached).toBe(false)
   })
 })

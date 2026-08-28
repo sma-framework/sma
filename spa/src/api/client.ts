@@ -48,6 +48,7 @@ import type {
   SearchResults,
   ShipGateReport,
   ShipPublishResult,
+  SkillCreateResult,
   StatePayload,
   TaskDetail,
   TelegramLink,
@@ -447,6 +448,19 @@ export function toggleAgent(id: string, enabled: boolean): Promise<ToggleResult>
 /** Say which helpers know a skill. */
 export function assignSkill(skillId: string, workerIds: string[]): Promise<ToggleResult> {
   return postJson<ToggleResult>('/api/skill/assign', { skillId, workerIds })
+}
+
+/**
+ * Write a skill. It lands in THIS MACHINE's skill store, so it is there under every project,
+ * and it can be given to a helper the moment it exists. The daemon refuses an id that is
+ * already taken — creating never overwrites somebody's skill.
+ */
+export function createSkill(input: { id: string; description: string; body: string }): Promise<SkillCreateResult> {
+  return postJson<SkillCreateResult>('/api/skill/create', {
+    id: input.id,
+    description: input.description,
+    body: input.body,
+  })
 }
 
 /** Switch one connection on or off. */

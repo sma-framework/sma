@@ -369,9 +369,12 @@ describe('подключение из окна — весь путь, от по�
     expect(existsSync(w.configPath)).toBe(false)
   })
 
-  it('дверь одна, и она в закрытом столе — счёт дверей сдвинут вместе с ней', () => {
+  it('дверь одна, и она в закрытом столе — три слова, и ни одного лишнего', () => {
     expect(ROUTES['POST /api/connection/telegram']).toBe('handleConnectionTelegram')
-    expect(Object.keys(ROUTES)).toHaveLength(64)
+    // Размер стола припинен РОВНО В ОДНОМ месте (front-auth.test.ts), где записаны и причины
+    // каждого перепина. Второе написание числа означало, что появление любой посторонней двери
+    // краснеет здесь — там, где речь о телеграме и ни о чём больше.
+    expect(Object.keys(ROUTES).filter((k) => /connection/i.test(k))).toEqual(['POST /api/connection/telegram'])
     expect(TELEGRAM_ACTIONS).toEqual(['connect', 'code', 'disconnect'])
   })
 })

@@ -361,6 +361,14 @@ export function useAssignSkill() {
   )
 }
 
+/** Write a skill into this machine's store. The list re-reads, so the new card is the proof. */
+export function useCreateSkill() {
+  return useAction<{ id: string; description: string; body: string }, Awaited<ReturnType<typeof api.createSkill>>>(
+    (input) => api.createSkill(input),
+    [HARNESS_KEY],
+  )
+}
+
 /** Switch one connection on or off. */
 export function useToggleMcp() {
   return useAction<{ serverId: string; enabled: boolean }, Awaited<ReturnType<typeof api.toggleMcp>>>(

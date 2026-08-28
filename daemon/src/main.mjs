@@ -91,6 +91,7 @@ import {
   loadMcpRegistry,
   applyAgentToggle,
   applySkillAssign,
+  createMachineSkill,
   applyMcpToggle,
   applyStockTeamToggle,
   applyAgentModel,
@@ -1221,6 +1222,10 @@ export function createDaemon(o = {}) {
         loadMcpRegistry: o.loadMcpRegistry ?? (() => loadMcpRegistry({})),
         applyAgentToggle,
         applySkillAssign,
+        // Написать навык из окна. Пишет ТОЛЬКО в машинное хранилище — тем и отличается от
+        // раздачи, которая читает оба: навык, положенный в служимое дерево, был бы навыком
+        // одного проекта и чужим файлом в чужом репозитории.
+        createMachineSkill,
         applyMcpToggle,
         // The one act that switches the whole shipped SMA team on — it rides the agent
         // toggle door under a reserved target, so the route table stayed at thirty.

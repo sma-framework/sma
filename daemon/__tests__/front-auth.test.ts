@@ -248,8 +248,15 @@ describe('server.mjs — the closed SIXTY-FOUR-route table', () => {
   // door opens only the documents the card knows how to name; everything else a phase left in
   // its own directory existed for a terminal and for nothing else. Read-only, and the path is
   // locked three times over (text, resolved, real), so no spelling of it leaves that directory.
-  it('the frozen table has EXACTLY sixty-four routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(64)
+  // RE-FREEZE REVISION (28.08.2026): + POST /api/skill/create — a person WRITES a skill in the
+  // window and it becomes a file in this machine's skill store, ready to be given to a worker.
+  // No existing door could do this: /api/forge asks a worker to draft one and waits for an
+  // approval, which is the right road for «придумай мне навык» and the wrong one for «вот
+  // текст, положи его», and /api/skill/assign refuses a skill whose file does not exist yet —
+  // so «создать навык из окна» had no path at all. It writes into the MACHINE store only, and
+  // it refuses an id that is already taken rather than overwriting somebody's skill.
+  it('the frozen table has EXACTLY sixty-five routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(65)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 

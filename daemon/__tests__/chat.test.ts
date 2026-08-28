@@ -1273,14 +1273,10 @@ describe('проект разговора: у двери он ставится, 
 })
 
 describe('the chat routes filled a FROZEN slot', () => {
-  it('the table is sixty-four routes and all three chat routes are real handlers', () => {
-    // V5.4 freeze (53) + chat/stop + redirect + the batch request + the word answering a stopped
-    // batch + the two doors of a task's words (proposed by the system, corrected by its owner)
-    // + the composition a phrase could have (proposed too — and putting it in is another door)
-    // + the order that stops ONE echelon of ONE phase and starts it again
-    // + the door a person cancels a task through (it kills the live child before it closes the row)
-    // + the door that reads the folder of one phase (its tree, and one file of it as text).
-    expect(Object.keys(ROUTES)).toHaveLength(64)
+  it('all three chat routes are real handlers of the frozen table', () => {
+    // The SIZE of the table is pinned in exactly one place (front-auth.test.ts), where the
+    // re-freeze revisions are recorded. Repeating the number here made every unrelated door's
+    // arrival look like a chat regression, which is the opposite of what this case is for.
     expect(ROUTES['POST /api/chat']).toBe('handleChat')
     expect(ROUTES['POST /api/chat/stop']).toBe('handleChatStop')
     expect(ROUTES['GET /api/chat/history']).toBe('handleChatHistory')

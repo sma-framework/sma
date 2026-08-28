@@ -3797,7 +3797,12 @@ export async function tick(deps = {}) {
       if (typeof deps.resolveWorkerContext === 'function' && route && route.workerId) {
         const worker = (config.workers || []).find((w) => w && w.id === route.workerId)
         if (worker && (worker.roleFile || (Array.isArray(worker.skills) && worker.skills.length))) {
-          const ctx = deps.resolveWorkerContext({ worker, repoDir: config.repoDir, fsImpl: deps.fsImpl })
+          const ctx = deps.resolveWorkerContext({ worker, repoDir: config.repoDir, fsImpl: deps.fsImpl, env: deps.env })
+          // ТЕКСТ ВЫДАННЫХ НАВЫКОВ ЕДЕТ ТЕМ ЖЕ ПУТЁМ, ЧТО И РОЛЬ. Раздача навыка была записью
+          // в конфиге и строкой в журнале: сессия, которой навык выдали, о нём не узнавала.
+          // Кладётся ПЕРВЫМ, чтобы после обеих вставок порядок читался как роль → навыки →
+          // работа: кто работник, что он умеет, и лишь потом что делать.
+          if (ctx && ctx.skillsPreamble) spec.prompt = `${ctx.skillsPreamble}\n\n${spec.prompt ?? ''}`
           if (ctx && ctx.rolePreamble) spec.prompt = `${ctx.rolePreamble}\n\n${spec.prompt ?? ''}`
           roleNotes = [
             ...(worker.roleFile ? [worker.roleFile] : []),
