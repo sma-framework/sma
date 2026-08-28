@@ -53,6 +53,27 @@
  * window, one scan; the clock and the fs are injected seams like everywhere else in this
  * directory, so the cache is testable without waiting a minute.
  *
+ * ═══════════════ THE SAME SCAN ALSO ANSWERS «ЧТО ЭТОТ ДЕЛАЛ» ═════════════════════
+ *
+ * Two figures say how much, and say nothing about what. The roster could show a worker's
+ * numbers and still leave a person unable to name a single piece of work he had led — so the
+ * pass that counts also REMEMBERS, and hands back the list of pieces it counted.
+ *
+ * IT IS THE SAME PASS, DELIBERATELY. A second reader over the same directory would be a second
+ * opinion the day one of them changed its window, its skip rules or its fold — and «сделано: 5»
+ * standing over four lines of history is precisely the sort of quiet contradiction a person
+ * stops believing a screen for. One scan, one set of rules, two answers.
+ *
+ * ONE LINE PER PIECE OF WORK, NOT PER TRY. The counts are about ATTEMPTS (work done twice cost
+ * twice), the history is about WORK (a task redone three times is one thing this worker led).
+ * So the history folds a worker's attempts on one task down to the LATEST of them, and the two
+ * answers are allowed to differ in length without disagreeing. The card says which is which.
+ *
+ * WHAT THE LEDGER CANNOT SAY IT DOES NOT SAY. A ledger row carries no title, no phase and no
+ * verdict of a person — those live on the queue row, and the caller joins them there. This
+ * module answers exactly three things per line: which task, when the try ended, and how the
+ * try itself ended.
+ *
  * Node built-ins only; the ledger dir is caller-provided (DI). Fail-open throughout — a broken
  * ledger costs the screen a number, never the screen.
  */
@@ -62,6 +83,17 @@ import { readdirSync as fsReaddirSync } from 'node:fs'
 import { readAttempts, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 
 const DAY_MS = 86_400_000
+
+/**
+ * HISTORY_CAP — how many pieces of work one worker's history carries.
+ *
+ * The list rides inside the state read, which is polled every few seconds by every open
+ * window, so it is BOUNDED at the source rather than sliced by whoever draws it: a ceiling
+ * applied on the screen would still have paid for the whole list on the wire. Twelve is the
+ * near past a person actually asks about — «что он делал в последнее время» — and the window
+ * of days above is the real answer to «how far back», stated in words beside the figures.
+ */
+export const HISTORY_CAP = 12
 
 /** The suffix of an attempt file, and the two siblings that live in the same directory. */
 const ATTEMPTS_SUFFIX = '.jsonl'
@@ -76,10 +108,13 @@ function stampMs(v) {
 }
 
 /**
- * createWorkerStats({ledgerDir, fsImpl, clock, windowDays, ttlMs}) → {statsFor, all}.
+ * createWorkerStats({ledgerDir, fsImpl, clock, windowDays, ttlMs}) → {statsFor, historyFor, all}.
  *
  * `statsFor(workerId)` → `{done, failed}` for the window, `{done:0, failed:0}` for a worker the
  * readable ledger has nothing on, and `null` when the ledger could not be read at all.
+ * `historyFor(workerId)` → the pieces of work that worker led inside the window, newest first
+ * and capped, `[]` for a worker the readable ledger has nothing on, `null` under the same
+ * unreadable-ledger condition as above. Each line: `{taskId, endedAt, outcome}`.
  * `all()` → `{[workerId]: {done, failed}}`, or `null` under the same condition.
  *
  * @param {{ledgerDir?:string, fsImpl?:object, clock?:()=>number, windowDays?:number, ttlMs?:number}} [args]
@@ -94,7 +129,12 @@ export function createWorkerStats({ ledgerDir, fsImpl, clock, windowDays = 30, t
   let cached
   let cachedTaken = false
 
-  /** One pass over the ledger directory → counts by worker, or null when it cannot be read. */
+  /**
+   * One pass over the ledger directory → `{counts, history}` by worker, or null when it cannot
+   * be read. The two answers are built side by side from the SAME accepted row, so no rule
+   * («вне окна», «никем не подписана», «восстановлена задним числом») can ever apply to one
+   * of them and not to the other.
+   */
   function scan(at) {
     if (typeof ledgerDir !== 'string' || ledgerDir.trim() === '') return null
     let names
@@ -105,6 +145,8 @@ export function createWorkerStats({ ledgerDir, fsImpl, clock, windowDays = 30, t
     }
     const since = at - windowMs
     const out = {}
+    /** `{[workerId]: {[taskId]: {taskId, endedAt, outcome}}}` — one line per piece of work. */
+    const led = {}
     for (const raw of names) {
       const name = String(raw)
       if (!name.endsWith(ATTEMPTS_SUFFIX)) continue
@@ -133,18 +175,35 @@ export function createWorkerStats({ ledgerDir, fsImpl, clock, windowDays = 30, t
         const bucket = out[workerId] || (out[workerId] = { done: 0, failed: 0 })
         if (rec.outcome === 'completed') bucket.done += 1
         else if (rec.outcome === 'failed') bucket.failed += 1
+        else continue // a row that named no ending is counted nowhere and remembered nowhere
+
+        // THE SAME ACCEPTED ROW, REMEMBERED. The id is taken off the row rather than off the
+        // file name: the name went through `safeName`, so a task whose id carries a character
+        // that rule replaces would be listed under a name no screen could open.
+        const id = typeof rec.taskId === 'string' && rec.taskId.trim() !== '' ? rec.taskId.trim() : taskId
+        const mine = led[workerId] || (led[workerId] = {})
+        const prev = mine[id]
+        // The LATEST try wins the line: a task redone three times is one piece of work, and the
+        // word a person needs beside it is how it ended LAST, not how it once went.
+        if (!prev || ended >= prev.endedAt) mine[id] = { taskId: id, endedAt: ended, outcome: rec.outcome }
       }
     }
-    return out
+    return { counts: out, history: led }
   }
 
-  function all() {
+  /** The one cached pass; `null` when the ledger could not be read at all. */
+  function snapshot() {
     const at = now()
     if (cachedTaken && Number.isFinite(cachedAt) && at - cachedAt >= 0 && at - cachedAt < ttlMs) return cached
     cached = scan(at)
     cachedAt = at
     cachedTaken = true
     return cached
+  }
+
+  function all() {
+    const taken = snapshot()
+    return taken === null ? null : taken.counts
   }
 
   function statsFor(workerId) {
@@ -154,5 +213,16 @@ export function createWorkerStats({ ledgerDir, fsImpl, clock, windowDays = 30, t
     return hit ? { done: hit.done, failed: hit.failed } : { done: 0, failed: 0 }
   }
 
-  return { statsFor, all }
+  function historyFor(workerId) {
+    const taken = snapshot()
+    if (taken === null) return null
+    const mine = taken.history[workerId]
+    if (!mine) return [] // the catalogue opened and this one led nothing in the period
+    return Object.values(mine)
+      .sort((a, b) => b.endedAt - a.endedAt)
+      .slice(0, HISTORY_CAP)
+      .map((e) => ({ taskId: e.taskId, endedAt: e.endedAt, outcome: e.outcome }))
+  }
+
+  return { statsFor, historyFor, all }
 }

@@ -1,5 +1,6 @@
 import type { Presence, WindowFact, WorkerRow } from '../../api/types'
 import { WINDOW_TERMINAL_HINT, WINDOW_UNKNOWN_HINT, accentFor, initialOf, windowWords } from '../../shell/format'
+import { STATS_PERIOD, statsWords } from './history'
 
 /**
  * WorkerCard — one worker, and the honest answer to «can this one take work right now».
@@ -35,6 +36,11 @@ import { WINDOW_TERMINAL_HINT, WINDOW_UNKNOWN_HINT, accentFor, initialOf, window
  * here were filled from this daemon's own token count against an invented capacity, so they
  * read near zero on a subscription a person had nearly spent in his own terminal, and a zero
  * bar is read as «free». A window nothing has been heard about now says «нет данных».
+ *
+ * И ПО РАБОТНИКУ МОЖНО НАЖАТЬ. До сих пор нажималась ровно одна вещь — название задачи в
+ * руках, — то есть карточка отвечала на «чем он занят сейчас» и молчала на «а что он делал».
+ * Имя работника открывает его историю; сами две цифры под именем — тоже кнопка, потому что
+ * человек, увидевший «не получилось: 3», спрашивает «что именно» ровно там, где прочитал.
  */
 
 /** A colour for each of the three words. The word itself always comes from the payload. */
@@ -96,6 +102,7 @@ export function WorkerCard({
   taskTitle,
   stats,
   onOpenTask,
+  onOpenHistory,
 }: {
   worker: WorkerRow
   /** The worker's line of work, in the words the rest of the window uses for it. */
@@ -109,15 +116,23 @@ export function WorkerCard({
    */
   stats: { done: number; failed: number } | null
   onOpenTask: (taskId: string) => void
+  /** «Покажи, что он делал» — открывает историю этого работника. */
+  onOpenHistory: () => void
 }) {
   const win = worker.window
   const closed = !!win.closedUntil
   const pulse = pulseLabel(worker.pulseAgeSec)
+  const said = statsWords(stats)
 
   return (
     <article className="flex flex-col gap-3.5 rounded-[13px] border border-bd bg-card p-[18px] shadow-panel">
       <header className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
+        <button
+          type="button"
+          onClick={onOpenHistory}
+          title={`Что делал ${worker.id}`}
+          className="flex min-w-0 items-center gap-2 text-left"
+        >
           <span
             className={`flex h-[19px] w-[19px] flex-none items-center justify-center rounded-md text-[9.5px] font-bold ${accentFor(
               worker.lane ?? worker.id,
@@ -125,8 +140,8 @@ export function WorkerCard({
           >
             {initialOf(worker.id)}
           </span>
-          <span className="truncate text-[13.5px] font-semibold text-tx">{worker.id}</span>
-        </div>
+          <span className="truncate text-[13.5px] font-semibold text-tx hover:text-blue">{worker.id}</span>
+        </button>
         <div className="flex flex-none items-center gap-1.5">
           <span aria-hidden className={`h-[7px] w-[7px] flex-none rounded-full ${PRESENCE_DOT[worker.presence]}`} />
           <span className="text-[11px] whitespace-nowrap text-tx2">{worker.presence}</span>
@@ -157,21 +172,24 @@ export function WorkerCard({
         <WindowLine label="Неделя" fact={win.week} />
       </div>
 
-      <div className="border-t border-bd pt-3 text-[11.5px] text-tx2">
-        <div className="mb-1 text-[10.5px] text-tx3">за 30 дней</div>
-        {stats === null ? (
-          <div className="text-tx3">нет данных</div>
-        ) : stats.done + stats.failed === 0 ? (
-          <div className="text-tx3">завершённых попыток не было</div>
-        ) : (
+      <button
+        type="button"
+        onClick={onOpenHistory}
+        title={`Что делал ${worker.id}`}
+        className="border-t border-bd pt-3 text-left text-[11.5px] text-tx2"
+      >
+        <div className="mb-1 text-[10.5px] text-tx3">{STATS_PERIOD}</div>
+        {said.kind === 'measured' ? (
           <div className="tabular-nums">
-            сделано: <span className="font-semibold text-ok-tx">{stats.done}</span> · не получилось:{' '}
-            <span className={stats.failed > 0 ? 'font-semibold text-err-tx' : 'font-semibold text-tx2'}>
-              {stats.failed}
+            сделано: <span className="font-semibold text-ok-tx">{said.done}</span> · не получилось:{' '}
+            <span className={(said.failed ?? 0) > 0 ? 'font-semibold text-err-tx' : 'font-semibold text-tx2'}>
+              {said.failed}
             </span>
           </div>
+        ) : (
+          <div className="text-tx3">{said.text}</div>
         )}
-      </div>
+      </button>
 
       <div className="text-[10.5px] text-tx3">
         {laneLabel ? `${laneLabel} · ` : ''}

@@ -1,9 +1,10 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useStateQuery } from '../../api/queries'
 import type { OrchestratorRow, Presence, WorkerRow } from '../../api/types'
 import { OPEN_SCREEN_EVENT } from '../../shell/navigation'
 import type { OpenScreenDetail } from '../../shell/navigation'
 import { WorkerCard } from './WorkerCard'
+import { WorkerHistory } from './WorkerHistory'
 
 /**
  * «Команда» — the roster: who is on what, whose window is nearly spent, who is free.
@@ -32,6 +33,11 @@ import { WorkerCard } from './WorkerCard'
  * done nothing. A statistic is a count over a stated period, not over whatever a poll returned;
  * the period now rides in the payload and the screen only prints it, with «за 30 дней» said in
  * words beside the figures.
+ *
+ * И РАБОТНИК ТЕПЕРЬ ОТКРЫВАЕТСЯ. По имени (и по самим цифрам) открывается его история —
+ * `workers[].history`, работы, которые он вёл, с исходом каждой и с переходом в карточку
+ * любой из них. Она приезжает тем же одним чтением и из того же прохода по леджеру, что и
+ * цифры: экран по-прежнему НИЧЕГО не спрашивает у демона от себя и ничего не считает сам.
  */
 
 /** The lines of work, in the words the rest of the product uses for them. */
@@ -181,8 +187,26 @@ export function Screen() {
   const state = useStateQuery()
   const data = state.data
   const workers = data?.workers ?? []
+  /**
+   * Открытая история — ПО ИМЕНИ работника, а не копией строки: чтение обновляется каждые
+   * несколько секунд, и окно, держащее снимок, показывало бы вчерашнее, пока его не закроют.
+   */
+  const [openedId, setOpenedId] = useState<string | null>(null)
+  const opened = workers.find((w) => w.id === openedId) ?? null
 
-  /** The title of a task in hand — looked up in the rows the window already has. */
+  /**
+   * The title of a task in hand.
+   *
+   * IT COMES OFF THE WORKER'S OWN ROW FIRST, and that is the whole of this fix. The roster is
+   * the ONE list that names a claimed task, so the daemon puts that task's name on the worker
+   * (`taskTitle`) precisely because no other list carries it: `queue[]` holds rows waiting for
+   * a worker, and a task in somebody's hands has left it. The screen looked the name up THERE
+   * anyway, missed every time, and printed the routing id where a title belongs — a field
+   * computed, delivered and read by nobody, which is the same half-done shape as a number that
+   * never reaches the eye.
+   *
+   * The lookup stays as the fallback for a reading older than that field.
+   */
   const titleOf = useMemo(() => {
     const byId = new Map<string, string>()
     for (const row of data?.queue ?? []) byId.set(row.id, row.title ?? 'Без названия')
@@ -239,15 +263,28 @@ export function Screen() {
                   key={w.id}
                   worker={w}
                   laneLabel={w.lane ? (LANE_LABEL[w.lane] ?? w.lane) : null}
-                  taskTitle={w.taskId ? (titleOf.get(w.taskId) ?? null) : null}
+                  taskTitle={w.taskId ? (w.taskTitle ?? titleOf.get(w.taskId) ?? null) : null}
                   stats={w.stats30d ?? null}
                   onOpenTask={openTask}
+                  onOpenHistory={() => setOpenedId(w.id)}
                 />
               )
             })}
           </div>
         </div>
       )}
+
+      {opened ? (
+        <WorkerHistory
+          worker={opened}
+          stats={opened.stats30d ?? null}
+          onOpenTask={(taskId) => {
+            setOpenedId(null)
+            openTask(taskId)
+          }}
+          onClose={() => setOpenedId(null)}
+        />
+      ) : null}
     </section>
   )
 }
