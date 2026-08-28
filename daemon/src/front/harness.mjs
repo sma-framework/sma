@@ -63,8 +63,9 @@ import { join } from 'node:path'
 import { atomicWriteJson } from '../../../scripts/sma/lib/fs-atomics.mjs'
 // The config writer is IMPORTED, never re-implemented: this file used to carry its own
 // private twin of it, and a twin is how a rule ends up living in only one of the two places
-// that write the same file. See config.mjs `writeConfig` — it is read-modify-write, so a key
-// a person put in the file by hand survives a toggle pressed in the window. `stripDerivedDirs`
+// that write the same file. See config.mjs `writeConfig` — it is read-modify-write AND
+// field-scoped, so a key a person put in the file by hand survives a toggle pressed in the
+// window whether or not the write model has ever heard of that key. `stripDerivedDirs`
 // left with the twin: the writer applies that rule itself, and calling it here again would be
 // the same second opinion in a smaller disguise.
 import { resolveConfigPath, writeConfig } from '../config.mjs'
@@ -478,6 +479,10 @@ export async function readHarness({ config, registry, adapter, repoDir, fsImpl, 
  * pinning them into the file, and what keeps a toggle from deleting a key the write model
  * never heard of.
  *
+ * EVERY ONE OF THEM OWNS `workers` AND NAMES IT (`fields`). Everything else in the file —
+ * the conveyor's switch, the budget, the concurrency ceiling a person edited an hour ago —
+ * is not theirs to write back, and the writer refuses a write that names nothing at all.
+ *
  * THE BASELINE IS `launchDir`, NOT `repoDir`. Every applier in this file needs BOTH: the
  * repoDir to READ from (role files, the skills tree, the installed roster) and the launch
  * directory to decide what counts as derived when it WRITES. Handing the repoDir to the
@@ -578,7 +583,7 @@ export function applyAgentModel({ config, id, model, effort, launchDir, fsImpl, 
       i === idx ? { ...w, ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}) } : w,
     ),
   }
-  writeConfig(nextConfig, { env, homedir, fsImpl, launchDir })
+  writeConfig(nextConfig, { env, homedir, fsImpl, launchDir, fields: ['workers'] })
   return nextConfig
 }
 
@@ -606,7 +611,7 @@ export function applyAgentToggle({ config, id, enabled, repoDir, launchDir, fsIm
     nextWorkers = [...workers, profile]
   }
   const nextConfig = { ...config, workers: nextWorkers }
-  writeConfig(nextConfig, { env, homedir, fsImpl, launchDir })
+  writeConfig(nextConfig, { env, homedir, fsImpl, launchDir, fields: ['workers'] })
   return nextConfig
 }
 
@@ -679,7 +684,7 @@ export function applyStockTeamToggle({ config, enabled, repoDir, launchDir, fsIm
     }
   }
   const nextConfig = { ...config, workers: nextWorkers }
-  writeConfig(nextConfig, { env, homedir, fsImpl, launchDir })
+  writeConfig(nextConfig, { env, homedir, fsImpl, launchDir, fields: ['workers'] })
   return nextConfig
 }
 
@@ -709,7 +714,7 @@ export function applySkillAssign({ config, skillId, workerIds, repoDir, launchDi
     return { ...w, skills: next }
   })
   const nextConfig = { ...config, workers: nextWorkers }
-  writeConfig(nextConfig, { env, homedir, fsImpl, launchDir })
+  writeConfig(nextConfig, { env, homedir, fsImpl, launchDir, fields: ['workers'] })
   return nextConfig
 }
 
