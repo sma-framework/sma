@@ -557,15 +557,15 @@ const GRAPH_TIP_PLACES = [
 
 /**
  * GROWTH_AXIS — the value axis of the growth chart in the chart's own coordinates: zero
- * tests on the baseline at y=170, the top gridline at y=20 labelled 5000. A point of N
- * tests therefore stands at y = 170 − N × 0.03, which is how every point already in the
- * map is drawn (532 → 154.04, 1145 → 135.65). That is what pins these numbers to the
+ * tests on the baseline at y=170, the top gridline at y=20 labelled 8000. A point of N
+ * tests therefore stands at y = 170 − N × 0.01875, which is how every point already in the
+ * map is drawn (532 → 160.03, 1145 → 148.53). That is what pins these numbers to the
  * drawing: rescaling the axis moves the historical points too, and the position rule then
  * says the tip is in the wrong place instead of the picture quietly contradicting its own
  * label. `topValue` is a hard edge — a suite bigger than the axis cannot be plotted
  * honestly, and `graph-axis-outgrown` asks a human to rescale rather than guessing.
  */
-export const GROWTH_AXIS = Object.freeze({ baselineY: 170, topY: 20, topValue: 5000 })
+export const GROWTH_AXIS = Object.freeze({ baselineY: 170, topY: 20, topValue: 8000 })
 
 /**
  * GRAPH_TIP_GEOMETRY — the drawn heights that are DERIVED from the measured count: the

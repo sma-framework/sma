@@ -121,7 +121,7 @@ function growthSvg(
   const f = opts.files ?? FILES
   const d = opts.date ?? STAMP_DATE
   const c = opts.commit ?? FIXTURE_HEAD
-  const y = opts.tipY ?? (170 - (t * 150) / 5000).toFixed(2)
+  const y = opts.tipY ?? (170 - (t * 150) / 8000).toFixed(2)
   const h = opts.history ?? 1145
   const drop = opts.drop
   const aria =
@@ -139,11 +139,11 @@ function growthSvg(
   return [
     `<figure><svg role="img" aria-label="${aria}">`,
     // ── history: outside every marked span, carrying no class="tip", read by nothing ──
-    `<circle cx="70" cy="154.04"><title>v3.0.0 · 532 tests</title></circle>`,
-    `<circle cx="342" cy="135.65"><title>v5.0.1 · ${h} tests</title></circle>`,
-    `<text class="val" x="342" y="125.65">${h}</text>`,
+    `<circle cx="70" cy="160.03"><title>v3.0.0 · 532 tests</title></circle>`,
+    `<circle cx="342" cy="148.53"><title>v5.0.1 · ${h} tests</title></circle>`,
+    `<text class="val" x="342" y="138.53">${h}</text>`,
     // ── the working-tree point: today's claim, in five places and one position ──
-    drop === 'line' ? '<line x1="342" y1="135.65" x2="410"/>' : `<line class="tip" x1="342" y1="135.65" x2="410" y2="${y}"/>`,
+    drop === 'line' ? '<line x1="342" y1="148.53" x2="410"/>' : `<line class="tip" x1="342" y1="148.53" x2="410" y2="${y}"/>`,
     drop === 'circle'
       ? `<circle cx="410" cy="${y}"><title>${title}</title></circle>`
       : `<circle class="tip" cx="410" cy="${y}"><title>${title}</title></circle>`,
@@ -555,10 +555,10 @@ describe('the numbers audit — the working-tree point of the growth chart', () 
   it('the drawn heights are the ones the map already uses for the points it has', () => {
     // pinned to two points actually in docs/master-graph.html — the formula and the drawing
     // are the same fact, so a change to either has to move the other
-    expect(growthTipY(532)).toBe('154.04')
-    expect(growthTipY(1145)).toBe('135.65')
-    expect(growthTipY(1145, -10)).toBe('125.65')
-    expect(growthTipY(1145, 16)).toBe('151.65')
+    expect(growthTipY(532)).toBe('160.03')
+    expect(growthTipY(1145)).toBe('148.53')
+    expect(growthTipY(1145, -10)).toBe('138.53')
+    expect(growthTipY(1145, 16)).toBe('164.53')
   })
 
   it('a tip test count that disagrees with the receipt is named, per place', () => {
@@ -593,7 +593,7 @@ describe('the numbers audit — the working-tree point of the growth chart', () 
   })
 
   it('a suite taller than the axis is refused a coordinate, in words, instead of being plotted off the top', () => {
-    const { violations } = runFixture({ tests: 6000 })
+    const { violations } = runFixture({ tests: 9000 })
     expect(violations.some((v) => v.rule === 'graph-axis-outgrown')).toBe(true)
     // and no coordinate is invented for it
     expect(violations.some((v) => v.rule === 'graph-tip-position')).toBe(false)
