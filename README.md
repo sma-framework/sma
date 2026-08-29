@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="version 5.6.1">
-  <img src="https://img.shields.io/badge/tests-5256%2F5256-3CC0A0" alt="tests 5256/5256">
+  <img src="https://img.shields.io/badge/tests-5302%2F5302-3CC0A0" alt="tests 5302/5302">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
