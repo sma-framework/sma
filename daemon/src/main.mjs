@@ -321,8 +321,13 @@ export function runProjectVerb({ verb, args = [], projectDir }, { execFileImpl =
  * Collisions are the JOURNALLED ones of today — the same window `status` counts, for the same
  * reason: the journal is append-only and never pruned, so an unbounded count becomes noise
  * within days of a busy checkout.
+ *
+ * EXPORTED FOR ONE CALLER BESIDES THIS ROOT: the live window scene (scripts/sma/ui-stage.mjs),
+ * which raises the same door over a fixture checkout. Handing it this function is the whole
+ * point — a scene that parsed `.sma/` its own way would be the second parser this comment
+ * exists to forbid, and the day the ledger moved, the scene would keep showing the old one.
  */
-async function readCoordinationLedger({ projectDir, now = Date.now() }) {
+export async function readCoordinationLedger({ projectDir, now = Date.now() }) {
   const out = { sessions: [], claims: [], collisions: [] }
   if (typeof projectDir !== 'string' || projectDir.trim() === '') return out
   const smaRoot = join(projectDir, '.sma')

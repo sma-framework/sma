@@ -26,6 +26,8 @@
  * Node built-ins only; the browser lives in the runner and is injected for tests.
  */
 
+import { join } from 'node:path'
+
 /** Viewports every run captures, so a responsive break cannot hide behind one width. */
 export const VIEWPORTS = Object.freeze([
   { name: 'desktop', width: 1440, height: 900 },
@@ -60,6 +62,38 @@ export function resolveDriveViewport(name) {
       ? `unknown width "${asked}" — the path may be walked at one of the widths this run already opens: ${allowed}`
       : `--at needs a width name — one of the widths this run already opens: ${allowed}`,
   }
+}
+
+/**
+ * SMA_UI_RECEIPTS — where this run puts its receipt, its journal and its screenshots.
+ *
+ * WHY THERE IS AN OVERRIDE AT ALL. The default — `.planning/ui-reviews/` under the tree being
+ * run from — is right for a person checking their own checkout, and it is what the phase
+ * machinery reads. It is exactly wrong for a run made in a THROWAWAY copy: the copy is removed
+ * at acceptance and the evidence goes with it, so the one artifact that proved the window
+ * works stops existing at the moment somebody wants to look at it. That happened twice in one
+ * shift before this seam existed.
+ *
+ * IT IS AN ENVIRONMENT VARIABLE AND NOT A FLAG, deliberately. The command that raises a live
+ * scene is the one that knows the run is happening in a copy, and it runs whatever trailing
+ * command an operator wrote; a flag would mean every such command had to remember to carry it,
+ * and the one that forgot would fail silently — by writing somewhere that disappears.
+ */
+export const RECEIPTS_ENV = 'SMA_UI_RECEIPTS'
+
+/**
+ * receiptsRoot({env, cwd}) → the directory this run's `run-<stamp>` folder goes into.
+ *
+ * The override wins when it names anything at all; otherwise the tree's own reviews folder,
+ * unchanged. Nothing here creates a directory — this decides a PATH, and the command makes it.
+ *
+ * @param {{env?:object, cwd?:string}} [opts]
+ * @returns {string}
+ */
+export function receiptsRoot({ env = {}, cwd = '.' } = {}) {
+  const named = env[RECEIPTS_ENV]
+  if (typeof named === 'string' && named.trim() !== '') return named.trim()
+  return join(cwd, '.planning', 'ui-reviews')
 }
 
 /** Severity vocabulary, shared with the retroactive audit so one glossary covers both. */

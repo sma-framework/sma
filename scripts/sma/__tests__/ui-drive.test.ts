@@ -24,12 +24,15 @@
  * Zero fs, zero browser — the impure half lives in the runner and is not imported.
  */
 
+import { join } from 'node:path'
+
 import { describe, it, expect } from 'vitest'
 import {
   BLOCKER,
   DESTRUCTIVE_RE,
   READY_CEILING_MS,
   READY_SETTLE_MS,
+  RECEIPTS_ENV,
   STREAM_RESOURCE_TYPES,
   SWEEP_CAP,
   WARNING,
@@ -39,6 +42,7 @@ import {
   missingDriverMessage,
   parseSteps,
   readiness,
+  receiptsRoot,
   redactUrl,
   renderCoverage,
   renderReceipt,
@@ -474,6 +478,22 @@ describe('resolveDriveViewport — the path may be walked only where the run alr
       const r = resolveDriveViewport(bad as string)
       expect(r.ok, `${String(bad)} must be refused`).toBe(false)
       expect(r.reason).toContain('mobile (375px)')
+    }
+  })
+})
+
+describe('receiptsRoot — the evidence has to outlive the copy the run was made in', () => {
+  it('writes into the tree being run from when nothing says otherwise', () => {
+    expect(receiptsRoot({ env: {}, cwd: '/repo' })).toBe(join('/repo', '.planning', 'ui-reviews'))
+  })
+
+  it('obeys SMA_UI_RECEIPTS, which is how a run inside a throwaway copy keeps its receipt', () => {
+    expect(receiptsRoot({ env: { [RECEIPTS_ENV]: '/var/receipts' }, cwd: '/repo' })).toBe('/var/receipts')
+  })
+
+  it('treats an empty or blank override as unsaid — never as «write to nowhere»', () => {
+    for (const blank of ['', '   ']) {
+      expect(receiptsRoot({ env: { [RECEIPTS_ENV]: blank }, cwd: '/repo' })).toBe(join('/repo', '.planning', 'ui-reviews'))
     }
   })
 })
