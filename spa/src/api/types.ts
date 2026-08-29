@@ -377,11 +377,62 @@ export interface ReceiptProof {
   newRed?: number
 }
 
+/**
+ * Ходы попытки по роду: правки, запуски оболочки, чтение, прочее.
+ *
+ * Все четыре всегда присутствуют, и нули означают «не было», а не «неизвестно»: неизвестное
+ * приезжает отсутствующим объектом целиком.
+ */
+export interface TurnKinds {
+  edits: number
+  runs: number
+  reads: number
+  other: number
+}
+
+/**
+ * СКОЛЬКО ХОДОВ ЕЙ ДАЛИ, СКОЛЬКО ОНА ВЗЯЛА И НА ЧТО.
+ *
+ * `null` в любом поле — «не мерили», и рисовать вместо него ноль нельзя: ноль читается как
+ * измерение. Весь объект отсутствует, когда попытка не записала о ходах ничего.
+ */
+export interface TurnSpend {
+  cap: number | null
+  used: number | null
+  kinds: TurnKinds | null
+}
+
+/**
+ * Одно из трёх действий, предложенных человеку под красной карточкой. `id` — имя, по которому
+ * окно знает, чем это действие делается; `label` и `detail` — слова двери, экран их не сочиняет.
+ */
+export interface FailureAction {
+  id: string
+  label: string
+  detail: string
+}
+
+/**
+ * ПРЕДЛОЖЕНИЕ, А НЕ ПРИГОВОР. Приезжает только у тех концов, за которыми повтора нет по
+ * устройству: такая работа стоит, пока человек не решит, и карточка обязана назвать ему
+ * решение вместе с числами, по которым его принимают.
+ */
+export interface FailureOffer {
+  turnsBurned: number | null
+  cap: number | null
+  kinds: TurnKinds | null
+  actions: FailureAction[]
+}
+
 export interface FailureSummary {
   reason: string | null
   /** The reason in words, from the daemon's own closed vocabulary. */
   reasonLabel: string | null
   attemptsCount: number
+  /** На что ушли ходы последней попытки. Отсутствует, когда строка попытки об этом молчит. */
+  spent?: TurnSpend | null
+  /** Три названных действия и числа под ними — только там, где следующей попытки не будет. */
+  offer?: FailureOffer
 }
 
 export interface DoneRow {

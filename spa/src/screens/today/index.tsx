@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
-import { useStateQuery } from '../../api/queries'
+import { useCancelTask, useReturnTask, useStateQuery } from '../../api/queries'
+import { openScreen } from '../../shell/navigation'
 import type { DoneRow, QueueRow, WorkerRow } from '../../api/types'
 import { DayFeed } from './DayFeed'
+import type { OfferAct } from './offer'
 import { KpiStrip } from './KpiStrip'
 import { TaskPanel } from '../../shell/TaskPanel'
 import { accentFor, initialOf, plural } from '../../shell/format'
@@ -57,6 +59,39 @@ function OfflineLine() {
 export function Screen() {
   const state = useStateQuery()
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Двери трёх действий красной карточки. Ни одной НОВОЙ: работа, которой не хватило ходов,
+  // ставится обратно той же дверью возврата, состав частей набирается той же формой батча,
+  // отмена — той же терминальной дверью. Список маршрутов демона не изменился ни на строку.
+  const putBack = useReturnTask()
+  const cancel = useCancelTask(null)
+  const [actProblem, setActProblem] = useState<string | null>(null)
+
+  /**
+   * ЧТО ДЕЛАЕТ НАЖАТИЕ НА КРАСНОЙ КАРТОЧКЕ. Три дела, и все три существовали до неё — не было
+   * только пути к ним от той строки, где человек принимает решение.
+   *
+   * `requeue` — та же работа под ТЕМ ЖЕ номером едет в очередь снова. Потолок поднимает не это
+   * нажатие: сгоревший записан на строке попытки, и следующий запуск обязан выдать строго
+   * больший. Номер несущий — поставленная заново работа начинала бы со дна. Слов человека
+   * здесь нет: он не поправляет работу, он даёт ей место, и выдуманный комментарий уехал бы
+   * работнику как чужая поправка.
+   *
+   * `compose` — окно уходит на «Задачи» с развёрнутой формой состава. Ни одной части нажатие
+   * не заводит: предложение и постановка — два действия, и второе принадлежит человеку.
+   *
+   * `cancel` — терминальная остановка. Вопрос-подтверждение задан на самой карточке, здесь
+   * исполняется уже принятое решение.
+   */
+  const act = (taskId: string, what: OfferAct) => {
+    setActProblem(null)
+    if (what === 'compose') return openScreen({ screen: 'tasks', opens: 'new-batch' })
+    const failed = () => setActProblem('Не вышло — работа осталась на месте.')
+    if (what === 'requeue') {
+      putBack.mutate({ taskId, note: '' }, { onError: failed })
+      return
+    }
+    cancel.mutate({ taskId }, { onError: failed })
+  }
 
   const data = state.data
   const activeProject = data?.activeProject ?? null
@@ -106,6 +141,7 @@ export function Screen() {
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto px-7 py-6">
           <KpiStrip kpis={data?.kpis} accounts={data?.spend.accounts ?? []} />
+          {actProblem ? <p className="m-0 px-0.5 text-[12px] text-err-tx">{actProblem}</p> : null}
           <DayFeed
             decisions={decisions}
             failed={failed}
@@ -113,6 +149,7 @@ export function Screen() {
             waiting={waiting}
             selectedId={selectedId}
             onOpen={setSelectedId}
+            onAct={act}
           />
         </div>
 

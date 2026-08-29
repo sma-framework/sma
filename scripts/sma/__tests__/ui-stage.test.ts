@@ -361,10 +361,23 @@ describe('the wire: one command raises the window, the run engine photographs it
       expect(existsSync(join(cwd, '.planning'))).toBe(false)
       expect(existsSync(receipt)).toBe(true)
 
-      // …and there is a picture beside it.
-      const shots = filesUnder(dirname(receipt)).filter((f) => f.endsWith('.png'))
-      expect(shots.length).toBeGreaterThan(0)
-      expect(statSync(shots[0]).size).toBeGreaterThan(0)
+      // …И РЯДОМ С НЕЙ — РОВНО ТО, ЧТО ЭТОТ ДРАЙВЕР УМЕЕТ ПРОИЗВЕСТИ, НАЗВАННОЕ СВОИМ ИМЕНЕМ.
+      //
+      // Подставной драйвер не рисует ничего и честно кладёт подпись PNG без изображения. Раньше
+      // здесь стояло «и рядом лежит картинка» с проверкой «размер больше нуля» — восемь байт её
+      // проходят, и суть подделки эта пара слов прятала. Хуже того, путь к такому файлу уезжал в
+      // раздел «Screenshots» рядом с вердиктом: квитанция обещала доказательство, которого нет,
+      // и один такой прогон стоил круга работы человеку, искавшему по ней снимок экрана.
+      //
+      // Теперь утверждается правда целиком: файл на диске остался (его написал драйвер), но
+      // снимком он не объявлен, а квитанция называет его пустышкой словами и размером.
+      const files = filesUnder(dirname(receipt)).filter((f) => f.endsWith('.png'))
+      expect(files.length).toBeGreaterThan(0)
+      expect(statSync(files[0]).size).toBe(8) // подпись PNG и ничего больше
+      const runMd = readFileSync(receipt, 'utf8')
+      expect(runMd).toContain('## Screenshots\n\n_none_')
+      expect(runMd).toContain('shot-not-an-image')
+      expect(JSON.parse(readFileSync(join(dirname(receipt), 'run.json'), 'utf8')).shots).toEqual([])
 
       // UPKEEP AT THE NORMAL END: the directory the scene made is gone with it — and the
       // receipts root, deliberately, is NOT. Evidence whose lifetime is the scene's lifetime

@@ -1845,8 +1845,9 @@ async function handleApprove({ req, res, config, deps }) {
 
 /**
  * POST /api/return — return-with-comment. Body {taskId, note, title?, lane?, machine?}
- * (note <= 2000). CAS awaiting_approval→returned, then re-enqueue with source:'return' +
- * the note + attempt+1. The note is DATA. A lost race → 409.
+ * (note <= 2000). CAS awaiting_approval→returned — or failed→returned for a row that is
+ * PARKED waiting for a person (see returnCas) — then re-enqueue with source:'return' + the
+ * note + attempt+1, under the SAME task id. The note is DATA. A lost race → 409.
  */
 async function handleReturn({ req, res, config, deps }) {
   const body = await readJsonBody(req)
@@ -1863,13 +1864,7 @@ async function handleReturn({ req, res, config, deps }) {
   }
 
   const table = deps.taskTable || 'sma_task_attempts'
-  const cas = await casTransition(deps.casExec, {
-    table,
-    id: taskId,
-    from: 'awaiting_approval',
-    to: 'returned',
-    extra: { returned_note: note },
-  })
+  const cas = await returnCas(deps, { table, taskId, note })
   if (!cas.won) return send409(res, 'return race lost (already handled)')
 
   // Re-queue the returned task for another attempt with the founder's comment.
@@ -1917,6 +1912,44 @@ async function handleReturn({ req, res, config, deps }) {
   emitSafe(deps, { event: 'task.returned', taskId, status: 'queued' })
   emitSafe(deps, { event: 'task.queued', taskId, status: 'queued' })
   sendJson(res, 200, { ok: true, taskId, attempt: prevAttempt + 1 })
+}
+
+/**
+ * ═══════ ДВА СОСТОЯНИЯ, ИЗ КОТОРЫХ РАБОТА ВОЗВРАЩАЕТСЯ В ОЧЕРЕДЬ ═══════════════════════════
+ *
+ * `awaiting_approval` — работа СДЕЛАНА и человек говорит «переделай». Это исходный случай
+ * двери, и он остаётся первым: гонку за уже принятую работу проигрывать надо здесь.
+ *
+ * `failed` — работа ВСТАЛА и ждёт человека. Такое бывает ровно у одного конца во всей
+ * таксономии — упор в потолок ходов (см. AWAITS_A_PERSON): повтора за ним нет по устройству,
+ * поэтому строка стоит, пока человек не решит. Его решение «поднять потолок» — это ровно
+ * «поставь ту же работу снова»: потолок поднимает не эта дверь, а реестр попыток, где записан
+ * сгоревший, и `taskTurnCap` у следующего запуска обязан выдать строго больший. Значит двери
+ * нечего добавлять к тому, что она уже умеет, — ей нужно перестать отказывать строке, которая
+ * стоит. До этого нажатие «Вернуть» на такой карточке отвечало 409 и не делало НИЧЕГО: кнопка
+ * была, провода за ней не было.
+ *
+ * НОМЕР ЗАДАЧИ ТОТ ЖЕ, И ЭТО ВЕСЬ СМЫСЛ. Подъём потолка привязан к номеру: работа, поставленная
+ * заново под новым номером, начинает со дна и упрётся в ту же стену. Поэтому «поднять потолок»
+ * не может быть дверью постановки — только этой.
+ *
+ * ПОРЯДОК, А НЕ СПИСОК. CAS сравнивает ОДНО ожидаемое состояние, поэтому попыток две, и вторая
+ * идёт только после проигрыша первой: строка не может быть в двух состояниях сразу, а проигрыш
+ * обеих — это честный 409 «уже разобрались без вас».
+ *
+ * @returns {Promise<{won:boolean, rows:any[]}>}
+ */
+async function returnCas(deps, { table, taskId, note }) {
+  const extra = { returned_note: note }
+  const fromApproval = await casTransition(deps.casExec, {
+    table,
+    id: taskId,
+    from: 'awaiting_approval',
+    to: 'returned',
+    extra,
+  })
+  if (fromApproval.won) return fromApproval
+  return casTransition(deps.casExec, { table, id: taskId, from: 'failed', to: 'returned', extra })
 }
 
 /**

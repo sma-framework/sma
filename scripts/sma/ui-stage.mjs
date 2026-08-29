@@ -104,6 +104,7 @@ import { createEventHub } from '../../daemon/src/front/events.mjs'
 import { readHarness } from '../../daemon/src/front/harness.mjs'
 import { createFrontServer } from '../../daemon/src/front/server.mjs'
 import { deriveBacklog, deriveCoordination, derivePhaseIndex, deriveState } from '../../daemon/src/front/state.mjs'
+import { recordAttempt } from '../../daemon/src/queue/attempt-ledger.mjs'
 import { readCoordinationLedger } from '../../daemon/src/main.mjs'
 import { scopeClaimSlug } from './lib/collision.mjs'
 import { claimSlot } from './lib/claims.mjs'
@@ -117,6 +118,7 @@ import {
   STAGE_CHAT_TURNS,
   STAGE_DIR_PREFIX,
   STAGE_LEDGER,
+  STAGE_PARKED_ATTEMPT,
   STAGE_RECEIPTS_DIR,
   URL_ENV,
   announcement,
@@ -128,6 +130,7 @@ import {
   stageDiskConfig,
   stageProjectFiles,
   stageProjects,
+  stageRows,
   stageUrl,
 } from './lib/ui-stage.mjs'
 
@@ -287,6 +290,10 @@ async function main() {
   const projects = stageProjects(home)
   for (const project of projects) writeTree(project, { pid: process.pid })
   for (const turn of STAGE_CHAT_TURNS) appendTurn({ dir: home, turn })
+  // СТРОКА РЕЕСТРА ПИШЕТСЯ ЕГО ЖЕ ПИСАТЕЛЕМ. Сколько ходов попытке дали и на что она их
+  // потратила, окно читает с этой строки — и читает настоящим читателем реестра, поэтому
+  // фикстура кладётся настоящим `recordAttempt`, а не файлом, сложенным здесь руками.
+  recordAttempt(home, { ...STAGE_PARKED_ATTEMPT, turnKinds: { ...STAGE_PARKED_ATTEMPT.turnKinds } })
 
   const config = stageConfig({ port: 0, token, projects, activeProject: STAGE_ACTIVE_PROJECT })
   // ФАЙЛ НАСТРОЕК СЦЕНЫ — во временном каталоге сцены и НАМЕРЕННО не такой, как копия выше.
@@ -316,9 +323,12 @@ async function main() {
       repoDir: projects[0].path,
       // A home of its own, so nothing resolved «off the machine» reaches the operator's.
       homedir: () => home,
-      // An EMPTY queue, in memory. The scene is a window, not a fleet: it must not be able
-      // to see the real daemon's work, still less to move it.
-      adapter: { list: async () => [] },
+      // AN EMPTY QUEUE, in memory. The scene is a window, not a fleet: it must not be able
+      // to see the real daemon's work, still less to move it. What it does carry is ONE CLOSED
+      // row — the work that ran out of turns — because the card that offers a person his three
+      // ways out cannot be looked at on a scene where nothing ever failed. Closed is the whole
+      // difference: nothing here waits for a worker, so the queue is as empty as it was.
+      adapter: { list: async () => stageRows({ now: Date.now() }) },
       deriveState,
       // ЧТО СТОИТ В ФАЙЛЕ НАСТРОЕК СЦЕНЫ — тем же чтением, каким его читает настоящий демон,
       // и по пути из окружения сцены, а не из дома оператора.
