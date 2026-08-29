@@ -1630,6 +1630,11 @@ describe('the ledger keeps its stated disciplines', () => {
         // touches no file — the discipline this list guards is «the log is never rewritten»,
         // and a pure transform of rows already read cannot break it
         'foldAttemptRows',
+        // the reader-side tally: how the last try of every task in this dir ended. A READER —
+        // it lists the dir and folds rows it has already read, and writes nothing. It is here
+        // because the queue library counts no finished and no broken work, so the board's two
+        // most-read numbers have to come from the record that does.
+        'countTerminalOutcomes',
       ].sort(),
     )
     for (const forbidden of ['unlinkSync', 'rmSync', 'writeFileSync', 'truncateSync']) {

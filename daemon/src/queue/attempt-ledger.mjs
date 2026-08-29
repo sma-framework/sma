@@ -85,7 +85,7 @@
  * would fabricate provenance, which is the one thing this stamp exists to prevent.
  */
 
-import { appendFileSync, readFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, readFileSync, readdirSync, mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
@@ -508,6 +508,61 @@ export function foldAttemptRows(rows) {
     }
   }
   return [...merged.values()]
+}
+
+/**
+ * countTerminalOutcomes(ledgerDir) → `{completed, failed}` over every task this ledger knows,
+ * or `null` when the ledger cannot be read at all.
+ *
+ * WHY THE QUEUE CANNOT ANSWER THIS. pg-boss counts three things about a queue —
+ * `queuedCount`, `activeCount`, `totalCount` — and it has never counted a finished job or a
+ * broken one: there are no such keys in its answer, and asking for them gets `undefined`. The
+ * backend asked anyway (`s.completed ?? 0`), so «сколько сделано» was a zero minted out of a
+ * name that does not exist — and a wrong zero does not look wrong: it reads as «сегодня ничего
+ * не сделали», which is a sentence about the day rather than about the question we asked.
+ * This journal is the source that DOES know: every ending the daemon produces appends a
+ * terminal row to it, and it is not archived on a retention window the way a job row is.
+ *
+ * ONE TASK, ONE VOTE, CAST BY ITS LAST TRY. The rows of a task are folded per attempt
+ * (`foldAttemptRows` — two writers append per try) and the task is classified by the LAST
+ * record that ended. A task whose last record has no outcome is under way and counts in
+ * neither column. A task waiting for a retry reads as «сорвалось» until a worker takes it —
+ * because that is exactly what the journal knows: its last try broke. That column answers
+ * «чем кончилась последняя попытка», never «где эта задача сейчас», and the two are not
+ * summed anywhere: `total` comes from the queue's own `totalCount`.
+ *
+ * NULL IS AN ANSWER, ZERO IS A CLAIM. An unreadable ledger dir returns null so that a caller
+ * says «нет данных» instead of «ничего не сделано»: on a screen the two read identically and
+ * mean opposite things. An EMPTY but readable dir is a genuine zero — the daemon makes this
+ * directory at boot, so «пусто» means nothing has ended yet.
+ *
+ * @param {string} ledgerDir
+ * @returns {{completed:number, failed:number}|null}
+ */
+export function countTerminalOutcomes(ledgerDir) {
+  if (!ledgerDir) return null
+  let entries
+  try {
+    entries = readdirSync(ledgerDir)
+  } catch {
+    return null // no source — the caller must say «нет данных», not zero
+  }
+  const out = { completed: 0, failed: 0 }
+  for (const entry of entries) {
+    const name = String(entry)
+    // `<taskId>.jsonl` ONLY. The two siblings of the same task — `<taskId>.journal.jsonl` and
+    // `<attemptId>.log.ndjson` — are different records of it, and counting one of them would
+    // count the task a second time under a name that only looks like a task id.
+    if (!name.endsWith('.jsonl') || name.endsWith('.journal.jsonl')) continue
+    const records = foldAttemptRows(readAttempts(ledgerDir, name.slice(0, -'.jsonl'.length)))
+    let verdict = null
+    for (const rec of records) {
+      if (rec && TERMINAL_OUTCOMES.includes(rec.outcome)) verdict = rec.outcome
+      else if (rec) verdict = null // a later try is running: the earlier ending is not the last word
+    }
+    if (verdict) out[verdict] += 1
+  }
+  return out
 }
 
 // ── the memory snapshot digest (fleet invariant six) ───────────────────────────

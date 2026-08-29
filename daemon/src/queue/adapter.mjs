@@ -158,7 +158,16 @@
  *                                   there is no such task or its work is already over (what is
  *                                   closed stays closed, exactly as with setWords).
  *   list(filter)                  → rows expose enqueuedAt/claimedAt/leaseRenewedAt/completedAt
- *   stats()                       → per-status counts, one key per TASK_STATUSES entry
+ *   stats()                       → per-status counts, one key per TASK_STATUSES entry, plus
+ *                                   `total`. A count is a NUMBER when the backend has a source
+ *                                   for it and `null` when it does not — never a zero standing
+ *                                   in for an unread source. The in-memory reference holds
+ *                                   every record itself, so its counts are always numbers; a
+ *                                   durable backend reads several sources (the queue library
+ *                                   for what it counts, the attempt journal for what it does
+ *                                   not) and any of them may be silent. A reader shows «нет
+ *                                   данных» for null: on a screen a zero is a measurement, and
+ *                                   «сделано: 0» is indistinguishable from a right answer.
  *
  * FINISHED IS NOT ACCEPTED. `complete()` carries a receipt, and a receipt is the worker's
  * half of done — the other half is a person saying so. So a completed task reads back as

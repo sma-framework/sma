@@ -36,9 +36,10 @@ import {
   BATCH_PARENT_QUEUE,
 } from '../src/queue/pgboss-backend.mjs'
 import { queueAdapterContractSuite, NoReceiptError } from '../src/queue/adapter.mjs'
-import { recordAttempt, readAttempts } from '../src/queue/attempt-ledger.mjs'
+import { countTerminalOutcomes, recordAttempt, readAttempts } from '../src/queue/attempt-ledger.mjs'
 import { STATE_MACHINE_VERSION, idempotencyKey } from '../src/queue/state-machine.mjs'
 import { defaultEnvelope, envelopeHash } from '../src/queue/capability-envelope.mjs'
+import { everyKeyTheAnswerMayCarry } from './fixtures/pgboss-real-stats-keys'
 
 // ── temp ledger dirs (cleaned once at the end) ──
 const tmpDirs: string[] = []
@@ -244,19 +245,34 @@ function makeFakeBackend({
       if (j && (j.state === 'created' || j.state === 'retry' || j.state === 'active')) j.state = 'cancelled'
       return true
     },
+    // THE LIBRARY'S OWN KEYS, AND NOT ONE MORE. This fake used to answer
+    // `{queued, active, completed, failed}` — four names pg-boss has never returned — and the
+    // backend asked for exactly those four, so the suite agreed with itself while the live
+    // queue answered `undefined` to every one of them and the board printed the zeros that
+    // fell out. A fake may be SMALLER than the library it stands for; it may never be BIGGER,
+    // and inventing a key is the biggest it can get. The four counts below are the aliases of
+    // pg-boss's own statement (`plans.getQueueStats`), computed the way that statement
+    // computes them; `singletonsActive` and the queue-row fields it merges in are omitted,
+    // which is allowed because it is less.
+    //
+    // NOTE THAT THERE IS NO `completed` AND NO `failed` HERE, and that is the fact this whole
+    // task turned on: the library does not count finished or broken work, so neither may the
+    // thing that stands in for it.
     async getQueueStats(name: string) {
       maintain()
-      const s: any = { queued: 0, active: 0, completed: 0, failed: 0 }
+      const s: any = { name, deferredCount: 0, queuedCount: 0, activeCount: 0, totalCount: 0 }
       for (const j of jobs.values()) {
         if (j.name !== name) continue
+        s.totalCount += 1
+        // `deferredCount` filters on the start date alone in the library's plan — no state
+        // clause — so a deferred row is ALSO counted in whichever state column it sits in.
+        if ((j.start_after ?? 0) > now()) s.deferredCount += 1
         // BOTH WAITING STATES COUNT AS QUEUED, because the library's own stats plan counts
         // `state < 'active'` — created AND retry. A fake counting only the first reports a row
         // handed back after a lost lease as belonging to no column at all, which is exactly how
         // «в очереди» could go on being wrong while every case stayed green.
-        if (j.state === 'created' || j.state === 'retry') s.queued += 1
-        else if (j.state === 'active') s.active += 1
-        else if (j.state === 'completed') s.completed += 1
-        else if (j.state === 'failed') s.failed += 1
+        if (j.state === 'created' || j.state === 'retry') s.queuedCount += 1
+        else if (j.state === 'active') s.activeCount += 1
       }
       return s
     },
@@ -1165,10 +1181,159 @@ describe('the approval row reaches the read path', () => {
     const rows = await restricted.list({}) // does not throw
     expect(rows).toHaveLength(1)
     expect(rows[0].status).toBe('completed') // the job's own state, the pre-join reading
-    expect((await restricted.stats()).awaiting_approval).toBe(0)
+    const s = await restricted.stats()
+    // FAIL-OPEN MEANS «DOES NOT THROW AND DOES NOT COST THE WORK ITS COUNTS» — never «invents
+    // a number». A table that refused to answer is «нет данных», and a screen says so; a zero
+    // here would read as «никто не ждёт решения» over a growing pile, which is the exact
+    // reading this join was added to end.
+    expect(s.awaiting_approval).toBeNull()
+    expect(s.queued).toBe(0) // and the WORK still answers: these come from the library
+    expect(s.total).toBe(1)
     expect(logged.some((m) => m.includes('approval join unavailable'))).toBe(true)
     // one broken permission polled every few seconds is still ONE log line
     expect(logged.filter((m) => m.includes('approval join unavailable'))).toHaveLength(1)
+  })
+})
+
+// ═══ THE COUNTERS NAME THEIR SOURCE ═══════════════════════════════════════════════════════
+//
+// `stats()` asked pg-boss for `queued/created/active/claimed/completed/failed` — our words,
+// spoken at a library that answers `queuedCount/activeCount/totalCount/deferredCount` and
+// counts no finished or broken work at all. Six reads of `undefined ?? 0`, and the board
+// printed the zeros: «сделано за смену: 0» is a plausible day, so nobody went looking. These
+// cases pin the three halves of the cure — the names are the library's, the two counts it does
+// not keep come from the journal that does, and a source that did not answer says «нет данных»
+// instead of zero.
+
+describe('stats() takes every number from a source that exists', () => {
+  /** The keys pg-boss can actually put on a getQueueStats answer — read off the library. */
+  const realKeys = everyKeyTheAnswerMayCarry()
+
+  it('the fake in this suite is not BIGGER than the library it stands for', async () => {
+    const c = mkClock()
+    const { adapter, boss } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    const answer = await boss.getQueueStats('sma.task.prod')
+
+    const invented = Object.keys(answer).filter((k) => !realKeys.includes(k))
+    expect(invented, `the fake answers ${invented.join(', ')}, which pg-boss never does`).toEqual([])
+    // Named on purpose: these two are what the fake used to invent, and inventing them is what
+    // let the suite agree with a backend asking the live queue a question it cannot hear.
+    expect(Object.keys(answer)).not.toContain('completed')
+    expect(Object.keys(answer)).not.toContain('failed')
+  })
+
+  it('stats() reads ONLY names the real pg-boss answers to', async () => {
+    const c = mkClock()
+    const { boss, execSql } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
+    const read = new Set<string>()
+    // Every property the backend touches on the answer is recorded. A recorder rather than a
+    // source-code regex: what matters is the name that was ASKED FOR at runtime, and a regex
+    // over the source is a second reading that can agree with the wrong thing.
+    const watched = {
+      ...boss,
+      async getQueueStats(name: string) {
+        const answer = await boss.getQueueStats(name)
+        return new Proxy(answer, {
+          get(t: any, p: string | symbol) {
+            // `then` is read by `await` itself, not by the backend.
+            if (typeof p === 'string' && p !== 'then') read.add(p)
+            return t[p as any]
+          },
+        })
+      },
+    }
+    const adapter = createPgBossQueue({
+      boss: watched,
+      execSql,
+      clock: c.clock,
+      expireMs: 5000,
+      ledgerDir: mkLedgerDir(),
+    })
+    await adapter.enqueue(backlog())
+    await adapter.stats()
+
+    // Vacancy check — a stats() that read nothing would pass an emptiness test.
+    expect(read.size).toBeGreaterThan(2)
+    const unknown = [...read].filter((k) => !realKeys.includes(k))
+    expect(unknown, `stats() asked pg-boss for ${unknown.join(', ')} — no such key in its answer`).toEqual([])
+  })
+
+  it('завершённое и провальное берутся из журнала попыток и совпадают с ним', async () => {
+    const c = mkClock()
+    const ledgerDir = mkLedgerDir()
+    const { adapter, attempts } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir })
+
+    await adapter.enqueue(backlog({ id: 'BL-DONE' }))
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-DONE', { receiptRef: 'reverify:green' })
+
+    await adapter.enqueue(backlog({ id: 'BL-BROKE' }))
+    await adapter.claimNext('w2', {})
+    await adapter.fail('BL-BROKE', 'missing_access')
+
+    // What the journal itself says, read through its own counter.
+    expect(countTerminalOutcomes(ledgerDir)).toEqual({ completed: 1, failed: 1 })
+    // …and what a reader sees, once the finished one is moved into «ждут решения» rather than
+    // counted twice (the population rule stats() has always kept with list()).
+    const waiting = await adapter.stats()
+    expect(waiting.awaiting_approval).toBe(1)
+    expect(waiting.completed).toBe(0)
+    expect(waiting.failed).toBe(1)
+
+    // The person says yes, and the number the journal has been holding all along appears.
+    attempts.set('BL-DONE', { status: 'approved', merge_receipt: 'merge:abc' })
+    const decided = await adapter.stats()
+    expect(decided.awaiting_approval).toBe(0)
+    expect(decided.completed).toBe(1)
+    expect(decided.completed).toBe(countTerminalOutcomes(ledgerDir).completed)
+    expect(decided.failed).toBe(countTerminalOutcomes(ledgerDir).failed)
+  })
+
+  it('без журнала это «нет данных», а не ноль — и работа при этом всё равно считается', async () => {
+    const c = mkClock()
+    const { boss, execSql } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
+    // No ledgerDir: there is NOTHING that knows how work ended. Zero here would read as
+    // «сегодня ничего не сделали», which is the sentence this whole task is about.
+    const noLedger = createPgBossQueue({ boss, execSql, clock: c.clock, expireMs: 5000 })
+    await noLedger.enqueue(backlog())
+    await noLedger.claimNext('w1', {})
+
+    const s = await noLedger.stats()
+    expect(s.completed).toBeNull()
+    expect(s.failed).toBeNull()
+    expect(s.completed).not.toBe(0)
+    expect(s.claimed).toBe(1) // the library's own counts are unaffected
+    expect(s.total).toBe(1)
+  })
+
+  it('a lane that answers without the key makes the WHOLE column «нет данных», never a partial sum', async () => {
+    const c = mkClock()
+    const { boss, execSql } = makeFakeBackend({ clock: c.clock, expireMs: 5000 })
+    // One lane's answer loses the count — the shape a renamed column would arrive in. A sum
+    // over the other three lanes presented as the total would be the same class of lie, only
+    // quieter: a number that is wrong by an unknown amount.
+    const partial = {
+      ...boss,
+      async getQueueStats(name: string) {
+        const answer: any = await boss.getQueueStats(name)
+        if (name === 'sma.task.research') delete answer.queuedCount
+        return answer
+      },
+    }
+    const adapter = createPgBossQueue({
+      boss: partial,
+      execSql,
+      clock: c.clock,
+      expireMs: 5000,
+      ledgerDir: mkLedgerDir(),
+    })
+    await adapter.enqueue(backlog())
+
+    const s = await adapter.stats()
+    expect(s.queued).toBeNull()
+    expect(s.claimed).toBe(0) // the columns that DID answer still answer
+    expect(s.total).toBe(1)
   })
 })
 
