@@ -61,11 +61,12 @@
 
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { readConfigOnDisk } from '../../daemon/src/config-restart.mjs'
 import { createEventHub } from '../../daemon/src/front/events.mjs'
 import { createFrontServer } from '../../daemon/src/front/server.mjs'
 import { derivePhaseIndex, deriveState } from '../../daemon/src/front/state.mjs'
@@ -80,6 +81,7 @@ import {
   parseStageArgs,
   stageCommandArgs,
   stageConfig,
+  stageDiskConfig,
   stageUrl,
 } from './lib/ui-stage.mjs'
 
@@ -162,12 +164,17 @@ async function main() {
   }
 
   const config = stageConfig({ port: 0, token })
+  // ФАЙЛ НАСТРОЕК СЦЕНЫ — во временном каталоге сцены и НАМЕРЕННО не такой, как копия выше.
+  // Настройки второго класса применяются только с нового запуска, и увидеть, как окно об этом
+  // говорит, можно ровно там, где два значения разные. Токена в файле нет — см. stageDiskConfig.
+  const configPath = join(home, 'config.json')
+  writeFileSync(configPath, `${JSON.stringify(stageDiskConfig(), null, 2)}\n`, 'utf8')
   front = createFrontServer({
     config,
     deps: {
       // The scene's whole environment points INSIDE its own directory: a door that decides
       // to write something writes it here, never into the operator's daemon home.
-      env: { ...process.env, SMA_DAEMON_CONFIG: join(home, 'config.json'), SMA_DAEMON_SKILLS: join(home, 'skills') },
+      env: { ...process.env, SMA_DAEMON_CONFIG: configPath, SMA_DAEMON_SKILLS: join(home, 'skills') },
       dataDir: home,
       ledgerDir: home,
       launchDir: home,
@@ -175,6 +182,9 @@ async function main() {
       // to see the real daemon's work, still less to move it.
       adapter: { list: async () => [] },
       deriveState,
+      // ЧТО СТОИТ В ФАЙЛЕ НАСТРОЕК СЦЕНЫ — тем же чтением, каким его читает настоящий демон,
+      // и по пути из окружения сцены, а не из дома оператора.
+      configOnDisk: () => readConfigOnDisk({ env: { SMA_DAEMON_CONFIG: configPath } }),
       // The shell asks for the phase list on every screen; without this the door answers 501
       // and the run engine reports it as a blocking finding — rightly, so it is wired.
       derivePhaseIndex,

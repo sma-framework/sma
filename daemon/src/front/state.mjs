@@ -106,6 +106,10 @@ import { readWaveHolds } from '../queue/wave-holds.mjs'
 // месте: у дома идущих попыток. Своё чтение настройки здесь означало бы подпись под экраном,
 // которая однажды разойдётся с поведением машины.
 import { concurrencyCap } from '../queue/in-flight.mjs'
+// НАСТРОЙКИ, ПРИМЕНЯЮЩИЕСЯ ТОЛЬКО С НОВОГО ЗАПУСКА, и их расхождение с файлом. Список
+// таких настроек ОДИН и живёт там; здесь он только читается — второй список рядом с
+// экраном означал бы, что окно однажды начнёт помечать не те настройки.
+import { deriveRestartScoped } from '../config-restart.mjs'
 import { readAttempts, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { attemptIdFor } from './journal.mjs'
 import { readTaskChanges, taskBranch, TASK_BRANCH_PREFIX } from './task-changes.mjs'
@@ -759,11 +763,18 @@ function deriveMachines(config) {
  * its own right). The read model carries the account NAME and nothing else, so a
  * payload that travels the LAN can never carry either.
  *
+ * `configOnDisk` — ФАЙЛ НАСТРОЕК, КАК ОН ЛЕЖИТ НА ДИСКЕ, и это единственная причина, по
+ * которой этот derive перестал быть чистым над одной копией настроек. Настройки второго
+ * класса (config-restart.mjs) применяются только с нового запуска, поэтому число в файле и
+ * число, по которому демон работает, — два РАЗНЫХ факта, и молчание о втором уже стоило
+ * человеку двух неверных выводов подряд. Не передали файл — расхождение не утверждается
+ * вовсе: «сравнивать не с чем» честнее, чем «всё совпадает».
+ *
  * @param {object} config
- * @param {{switchMode?:'subscription'|'api'}} [opts]
- * @returns {{lanes:object[], workers:object[], budgetStops?:object, subApiSwitch:object}}
+ * @param {{switchMode?:'subscription'|'api', configOnDisk?:object|null}} [opts]
+ * @returns {{lanes:object[], workers:object[], budgetStops?:object, subApiSwitch:object, restartScoped:object[]}}
  */
-export function deriveRules(config = {}, { switchMode } = {}) {
+export function deriveRules(config = {}, { switchMode, configOnDisk = null } = {}) {
   const workersCfg = Array.isArray(config.workers) ? config.workers : []
   const lanes = []
   const byLane = new Map()
@@ -801,6 +812,11 @@ export function deriveRules(config = {}, { switchMode } = {}) {
     // never stored a second time: the answer on the screen and the answer in the tick are
     // one comparison, so they cannot come to disagree.
     pipeline: { enabled: pipelineEnabled(config) },
+    // НАСТРОЙКИ, КОТОРЫЕ ПРИМЕНЯТСЯ ТОЛЬКО ПРИ ПЕРЕЗАПУСКЕ — каждая помечена такой ПОИМЁННО,
+    // и рядом с ней стоит, что говорит о ней файл. Ключ присутствует всегда: список пустым
+    // не бывает, а «нет ключа» экран читал бы как «таких настроек не существует» — то самое
+    // молчание, из-за которого «записано и показано» дважды прочли как «действует».
+    restartScoped: deriveRestartScoped(config, configOnDisk),
     ...(budget
       ? {
           budgetStops: {
@@ -2609,6 +2625,7 @@ function deriveWaves(rows, holds, { machineId } = {}) {
  *   hubReachable?: boolean,               // hub-probe seam; absent = true
  *   aggregator?: (payload:object)=>object, // hub-only federation merge; absent = local only
  *   inFlight?: {size:()=>number},         // ДОМ ИДУЩИХ ПОПЫТОК — сколько мест занято прямо сейчас
+ *   configOnDisk?: ()=>object|null,       // ФАЙЛ НАСТРОЕК С ДИСКА — против копии, по которой демон живёт
  * }} deps
  * @returns {Promise<object>}
  */
@@ -2953,7 +2970,23 @@ export async function deriveState(deps = {}) {
   }
 
   // ── the settings read models — the SAME route, a fuller payload ──
-  const rules = deriveRules(config, { switchMode })
+  //
+  // ФАЙЛ НАСТРОЕК ЧИТАЕТСЯ ЗДЕСЬ ЗАНОВО, и это не дубль загрузки: `config` — это копия,
+  // прочитанная НА ЗАПУСКЕ демона, а файл с тех пор мог поменять человек руками. Ровно эти
+  // два значения и расходятся у настроек второго класса, и назвать расхождение можно только
+  // подержав оба разом. Шов — функция: демон подключает настоящее чтение с диска, сцена и
+  // тесты подставляют своё, а демон, который не подключил ничего, просто ничего не
+  // утверждает про файл.
+  let configOnDisk = null
+  if (typeof deps.configOnDisk === 'function') {
+    try {
+      const read = deps.configOnDisk()
+      configOnDisk = read && typeof read === 'object' && !Array.isArray(read) ? read : null
+    } catch {
+      configOnDisk = null // нечитаемый файл — обычное состояние, а не отказ двери
+    }
+  }
+  const rules = deriveRules(config, { switchMode, configOnDisk })
   // The corpus lives in the repository the daemon serves; an explicit memoryDir wins, so a
   // test (and a future multi-repo wiring) never has to own the layout convention.
   const memoryDir = deps.memoryDir ?? (deps.repoDir ? join(deps.repoDir, '.claude', 'memory') : null)

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { ApiError, isNotReady } from '../../api/client'
 import { useDiagnosticsQuery, usePipelineToggle, useStateQuery, useUpdateRun } from '../../api/queries'
-import type { Diagnostics, UpdateReport } from '../../api/types'
+import type { Diagnostics, RestartScopedSetting, UpdateReport } from '../../api/types'
 
 /**
  * «Дом системы» — what this install is, whether there is a newer one, the switch that decides
@@ -349,6 +349,88 @@ function UpdateCard() {
  * is NOT on — it is an older process, and the screen says exactly that instead of choosing a
  * state on its behalf.
  */
+/** Значение настройки словами — так, как человек читает его в файле. */
+function settingValue(v: RestartScopedSetting['running']): string {
+  if (v === null || v === undefined) return '—'
+  if (typeof v === 'boolean') return v ? 'да' : 'нет'
+  return String(v)
+}
+
+/**
+ * ОДНА СТРОКА НАСТРОЙКИ ВТОРОГО КЛАССА — и она называет себя такой РЯДОМ С СОБОЙ.
+ *
+ * Пометка «применится при перезапуске» стоит на самой строке, а не в заголовке карточки и не
+ * в документации: заголовок однажды переедет, документацию человек в этот момент не читает, а
+ * ошибиться он может ровно здесь — глядя на число.
+ *
+ * И ГЛАВНОЕ — РАСХОЖДЕНИЕ. Когда в файле стоит одно, а демон работает по другому, строка
+ * говорит оба числа и что будет дальше. Это самый частый и самый дорогой случай: настройка
+ * записана, показана и НЕ ДЕЙСТВУЕТ, и до сих пор об этом не говорилось нигде.
+ */
+function RestartScopedRow({ setting }: { setting: RestartScopedSetting }) {
+  const restart = setting.applies === 'restart'
+  return (
+    <div className="border-b border-bd px-[18px] py-[13px] last:border-b-0">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1.5">
+        <span className="text-[13px] font-semibold text-tx">{setting.label}</span>
+        <code className="rounded-[6px] bg-idle-s px-1.5 py-0.5 font-mono text-[11px] text-tx3">
+          {setting.id}
+        </code>
+        {restart ? (
+          <span className="rounded-[7px] bg-idle-s px-2 py-0.5 text-[11px] text-idle-tx">
+            применится при перезапуске
+          </span>
+        ) : null}
+      </div>
+
+      {setting.diverged ? (
+        <div className="mt-2 rounded-[9px] border border-warn-s bg-warn-s px-3 py-2 text-[12.5px] leading-[1.55] text-tx">
+          В файле {settingValue(setting.onDisk)}, работаю по {settingValue(setting.running)} —
+          применится при следующем запуске демона.
+        </div>
+      ) : (
+        <div className="mt-2 text-[12.5px] leading-[1.55] text-tx2">
+          Работаю по {settingValue(setting.running)}
+          {setting.onDisk === null
+            ? ' — файл настроек прочитать не удалось, поэтому про запись в нём здесь ничего не говорится.'
+            : ' — столько же стоит и в файле.'}
+        </div>
+      )}
+
+      <div className="mt-1.5 text-[11.5px] leading-[1.55] text-tx3">{setting.why}</div>
+    </div>
+  )
+}
+
+/**
+ * «Применятся при перезапуске» — весь список настроек второго класса, один и тот же на экране
+ * и в машине: демон присылает его из своего единственного реестра, окно ничего не угадывает.
+ *
+ * Демон, собранный до появления этого списка, ключа не несёт — и тогда карточки нет вовсе.
+ * Нарисовать пустой список значило бы сказать «таких настроек не существует», а это ровно то
+ * утверждение, из-за которого владелец дважды решил, что правка подействовала.
+ */
+function RestartScopedCard({ settings }: { settings: RestartScopedSetting[] | undefined }) {
+  if (!settings || settings.length === 0) return null
+  const diverged = settings.filter((s) => s.diverged).length
+
+  return (
+    <Card
+      title="Применятся при перезапуске"
+      note={diverged > 0 ? `расходится с файлом: ${diverged}` : undefined}
+    >
+      <div className="px-[18px] py-[13px] text-[12px] leading-[1.6] text-tx2">
+        Настройки файла демон читает один раз — при запуске. Эти правятся руками в файле и
+        начинают действовать только с нового запуска: пока демон работает, он живёт по числу,
+        прочитанному тогда.
+      </div>
+      {settings.map((s) => (
+        <RestartScopedRow key={s.id} setting={s} />
+      ))}
+    </Card>
+  )
+}
+
 function PipelineCard({ enabled }: { enabled: boolean | undefined }) {
   const toggle = usePipelineToggle()
   const [asking, setAsking] = useState(false)
@@ -639,6 +721,7 @@ export function Screen() {
           <VersionCard diagnostics={diag} />
           <UpdateCard />
           <PipelineCard enabled={pipeline} />
+          <RestartScopedCard settings={state.data?.rules.restartScoped} />
           <FeedbackCard diagnostics={diag} />
 
           <p className="m-0 max-w-[720px] text-[11.5px] leading-[1.6] text-tx3">
