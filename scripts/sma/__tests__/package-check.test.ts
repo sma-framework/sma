@@ -12,12 +12,16 @@
  *   Test 5 — the vendored daemon ledger reaches this count: a generated section
  *            that no longer describes `daemon/node_modules`, and a vendored
  *            license outside the allowlist, are both publishability violations
+ *   Test 6 — the WINDOW ledger reaches it the same way: the bundle ships other
+ *            people's code compiled, so a window section that no longer matches
+ *            `spa/package-lock.json`, and a bundled license outside the
+ *            allowlist, are publishability violations too
  */
 
 import { resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { checkPackage } from '../lib/package-check.mjs'
-import { applyToFile, renderSection } from '../lib/daemon-licenses.mjs'
+import { applySpaToFile, applyToFile, renderSection, renderSpaSection, scanSpaPackages } from '../lib/daemon-licenses.mjs'
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..')
 
@@ -31,10 +35,11 @@ describe('package-check — the real repo (Test 1)', () => {
 
 describe('package-check — violation classes (Test 2)', () => {
   const ROOT = 'C:\\pkg'
-  function io(pkg: object, cap: object = { version: '3.6.0' }, present: string[] = []) {
+  function io(pkg: object, cap: object = { version: '3.6.0' }, present: string[] = [], contents: Record<string, string> = {}) {
     const files = new Map<string, string>([
       [resolve(ROOT, 'package.json'), JSON.stringify(pkg)],
       [resolve(ROOT, 'sma-core', 'capabilities', 'sma', 'capability.json'), JSON.stringify(cap)],
+      ...Object.entries(contents).map(([p, text]) => [resolve(ROOT, p), text] as [string, string]),
     ])
     const disk = new Set(present.map((p) => resolve(ROOT, p)))
     return {
@@ -87,16 +92,37 @@ describe('package-check — violation classes (Test 2)', () => {
    */
   const BASE = ['bin', 'bin/init.mjs']
 
+  /**
+   * A window source is more than a directory: it carries the lockfile the licence
+   * ledger reads, and the ledger's committed section has to match it. This builds
+   * a `spa/` that is complete in that sense, so the bundle tests below measure the
+   * bundle rule and nothing else.
+   */
+  const SPA_FILES = {
+    'spa/package.json': JSON.stringify({ name: 'sma-spa', dependencies: {} }),
+    'spa/package-lock.json': JSON.stringify({
+      lockfileVersion: 3,
+      packages: { '': { dependencies: {} }, 'node_modules/tailwindcss': { version: '4.3.3', license: 'MIT' } },
+    }),
+  }
+  function withWindowSource(present: string[]) {
+    const probe = io(GOOD, { version: '3.6.0' }, present, SPA_FILES)
+    const section = renderSpaSection(scanSpaPackages(ROOT, { io: probe }))
+    return io(GOOD, { version: '3.6.0' }, present, {
+      ...SPA_FILES,
+      'THIRD-PARTY-LICENSES.md': applySpaToFile('# Third-Party Licenses\n', section),
+    })
+  }
+
   it('flags a package that would ship without the window', () => {
-    const res = checkPackage({ pkgRoot: ROOT, io: io(GOOD, { version: '3.6.0' }, [...BASE, 'spa/package.json']) })
-    expect(res.violations.map((v) => v.code)).toContain('bundle-missing')
+    const res = checkPackage({ pkgRoot: ROOT, io: withWindowSource(BASE) })
+    expect(res.violations.map((v) => v.code)).toEqual(['bundle-missing'])
     // the message has to say what to DO, not only what is wrong
     expect(res.violations.find((v) => v.code === 'bundle-missing')?.detail).toContain('build:spa')
   })
 
   it('is satisfied once the window is built', () => {
-    const present = [...BASE, 'spa/package.json', 'daemon/static/app/index.html']
-    const res = checkPackage({ pkgRoot: ROOT, io: io(GOOD, { version: '3.6.0' }, present) })
+    const res = checkPackage({ pkgRoot: ROOT, io: withWindowSource([...BASE, 'daemon/static/app/index.html']) })
     expect(res.violations).toEqual([])
   })
 
@@ -180,6 +206,55 @@ describe('package-check — the vendored daemon ledger (Test 5)', () => {
       resolve(p) === resolve(MODULES, 'pg-fake', 'package.json') ? JSON.stringify(copyleft[0]) : files.readFile(p)
     const res = checkPackage({ pkgRoot: ROOT, io: { ...files, readFile } })
     expect(res.violations.map((v: { code: string }) => v.code)).toEqual(['daemon-license-forbidden'])
+  })
+})
+
+describe('package-check — the window bundle ledger (Test 6)', () => {
+  const ROOT = 'C:\\pkg'
+  const lock = (license: string) => ({
+    lockfileVersion: 3,
+    packages: {
+      '': { dependencies: { react: '19.2.8' } },
+      'node_modules/react': { version: '19.2.8', license },
+      'node_modules/tailwindcss': { version: '4.3.3', license: 'MIT' },
+    },
+  })
+
+  function io(lockObj: object, licensesText?: string) {
+    const files = new Map<string, string>([
+      [resolve(ROOT, 'package.json'), JSON.stringify({ version: '3.6.0', license: 'MIT', repository: { url: 'x' }, files: [] })],
+      [resolve(ROOT, 'sma-core', 'capabilities', 'sma', 'capability.json'), JSON.stringify({ version: '3.6.0' })],
+      [resolve(ROOT, 'spa', 'package.json'), JSON.stringify({ name: 'sma-spa' })],
+      [resolve(ROOT, 'spa', 'package-lock.json'), JSON.stringify(lockObj)],
+      // the built window, so `bundle-missing` stays out of the way of this measurement
+      [resolve(ROOT, 'daemon', 'static', 'app', 'index.html'), '<!doctype html>'],
+    ])
+    if (licensesText !== undefined) files.set(resolve(ROOT, 'THIRD-PARTY-LICENSES.md'), licensesText)
+    return {
+      exists: (p: string) => files.has(resolve(p)),
+      readFile: (p: string) => {
+        const v = files.get(resolve(p))
+        if (v === undefined) throw new Error('ENOENT')
+        return v
+      },
+    }
+  }
+
+  const current = (lockObj: object) =>
+    applySpaToFile('# Third-Party Licenses\n', renderSpaSection(scanSpaPackages(ROOT, { io: io(lockObj) })))
+
+  it('counts a stale window section as a publishability violation, and a current one as none', () => {
+    const good = lock('MIT')
+    expect(checkPackage({ pkgRoot: ROOT, io: io(good, current(good)) }).violations).toEqual([])
+    const stale = checkPackage({ pkgRoot: ROOT, io: io(good, current(good).replace('19.2.8', '19.2.9')) })
+    expect(stale.violations.map((v: { code: string }) => v.code)).toEqual(['spa-licenses-stale'])
+  })
+
+  it('counts a bundled license outside the allowlist as a publishability violation', () => {
+    const copyleft = lock('GPL-3.0')
+    const res = checkPackage({ pkgRoot: ROOT, io: io(copyleft, current(copyleft)) })
+    expect(res.violations.map((v: { code: string }) => v.code)).toEqual(['spa-license-forbidden'])
+    expect(res.violations[0].detail).toContain('react@19.2.8')
   })
 })
 

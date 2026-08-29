@@ -137,8 +137,10 @@
  *   touch(taskId)                 → refresh the liveness clock on a claimed task
  *   resolveBatch(batchId, word)   → record the owner's word about a stopped assembly
  *                                   ({skip:<itemId>} | {cancel:true}) and make it take effect
- *   setWords(taskId, words)       → replace `description` / `acceptance` on a task whose work
- *                                   is not over yet; false on an unknown or finished task
+ *   setWords(taskId, words)       → replace `description` / `acceptance` / `project` on a task
+ *                                   whose work is not over yet; false on an unknown or
+ *                                   finished task. `project` is the RE-STAMP: a task put in
+ *                                   under the wrong tree is MOVED, not cancelled and retyped
  *   complete(taskId, result)      → result MUST carry `receiptRef` else NoReceiptError
  *   fail(taskId, reason)          → reason ∈ FAIL_REASONS else InvalidFailReasonError. This is
  *                                   the RETRYABLE ending: the row may be handed out again,
@@ -701,8 +703,15 @@ export const WORDS_EDITABLE_STATUSES = Object.freeze(['queued', 'claimed'])
  * The DoR gate is deliberately NOT re-applied: readiness is a question asked of a task on its
  * way IN, and a task that is already in the queue was answered once.
  *
- * @param {{description?:string, acceptance?:(string|string[])}} [patch]
- * @returns {{description?:string, acceptance?:(string|string[])}}
+ * ПРОЕКТ ЗДЕСЬ — ЭТО ПЕРЕСТАНОВКА ЗАДАЧИ, И ГЕЙТ У НЕЁ ТОТ ЖЕ, ЧТО У ПОСТАНОВКИ: слаг
+ * проверяется СТРУКТУРНО (`TASK_PROJECT_RE`) и только. Существует ли такой проект — вопрос
+ * реестра, а реестр держит дверь: очередь никогда не знала, какие проекты заведены, и
+ * заводить ей это знание ради одной правки значило бы сделать её второй половиной конфига.
+ * Окно ошибки при этом остаётся ровно тем же — пока работа не кончилась; после измерения
+ * дерево, в котором работа шла, переписывать нечем.
+ *
+ * @param {{description?:string, acceptance?:(string|string[]), project?:string}} [patch]
+ * @returns {{description?:string, acceptance?:(string|string[]), project?:string}}
  */
 export function validateWords(patch = {}) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
@@ -715,10 +724,12 @@ export function validateWords(patch = {}) {
   // единственный гейт: попытка сорвалась — человек дописывает то, чего работнику не хватило,
   // и СЛЕДУЮЩАЯ выдача уходит с исправленным снимком, а не с тем, с которым сорвалось.
   if (patch.taskContext !== undefined) probe.taskContext = patch.taskContext
+  if (patch.project !== undefined) probe.project = patch.project
   validateTask(probe)
   const out = {}
   if (patch.description !== undefined) out.description = patch.description
   if (patch.acceptance !== undefined) out.acceptance = patch.acceptance
+  if (patch.project !== undefined) out.project = patch.project
   // СТЁРТЫЙ СНИМОК ОСТАЁТСЯ НА СТРОКЕ ПУСТОЙ СТРОКОЙ, а не исчезает ключом, и это не
   // небрежность: правка слов у долговечной очереди — это слияние объектов в payload'е джоба,
   // которое умеет ЗАПИСАТЬ поле и не умеет его удалить. Удаление ключа памятным бэкендом
@@ -1673,8 +1684,8 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
   }
 
   /**
-   * setWords(taskId, {description, acceptance}) — replace the words of a task that is still
-   * live. Returns false when there is no such task or its work is already over.
+   * setWords(taskId, {description, acceptance, project}) — replace the words of a task that is
+   * still live. Returns false when there is no such task or its work is already over.
    *
    * Only the keys PRESENT in the patch move: a door sending a description alone must not
    * silently erase a promise it never mentioned.
@@ -2676,6 +2687,40 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       const next = await q.claimNext('w2', {})
       expect(next.id).toBe('BL-98')
       expect(next.description).toBe('вторая редакция')
+    })
+
+    /**
+     * ЗАДАЧУ, ПОСТАВЛЕННУЮ НЕ В ТОТ ПРОЕКТ, ПЕРЕСТАВЛЯЮТ — А НЕ ОТМЕНЯЮТ И ПИШУТ ЗАНОВО.
+     *
+     * Штамп проекта ставится при СОЗДАНИИ и переключением активного проекта задним числом не
+     * чинится (иначе ownership снова поехало бы за взглядом — см. `withStatedProject`). Пока
+     * это была единственная правда, промах стоил полного круга: замерено — шесть работ,
+     * поставленных при не том активном проекте, пришлось отменять и пересоздавать. Здесь у
+     * ошибки появляется цена одного нажатия, и окно у неё то же самое, что у остальных слов:
+     * пока работа не кончилась. Дальше по проводу этот слаг читает `taskTreeDir` — то есть
+     * перестановка меняет ДЕРЕВО, из которого работнику отводится копия.
+     */
+    it('проект живой задачи переставляется, и следующая выдача уходит уже с новым', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue({ id: 'R-move', source: 'roster', title: 'работа', lane: 'prod', project: 'workshop' })
+      expect((await q.list({}))[0].project).toBe('workshop')
+
+      expect(await q.setWords('R-move', { project: 'product' })).toBe(true)
+
+      const [row] = await q.list({})
+      expect(row.project).toBe('product')
+      expect(row.title).toBe('работа') // переставили задачу, а не переписали её
+      const next = await q.claimNext('w1', {})
+      expect(next.project).toBe('product')
+    })
+
+    it('слаг проекта у перестановки проходит ТОТ ЖЕ структурный гейт, что и у постановки', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 1000 })
+      await q.enqueue({ id: 'R-slug', source: 'roster', title: 'работа', lane: 'prod', project: 'workshop' })
+      await expect(q.setWords('R-slug', { project: 'НЕ слаг' })).rejects.toThrow(/project/)
+      expect((await q.list({}))[0].project).toBe('workshop') // отказ ничего не переставил
     })
 
     it('the words door is bounded by the SAME caps the enqueue is', async () => {
