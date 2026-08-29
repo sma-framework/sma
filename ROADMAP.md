@@ -8,18 +8,12 @@
 
 ```mermaid
 flowchart LR
-    V1["V1<br>memory + coordination<br>on files + git"] --> V2["V2<br>predictions · reflexes ·<br>corpus health · gates"]
-    V2 --> V3["V3<br>the trust spine:<br>receipts · blind verify · consequences"]
-    V3 --> V35["V3.5<br>adoption & trust telemetry"]
-    V35 --> V36["V3.6<br>the one-command door:<br>npm install · off-ramp · memory preview"]
-    V36 --> V4["V4<br>grade the grader:<br>graded verdicts · economy meters"]
+    V1["V1<br>memory + coordination<br>on files + git"] --> V3["V2–V3<br>predictions · reflexes ·<br>the trust spine"]
+    V3 --> V4["V3.5–V4<br>adoption telemetry ·<br>grade the grader"]
     V4 --> V5["V5<br>orchestration:<br>a 24/7 worker fleet"]
-    V5 -.-> V51["V5.1<br>works with what you have<br>+ memory model 1.0 + the front"]
-    V51 -.-> V52["V5.2<br>measured memory:<br>benchmark · explain · hybrid retrieval"]
-    V52 -.-> V53["V5.3<br>governance · hardened fleet ·<br>external validation"]
-    V53 -.-> V54["V5.4<br>the whole working day<br>without the terminal"]
-    V54 -.-> V55["V5.5<br>the engine:<br>steering a live session"]
-    V55 -.-> V56["V5.6 — current<br>the taskboard ·<br>numbers that do not lie"]
+    V5 -.-> V54["V5.1–V5.4<br>the window · measured memory ·<br>governance · the whole day"]
+    V54 -.-> V56["V5.5–V5.6<br>steering a live session ·<br>numbers that do not lie"]
+    V56 -.-> V57["V5.7 — current<br>the design stage:<br>drawn, confirmed, then built"]
 ```
 
 | Version | Theme | Status |
@@ -27,183 +21,39 @@ flowchart LR
 | V1 | Layered memory + multi-terminal coordination, plain files + git | ✅ shipped |
 | V2 | Predictions, reflexes, corpus health, gates | ✅ shipped |
 | V3 | The trust spine: receipts, blind verify, consequences | ✅ shipped |
-| V3.5 | Adoption & trust telemetry | ✅ shipped |
-| V3.6 | The one-command door: npm install, off-ramp, memory preview | ✅ shipped |
-| V4 | Grade the grader: graded verdicts, economy meters, vendor triage | ✅ shipped |
-| V5 | Orchestration: a 24/7 worker fleet | ✅ **shipped** (v5.0.0, July 2026) |
-| V5.1 | Works with what you have + the working front | ✅ **shipped** (v5.1.0, August 2026) |
-| V5.2 | Measured memory: benchmark, explainability, hybrid retrieval | ✅ **shipped** (v5.2.0, 3 August 2026) |
-| V5.3 | Memory governance, hardened fleet | ✅ **shipped** (v5.3.0, patched v5.3.1) — the external-validation pilots carry forward |
-| V5.4 | The whole working day without the terminal | ✅ **shipped** (v5.4.0, patched v5.4.1–v5.4.3) — the proving run is live operation after the release |
-| V5.5 | The engine: steering a live session | ✅ **shipped** (v5.5.0, patched v5.5.1–v5.5.2) — the patch line is where the engine's parts were finally connected to one another |
-| **V5.6** | **The taskboard, and numbers that do not lie** | ✅ **shipped** (v5.6.0, in the repository) — not published to npm while the engine settles |
+| V3.5 / V3.6 | Adoption telemetry · the one-command door | ✅ shipped |
+| V4 | Grade the grader: graded verdicts, economy meters | ✅ shipped |
+| V5 | Orchestration: a 24/7 worker fleet | ✅ shipped (v5.0.0, July 2026) |
+| V5.1 | Works with what you have + the working front | ✅ shipped (v5.1.0) |
+| V5.2 | Measured memory: benchmark, explainability, hybrid retrieval | ✅ shipped (v5.2.0) |
+| V5.3 | Memory governance, hardened fleet | ✅ shipped (v5.3.0) |
+| V5.4 | The whole working day without the terminal | ✅ shipped (v5.4.0) |
+| V5.5 | The engine: steering a live session | ✅ shipped (v5.5.0) |
+| V5.6 | The taskboard, and numbers that do not lie | ✅ shipped (v5.6.0–v5.6.1) |
+| **V5.7** | **The design stage: drawn, confirmed, then built** | ✅ **shipped (v5.7.0) — current** |
 
-## V5 — Orchestration: a 24/7 worker fleet ✅
+Each release's full story — what it built, what broke on the way, and what it deliberately did not claim — is in [docs/DETAILS.md](docs/DETAILS.md#the-v5-series-release-by-release). This page keeps the shape.
 
-Until V5, SMA was the discipline *around* one interactive session. V5 shipped the layer that runs the work itself, overnight, while the trust spine stays exactly as strict. This is the engine that is in the repository today:
+## What the journey built — the highlights
 
-| Piece | What it does |
-|---|---|
-| **Durable queue + dispatcher** | A small always-on daemon on a machine you own. Tasks live in a durable local queue (Postgres); workers claim atomically — a task can never be taken twice; every attempt lands in an append-only attempt ledger; an expired lease returns a silent task to the queue, and a task that keeps failing parks in a dead-letter lane instead of looping forever. The tick loop is stateless: kill the daemon mid-step, restart it, nothing is lost and nothing double-runs. |
-| **Headless runners** | Workers drive Claude Code and Codex CLI headless sessions. Dangerous CLI flags are refused by construction — an error class, not a convention; output parsers never throw on garbage; usage is estimated per run. |
-| **Window routing + budget stop** | Several subscription accounts, honest window estimates (marked *estimated* until a ground-truth close confirms them), automatic hand-over when a limit closes, and a hard budget staircase: warn at 70%, alarm at 90%, stop at 100%. The fleet spends inside the subscriptions you already pay for. |
-| **One gate for every lane** | Whoever produced the work — no reverify receipt, no "done". Workers hold zero push and zero merge capability, no matter what any prompt tells them; a human reviews, approves, and publishes. |
-| **Owner's front** | A token-authenticated panel served by the daemon itself, with a deliberately **frozen route table** — the surface cannot quietly grow into remote command execution; it grows only by an explicit recorded revision. Live updates stream only after the underlying write is durable. |
-| **Decision snapshot** | The dispatcher's policy is distilled from the owner's own session history — mined locally, secrets redacted, never committed — and graded by a replay exam: held-out historical situations run through the synthetic dispatcher, and the match rate against what the owner really decided is the policy's score. Hard boundaries (push, design, scope, budget) stay human-only regardless of score. |
-| **The Creator** | A standing roster role that turns a plain-language description into *drafts* of new agents, skills, and tool requests. Drafts only — each carries a lint receipt, parks in an approval queue, and activation is two explicit human steps. Tool connections toggle a boolean in a host-local registry; the Creator can request, never grant. |
-| **Report-back** | A morning summary over a webhook (a chat bot as the first consumer): done, failed, spend, awaiting approval. |
+Every line below is held by receipts in the repository, not by this page's word.
 
-Two honesty notes. The **rich daily-driver app** on top of this engine was the first deliverable of V5.1: it is built and served by the daemon in the repository today, and it reaches you with the V5.1 release — v5.0.x ships the engine plus the thin operations panel. And the **autostart scaffolds** (Windows Task Scheduler, macOS launchd) ship in the repository *disabled*: registering and enabling them is an explicit owner action, documented step by step, with a smoke script that proves the queue → claim → receipt → front loop end to end before a single model token is spent.
+- **A trust spine no other tool has.** Pre-registered predictions, re-runnable receipts whose digests bind command + exit code + output, a blind verifier that refuses the agent's self-report, and a false "done" that blocks the release until a human rules. The grader itself is graded, and the calibration badge hides itself rather than overstate.
+- **A memory layer that is measured, not promised.** A benchmark reproducible on a fresh clone; an explain command that names why every note was delivered or withheld; a lexical retrieval layer admitted to the default path only after a measured lift on gold cases (recall@3 +34 points, MRR +26 — and its one regression on the same record); a twelve-step write pipeline with secret scrub and drafts.
+- **A fleet whose parity is proven per attempt.** A worker runs in its own copy carrying your rules, hooks, memory, skills and narrowing permissions — five receipts per attempt, computed by the daemon, where missing data is a failure. Push, merge, tag, deploy are refused in the process's own launch arguments.
+- **A window whose numbers do not lie.** Every figure on the taskboard is measured or says «no data» in words; a field that reaches the window's contract is drawn or stands in an explicit not-drawn list with a reason — enforced by the suite. The route table is frozen, its size is a test.
+- **Steering a live session** — the gap the whole market left open: a word typed at running work reaches the turn mid-run at the next tool-call boundary, or interrupts with the correction written to disk first; a returned task resumes the session you already paid for.
+- **Documentation held by the test suite.** The counts of commands, verbs, routes and tests quoted in the docs are checked against the code on every `npm test`; the badge is written from a real run's report.
+- **A hardening campaign closed with receipts.** A 116-point registry — worker-terminal parity, engine wiring, docs-equal-code, end-to-end acceptance — was driven to 112 green with a receipt behind every point; the four that remain are exactly the live-operation milestones named below, on this page, not hidden in a changelog.
+- **And the design stage** — the fifth stage of the phase graph: the thing is drawn, a contract stands beside the drawing, and execution is physically refused until a person confirms it. Two roles came with it: a designer distilled from real design resources, and an animator under a stated motion law.
 
-## V5.1 — Works with what you have
+## What comes next
 
-> **Status: shipped as v5.1.0 (August 2026), as one whole.** Everything described in this section is in the release and covered by the suite: the app and its screens, multi-project and hub↔peer federation, the conversation, the import door, first-run onboarding through the app, the decision journal — and Memory Model 1.0, which shipped with its three canonical documents (the model, the lifecycle, the threat model).
-
-Orchestration is only useful when it runs YOUR setup, not a naked model. V5.1 makes that true in three steps: the fleet's workers operate with the estate the repository already carries (its agents, skills, rules, and the layered memory); a fresh install ships the SMA preset out of the box — the standard agents, skills, and the memory system itself (the architecture and its rituals, with your own empty corpus; nobody's memories are ever bundled); and an import door reads the agents and skills you built elsewhere (`.claude/agents`, `.claude/skills`, rules files; other tools' formats as demand appears) and enrolls them into the fleet through the same door the Creator uses — draft, lint receipt, approval queue. Imported definitions are third-party text: nothing activates without the owner's explicit yes. The bar the fleet has to clear is **terminal parity**: a worker session must be able to do what your own terminal session does — same hooks, same memory, same skills — proven by receipts on a real run, not asserted.
-
-V5.1 also opens the conversational door. A chat window in the owner's front lets you talk to the dispatcher the way you talk to a terminal — add a task to the backlog, ask why a run failed, ask what is eating the budget. The chat's hands are deliberately tied: it can read fleet state and draft tasks (through the same readiness gate as any task), and nothing more — no command execution, and everything that changes reality still passes the existing approval doors; the front's frozen route table only grows by an explicit, recorded revision. The same seam carries first-run onboarding: once the daemon is running, the app opens on the dispatcher's interview — project profile, infrastructure, seeding your empty memory corpus and the preset — so someone who prefers the window never has to start in the terminal. The CLI onboarding remains for those who prefer it, and it needs no daemon at all.
-
-V5.1 makes every decision visible. **The decision journal**: nothing in the fleet happens "on faith" — the task card shows WHY at every step. The dispatcher logs its reasons as structured codes (why this lane and this worker, why the run moved to another account, what was rejected and why — deterministic, from the routing and window machinery). Every worker attempt carries a mandatory **approach note**: the chosen approach, the alternatives considered and rejected, and which memories or rules shaped it — an attempt without its note is as incomplete as one without its receipt. And the memory-influence trace (which notes loaded, which reflexes fired during the attempt) closes the chain, connecting forward to `sma memory explain` in V5.2. The journal is append-only and rides the same attempt ledger the receipts do.
-
-### Several machines, several projects — one window
-
-A fleet rarely lives on one computer: the realistic shape is a small always-on machine doing the night work, a desktop that joins when it is on, and a phone that wants to watch and approve from anywhere. V5.1 designs for exactly that shape, on three laws:
-
-- **One daemon per machine, and every subscription account pinned to exactly one machine.** Window estimates and budget stops can only be honest when a single daemon sees all the spending an account does — two daemons blindly sharing one subscription would burn the same window twice.
-- **"Project" is a first-class dimension, not a separate install.** One daemon runs tasks for all your repositories; the task carries its project; the front filters by it. One machine — one daemon — every project in it.
-- **Across machines, daemons federate.** You nominate one daemon as the **hub** and list its peers (address + token). The hub aggregates their state, and the app shows every machine and every project in a single window: presence per machine (online / offline, like a runtimes board), costs and windows per machine, one address in your browser — phone included.
-
-The network layer is **yours, not ours**: a private mesh (WireGuard, Tailscale, or a self-hosted coordinator) connects your machines and your phone. The daemon never asks to be exposed to the public internet — the docs say so in bold — and no vendor cloud appears anywhere in this design. Your fleet, your queue, your tokens, your machines.
-
-All three laws are built: projects are a dimension of the task, the introduction of a peer is a single-use invitation carried by hand from the hub, and the hub proxies an action to the machine that owns it rather than re-playing its logic. A peer opened directly still shows its own machine, with a quiet banner when the hub is unreachable, so the hub is not a single point of failure. Two deliberate gaps remain and are named rather than hidden: the **phone** still awaits its own design pass in a later 5.x release (V5.1–V5.3 are built for a desktop screen), and the loop has so far been proven with two daemons on one machine — repeating it across two physical machines is a smoke test still to run.
-
-V5.1 ships two more things. **The working front** — the owner's rich app (today view, task board, roster, task card, live work stream, costs, rules, and the settings the fleet used to need a text editor for) has gone from design to a running build the daemon serves itself: `cd spa && npm run build`, and there is no second server. And **Memory Model 1.0** — the start of the memory-foundation program below: freeze the surface baseline (reproducible install, current receipts green, current retrieval/latency/cost measured), then formalize what a memory IS. Schema v2 turns a note into a **claim**: memory type (working / semantic / episodic / procedural / prospective / normative / preference), truth mode (observed / inferred / factual / hypothesis / decision / normative), source authority, evidence links, scope, `observed_at`/`recorded_at`/valid time, sensitivity, retention, and a verification command. The overloaded single "importance" number splits into criticality, frequency, confidence, freshness, context priority, and risk. Agents write the full schema — the discipline costs model tokens, not human patience. The whole v1 corpus stays readable; migration is preview-only; nothing is rewritten silently.
-
-## The memory foundation — the program behind V5.1–V5.3
-
-An external architecture review of SMA (internal working document, 2026-07-20) set the direction we adopt here: **before the product surface grows further, the memory layer itself must become formally specified, measurable, explainable, and governable.** The sequence is the point: formal memory model → baseline → explainability → hybrid retrieval → lifecycle governance → fleet hardening → external validation.
-
-**North-star metric: cost per verified correct result** — total tokens, compute, wall-clock time, and human minutes per independently verified accepted outcome. Guardrails around it: critical-memory miss rate, superseded-memory selection rate, repeated-incident recurrence, false-done rate, collision precision/recall, context overhead, human corrections per accepted task.
-
-Two standing laws carried through every phase: **every derived index is rebuildable** (deleting an FTS, vector, or graph projection must never destroy knowledge — if it can't be rebuilt from canonical records, it has become a hidden source of truth), and **a new retriever enters the default path only after measured lift on the gold set** — a negative result is a full-fledged outcome, recorded and kept.
-
-## V5.2 — Measured memory
-
-Prove the memory works before making it cleverer.
-
-- **Memory benchmark** — a gold set of real and adversarial cases: exact retrieval, synonyms and paraphrases, cross-language queries (a query in one language finding a note in another), superseded facts, contradictions, temporal questions, missing evidence, abstention, selective forgetting, prompt injection planted inside a memory, poisoned memories, multi-hop dependencies, similar-but-inapplicable lessons, renamed paths. Metrics: recall@k, precision@k, critical-memory miss rate, superseded selection rate, contradiction exposure — plus action-impact metrics: repeated-defect recurrence, time-to-first-correct-action, human corrections, cost per verified result. Reproducible on a fresh clone.
-- **`sma memory explain`** — every retrieval decision becomes explainable BEFORE any new retriever: which memories were selected, on which exact/lexical/graph grounds, and which were rejected and why (superseded, out of scope, low trust).
-- **Explainable hybrid retrieval** — deterministic facets stay the always-available substrate; add exact path/symbol retrieval and a rebuildable FTS/BM25 index; fuse and rerank by relevance, criticality, temporal state, and authority under a hard context budget. Optional multilingual dense retrieval only after measured lift — and the system keeps working with the vector layer removed.
-- The front keeps maturing here, on top of what V5.1 shipped.
-
-## V5.3 — Memory governance and the hardened fleet ✅ (v5.3.0, 6 August 2026)
-
-Make memory governable and the fleet's semantics formal. Shipped as planned below, with one
-honest carry: the **external-validation pilots on strangers' repositories** (last bullet) did
-not run inside this release — they move to the next cycle, and the memory benchmark closed
-with four known misses, recorded rather than retuned away. The multi-machine window reached
-its federated form.
-
-- **Temporal graph and typed links** — machine-readable relations (`derived_from`, `supports`, `contradicts`, `supersedes`, `applies_to`, `requires`, `exception_to`, `verified_by`), full `observed_at`/`recorded_at`/valid-time semantics, immutable episodes stored apart from compact reviewed claims. An edge is added only when it improves a concrete retrieval, temporal, or verification query — never for beauty.
-- **The full memory lifecycle** — the old "memory is never deleted" invariant is replaced with the precise rule: reviewed organizational knowledge never disappears *by accident*, but the system supports supersede, **revoke**, **expire**, **archive**, and physical **erase** where safety, law, or the owner requires it — with erasure tests covering copies and indexes. Risk-based approval per memory class: low-risk observations auto-persist with TTL; procedural recommendations need an evidence threshold; hard reflexes need human approval or deterministic proof; security rules and decision policies are governed, versioned, human-only.
-- **Storage classes and fail semantics** — public/repo memory in git; internal reviewed memory in private git; sensitive local memory encrypted; ephemeral runtime memory with TTL; regulated data in a separately governed store. Advisory streams fail open; push authorization, secret access, destructive actions, and hard budget stops fail closed. A small **safety kernel** — capability validation, human-only boundaries, secret scopes, budget stops — with formal failure semantics and minimal dependence on the LLM or optional indexes.
-- **Memory as untrusted input** — retrieved content is data, never policy: source, trust level, and sensitivity travel separately from the text; a retrieved document can never widen tool permissions; external content passes secret scan and suspicious-instruction detection.
-- **Fleet hardening** — the task lifecycle becomes a versioned state machine (ready → claimed → running → produced → verifying → waiting-human → accepted / rejected / retryable / dead-letter) with transition contracts, immutable attempts, single-active-lease semantics, idempotency keys for side effects, per-worker capability envelopes, and dead-letter recovery drills. Every attempt is stamped with the policy version, memory snapshot hash, plan hash, model, and harness version. No exactly-once promises — at-least-once delivery with idempotent effects, stated plainly. Workers keep zero push/merge capability, no matter what any prompt says.
-- **External validation and the product core** — counterfactual pilots (bare agent vs current SMA vs experimental SMA on the same tasks and repo states) across several external repositories and stacks; the default command surface shrinks to a small core path with advanced instruments discoverable but secondary; the evidence report is published including negative results. Acceptance is blunt: a lower cost per verified correct result in the target segment, and a new user reaching first value **without the author's help** — onboarding sells value, not terminology.
-
-## V5.4 — The whole working day, without the terminal ✅ (v5.4.0, 7 August 2026)
-
-V5.1 put the window there and V5.3 filled it with the shipped team. V5.4 turns it into the
-place the day's work actually happens. The route table that carries it is declared once and
-frozen — its size is a test — and every door in it is live: the shape test that guards the table
-is unconditional again, so there is no «coming soon» handler left in it.
-
-- **The phase cycle, run from the app** — an index of phases, a card per phase with its four
-  stages and a button on each, plans and summaries read in place, the acceptance list answered
-  line by line. A stage that stops to ask parks its question and the window renders it in the
-  shape the engine parked it, answered on a card rather than retyped into a terminal.
-- **The workbench** — memory drafts reviewed one at a time with a per-file yes, the lint report
-  and the corpus doors, live claims and collisions, the backlog with a «promote to a task» door,
-  one search across everything with a visibility filter, and a command palette that **opens the
-  thing that acts** rather than acting itself.
-- **The live attempt log** — a worker's output reaches the screen while it is still talking,
-  subagents included, so a delegating session does not go silent behind a spinner.
-- **The ship card, which never pushes** — it runs the gate, records the run, marks the result.
-  There is no path from the daemon to `origin` and this card does not invent one.
-- **An answer is also work** — a task that needed no code completes on an answer receipt and
-  lands in approval, instead of failing for want of a receipt over code that was never supposed
-  to exist. The gate opens only when git says the attempt touched nothing: zero commits on the
-  branch and a clean worktree. An edit left uncommitted is unfinished work, not an answer.
-- **Proof that the move happened** — a session-start hook writes one line per terminal run, and
-  the journal report sorts each into one of the four kinds of work agreed to stay at a terminal
-  (measuring runs, git history surgery, removing the framework, repairing the daemon), printing
-  the count outside that list as its last line. A missing journal exits 3 rather than reporting
-  a zero: the absence of a record is not a record of absence.
-- **An attempt books what it cost**, so the spend screen answers a real question.
-
-One honest carry, stated rather than hidden: **the five-day proving run** — a full phase cycle
-driven from the window, start to finish, with the journal reading zero outside the list — is
-live operation *after* this release, not a receipt inside it.
-
-## V5.5 — The engine: steering a live session ✅ (v5.5.0, patched v5.5.1–v5.5.2)
-
-The competitor survey exposed one gap nobody had filled: **you cannot steer a live agent
-session.** V5.5 built the wheel into the window — the task card became a thread, text typed
-against running work gained a declared fate (interrupt now, or ride the continuation), and a
-returned task resumes the session it already paid for instead of starting from zero. The
-correction is written to disk before anything is killed, so a daemon restart cannot lose it.
-
-The honest half of this version is its patch line. **v5.5.2 was the day it was found that the
-engine's parts had never been bolted to one another** — nine breaks, all one class: each piece
-written, covered by a test, green, and attached to nothing. A worker had never been able to
-change a file, because the permission envelope was computed and journaled but never handed to
-the process being launched. Live updates had never reached the window, because the daemon named
-its frames and the window listened for the unnamed default. Work happened in the directory the
-daemon was launched from rather than the connected project. Each break became visible only after
-the one before it was fixed. They are listed one by one in
-[docs/DETAILS.md](docs/DETAILS.md#the-v5-series-release-by-release), because a release note that
-hides what was broken is worth nothing to the person who hit it.
-
-The standing law that came out of it, and now governs planning: **computed is not connected.**
-Every computed artifact must be proven to reach the thing that consumes it, by a test that
-asserts the wire — not the calculation — and by an end-to-end run over the whole route rather
-than piece by piece.
-
-## V5.6 — The taskboard, and numbers that do not lie ✅ (v5.6.0)
-
-In the repository, deliberately not published while the engine settles.
-
-- **One line per unit of work, three real kinds.** A task, a pack of tasks worked one at a time
-  and closed by a single assembly, and a phase with its four stages and gates. Each opens into
-  its own view; the trail at the top leads back where you came from. Every section of the list
-  stands for the **last word** about a task, so a returned task appears once, under its own name.
-- **A card that answers three questions** — what was promised, what was done, what proves it —
-  with ✓ / ? / × only where the state is genuinely known, and words where the engine cannot
-  answer.
-- **The words of a task are derived by the system**, from your formulation, the way a planner
-  derives criteria from a goal — visible, correctable, and queued only on your confirmation. A
-  pack is proposed the same way: matching backlog entries plus sub-tasks split out of your
-  sentence.
-- **A conversation with the system that does not leave the screen** — one keystroke opens it over
-  whatever you are looking at, and it takes its context from there. Three outcomes: a decision on
-  a waiting question that travels to the worker, an order that becomes a task, or an answer about
-  the current state.
-- **A whole wave can be told to stand.** Tasks finish the move they are in and stop; nothing is
-  torn mid-step; the hold is written to disk and survives a restart.
-- **The exit gate is differential, and measures the worker's own copy.** Both snapshots name the
-  worker's working tree, `reverify --tree` measures the tree it was told to measure, and only a
-  **new** divergence is red — a pre-existing failure is reported as pre-existing rather than
-  charged to whoever ran last.
-- **Numbers are measured or absent, never invented** — the waiting age counted from when work
-  actually stopped, attempts counted as attempts rather than journal lines, and a merge receipt
-  that answers «not run» instead of a green it never observed.
-- **Acceptance happens in the tree that holds the branch**, and a refusal names its reason on the
-  card. Every attempt's journal carries the list of files it changed beside the commit it started
-  from, so a rollback reads from the record instead of being reconstructed.
-
-Two carries are named rather than hidden: the **phone** still has no design pass of its own, and
-the end-to-end proving run — a full cycle placed, worked and accepted from the window, several
-times without a break — is live operation, not a receipt inside this version.
+- **The five-day acceptance run.** The owner works five days only from the window on a real project; every hole becomes a filed task; zero manual daemon lifts. This is a live-operation milestone — it cannot be closed by a test, only by the days actually happening.
+- **Federation across two physical machines.** The hub/peer design is built and proven on one machine; the receipt on two real machines over a private mesh is the remaining step.
+- **A bilingual runtime, and pilots on strangers' repositories.** The runtime's surfaces speak the user's language (RU/EN) evenly, held by a string-parity test; and the full path — task → worker → acceptance — runs on two external open repositories, receipts published, negative results included.
+- **One journal for every error.** Today failures land in half a dozen places and some silent refusals land nowhere; a single error journal — every subsystem, one line each, with words and a trail — becomes the source that proposes tasks onto the board by itself.
+- **An independent cross-vendor reviewer.** The blind-verification seat extended so that work done by one model family can be re-checked by a different vendor's model that never saw the executor's prompt or reasoning — catching what a same-family reviewer might share as a blind spot.
 
 ## Not building yet — on purpose
 
