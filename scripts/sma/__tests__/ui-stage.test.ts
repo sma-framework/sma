@@ -17,19 +17,24 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { createConnection } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
 import {
+  STAGE_ACTIVE_PROJECT,
+  STAGE_CHAT_TURNS,
   STAGE_HOST,
+  STAGE_PROJECTS,
   URL_ENV,
   announcement,
   missingBuildMessage,
   parseStageArgs,
   stageCommandArgs,
   stageConfig,
+  stageProjectFiles,
+  stageProjects,
   stageUrl,
 } from '../lib/ui-stage.mjs'
 
@@ -43,15 +48,67 @@ const DAEMON_DEFAULT_PORT = 7777
 /** …and the directory it keeps its config and its token in. */
 const DAEMON_HOME = join(homedir(), '.sma-daemon')
 
-type Announced = { url: string; port: number; dir: string; token: string }
+type Announced = { url: string; port: number; dir: string; token: string; receipts: string }
 
-/** Read the scene's own words back: the address, the port and the directory it printed. */
+/** Read the scene's own words back: the address, the port, the directory, the receipts root. */
 function announced(out: string): Announced {
   const url = (out.match(/address:\s+(\S+)/) || [])[1] || ''
   const port = Number((out.match(/port:\s+(\d+)/) || [])[1] || 0)
-  const dir = ((out.match(/dir:\s+(.+)/) || [])[1] || '').trim()
+  const dir = ((out.match(/^\s+dir:\s+(.+)$/m) || [])[1] || '').trim()
+  const receipts = ((out.match(/receipts:\s+(.+?)\s+\(outside/) || [])[1] || '').trim()
   const token = (url.match(/token=([a-f0-9]+)/) || [])[1] || ''
-  return { url, port, dir, token }
+  return { url, port, dir, token, receipts }
+}
+
+/** The address the run engine printed for its own receipt — absolute, on the last line. */
+function receiptPath(out: string): string {
+  return ((out.match(/^Receipt:\s+(.+)$/m) || [])[1] || '').trim()
+}
+
+/**
+ * Ask the live scene a question the way a browser does: mint the session cookie off the
+ * printed address, then call the door. The point of every wire case below is that the answer
+ * comes off a SOCKET — a door that refuses is a fact about the running scene, and no
+ * in-process double can be asked it.
+ */
+async function ask(url: string, path: string, init: RequestInit = {}) {
+  const first = await fetch(url, { redirect: 'manual', headers: { connection: 'close' } })
+  const cookie = (first.headers.getSetCookie?.() ?? []).map((c) => c.split(';')[0]).join('; ')
+  const origin = new URL(url).origin
+  const res = await fetch(origin + path, {
+    ...init,
+    headers: { ...(init.headers ?? {}), cookie, connection: 'close' },
+  })
+  return { status: res.status, text: await res.text() }
+}
+
+/** Raise a holding scene, hand its announcement to `body`, and take it down again. */
+async function onStage(body: (a: Announced) => Promise<void>): Promise<void> {
+  const cwd = scratchDir()
+  const child = spawn(process.execPath, [STAGE], { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+  let out = ''
+  const exited = new Promise<number | null>((done) => child.on('exit', (code) => done(code)))
+  try {
+    await new Promise<void>((done, fail) => {
+      const timer = setTimeout(() => fail(new Error(`the scene never announced itself: ${out}`)), 30000)
+      child.stdout.on('data', (b) => {
+        out += String(b)
+        if (out.includes('Holding.')) {
+          clearTimeout(timer)
+          done()
+        }
+      })
+      child.stderr.on('data', (b) => (out += String(b)))
+      child.on('exit', () => {
+        clearTimeout(timer)
+        fail(new Error(`the scene died before it was up: ${out}`))
+      })
+    })
+    await body(announced(out))
+  } finally {
+    child.kill('SIGTERM')
+    await exited
+  }
 }
 
 /** Every file under a directory, recursively — used to prove an ABSENCE (see the token case). */
@@ -144,6 +201,60 @@ describe('the scene config — made in memory, standing on nothing the daemon ow
   it('carries the port it was given, so the caller writes back the one the socket took', () => {
     expect(stageConfig({ port: 51000, token: 't' }).port).toBe(51000)
   })
+
+  it('carries the registry it is handed — the four read models all start at a connected tree', () => {
+    const projects = stageProjects('/scene')
+    const config = stageConfig({ port: 0, token: 't', projects, activeProject: STAGE_ACTIVE_PROJECT })
+    expect(config.projects).toHaveLength(2)
+    expect(config.activeProject).toBe(STAGE_ACTIVE_PROJECT)
+  })
+
+  it('invents no registry of its own: no trees passed, no trees served', () => {
+    const config = stageConfig({ port: 0, token: 't' })
+    expect(config.projects).toEqual([])
+    expect(config.activeProject).toBeUndefined()
+  })
+})
+
+describe('the kit — two trees, deliberately unalike', () => {
+  it('roots every tree inside the scene’s own directory, and names nothing outside it', () => {
+    for (const p of stageProjects('/scene')) {
+      expect(p.path.startsWith(join('/scene', 'projects'))).toBe(true)
+      expect(p.id).toMatch(/^[a-z][a-z0-9-]*$/)
+      expect(p.name.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('gives BOTH trees a backlog and a profile — one tree is not a switch to test', () => {
+    expect(STAGE_PROJECTS).toHaveLength(2)
+    for (const p of STAGE_PROJECTS) {
+      const files = stageProjectFiles(p.id).map((f) => f.path.join('/'))
+      expect(files, p.id).toContain('.planning/BACKLOG.md')
+      // The profile is what tells the window the house is set up; without it every run has to
+      // remember to walk past the first-run interview before it can look at anything.
+      expect(files, p.id).toContain('.sma/profile.json')
+    }
+  })
+
+  it('makes the two boards DIFFERENT, because a switch that changes nothing proves nothing', () => {
+    const board = (id: string) => stageProjectFiles(id).find((f) => f.path.join('/') === '.planning/BACKLOG.md')?.text ?? ''
+    expect(board(STAGE_PROJECTS[0].id)).not.toBe(board(STAGE_PROJECTS[1].id))
+  })
+
+  it('writes rows in the shape the board parses by, and marks one done so the derive can drop it', () => {
+    const text = stageProjectFiles(STAGE_PROJECTS[0].id).find((f) => f.path.join('/') === '.planning/BACKLOG.md')!.text
+    expect(text).toMatch(/^- \*\*[A-Z][A-Z0-9]{1,7}-\d{1,6}\*\* /m)
+    expect(text).toMatch(/^- \[x\] \*\*/m)
+  })
+
+  it('stamps every fixture turn with the tree it was said under, so the conversation narrows', () => {
+    const ids = new Set(STAGE_CHAT_TURNS.map((t) => t.project))
+    expect([...ids].sort()).toEqual(STAGE_PROJECTS.map((p) => p.id).sort())
+  })
+
+  it('answers an unknown tree with an empty one rather than throwing at the command that raises it', () => {
+    expect(stageProjectFiles('nobody')).toEqual([])
+  })
 })
 
 describe('the words for a state the scene refuses to fix by itself', () => {
@@ -159,6 +270,26 @@ describe('the words for a state the scene refuses to fix by itself', () => {
     expect(said).toContain('port:    9')
     expect(said).toContain('/tmp/scene')
     expect(said).toMatch(/written to no file/)
+  })
+
+  it('names the trees and the receipts root — an artifact nobody can find is no artifact', () => {
+    const said = announcement({
+      url: 'http://127.0.0.1:9/?token=t',
+      port: 9,
+      dir: '/tmp/scene',
+      projects: stageProjects('/tmp/scene'),
+      receipts: '/tmp/sma-ui-receipts',
+    })
+    expect(said).toContain(STAGE_PROJECTS[0].name)
+    expect(said).toContain(STAGE_PROJECTS[1].id)
+    expect(said).toContain('/tmp/sma-ui-receipts')
+    expect(said).toMatch(/outlives this scene/)
+  })
+
+  it('says nothing about trees or receipts it was not given, rather than printing a blank line', () => {
+    const said = announcement({ url: 'http://127.0.0.1:9/?token=t', port: 9, dir: '/tmp/scene' })
+    expect(said).not.toContain('trees:')
+    expect(said).not.toContain('receipts:')
   })
 })
 
@@ -188,7 +319,7 @@ describe('the wire: one command raises the window, the run engine photographs it
       // window, never an opinion about what was seen through it.
       expect(run.code, run.out).toBe(0)
 
-      const { port, dir, token } = announced(run.out)
+      const { port, dir, token, receipts } = announced(run.out)
       expect(port).toBeGreaterThan(0)
       expect(port).not.toBe(DAEMON_DEFAULT_PORT)
       expect(dir.startsWith(DAEMON_HOME)).toBe(false)
@@ -201,13 +332,28 @@ describe('the wire: one command raises the window, the run engine photographs it
       expect(visits.map((v: { status: number }) => v.status)).toEqual([302, 200])
       expect(visits[0].url).toContain(String(port))
 
-      // …and the engine wrote a receipt with a picture in it.
-      const shots = filesUnder(join(cwd, '.planning', 'ui-reviews')).filter((f) => f.endsWith('.png'))
+      // THE RECEIPT LANDED OUTSIDE THE WORKING COPY, AND THE PATH WAS PRINTED — both halves
+      // matter and only the pair is useful. A run made in a throwaway copy used to write its
+      // verdict and its screenshots INTO that copy, which acceptance then removed: the one
+      // artifact proving the window worked stopped existing at the moment somebody read for it.
+      const receipt = receiptPath(run.out)
+      expect(receipt, run.out).not.toBe('')
+      expect(isAbsolute(receipt)).toBe(true)
+      expect(receipt.startsWith(receipts)).toBe(true)
+      expect(receipt.startsWith(cwd)).toBe(false)
+      expect(existsSync(join(cwd, '.planning'))).toBe(false)
+      expect(existsSync(receipt)).toBe(true)
+
+      // …and there is a picture beside it.
+      const shots = filesUnder(dirname(receipt)).filter((f) => f.endsWith('.png'))
       expect(shots.length).toBeGreaterThan(0)
       expect(statSync(shots[0]).size).toBeGreaterThan(0)
 
-      // UPKEEP AT THE NORMAL END: the directory the scene made is gone with it.
+      // UPKEEP AT THE NORMAL END: the directory the scene made is gone with it — and the
+      // receipts root, deliberately, is NOT. Evidence whose lifetime is the scene's lifetime
+      // is evidence nobody can read afterwards.
       expect(existsSync(dir)).toBe(false)
+      expect(existsSync(receipts)).toBe(true)
     },
     60000
   )
@@ -255,6 +401,94 @@ describe('the wire: one command raises the window, the run engine photographs it
       child.kill('SIGTERM')
       await exited
       expect(await portAnswers(port)).toBe(false)
+    },
+    60000
+  )
+
+  it(
+    'the four doors that used to answer «не реализовано» answer for real — asked of the live scene',
+    async () => {
+      await onStage(async ({ url }) => {
+        // MEASURED ON THE RAISED SCENE, not read off the source. Each of these four is a read
+        // model whose collaborator the first scene did not wire, so each answered 501 — and a
+        // worker taking the scene to check «Задачи» or «Бэклог» got a red verdict about work
+        // that was never theirs and went hunting a defect that did not exist.
+        for (const path of ['/api/chat/history?limit=10', '/api/backlog', '/api/coordination', '/api/harness']) {
+          const got = await ask(url, path)
+          expect(got.status, `${path} → ${got.text}`).toBe(200)
+          expect(got.text).not.toContain('not implemented')
+        }
+
+        // …and «answers» means «has something to read», not «returns an empty shape».
+        const backlog = JSON.parse((await ask(url, '/api/backlog')).text)
+        expect(backlog.rows.length).toBeGreaterThan(0)
+        // The ticked row of the fixture is NOT on the board: a board that showed it would be a
+        // history. That is the derive's own rule, proved here on the file the scene wrote.
+        expect(backlog.rows.some((r: { id: string }) => r.id === 'SCN-4')).toBe(false)
+
+        // The ledger is written by the runtime's own writers and read back by the daemon's own
+        // reader — so a fixture that showed rows here could not be showing a shape of its own.
+        const coord = JSON.parse((await ask(url, '/api/coordination')).text)
+        expect(coord.sessions.length).toBeGreaterThan(0)
+        expect(coord.claims.length).toBeGreaterThan(0)
+        expect(coord.collisions.length).toBeGreaterThan(0)
+
+        const chat = JSON.parse((await ask(url, '/api/chat/history?limit=10')).text)
+        expect(chat.turns.length).toBeGreaterThan(0)
+
+        const harness = JSON.parse((await ask(url, '/api/harness')).text)
+        expect(harness.skills.length).toBeGreaterThan(0)
+        // Both stores are NAMED and both are inside the scene: an unnamed machine store
+        // resolves to the operator's own ~/.claude, and the scene would be reading their tree.
+        for (const store of [...harness.skillStores, ...harness.agentStores]) {
+          expect(store.path.startsWith(homedir() + '/.claude'), store.path).toBe(false)
+          expect(store.path.startsWith(join(homedir(), '.claude')), store.path).toBe(false)
+        }
+      })
+    },
+    60000
+  )
+
+  it(
+    'brings two trees and lets a run move between them — and the screen behind the switch changes',
+    async () => {
+      await onStage(async ({ url, dir }) => {
+        const before = JSON.parse((await ask(url, '/api/projects')).text)
+        expect(before.projects.length).toBeGreaterThanOrEqual(2)
+        expect(before.activeProject).toBe(STAGE_ACTIVE_PROJECT)
+
+        const other = STAGE_PROJECTS[1].id
+        const moved = await ask(url, '/api/project/select', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: other }),
+        })
+        expect(moved.status, moved.text).toBe(200)
+
+        // THE SWITCH HAS TO SHOW. The two-tree case is the treacherous one — work routed to the
+        // tree the code is not in — and a switcher whose screens look identical either way
+        // tells a run nothing about whether the switch happened.
+        const after = JSON.parse((await ask(url, '/api/projects')).text)
+        expect(after.activeProject).toBe(other)
+        const board = JSON.parse((await ask(url, '/api/backlog')).text)
+        expect(board.rows.length).toBeGreaterThan(0)
+        expect(board.rows.some((r: { id: string }) => r.id === 'SCN-1')).toBe(false)
+        // The second tree is a QUIET checkout, and an empty panel over one is an honest 200.
+        expect(JSON.parse((await ask(url, '/api/coordination')).text).sessions).toEqual([])
+
+        // AND THE PEN STAYED OFF. The applier decided; nothing was written — least of all the
+        // token, which a config write would have put in a file on the very first press.
+        for (const file of filesUnder(dir)) {
+          expect(file.endsWith('config.json'), file).toBe(false)
+        }
+
+        const unknown = await ask(url, '/api/project/select', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: 'nobody' }),
+        })
+        expect(unknown.status).toBe(404) // the production applier's own named refusal, unchanged
+      })
     },
     60000
   )

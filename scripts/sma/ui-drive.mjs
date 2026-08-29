@@ -15,6 +15,11 @@
  * Exit: 0 clean (or warnings only) · 1 blocking findings · 2 bad arguments
  *       3 NOT RUN — no browser driver, nothing was looked at
  *
+ * The receipt, its journal and its screenshots go to `.planning/ui-reviews/run-<stamp>/`, or
+ * to `$SMA_UI_RECEIPTS/run-<stamp>/` when that names a directory — which is how a run made
+ * inside a throwaway copy keeps its evidence after the copy is taken away. The path is
+ * printed absolute on the last line, either way.
+ *
  * ═══════════════════════ THE IMPURE HALF, KEPT THIN ══════════════════════════════
  * Everything decidable — step parsing, the severity rubric, the verdict, the receipt —
  * lives in lib/ui-drive.mjs under test. This file only drives a browser and writes
@@ -29,7 +34,7 @@
  */
 
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import {
@@ -48,6 +53,7 @@ import {
   missingDriverMessage,
   parseSteps,
   readiness,
+  receiptsRoot,
   redactUrl,
   renderReceipt,
   resolveDriveViewport,
@@ -345,7 +351,10 @@ async function main() {
   }
 
   const startedAt = new Date().toISOString()
-  const outDir = join('.planning', 'ui-reviews', `run-${startedAt.replace(/[:.]/g, '-')}`)
+  // Where the evidence goes. The tree's own reviews folder unless something told this run
+  // otherwise — and the thing that does is a scene raised inside a throwaway copy, whose
+  // receipt has to outlive the copy (see RECEIPTS_ENV).
+  const outDir = join(receiptsRoot({ env: process.env, cwd: process.cwd() }), `run-${startedAt.replace(/[:.]/g, '-')}`)
   mkdirSync(outDir, { recursive: true })
   if (!existsSync(join(outDir, '.gitignore'))) writeFileSync(join(outDir, '.gitignore'), SHOT_IGNORE.join('\n'))
 
@@ -573,7 +582,10 @@ async function main() {
     `${JSON.stringify({ url: redactUrl(url), startedAt, verdict: v, coverage, findings, shots }, null, 2)}\n`,
   )
 
-  process.stdout.write(`${receipt}\nReceipt: ${join(outDir, 'RUN.md')}\n`)
+  // ABSOLUTE, always. The relative form read fine from the shell it was launched in and
+  // nowhere else — and the run that most needs its receipt found is the one made in a copy
+  // whose working directory the reader never had.
+  process.stdout.write(`${receipt}\nReceipt: ${resolve(outDir, 'RUN.md')}\n`)
   process.exit(v.exitCode)
 }
 

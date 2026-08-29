@@ -624,6 +624,29 @@ after it, at the end and on a signal, handing back the command's own exit code. 
 your behalf: no built window is exit 3 with the one command that fixes it, because turning «open the
 window» into «change the repository» is not a trade a check may make for you.
 
+**And it brings something for the window to show.** A door with nothing behind it answers «not
+implemented», which on a screen reads as «the product does not have this» — so a worker who took the
+scene to check the backlog got a red verdict about somebody else's work and went hunting a defect
+that did not exist. The scene therefore carries a kit, written into its own throwaway directory and
+dying with it: **two project trees**, not one, because the two-tree case is the treacherous one —
+work routed to the tree the code is not in — and a switcher with one entry under it is not something
+a run can walk. They differ on purpose: the first is a busy checkout (a backlog, a live session, a
+held reservation, a collision journalled today, a skill of its own), the second is quiet, so a
+switch between them **changes the screen** rather than looking identical either way. The
+coordination ledger is written by the runtime's own writers and read back by the daemon's own
+reader, so the fixture cannot drift away from the format the product keeps; each tree carries a
+profile, so the window opens on the board instead of on the first-run interview. The switcher keeps
+its production applier and loses its **pen** — the registry lives in memory for exactly as long as
+the scene does, which is why the token still meets no file. The queue stays empty and in memory: the
+scene is a window, not a fleet.
+
+**The receipt lands outside every working copy, and the path is printed.** A run made in a
+throwaway copy used to write its verdict and its screenshots into that copy, which is then removed —
+so the one artifact proving the window worked stopped existing at the moment somebody went to read
+it. The scene hands the run engine a receipts root of its own (`SMA_UI_RECEIPTS`), announces it, and
+does **not** take it away at teardown; `ui-drive` prints the receipt's absolute path on its last
+line. Run standalone, the engine still writes to `.planning/ui-reviews/` exactly as before.
+
 That sideways measurement follows the CONTENT, not the document. A window that carries its minimum
 width on a container inside the page measures perfectly clean at phone width while most of the
 screen lies past the edge — so the finding names the box that holds the content and how many pixels
