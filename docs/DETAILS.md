@@ -279,6 +279,26 @@ Every command is a terminal conversation. Expand any to watch what it does — e
 </details>
 
 <details>
+<summary><b><code>/sma-design-phase</code></b> — draw the phase, write the contract beside the drawing, stop at the gate</summary>
+<br>
+
+No recorded terminal demo yet — the stage is new, and a demo of a run that never happened
+would be exactly the kind of claim this product refuses to make. What the command does:
+
+- **Draws.** A self-contained HTML sketch per screen or state into the phase folder, with a
+  snapshot beside it; a snapshot no driver could take is written down as not taken. A phase
+  with no screens gets the shape of its machinery instead — a diagram and half a page — and
+  is looked at by eye in exactly the same way.
+- **Writes the contract.** `NN-DESIGN.md` beside the sketch: what stands where, what the
+  person does, what must not be there. Every point is derived *from* the drawing, so each one
+  is a statement the executor and QA can be right or wrong about.
+- **Has it checked, then stops.** The checker's verdict — `PASS`, `FLAG` or `BLOCK` — goes
+  into the contract's front matter *before* a person is asked, and a surviving `BLOCK` stays
+  written there. The command confirms nothing itself and has no way past its own gate.
+
+</details>
+
+<details>
 <summary><b><code>/sma-execute-phase</code></b> — build in dependency-aware waves; reflexes fire before the act</summary>
 <br><img src="../assets/demos/sma-execute-phase.svg" alt="/sma-execute-phase terminal demo" width="760">
 </details>
@@ -1343,7 +1363,7 @@ $ node scripts/sma/cli.mjs next-slot migration
 
 Nothing here is a database row or an opaque embedding. It is a handful of text files, and together they are the entire loop: burn → note → prediction → script-settled receipt → reflex that stops the next burn.
 
-### The lifecycle: discuss → plan → grill → build → verify → ship
+### The lifecycle: discuss → plan → grill → design → build → verify → ship
 
 SMA is not only memory — it is a full working rhythm for shipping real changes with an agent. Each stage is a `/sma-*` command, and every stage reads from and writes back to the same file-based memory, so nothing is re-explained twice.
 
@@ -1351,9 +1371,10 @@ SMA is not only memory — it is a full working rhythm for shipping real changes
 flowchart LR
     D["1 · Discuss<br>/sma-discuss-phase"] --> P["2 · Plan<br>/sma-plan-phase"]
     P --> G["3 · Grill<br>sma grill --gate"]
-    G --> B["4 · Build<br>/sma-execute-phase"]
-    B --> V["5 · Verify<br>/sma-verify-work"]
-    V --> S["6 · Ship<br>push ritual + preship gate"]
+    G --> DS["4 · Design<br>/sma-design-phase"]
+    DS --> B["5 · Build<br>/sma-execute-phase"]
+    B --> V["6 · Verify<br>/sma-verify-work"]
+    V --> S["7 · Ship<br>push ritual + preship gate"]
     M(["Memory + predictions<br>+ receipts + reflexes"]) -.->|reads| D
     M -.->|reads| P
     M -.->|reads| B
@@ -1365,9 +1386,10 @@ flowchart LR
 - **1 · Discuss** — lock the gray-area decisions with a human *before* any code, through adaptive questioning. The context is captured as files, so the plan that follows is grounded, not guessed.
 - **2 · Plan** — turn the decisions into an executable plan whose steps each carry a machine-checkable **prediction** and, at close, a re-runnable **receipt**. The plan is the contract.
 - **3 · Grill** — cross-examine every promise before a line is built; an unresolved challenge becomes a registered prediction or the build does not start.
-- **4 · Build** — execute the plan in dependency-aware waves. Reflexes fire before risky actions; progress is journaled so an interrupted run resumes in minutes, not from scratch; subagent writes are verified against the tree.
-- **5 · Verify** — validate the built feature against its acceptance criteria, and let the blind verifier re-derive each "done" from the tree alone. Human sign-off gates stay human; the agent never self-certifies.
-- **6 · Ship** — the release ritual runs the full gate *and the `preship` consequences check*; the predictions written in step 2 are **scored** against what actually happened. A class-A miss blocks the push until the founder dispositions it. The loop closes.
+- **4 · Design** — draw the thing the plan describes, and write a short contract of checkable points beside the drawing. Both stay in the phase folder for good. A person confirms the contract at the gate — on the phase card or from the terminal — and **without that confirmation the build does not start**: there is no flag and no configuration key that turns this gate off. A redraw after a confirmation is a new version through the same gate, with the previous contract kept as the trail.
+- **5 · Build** — execute the plan in dependency-aware waves. Reflexes fire before risky actions; progress is journaled so an interrupted run resumes in minutes, not from scratch; subagent writes are verified against the tree.
+- **6 · Verify** — validate the built feature against its acceptance criteria, and let the blind verifier re-derive each "done" from the tree alone. Human sign-off gates stay human; the agent never self-certifies.
+- **7 · Ship** — the release ritual runs the full gate *and the `preship` consequences check*; the predictions written in step 2 are **scored** against what actually happened. A class-A miss blocks the push until the founder dispositions it. The loop closes.
 
 ## V2 — Predictions, reflexes, coordination
 

@@ -195,10 +195,11 @@ line to it (unless one is already there). It does not create the file — if
 you have none, add `.sma/` yourself, or the coordination state travels in
 your commits.
 
-The fourteen command skills are `/sma-start`, `/sma-discuss-phase`,
-`/sma-plan-phase`, `/sma-execute-phase`, `/sma-verify-work`, `/sma-quick`,
-`/sma-fast`, `/sma-debug`, `/sma-progress`, `/sma-resume-work`,
-`/sma-pause-work`, `/sma-help`, `/sma-deleteme` and `/sma-update`. Anything
+The sixteen command skills are `/sma-start`, `/sma-discuss-phase`,
+`/sma-plan-phase`, `/sma-design-phase`, `/sma-execute-phase`,
+`/sma-verify-work`, `/sma-qa`, `/sma-quick`, `/sma-fast`, `/sma-debug`,
+`/sma-progress`, `/sma-resume-work`, `/sma-pause-work`, `/sma-help`,
+`/sma-deleteme` and `/sma-update`. Anything
 else you see written as `/sma-…` in older notes is a CLI verb, not a skill —
 run those as `node scripts/sma/cli.mjs <verb>`.
 

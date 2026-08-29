@@ -138,14 +138,17 @@ Open a Claude Code session in your project and type:
 
 ### A normal working cycle
 
-You work in **phases**: one chunk of work at a time — a feature, a fix, a rewrite. Four commands, always in this order:
+You work in **phases**: one chunk of work at a time — a feature, a fix, a rewrite. Five commands, always in this order:
 
 1. `/sma-discuss-phase 1` — it asks you questions until the goal is unambiguous.
 2. `/sma-plan-phase 1` — it writes the plan, including how the result will be checked.
-3. `/sma-execute-phase 1` — it does the work and commits it, step by step.
-4. `/sma-verify-work 1` — it walks the result through with you and re-runs the checks the plan promised.
+3. `/sma-design-phase 1` — it draws the thing and writes a short contract beside the drawing, for you to confirm.
+4. `/sma-execute-phase 1` — it does the work and commits it, step by step.
+5. `/sma-verify-work 1` — it walks the result through with you and re-runs the checks the plan promised.
 
-Then repeat with `2`, `3`, and so on. For something small, skip all four: `/sma-quick` for a small task, `/sma-fast` for a one-liner.
+Then repeat with `2`, `3`, and so on. For something small, skip all five: `/sma-quick` for a small task, `/sma-fast` for a one-liner.
+
+**The design stage, in short.** Between the plan and the code the phase draws the thing and writes a short contract beside the drawing: what stands where, what the person does, what must not be there. Both stay in the phase folder for good — a self-contained HTML sketch with its snapshot when the work has screens, the shape of the machinery when it has none. A person confirms the contract on the phase card in the window, or with the same action from the terminal, and **until it is confirmed, execution of that phase does not start**: there is no flag and no configuration key that turns the gate off. Redrawing after a confirmation is a new version through the same gate — the previous contract stays in the folder as the trail, and execution waits for a fresh confirmation. If the drawing exposes a hole in the plan, the phase goes back to planning with the reason in words, and the plan is corrected in its own stage.
 
 ### Where to look next
 
@@ -155,7 +158,7 @@ Then repeat with `2`, `3`, and so on. For something small, skip all four: `/sma-
 
 ## What's new — the taskboard, and numbers that do not lie
 
-The window had a board of cards. This work turns it into the place the owner actually works from: **every unit of work stands in the column of the stage it is at, opens into its own view, and the conversation about it happens without leaving the screen** — and every figure beside it is either measured or admitted to be missing. There are six columns — discussion, planning, execution, verification, **waiting on you**, and done — a phase stands by its own stage, a task and a batch by their state, and the finished ones are folded into a counter so the working columns keep the screen. Names on the cards are small on purpose («17.7 Phone»); the full name lives on the page of the thing itself, which is what the card opens into.
+The window had a board of cards. This work turns it into the place the owner actually works from: **every unit of work stands in the column of the stage it is at, opens into its own view, and the conversation about it happens without leaving the screen** — and every figure beside it is either measured or admitted to be missing. There are seven columns — discussion, planning, design, execution, verification, **waiting on you**, and done — a phase stands by its own stage, a task and a batch by their state, and the finished ones are folded into a counter so the working columns keep the screen. Names on the cards are small on purpose («17.7 Phone»); the full name lives on the page of the thing itself, which is what the card opens into.
 
 The first cut of this screen read every unit as one line instead, and said so here. The owner accepted the column layout in its place on 25.08.2026; the reason the list existed — that a person comes to this screen to find what is stuck on **them** — did not go away, it got a column of its own.
 
@@ -165,7 +168,7 @@ The first cut of this screen read every unit as one line instead, and said so he
 |---|---|
 | **A task** | the smallest unit — one order, one worker, one session. It closes when the session closes; nothing else has to be signed. |
 | **A pack of tasks** | one sentence of yours spread over several items, worked one at a time by the same worker, and closed by a single assembly at the end. The line names which item is holding the assembly up. |
-| **A phase** | the full cycle — discuss, plan, execute, verify — with gates between the stages. It does not call itself finished until verification and your acceptance are both behind it. |
+| **A phase** | the full cycle — discuss, plan, design, execute, verify — with gates between the stages. It does not call itself finished until verification and your acceptance are both behind it. |
 
 A task is the bottom of the hierarchy and the way in is the same from everywhere: from inside a phase you reach it through a plan, from inside a pack through an item, and on its own it is simply a task with no parent. The trail at the top leads back exactly where you came from.
 
@@ -286,8 +289,9 @@ Every door in it is live: there is no «coming soon» handler left in the table.
 
 - **The phase cycle, run from the app — from the task list, not from a screen of its own.** A
   phase stands in the list of work beside the tasks and the batches, in the column of the stage
-  it is at, and opens **there** into its card: four stages with a button on each, plans and
-  summaries opened in place, and the acceptance list answered line by line. The separate «phase
+  it is at, and opens **there** into its card: five stages with a button on each, plans and
+  summaries opened in place, the drawing and its contract confirmed or sent back right there,
+  and the acceptance list answered line by line. The separate «phase
   pipeline» screen that used to hold an index of every phase was **removed** on 28.08.2026 — one
   backlog carries tasks, phases and batches, and a second list of the same work was a second
   truth to keep in step. A phase is named the way *you* named it in the roadmap, not by its
@@ -675,6 +679,7 @@ The `/sma-*` workflow family (run inside a Claude Code session):
 | `/sma-start` | First-run onboarding: explains the system, seeds the memory corpus and the infra profile |
 | `/sma-discuss-phase` | Gather phase context through adaptive questioning before planning |
 | `/sma-plan-phase` | Create a detailed phase plan with a verification loop |
+| `/sma-design-phase` | Draw the phase and write the contract beside the drawing; execution waits for your confirmation |
 | `/sma-execute-phase` | Execute all plans in a phase with wave-based parallelization |
 | `/sma-verify-work` | Validate built features through conversational UAT |
 | `/sma-qa` | Live QA: run the app, check every success criterion by using it, press the surface, file defects with repro steps |
