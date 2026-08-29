@@ -88,6 +88,7 @@
 
 import { createServer } from 'node:http'
 import {
+  existsSync as fsExistsSync,
   readFileSync as fsReadFileSync,
   statSync as fsStatSync,
   readdirSync as fsReaddirSync,
@@ -126,6 +127,7 @@ import { buildPairingInstruction } from './federation.mjs'
 import { mintPairing, telegramLinkView } from '../telegram/pairing.mjs'
 import { scanEstate, enrollSelections } from './import-scanner.mjs'
 import { createOnboarding } from './onboarding.mjs'
+import { namedPaths, missingPaths } from './tree-probe.mjs'
 import { collectDiagnostics } from './diagnostics.mjs'
 // NOTE: diagnostics.mjs is STATICALLY imported for the same reason as the two below: it is
 // pure over an injected os/process/fs, it writes nothing, it reaches no model and no spawn,
@@ -1556,7 +1558,12 @@ async function handleEnqueue({ req, res, config, deps }) {
   if (enq.answered) return undefined // the database refused the text; the reason is already sent
   const result = enq.result
   emitSafe(deps, { event: 'task.queued', taskId: norm.id, status: 'queued' })
-  sendJson(res, 200, { ok: true, id: result.id, coalesced: !!result.coalesced })
+  // КУДА ЗАДАЧА УЕХАЛА — В ОТВЕТЕ ДВЕРИ. Штамп ставится здесь и больше нигде, и до этой
+  // строки его нельзя было прочесть иначе как перечитав очередь: нажавший «Поставить» узнавал
+  // о промахе только когда работник возвращался с вопросом из чужого дерева. Отдаётся то, что
+  // РЕАЛЬНО записано (`norm.project`), а не то, что дверь собиралась записать: у гейта есть
+  // право на своё мнение, и ответ обязан говорить о строке, а не о намерении.
+  sendJson(res, 200, { ok: true, id: result.id, coalesced: !!result.coalesced, project: norm.project ?? null })
 }
 
 /**
@@ -1996,6 +2003,48 @@ function refreshWorkers(config, next) {
 function doorProject(config) {
   const chosen = config && config.activeProject
   return typeof chosen === 'string' && chosen !== '' ? { project: chosen } : {}
+}
+
+/**
+ * doorProjectEntry(config) → the REGISTRY ENTRY the stamp above names, or null.
+ *
+ * THE SAME FACT, SAID SO A PERSON CAN READ IT. `doorProject` answers a slug, because a slug is
+ * what a row stores; a window has to show a NAME, and the tree behind it is what a warning can
+ * actually be checked against. Both come from the one lookup here rather than from two, so the
+ * project a screen names and the project a task is stamped with can never be two projects.
+ *
+ * An entry the register does not have answers as a name equal to its own slug and NO path: an
+ * install can carry a selected project that was renamed away, and inventing a pretty name for
+ * it would be exactly the invented fact `doorProject` refuses to write. Nothing is checked
+ * against a tree that was not named.
+ */
+function doorProjectEntry(config) {
+  const { project } = doorProject(config)
+  if (!project) return null
+  const list = Array.isArray(config && config.projects) ? config.projects : []
+  const hit = list.find((p) => p && p.id === project)
+  if (!hit) return { id: project, name: project, path: null }
+  const path = typeof hit.path === 'string' && hit.path.trim() !== '' ? hit.path : null
+  return { id: hit.id, name: hit.name || hit.id, path }
+}
+
+/**
+ * treeMisses(text, entry, deps) → what the text NAMES BY PATH and that tree does not have.
+ *
+ * ЛОВУШКА, РАДИ КОТОРОЙ ЭТО НАПИСАНО: штамп проекта ставится при создании задачи, а промах
+ * виден только работнику — он получает копию дерева, не находит в ней исходников, о которых
+ * его спросили, и возвращается с вопросом. Замерено: шесть работ, поставленных при не том
+ * активном проекте, стоили полного круга «отменить и пересоздать».
+ *
+ * ЗДЕСЬ НЕ УГАДЫВАЕТСЯ ПРОЕКТ. Дверь отвечает про НАЗВАННОЕ дерево и только на тот вопрос,
+ * который стоит одного `existsSync` на путь; правило, что считать путём, живёт в tree-probe
+ * и проверяется без диска. Дерева нет (проект не подключён) — молчание, а не список: сказать
+ * «в проекте этого нет» про папку, которой мы не видели, значит выдумать факт.
+ */
+function treeMisses(text, entry, deps) {
+  if (!entry || !entry.path) return []
+  const exists = (deps && deps.fsImpl && deps.fsImpl.existsSync) || fsExistsSync
+  return missingPaths({ paths: namedPaths(text), projectDir: entry.path, existsImpl: exists })
 }
 
 /**
@@ -5453,7 +5502,7 @@ async function handleWaveHold({ req, res, config, deps }) {
  * one the conversation offers, so the words of a task do not depend on which of the two places
  * it was asked from.
  */
-async function handleTaskSuggest({ req, res }) {
+async function handleTaskSuggest({ req, res, config, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
   const b = body.value || {}
@@ -5464,17 +5513,42 @@ async function handleTaskSuggest({ req, res }) {
 
   const words = proposeWords(title)
   if (!words) return send400(res, 'invalid title')
+  // КУДА ЭТА ЗАДАЧА УЕДЕТ — И ЧЕГО В ТОМ ДЕРЕВЕ НЕТ. Это единственная дверь, которую окно
+  // спрашивает ДО постановки и с текстом человека на руках, поэтому предупреждение живёт
+  // здесь: после нажатия оно уже не предупреждение, а объяснение убытка. Дверь по-прежнему
+  // НИЧЕГО НЕ СТАВИТ — она и читает-то одним `existsSync` на путь.
+  const entry = doorProjectEntry(config)
   return sendJson(res, 200, {
     ok: true,
     kind: words.kind,
     text: words.text,
     draft: { description: words.description, acceptance: words.acceptance },
+    project: entry ? { id: entry.id, name: entry.name } : null,
+    missing: treeMisses(title, entry, deps),
   })
 }
 
 /**
- * POST /api/task/words — body `{taskId, description?, acceptance?}`. The owner's correction of
- * what a task says about itself, on a task whose work is NOT over.
+ * POST /api/task/words — body `{taskId, description?, acceptance?, taskContext?, project?}`.
+ * The owner's correction of what a task says about itself, on a task whose work is NOT over.
+ *
+ * ═════════════ И ПРОЕКТ — ТО ЖЕ САМОЕ, В ТО ЖЕ САМОЕ ОКНО ═══════════════════════
+ * Задача говорит о себе не только словами: она говорит, ЧЬЯ она — и до сих пор это было
+ * единственное, чего исправить было нельзя. Штамп ставится при создании (`doorProject`) и
+ * переключением активного проекта задним числом не чинится, поэтому промах стоил полного
+ * круга: замерено — шесть работ, поставленных при не том активном проекте, пришлось отменять
+ * и пересоздавать по одной. Здесь у той же ошибки цена одного нажатия.
+ *
+ * НОВОЙ ДВЕРИ ПРИ ЭТОМ НЕ ПОЯВЛЯЕТСЯ: `ROUTES` не изменилась ни на строку. Перестановка —
+ * это правка того, что задача говорит о себе, с тем же окном («пока работа не кончилась»),
+ * тем же ответом на закрытую строку (409) и тем же гейтом очереди; отдельная дверь была бы
+ * вторым экземпляром всех трёх решений.
+ *
+ * СУЩЕСТВУЕТ ЛИ ТАКОЙ ПРОЕКТ, СПРАШИВАЕТ ДВЕРЬ, А НЕ ОЧЕРЕДЬ — ровно там же, где живёт
+ * `doorProject`: конфигом владеет эта половина, а очередь никогда не знала, какие проекты
+ * заведены, и учить её этому ради одной правки значило бы сделать её второй половиной
+ * реестра. Незнакомый слаг — 400 со СВОИМИ словами, а не 404: 404 у этой двери уже занят
+ * и означает «нет такой задачи».
  *
  * A PROMISE IS EDITED BEFORE IT IS JUDGED. On a task that already produced, failed or is
  * waiting for a person, this answers 409 and changes nothing: rewriting what «done» meant
@@ -5485,7 +5559,7 @@ async function handleTaskSuggest({ req, res }) {
  * Only the fields PRESENT in the body move, so a screen editing one does not erase the other.
  * Both are bounded by the queue's own caps, not by a second set written here.
  */
-async function handleTaskWords({ req, res, deps }) {
+async function handleTaskWords({ req, res, config, deps }) {
   const adapter = deps.adapter
   if (!adapter || typeof adapter.setWords !== 'function') return send501(res)
   const body = await readJsonBody(req)
@@ -5493,11 +5567,13 @@ async function handleTaskWords({ req, res, deps }) {
   const b = body.value || {}
   // `taskContext` — снимок контекста, тем же именем, что у двери постановки. Замок не снят:
   // список расширен, а всё, чего в нём нет, по-прежнему 400 ДО всего.
-  if (rejectUnknownKeys(res, b, new Set(['taskId', 'description', 'acceptance', 'taskContext']))) return undefined
+  if (rejectUnknownKeys(res, b, new Set(['taskId', 'description', 'acceptance', 'taskContext', 'project']))) {
+    return undefined
+  }
 
   const taskId = b.taskId
   if (typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
-  if (b.description === undefined && b.acceptance === undefined && b.taskContext === undefined) {
+  if (b.description === undefined && b.acceptance === undefined && b.taskContext === undefined && b.project === undefined) {
     return send400(res, 'nothing to change')
   }
 
@@ -5522,6 +5598,16 @@ async function handleTaskWords({ req, res, deps }) {
     if (typeof b.taskContext !== 'string') return send400(res, 'taskContext must be a string')
     patch.taskContext = b.taskContext
   }
+  if (b.project !== undefined) {
+    // ПЕРЕСТАВИТЬ МОЖНО ТОЛЬКО В ТО, ЧТО ЭТА МАШИНА ЗНАЕТ. Слаг, которого нет в реестре,
+    // прошёл бы структурный гейт очереди и лёг бы на строку — а `taskTreeDir`, не найдя такой
+    // записи, тихо увёл бы работу в дерево запуска. Иначе говоря: перестановка «куда-нибудь»
+    // выглядела бы как удавшаяся и делала бы ровно ту беду, ради которой всё это написано.
+    if (typeof b.project !== 'string' || b.project === '') return send400(res, 'invalid project')
+    const known = (Array.isArray(config && config.projects) ? config.projects : []).some((p) => p && p.id === b.project)
+    if (!known) return send400(res, 'this machine has no such project')
+    patch.project = b.project
+  }
 
   let changed
   try {
@@ -5543,7 +5629,10 @@ async function handleTaskWords({ req, res, deps }) {
   }
 
   emitSafe(deps, { event: 'worker.presence', taskId })
-  return sendJson(res, 200, { ok: true, taskId })
+  // Куда задача теперь поставлена — тем же ключом и теми же словами, что у двери постановки.
+  // Правка, не трогавшая проект, о нём и не заявляет: `null` здесь читался бы как «переставили
+  // в никуда» ровно тем читателем, который и должен показать человеку, где работа лежит.
+  return sendJson(res, 200, { ok: true, taskId, ...(patch.project !== undefined ? { project: patch.project } : {}) })
 }
 
 // ── the three switches a person holds: the conveyor, the money, the model ──

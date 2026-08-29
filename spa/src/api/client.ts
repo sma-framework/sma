@@ -292,6 +292,17 @@ export interface SuggestedWords {
   /** Что система поняла — одной фразой, чтобы промах был виден до нажатия. */
   text: string
   draft: { description: string; acceptance: string[] }
+  /**
+   * В КАКОЙ ПРОЕКТ ЭТА ЗАДАЧА УЕДЕТ, если нажать «Поставить» прямо сейчас. Не догадка по
+   * тексту — активный выбор двери, названный именем, которое человек читает в переключателе.
+   */
+  project?: { id: string; name: string } | null
+  /**
+   * ЧЕГО В ТОМ ДЕРЕВЕ НЕТ: пути, НАЗВАННЫЕ в формулировке и не найденные в проекте выше.
+   * Пустой список — обычное состояние (человек не назвал ни одного пути, или все на месте);
+   * непустой значит ровно одно — задача говорит о файлах, которых в выбранном дереве нет.
+   */
+  missing?: string[]
 }
 
 /**
@@ -305,17 +316,23 @@ export function suggestTaskWords(title: string): Promise<SuggestedWords> {
 }
 
 /**
- * Поправить слова живой задачи. Задача, чья работа уже закончилась, отвечает отказом:
- * переписывать обещание после того, как по нему судили, нельзя.
+ * Поправить слова живой задачи — и ПЕРЕСТАВИТЬ её в другой проект. Задача, чья работа уже
+ * закончилась, отвечает отказом: переписывать обещание после того, как по нему судили, нельзя,
+ * и переписывать дерево, в котором работа шла, тоже нечем.
+ *
+ * `project` — тот же слаг, что стоит в переключателе. Дверь принимает только проект, заведённый
+ * на этой машине; после перестановки копия работнику отводится уже из его дерева.
  */
 export function setTaskWords(input: {
   taskId: string
   description?: string
   acceptance?: string | string[]
-}): Promise<{ ok: boolean; taskId: string }> {
+  project?: string
+}): Promise<{ ok: boolean; taskId: string; project?: string }> {
   return postJson('/api/task/words', withOptional({ taskId: input.taskId }, {
     description: input.description,
     acceptance: input.acceptance,
+    project: input.project,
   }))
 }
 

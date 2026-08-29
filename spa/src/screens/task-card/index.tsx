@@ -878,6 +878,15 @@ export function Screen() {
     return rows.find((r) => r.id === taskId)?.machine
   }, [state.data, taskId])
 
+  // ЧЕЙ ЭТО ПРОЕКТ — из того же чтения и по той же тропе, что и машина. Строка называет свой
+  // проект или не называет ничей; догадка «раз не сказано, значит текущий» — ровно то, из-за
+  // чего одна и та же работа однажды числилась за обоими деревьями сразу.
+  const taskProject = useMemo(() => {
+    if (!taskId) return null
+    const rows = [...(state.data?.queue ?? []), ...(state.data?.awaiting ?? []), ...(state.data?.done ?? [])]
+    return rows.find((r) => r.id === taskId)?.project ?? null
+  }, [state.data, taskId])
+
   // СВОЯ МАШИНА НЕ ПОСЫЛАЕТСЯ. Чтение помечает КАЖДУЮ здешнюю задачу собственным именем машины
   // — «self», если имя не задано, — и карточка честно возвращала его с решением. Дверь читала
   // любое непустое имя как «другая машина», федерации не находила и отвечала 501: живой прогон
@@ -973,6 +982,24 @@ export function Screen() {
         onError: (err) => setProblem(refusalWords(err)),
       },
     )
+  }
+
+  /**
+   * ПЕРЕСТАВИТЬ ЗАДАЧУ В ДРУГОЙ ПРОЕКТ — вместо «отменить и написать заново».
+   *
+   * Штамп проекта ставится при СОЗДАНИИ задачи и переключением активного проекта задним
+   * числом не чинится. Пока переставить было нечем, промах стоил полного круга: замерено —
+   * шесть работ, поставленных при не том активном проекте, пришлось отменить и пересоздать по
+   * одной. Окно у перестановки то же, что у слов, и по той же причине: дерево, в котором
+   * работа уже шла, переписывать нечем.
+   *
+   * Отправляется ТОЛЬКО проект: правка, которая заодно перезаписала бы слова значениями из
+   * полей редактора, стёрла бы то, чего человек не трогал.
+   */
+  const moveToProject = (project: string) => {
+    if (!taskId || project === '' || project === taskProject) return
+    setProblem(null)
+    setWords.mutate({ taskId, project }, { onError: (err) => setProblem(refusalWords(err)) })
   }
 
   const doApprove = () => {
@@ -1153,6 +1180,31 @@ export function Screen() {
                 >
                   Поправить слова
                 </button>
+              </div>
+            ) : null}
+
+            {wordsEditable ? (
+              <div className="flex flex-wrap items-center gap-2 px-1">
+                <span className="text-[10px] font-semibold tracking-[0.08em] text-tx3 uppercase">Проект</span>
+                <select
+                  value={taskProject ?? ''}
+                  onChange={(e) => moveToProject(e.target.value)}
+                  disabled={setWords.isPending}
+                  aria-label="Проект задачи"
+                  className="rounded-[7px] border border-bd2 bg-input px-2 py-1 text-[11.5px] text-tx outline-none focus:border-blue disabled:opacity-60"
+                >
+                  {/* Строка, не назвавшая проекта, так и стоит: подставить сюда текущий выбор
+                      значило бы записать за неё факт, которого никто не измерял. */}
+                  {taskProject === null ? <option value="">проект не назван</option> : null}
+                  {(state.data?.projects ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[10.5px] text-tx3">
+                  Работник получит копию из дерева этого проекта — переставьте, если задача уехала не туда.
+                </span>
               </div>
             ) : null}
 
