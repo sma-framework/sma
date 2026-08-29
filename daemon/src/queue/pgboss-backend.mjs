@@ -29,7 +29,9 @@
  * for touch/complete/fail is likewise a read-only SELECT. This backend NEVER UPDATEs
  * boss tables directly — every MUTATION goes through the boss API (send / fetch /
  * touch / complete / fail). stats() stays API-first via getQueueStats summed over the
- * four lane queues. The ONE table this backend does write is not pg-boss's: the daemon's
+ * four lane queues — under the LIBRARY's key names (QUEUE_STATS_KEYS), and only for the three
+ * things the library actually counts; finished and broken work is counted where it is
+ * recorded, in the attempt journal. The ONE table this backend does write is not pg-boss's: the daemon's
  * own approval row (approval-store.mjs), provisioned at start() and stamped at complete()
  * so the front's approve/return have a durable state to compare-and-set against.
  *
@@ -122,7 +124,7 @@ import {
   readQueueEncoding,
   UTF8,
 } from './encoding.mjs'
-import { recordAttempt } from './attempt-ledger.mjs'
+import { countTerminalOutcomes, recordAttempt } from './attempt-ledger.mjs'
 import { APPROVAL_TABLE, AWAITING_APPROVAL, ensureApprovalTable, markAwaitingApproval } from './approval-store.mjs'
 import { applyTransition } from './state-machine.mjs'
 import { defaultEnvelope } from './capability-envelope.mjs'
@@ -160,6 +162,46 @@ export const BATCH_PARENT_QUEUE = 'sma.batch'
  * a held piece is released by the turn rule or by the owner's word, never by time passing.
  */
 export const HELD_UNTIL = '2999-01-01T00:00:00.000Z'
+
+/**
+ * THE KEYS THIS BACKEND READS OFF `getQueueStats`, WRITTEN DOWN ONCE AND CHECKED AGAINST THE
+ * REAL LIBRARY.
+ *
+ * `stats()` used to ask pg-boss for `queued`, `created`, `active`, `claimed`, `completed` and
+ * `failed` — OUR vocabulary, spoken at a library that answers in its own: `deferredCount`,
+ * `queuedCount`, `activeCount`, `totalCount`. Six names, none of them in the reply, every one
+ * of them resolving to `undefined ?? 0`. The board therefore showed a confident zero for work
+ * that had been done all day, and a wrong number does not look wrong — «сделано: 0» reads as
+ * «сегодня ничего не сделали», which is why nobody went looking for a bug.
+ *
+ * The map is EXPORTED so a test can hold it against the statement pg-boss actually sends to
+ * the database (`pg-boss/src/plans.js` → `getQueueStats`, whose `as "…"` aliases ARE the keys
+ * of the returned row). A hand-written list checked against another hand-written list is two
+ * copies of the same belief; this one is checked against the library's own SQL, so the day
+ * pg-boss renames a column the test fails instead of the board.
+ *
+ * WHAT IS DELIBERATELY ABSENT: there is no entry for `completed` or `failed`, because pg-boss
+ * counts neither. Those two come from the attempt journal (attempt-ledger.mjs), which does.
+ */
+export const QUEUE_STATS_KEYS = Object.freeze({
+  queued: 'queuedCount',
+  claimed: 'activeCount',
+  total: 'totalCount',
+})
+
+/**
+ * The names this backend must NEVER ask pg-boss for again — the exact six it used to ask for.
+ * Kept beside the map it replaced so the regression has a name and a test, rather than living
+ * only in a commit message nobody reads.
+ */
+export const QUEUE_STATS_KEYS_NEVER = Object.freeze([
+  'queued',
+  'created',
+  'active',
+  'claimed',
+  'completed',
+  'failed',
+])
 
 /**
  * THE SESSION SPEAKS UTF-8, AND IT HAS TO BE SAID OUT LOUD. node-postgres decodes every byte
@@ -1398,8 +1440,11 @@ export function createPgBossQueue({
    * while the approval row stays, and counting the table alone would report tasks waiting
    * that no screen can show, growing forever.
    *
-   * Fail-open like every other approval read: an unanswerable side table means zero, and
-   * the counts about WORK are unaffected.
+   * Fail-open like every other approval read — but fail-open means «does not throw and does
+   * not cost the rows their WORK counts», never «invents a number». A side table that will not
+   * answer returns `null`, and stats() passes that through as «нет данных»: zero here would be
+   * the same lie the library keys were, said by a different mouth, and a screen reading «ждут
+   * решения: 0» over a growing pile is precisely the failure this whole read path exists for.
    */
   async function countAwaitingApproval(names) {
     try {
@@ -1412,38 +1457,61 @@ export function createPgBossQueue({
         [AWAITING_APPROVAL, names],
       )
       const row = res && Array.isArray(res.rows) ? res.rows[0] : null
-      return Number(row && row.n) || 0
+      const n = Number(row && row.n)
+      return Number.isFinite(n) ? n : null
     } catch (err) {
       noteApprovalFailure(err)
-      return 0
+      return null
     }
   }
 
+  /**
+   * EVERY NUMBER HERE NAMES ITS SOURCE, AND A MISSING SOURCE SAYS SO.
+   *
+   * Three of the five counts are the library's, read under the library's OWN key names
+   * (QUEUE_STATS_KEYS — see the note there for what asking under ours cost). Two of them —
+   * finished and broken — pg-boss does not count at all, and they come from the attempt
+   * journal, which does. Nothing is derived from a name that is not in an answer: a key that
+   * is absent, or a source that will not answer, yields `null`, and a screen shows «нет
+   * данных». A zero would be a measurement, and «сделано: 0» is the one wrong number that
+   * looks exactly like a right one.
+   */
   async function stats() {
-    const agg = { queued: 0, claimed: 0, awaiting_approval: 0, completed: 0, failed: 0, total: 0 }
+    // Sum a per-lane count while it is still trustworthy: one lane answering with something
+    // that is not a number makes the WHOLE column unknown, because a partial sum presented as
+    // a total is a smaller version of the same lie.
+    const add = (sum, v) => (sum === null || !Number.isFinite(v) ? null : sum + v)
+    let queued = 0
+    let claimed = 0
+    let total = 0
     // THE LANES ONLY, and that is the whole reason the batch requests live elsewhere: they are
     // records of what was asked, not work waiting for a worker, and one counted here would add
     // a permanent unit to «в очереди» that no amount of working could remove.
     for (const lane of TASK_QUEUE_LANES) {
       const s = (await bossInstance.getQueueStats(laneQueue(lane))) || {}
-      const queued = s.queued ?? s.created ?? 0
-      const active = s.active ?? s.claimed ?? 0
-      const completed = s.completed ?? 0
-      const failed = s.failed ?? 0
-      agg.queued += queued
-      agg.claimed += active
-      agg.completed += completed
-      agg.failed += failed
-      agg.total += queued + active + completed + failed
+      queued = add(queued, s[QUEUE_STATS_KEYS.queued])
+      claimed = add(claimed, s[QUEUE_STATS_KEYS.claimed])
+      total = add(total, s[QUEUE_STATS_KEYS.total])
     }
-    // The two counts are ONE population read twice: pg-boss calls these jobs completed and
-    // the approval row says they are still waiting. Counting them in both places would make
-    // stats() disagree with list(), where each row holds exactly one status — so the
-    // waiting ones move over rather than being added. `total` does not change: nothing
-    // appeared, a name did.
-    agg.awaiting_approval = await countAwaitingApproval(TASK_QUEUE_LANES.map(laneQueue))
-    agg.completed = Math.max(0, agg.completed - agg.awaiting_approval)
-    return agg
+    // `awaiting_approval` is a state of the DAEMON's own table — pg-boss has never heard of it
+    // (countAwaitingApproval says why), and an unanswerable table is `null` rather than zero.
+    const awaiting = await countAwaitingApproval(TASK_QUEUE_LANES.map(laneQueue))
+    // The journal of attempts, folded per task: how the last try of each task ended.
+    const ended = countTerminalOutcomes(ledgerDir)
+    // The finished ones and the waiting ones are ONE population read twice: the journal says
+    // the work is done and the approval row says a person has not spoken yet. Counting them in
+    // both places would make stats() disagree with list(), where a row holds exactly one
+    // status — so the waiting ones move over rather than being added. With either side
+    // unknown the subtraction has no meaning and is not attempted.
+    const completed = ended && awaiting !== null ? Math.max(0, ended.completed - awaiting) : null
+    return {
+      queued,
+      claimed,
+      awaiting_approval: awaiting,
+      completed,
+      failed: ended ? ended.failed : null,
+      total,
+    }
   }
 
   // `execSql` is exposed so the composition root can hand the FRONT the same read/write
