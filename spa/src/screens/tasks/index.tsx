@@ -74,12 +74,13 @@ import type { BoardColumn, WorkUnit } from './units'
  */
 
 /**
- * Цвет счётчика и заголовка столбика. Три стадии движения — синие, потому что там работа идёт;
+ * Цвет счётчика и заголовка столбика. Стадии движения — синие, потому что там работа идёт;
  * первая — серая, потому что там она ещё не пошла; «ЖДУТ ВАС» — янтарный, «Готово» — зелёный.
  */
 const COLUMN_TONE: Record<BoardColumn, string> = {
   discuss: 'text-tx3',
   plan: 'text-blue',
+  design: 'text-blue',
   execute: 'text-blue',
   verify: 'text-blue',
   you: 'text-warn-tx',

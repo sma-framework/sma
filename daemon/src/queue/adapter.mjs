@@ -602,9 +602,14 @@ export const TASK_KINDS = Object.freeze(['code', 'document'])
  * The stages of the phase cycle a task may stand for. The exit gate asks a different question
  * of each, so the vocabulary is CLOSED: a stage nobody declared cannot silently pick the
  * loosest gate. `execute` is the one stage whose product is code AND whose questions are
- * documents — which is exactly why it is named here alongside the other three.
+ * documents — which is exactly why it is named here alongside the others.
+ *
+ * `design` stands BETWEEN planning and execution, and it is a stage of every phase rather than
+ * an option a phase may switch on: the drawing a phase is built from is settled before a line
+ * of it is written, or it is settled afterwards by whoever writes the line. It is documentary
+ * like planning and acceptance — it owes a contract file, not a branch.
  */
-export const TASK_STAGES = Object.freeze(['discuss', 'plan', 'execute', 'verify'])
+export const TASK_STAGES = Object.freeze(['discuss', 'plan', 'design', 'execute', 'verify'])
 
 /**
  * The role a row plays in its batch — a CLOSED vocabulary of exactly one value, and the one

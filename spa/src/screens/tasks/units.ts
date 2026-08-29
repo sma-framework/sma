@@ -163,8 +163,8 @@ export const KIND_WORD: Record<UnitKind, string> = {
  */
 const RANK: Record<UnitState, number> = { dec: 0, run: 1, wait: 2, fail: 3, ok: 4, skip: 5, off: 6 }
 
-/** The four stages in the order a phase goes through them. */
-const STAGES: PhaseStage[] = ['discuss', 'plan', 'execute', 'verify']
+/** The stages in the order a phase goes through them. */
+const STAGES: PhaseStage[] = ['discuss', 'plan', 'design', 'execute', 'verify']
 
 /** A stage's status in the vocabulary of this screen. */
 const STAGE_STATE: Record<PhaseStageStatus, UnitState> = {
@@ -612,18 +612,27 @@ export function buildUnits(input: UnitsInput): WorkUnit[] {
  * СТОЛБИК — ЭТО ГДЕ РАБОТА СТОИТ НА ДОРОГЕ, А НЕ ЧТО С НЕЙ ПРОИСХОДИТ. Второе говорит сама
  * карточка своим словом и точкой: фаза, у которой стадия «Исполнение» ещё не запущена, стоит
  * в «Исполнении» и при этом честно пишет «Не начата». Если бы столбик отвечал ещё и за
- * состояние, у шести столбиков было бы семь смыслов, и первый же спор двух смыслов человек
+ * состояние, у столбиков было бы вдвое больше смыслов, и первый же спор двух смыслов человек
  * прочитал бы как ошибку экрана.
  */
-export type BoardColumn = 'discuss' | 'plan' | 'execute' | 'verify' | 'you' | 'done'
+export type BoardColumn = 'discuss' | 'plan' | 'design' | 'execute' | 'verify' | 'you' | 'done'
 
 /** Слева направо — так, как работа идёт. Порядок объявлен один раз и здесь. */
-export const BOARD_COLUMNS: BoardColumn[] = ['discuss', 'plan', 'execute', 'verify', 'you', 'done']
+export const BOARD_COLUMNS: BoardColumn[] = [
+  'discuss',
+  'plan',
+  'design',
+  'execute',
+  'verify',
+  'you',
+  'done',
+]
 
 /** Заголовки столбиков — в словах принятого макета. */
 export const COLUMN_WORD: Record<BoardColumn, string> = {
   discuss: 'Обсуждение',
   plan: 'Планирование',
+  design: 'Дизайн',
   execute: 'Исполнение',
   verify: 'Проверка',
   you: 'ЖДУТ ВАС',
@@ -631,10 +640,16 @@ export const COLUMN_WORD: Record<BoardColumn, string> = {
 }
 
 /**
- * Четыре стадии фазы — и четыре первых столбика. Список стоит рядом со `STAGES` и в том же
+ * Стадии фазы — и столько же первых столбиков. Список стоит рядом со `STAGES` и в том же
  * порядке НАРОЧНО: стадия N фазы и есть столбик N, и связь эта проверяется прогоном.
+ *
+ * ДИЗАЙН ПОЛУЧИЛ СВОЙ СТОЛБИК, А НЕ УГОЛОК В «ПЛАНИРОВАНИИ», и это решение, а не следствие.
+ * Свернуть его к соседу означало бы: две разные стадии стоят в одном месте доски, инвариант
+ * «стадия N и есть столбик N» перестаёт быть равенством, а человек, увидевший фазу в
+ * «Планировании», не может сказать, чего она ждёт — плана или чертежа. Столбик шире доски
+ * стоит дешевле, чем место на доске, о котором надо спрашивать.
  */
-const STAGE_COLUMN: BoardColumn[] = ['discuss', 'plan', 'execute', 'verify']
+const STAGE_COLUMN: BoardColumn[] = ['discuss', 'plan', 'design', 'execute', 'verify']
 
 /**
  * В КАКОМ СТОЛБИКЕ СТОИТ ЕДИНИЦА.
@@ -645,7 +660,7 @@ const STAGE_COLUMN: BoardColumn[] = ['discuss', 'plan', 'execute', 'verify']
  *      человеке, не должна отыскиваться среди движущейся: в этом весь смысл столбика.
  *   2. Фаза — по СВОЕЙ стадии: идущая, если такая есть, иначе первая непройденная. Стадии
  *      фаза несёт лентой (`segs`), считанной с её собственных артефактов, поэтому здесь
- *      ничего не домысливается. Все четыре пройдены — «Готово».
+ *      ничего не домысливается. Все пройдены — «Готово».
  *   3. Инлайн и батч стадий не имеют вовсе: у них одна дорога — исполнение. Поэтому идущая и
  *      ждущая работника единица стоят в «Исполнении», а всё закрытое — в «Готово».
  *
@@ -671,7 +686,7 @@ export interface BoardColumnView {
 }
 
 /**
- * Шесть столбиков в их порядке — и пустой столбик остаётся столбиком.
+ * Столбики в их порядке — и пустой столбик остаётся столбиком.
  *
  * Пустое «Планирование», убранное с экрана, двигало бы соседей при каждом опросе состояния:
  * человек читает доску по МЕСТУ, и место, которое переезжает, приходится искать заново.
@@ -684,7 +699,15 @@ export function buildBoard(units: WorkUnit[]): BoardColumnView[] {
 
 /** Счётчики шапки — по столбикам, посчитанные по тем же единицам, что в них и лежат. */
 export function countColumns(units: WorkUnit[]): Record<BoardColumn, number> {
-  const out: Record<BoardColumn, number> = { discuss: 0, plan: 0, execute: 0, verify: 0, you: 0, done: 0 }
+  const out: Record<BoardColumn, number> = {
+    discuss: 0,
+    plan: 0,
+    design: 0,
+    execute: 0,
+    verify: 0,
+    you: 0,
+    done: 0,
+  }
   for (const u of units) out[columnOf(u)] += 1
   return out
 }

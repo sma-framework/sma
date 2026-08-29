@@ -15,7 +15,7 @@ import { isDeadline, isNotReady, isRaceLost } from '../api/client'
 import type { PhaseStage, ReceiptProof, ReceiptSummary, TaskStatus, WindowFact } from '../api/types'
 
 /**
- * What each of the four stages is called on the glass.
+ * What each stage of a phase is called on the glass.
  *
  * It began beside «Конвейер фаз», the first screen with stages on it, and moved here the day
  * the conversation grew a stage draft of its own — the registry's rule for a thing two
@@ -26,20 +26,31 @@ import type { PhaseStage, ReceiptProof, ReceiptSummary, TaskStatus, WindowFact }
 export const STAGE_LABEL: Record<PhaseStage, string> = {
   discuss: 'Обсуждение',
   plan: 'План',
+  design: 'Дизайн',
   execute: 'Исполнение',
   verify: 'Приёмка',
 }
 
 /**
- * ПОРЯДОК ЧЕТЫРЁХ СТАДИЙ — дорога фазы, названная один раз.
+ * ПОРЯДОК СТАДИЙ — дорога фазы, названная один раз.
  *
  * Он жил у экрана фаз, пока его не спросил ВТОРОЙ читатель: окошко показателей считает по нему
- * «стадия N из 4», и это тот же вопрос, что рисует дорога. Поэтому порядок переехал сюда, к
+ * «стадия N из N», и это тот же вопрос, что рисует дорога. Поэтому порядок переехал сюда, к
  * названиям стадий, — по тому же правилу, по которому здесь оказались они сами, — а прежнее
  * место его перепубликует. Два написания одной дороги однажды разошлись бы, и «стадия 3 из 4»
  * указывала бы не на ту стадию, которую человек видит открытой.
+ *
+ * ДЛИНА ДОРОГИ НИГДЕ НЕ ЗАПИСАНА ЧИСЛОМ — она считается по этому списку. Ровно поэтому дизайн,
+ * вставший между планом и исполнением, не потребовал править ни одного счётчика: место, где
+ * длина стояла бы цифрой, — это и есть место, где счёт разошёлся бы с дорогой молча.
  */
-export const STAGE_ORDER: readonly PhaseStage[] = ['discuss', 'plan', 'execute', 'verify'] as const
+export const STAGE_ORDER: readonly PhaseStage[] = [
+  'discuss',
+  'plan',
+  'design',
+  'execute',
+  'verify',
+] as const
 
 /** Russian counts three ways. This is that rule, written once. */
 export function plural(n: number, one: string, few: string, many: string): string {

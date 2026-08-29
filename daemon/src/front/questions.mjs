@@ -179,6 +179,10 @@ export const STAGE_ARTIFACTS = Object.freeze({
   discuss: Object.freeze({ produces: '-CONTEXT.md', checkpoint: CHECKPOINT_SUFFIX }),
   // planning ends in plan files — one per plan of the phase
   plan: Object.freeze({ produces: '-PLAN.md', checkpoint: null }),
+  // the drawing stage ends in the phase's design contract. Documentary, exactly like planning
+  // and acceptance: it owes a file and it parks nothing of its own — the question it may reach
+  // is settled at its own gate, by a person, before any of the work is dispatched
+  design: Object.freeze({ produces: '-DESIGN.md', checkpoint: null }),
   // acceptance ends in the verification record
   verify: Object.freeze({ produces: '-VERIFICATION.md', checkpoint: null }),
   // an execute stage produces CODE (it rides the reverify gate), but it can still stop on a

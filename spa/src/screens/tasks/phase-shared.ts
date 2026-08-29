@@ -32,7 +32,7 @@ import { refusalWords, STAGE_LABEL, STAGE_ORDER } from '../../shell/format'
 /**
  * What each stage is called on the glass, and the order a phase goes through them. Both MOVED
  * to the shell the day a second screen needed them — the conversation drafts a stage of its own,
- * and the phase's «стадия N из 4» counts by the order — and are re-exported here so this
+ * and the phase's «стадия N из N» counts by the order — and are re-exported here so this
  * folder's readers still find them where they expect. One spelling, two screens.
  */
 export { STAGE_LABEL, STAGE_ORDER }
@@ -41,6 +41,7 @@ export { STAGE_LABEL, STAGE_ORDER }
 export const STAGE_WHAT: Record<PhaseStage, string> = {
   discuss: 'разговор о том, что делаем и почему',
   plan: 'планы работ по этой фазе',
+  design: 'договор о том, как это выглядит и ведёт себя',
   execute: 'работа по планам и итоги',
   verify: 'проверка сделанного',
 }

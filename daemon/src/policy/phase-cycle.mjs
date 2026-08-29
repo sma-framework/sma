@@ -1,7 +1,7 @@
 /**
- * phase-cycle.mjs — THE FOUR COMMANDS OF THE PHASE CYCLE, IN ONE PLACE.
+ * phase-cycle.mjs — THE COMMANDS OF THE PHASE CYCLE, IN ONE PLACE.
  *
- * WHY THIS FILE EXISTS AT ALL. Two parts of the daemon need the same four strings and they sit
+ * WHY THIS FILE EXISTS AT ALL. Two parts of the daemon need the same strings and they sit
  * on opposite sides of the machine: the front door that STARTS a stage writes the command onto
  * the task, and the runner that SPAWNS the session turns it into the session's prompt. While
  * the dictionary lived inside the front server, the runner had exactly two ways to reach it —
@@ -15,7 +15,7 @@
  * content of a task is fenced as DATA precisely because of that. So the runner does NOT read
  * the command it is about to execute out of the record — it looks the stage up here and
  * rebuilds the command from a frozen constant. The only text that can ever become a bare
- * instruction is one of these four templates, whatever the row says.
+ * instruction is one of these frozen templates, whatever the row says.
  *
  * THE PAIR CANNOT DRIFT, AND THAT IS PROVED RATHER THAN INTENDED. The door and the runner
  * call the SAME function with the same arguments, and the suite pins their outputs equal byte
@@ -23,7 +23,7 @@
  * command while the worker ran another — the class of defect this whole file is built to make
  * impossible.
  *
- * NO PATH TO AUTO-MODE EXISTS HERE, BY CONSTRUCTION. None of the four commands carries a flag
+ * NO PATH TO AUTO-MODE EXISTS HERE, BY CONSTRUCTION. None of the commands carries a flag
  * that would let the machine answer a question in the founder's place, and `assertNoAutomation`
  * refuses the command if one is ever added — enforced at the point of use rather than
  * remembered at the point of editing. Both callers get that guard by construction, because
@@ -34,7 +34,7 @@
  */
 
 /**
- * THE FOUR COMMANDS — one per stage, frozen, with `{phase}` as their only hole. A stage the
+ * THE COMMANDS — one per stage, frozen, with `{phase}` as their only hole. A stage the
  * table does not name has no command and is refused by name.
  *
  * `--text` and `--batch` are the shape of a stage RUN BY A DAEMON: no interactive prompt to
@@ -45,6 +45,10 @@
 export const STAGE_COMMANDS = Object.freeze({
   discuss: '/sma-discuss-phase {phase} --batch --text',
   plan: '/sma-plan-phase {phase} --text',
+  // the drawing stage, between the plan and the work. Same frozen shape as the others, and
+  // deliberately no flag that would let the machine settle a design question in a person's
+  // place — a drawing nobody chose is the one artefact of a phase that cannot be re-derived
+  design: '/sma-design-phase {phase} --text',
   execute: '/sma-execute-phase {phase}',
   verify: '/sma-verify-work {phase} --text',
 })

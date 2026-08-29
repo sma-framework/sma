@@ -2094,8 +2094,8 @@ export interface ProjectWriteResult extends OkResult {
 // A shape here is therefore a CONTRACT on the filling work, not a wish — if a door ends up
 // answering something else, this file is what changes, in that door's own commit.
 
-/** The four stages a phase goes through. A closed vocabulary; a fifth name is refused. */
-export type PhaseStage = 'discuss' | 'plan' | 'execute' | 'verify'
+/** The stages a phase goes through. A closed vocabulary; a name outside it is refused. */
+export type PhaseStage = 'discuss' | 'plan' | 'design' | 'execute' | 'verify'
 
 /**
  * Where a stage stands, read off the artefacts on disk rather than remembered. A stage is
