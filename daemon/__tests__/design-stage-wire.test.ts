@@ -37,6 +37,14 @@ import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { derivePhaseCard, stagesOf } from '../src/front/state.mjs'
 import { EXEC_CHECKPOINT_SUFFIX } from '../src/front/questions.mjs'
 import { stageCommand } from '../src/policy/phase-cycle.mjs'
+import {
+  gateCleared,
+  SHOWN_WORD,
+  stageShown,
+  STAGE_ORDER,
+  STATUS_WORD,
+} from '../../spa/src/screens/tasks/phase-shared'
+import type { PhaseStage, PhaseStageStatus } from '../../spa/src/api/types'
 
 const TOKEN = 'g'.repeat(64)
 const PROJECT = '/proj'
@@ -587,5 +595,71 @@ describe('Е · строка чертежа, ждущая слова челов�
   it('ждёт чертёж ДРУГОЙ фазы — поле не появляется: чужой номер тут был бы чужой кнопкой', () => {
     const alien = designRow({ id: 'S-555', status: 'awaiting_approval', data: { kind: 'document', stage: 'design', phase: '77' } })
     expect(cardWith([alien])).not.toHaveProperty('designTask')
+  })
+})
+
+// ═════ Ж · ВОРОТА ЧЕРТЕЖА НЕ ПРОЙДЕНЫ, ПОКА СЛОВА ЧЕЛОВЕКА НЕТ ══════════════════════════
+//
+// Ступень дизайна существует ради ОДНОГО факта: человек посмотрел глазами и сказал «да». Файл
+// на диске этого факта не содержит. `stages.design` демон выводит ИЗ ПАПКИ ФАЗЫ — чертёж лёг,
+// ступень «готово», — и о подтверждении этот вывод не знает ничего. Пока тон ворот и слово
+// ступени брались прямо оттуда, экран рисовал ворота ПРОЙДЕННЫМИ и говорил «готово» на решении,
+// которого человек не принимал: та же карточка двумя сотнями пикселей ниже предлагала кнопку
+// «Подтвердить дизайн», а дверь исполнения этой фазы ответила бы отказом (кейс Б).
+//
+// Утверждается ЦЕПОЧКА ЦЕЛИКОМ: папка фазы → проекция → слово и тон на стекле. Карточка
+// строится настоящим `derivePhaseCard`, а не собирается руками: карточка, собранная руками,
+// отвечала бы из того самого допущения, которое здесь и проверяется.
+
+describe('Ж · чертёж на диске есть, а слова человека ещё нет — ворота не пройдены', () => {
+  /** Папка фазы с чертежом: на диске он ЕСТЬ, и проекция обязана называть ступень пройденной. */
+  const drawn = () =>
+    fakeFs({
+      [`${DIR}/${PHASE}-CONTEXT.md`]: '# о чём фаза',
+      [`${DIR}/${PHASE}-DESIGN.md`]: '# чертёж',
+    })
+
+  const cardOf = (rows: any[], io: any = drawn()) =>
+    derivePhaseCard({ projectDir: PROJECT, phaseId: PHASE, fsImpl: io, parkedRows: rows })
+
+  /** Ровно то, что делает экран: состояние ступени ГЛАЗАМИ ЧЕЛОВЕКА, а не глазами папки. */
+  const shownOf = (card: any, stage: PhaseStage = 'design') =>
+    stageShown(stage, card.stages[stage] as PhaseStageStatus, card.designTask != null)
+
+  it('вход предъявлен: файл на диске делает ступень «done», ничего не зная о подтверждении', () => {
+    const card = cardOf([designRow({ status: 'awaiting_approval' })])
+    expect(card?.stages.design).toBe('done')
+    expect(card?.designTask).toEqual({ id: 'S-100' })
+  })
+
+  it('ворота НЕ пройдены, пока строка чертежа ждёт человека', () => {
+    const card = cardOf([designRow({ status: 'awaiting_approval' })])
+    expect(gateCleared(shownOf(card))).toBe(false)
+  })
+
+  it('и слово ступени не говорит «готово» — оно говорит, что ждут именно вас', () => {
+    const card = cardOf([designRow({ status: 'awaiting_approval' })])
+    expect(SHOWN_WORD[shownOf(card)]).not.toBe(STATUS_WORD.done)
+    expect(SHOWN_WORD[shownOf(card)]).toBe('ждёт вас')
+  })
+
+  it('чертёж подтверждён — ворота снова пройдены и слово снова «готово»', () => {
+    const card = cardOf([designRow({ status: 'completed' })])
+    expect(gateCleared(shownOf(card))).toBe(true)
+    expect(SHOWN_WORD[shownOf(card)]).toBe(STATUS_WORD.done)
+  })
+
+  it('фаза старше ступени: «пропущена» проходится воротами так же, как раньше', () => {
+    const card = cardOf([], workedPhase())
+    expect(card?.stages.design).toBe('skipped')
+    expect(gateCleared(shownOf(card))).toBe(true)
+    expect(SHOWN_WORD[shownOf(card)]).toBe(STATUS_WORD.skipped)
+  })
+
+  it('ждущий чертёж не перекрашивает ЧУЖИЕ ворота: у остальных ступеней слово прежнее', () => {
+    const card = cardOf([designRow({ status: 'awaiting_approval' })])
+    for (const stage of STAGE_ORDER.filter((s) => s !== 'design')) {
+      expect(shownOf(card, stage), stage).toBe(card.stages[stage])
+    }
   })
 })
