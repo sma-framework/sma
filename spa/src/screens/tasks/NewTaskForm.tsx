@@ -31,6 +31,20 @@ import { useEnqueue, useStateQuery, useSuggestWords } from '../../api/queries'
  * их или стирает, и «Поставить» отправляет то, что он оставил. Два нажатия, а не одно:
  * система, которая и вывела бы смысл работы, и запустила бы её, ответила бы на вопрос,
  * которого ей не задавали.
+ *
+ * ══════════ КУДА ЗАДАЧА УЕДЕТ — НАПИСАНО ДО НАЖАТИЯ, А НЕ ПОСЛЕ ══════════════
+ *
+ * Штамп проекта ставится ПРИ СОЗДАНИИ и переключением активного проекта задним числом не
+ * чинится. У владельца два дерева, и его собственные слова про остальные проекты — «всегда
+ * только мейн и нет отдельных репозиториев», то есть привычка тут и подводит. Замерено
+ * 28.08: шесть работ, поставленных при не том активном проекте, — работник получил копию
+ * дерева планирования, не нашёл в ней исходников и вернулся с вопросом; починить это можно
+ * было только отменив и пересоздав все шесть.
+ *
+ * Поэтому имя проекта стоит ПЕРВОЙ строкой формы, крупно, и рядом с ним — предупреждение о
+ * том, чего в этом дереве нет. Оба факта живут по ту сторону двери: имя приходит с картиной,
+ * список ненайденного — с той же двери, что выводит слова. Форма НЕ УГАДЫВАЕТ проект по
+ * тексту: догадка, ошибающаяся раз в двадцать, хуже честного вопроса.
  */
 
 /**
@@ -120,6 +134,50 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
   const [criteria, setCriteria] = useState('')
   const [understood, setUnderstood] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
+  /** Пути, названные в формулировке и НЕ найденные в дереве выбранного проекта. */
+  const [missing, setMissing] = useState<string[]>([])
+
+  // ИМЯ ПРОЕКТА БЕРЁТСЯ ИЗ КАРТИНЫ, А НЕ ИЗ ЗЕРКАЛА ПЕРЕКЛЮЧАТЕЛЯ: штампует задачу дверь, и
+  // штампует она СВОИМ активным выбором. Показывать здесь то, чем окно сузило чтение, значило
+  // бы обещать одно, а поставить в другое — ровно в тот день, когда эти двое разойдутся.
+  const activeProject = state.data?.activeProject ?? null
+  const projectName =
+    (state.data?.projects ?? []).find((p) => p.id === activeProject)?.name ?? activeProject
+
+  /**
+   * СПРОСИТЬ ДВЕРЬ О ФОРМУЛИРОВКЕ. Одна и та же дверь отвечает на два вопроса — «какими
+   * словами это описать» и «чего из названного нет в выбранном дереве», — и второй ответ
+   * нужен человеку даже тогда, когда слова он пишет сам. Поэтому вызовов два: по кнопке (с
+   * подстановкой черновика) и при уходе из поля названия (только предупреждение).
+   *
+   * Предупреждение НЕ СТИРАЕТСЯ на неудачном вызове: молчание после ошибки сети читается как
+   * «всё на месте», а это ровно тот вывод, ради запрета которого предупреждение и написано.
+   */
+  const askDoor = (text: string, fill: boolean) => {
+    suggest.mutate(text, {
+      onSuccess: (answer) => {
+        setMissing(answer.missing ?? [])
+        if (!fill) return
+        // Черновик КЛАДЁТСЯ В ПОЛЯ, а не показывается отдельной панелью: слова, которые
+        // нельзя тронуть, читаются как решение системы, а это предложение.
+        setDescription(answer.draft.description)
+        setCriteria(answer.draft.acceptance.join('\n'))
+        setUnderstood(answer.text)
+      },
+      onError: () => {
+        if (fill) setProblem('Не вышло вывести слова. Напишите их сами или попробуйте ещё раз.')
+      },
+    })
+  }
+
+  const checkTree = () => {
+    const text = title.trim()
+    if (text.length === 0) {
+      setMissing([])
+      return
+    }
+    askDoor(text, false)
+  }
 
   const deriveWords = () => {
     const text = title.trim()
@@ -128,16 +186,7 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
       return
     }
     setProblem(null)
-    suggest.mutate(text, {
-      onSuccess: (answer) => {
-        // Черновик КЛАДЁТСЯ В ПОЛЯ, а не показывается отдельной панелью: слова, которые
-        // нельзя тронуть, читаются как решение системы, а это предложение.
-        setDescription(answer.draft.description)
-        setCriteria(answer.draft.acceptance.join('\n'))
-        setUnderstood(answer.text)
-      },
-      onError: () => setProblem('Не вышло вывести слова. Напишите их сами или попробуйте ещё раз.'),
-    })
+    askDoor(text, true)
   }
 
   const submit = () => {
@@ -172,10 +221,23 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="absolute top-[42px] right-0 z-30 flex w-[310px] flex-col gap-3 rounded-[13px] border border-bd2 bg-card p-4 shadow-menu">
+      {/*
+        ПЕРВОЙ СТРОКОЙ И КРУПНО — потому что это решение, которое принимается ДО нажатия и
+        стоит дороже всех остальных полей этой формы вместе взятых. Проект не выбран — так и
+        написано: задача встанет без штампа и работника уведут в дерево запуска демона.
+      */}
+      <div className="rounded-[9px] border border-bd2 bg-blue-s px-[11px] py-2">
+        <div className="text-[10px] font-semibold tracking-[0.08em] text-tx3 uppercase">Уедет в проект</div>
+        <div className="mt-0.5 truncate text-[14px] leading-[1.25] font-semibold text-tx" title={projectName ?? undefined}>
+          {projectName ?? 'проект не выбран'}
+        </div>
+      </div>
+
       <input
         value={title}
         autoFocus
         onChange={(e) => setTitle(e.target.value)}
+        onBlur={checkTree}
         onKeyDown={(e) => {
           if (e.key === 'Enter') submit()
           if (e.key === 'Escape') onClose()
@@ -185,6 +247,12 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
         aria-label="Название задачи"
         className="w-full rounded-[9px] border border-bd bg-input px-[11px] py-2.5 text-[12.5px] text-tx outline-none focus:border-blue"
       />
+
+      {missing.length > 0 ? (
+        <p className="m-0 rounded-[8px] bg-warn-s px-2.5 py-2 text-[11.5px] leading-[1.4] text-warn-tx">
+          {`В дереве проекта «${projectName ?? 'без проекта'}» этого нет: ${missing.join(', ')}. Проверьте проект — задача уедет в дерево, которое вы видите выше.`}
+        </p>
+      ) : null}
 
       <Segmented label="Направление" options={LANES} current={lane} onPick={setLane} />
       <Segmented label="Исполнитель" options={EXECUTORS} current={provider} onPick={setProvider} />
