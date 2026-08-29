@@ -33,7 +33,7 @@
  * looked at. Absent driver is a status of its own, never an empty finding list.
  */
 
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -49,6 +49,7 @@ import {
   SWEEP_CAP,
   VIEWPORTS,
   classify,
+  imageFacts,
   isStreamClose,
   missingDriverMessage,
   parseSteps,
@@ -378,6 +379,8 @@ async function main() {
   const overflows = []
   const notSettled = []
   const shots = []
+  /** Файлы, которые драйвер положил вместо снимков: имя, размер и почему это не изображение. */
+  const blankShots = []
   /** Record a page that never stopped changing, naming WHERE it happened. */
   const noteReadiness = (where, state) => {
     if (state && state.ready === false) notSettled.push({ where, waitedMs: state.waitedMs, reason: state.reason })
@@ -444,10 +447,30 @@ async function main() {
     await page.close()
   }
 
+  /**
+   * Снять экран — и ПОСМОТРЕТЬ, что легло на диск.
+   *
+   * Драйвер, который ничего не рисует, всё равно оставляет файл с расширением .png, и путь к
+   * нему уезжал в раздел «Screenshots» рядом с вердиктом PASS. Такой список читается как
+   * доказательство, которого нет. Файл, не оказавшийся изображением, здесь не публикуется
+   * снимком вовсе — он становится находкой, называющей себя словами (см. imageFacts).
+   */
   const capture = async (page, name) => {
     const file = `${name}.png`
-    await page.screenshot({ path: join(outDir, file) })
-    shots.push(join(outDir, file))
+    const path = join(outDir, file)
+    await page.screenshot({ path })
+    let facts
+    try {
+      facts = imageFacts(readFileSync(path))
+    } catch (err) {
+      // Нечитаемый файл — то же отсутствие снимка, и причина у него своя, а не выдуманная.
+      facts = { ok: false, bytes: 0, reason: `файл не читается — ${err.message.split('\n')[0]}` }
+    }
+    if (!facts.ok) {
+      blankShots.push({ file, bytes: facts.bytes, reason: facts.reason })
+      return
+    }
+    shots.push(path)
   }
 
   // Without --at the path and the sweep walk exactly where they always did: 1440×900.
@@ -568,6 +591,7 @@ async function main() {
       unnamedControls,
       overflows,
       notSettled,
+      blankShots,
     },
     { origin }
   )

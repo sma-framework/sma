@@ -352,6 +352,9 @@ export function parseSteps(argv = []) {
  *  - a scripted step that could not complete BLOCKS — a path the operator was told
  *    works, does not
  *  - a console error WARNs — noisy by nature, real often enough to report
+ *  - a CAPTURE THAT IS NOT AN IMAGE WARNs, and the file is not published as a screenshot: the
+ *    walk may have been perfectly valid, but a receipt that lists evidence it does not have is
+ *    worse than one that lists none (see imageFacts)
  *
  * @param {{consoleErrors?:string[], pageErrors?:string[], requestFailures?:Array<object>,
  *          httpErrors?:Array<object>, stepFailures?:Array<object>, deadControls?:Array<object>,
@@ -437,6 +440,17 @@ export function classify(observations = {}, { origin = '' } = {}) {
       detail:
         `${n.where ?? 'the page'} had not finished rendering after ${Math.round(Number(n.waitedMs) || 0) / 1000}s` +
         `${n.reason ? ` — ${n.reason}` : ''}; what was measured there was measured on a page that was still loading`,
+    })
+  }
+  // СНИМОК, КОТОРЫЙ НЕ ИЗОБРАЖЕНИЕ, — это отсутствие доказательства, и сказать об этом обязана
+  // сама квитанция. Предупреждение, а не блокер, и это решение: пройденный путь от неспособности
+  // драйвера сфотографировать не портится — ложным становится только раздел «Screenshots»,
+  // поэтому такой файл там и не публикуется (см. imageFacts и capture в ui-drive.mjs).
+  for (const s of observations.blankShots ?? []) {
+    findings.push({
+      severity: WARNING,
+      kind: 'shot-not-an-image',
+      detail: `${s.file} — ${s.reason ?? 'не изображение'} (${s.bytes ?? 0} байт); этот прогон ничего не сфотографировал`,
     })
   }
   // A control nobody can name is unusable by screen reader and untestable by anyone.
@@ -745,6 +759,55 @@ export function redactUrl(u) {
     // not an address this runtime can parse — hand it back untouched rather than lose it
     return u
   }
+}
+
+/** Первые восемь байт всякого PNG. Файл, который на них кончается, — подпись без картинки. */
+export const PNG_SIGNATURE = Object.freeze([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+
+/**
+ * imageFacts(bytes) → «это вообще изображение?» — по самому файлу, а не по его имени.
+ *
+ * ═══════ ПОЧЕМУ ЭТО ПОНАДОБИЛОСЬ: КВИТАНЦИЯ, ОБЕЩАВШАЯ СНИМОК, КОТОРОГО НЕТ ═══════
+ *
+ * Внизу каждой квитанции написано «снимок доказывает, что экран нарисовался». Драйвер, который
+ * НИЧЕГО не рисует (подставной, отказавший, headless без гарантии захвата), кладёт на диск файл
+ * с расширением .png — и путь к нему уезжал в раздел «Screenshots» рядом с вердиктом PASS.
+ * Читатель такой квитанции видит список снимков и верит ему; открыв файл, он находит восемь
+ * байт подписи. Ровно это и произошло: прогон, у которого не было ни одного шага и ни одного
+ * пикселя, отчитался как зелёный со снимком, и целый круг работы ушёл на выяснение, чей это
+ * файл. Проверка стоит одно чтение файла и снимает весь класс.
+ *
+ * ЧИТАЕТСЯ САМ ФАЙЛ, А НЕ ЕГО РАЗМЕР. Порог в килобайтах был бы гаданием: у пустой страницы
+ * снимок честно маленький. Спрашивается структура — подпись, заголовок IHDR с ненулевыми
+ * сторонами и завершающий IEND: файл, оборванный на середине записи, тоже не изображение.
+ *
+ * ЧИСТАЯ И ТОТАЛЬНАЯ: что угодно нечитаемое — это `{ok:false}` с причиной словами, никогда
+ * исключение. Причина едет в квитанцию, поэтому она на языке квитанции.
+ *
+ * @param {Uint8Array|Buffer|null|undefined} bytes
+ * @returns {{ok:boolean, bytes:number, width:number|null, height:number|null, reason:string|null}}
+ */
+export function imageFacts(bytes) {
+  const b = bytes && typeof bytes.length === 'number' ? bytes : null
+  const n = b ? b.length : 0
+  const no = (reason) => ({ ok: false, bytes: n, width: null, height: null, reason })
+  if (!b || n === 0) return no('файл пуст')
+  if (n < PNG_SIGNATURE.length) return no('файл короче подписи PNG')
+  for (let i = 0; i < PNG_SIGNATURE.length; i += 1) {
+    if (b[i] !== PNG_SIGNATURE[i]) return no('это не PNG — подпись не та')
+  }
+  // Первая запись PNG обязана быть IHDR, и лежит она по фиксированному смещению: длина (4) +
+  // имя (4) сразу за подписью. Без неё у файла нет ни ширины, ни высоты — то есть картинки.
+  if (n < 24) return no(`подпись PNG без изображения — ${n} байт`)
+  const name = String.fromCharCode(b[12], b[13], b[14], b[15])
+  if (name !== 'IHDR') return no('в файле нет заголовка изображения (IHDR)')
+  const u32 = (o) => ((b[o] << 24) >>> 0) + (b[o + 1] << 16) + (b[o + 2] << 8) + b[o + 3]
+  const width = u32(16)
+  const height = u32(20)
+  if (width === 0 || height === 0) return no('изображение нулевого размера')
+  const tail = n >= 8 ? String.fromCharCode(b[n - 8], b[n - 7], b[n - 6], b[n - 5]) : ''
+  if (tail !== 'IEND') return { ok: false, bytes: n, width, height, reason: 'файл оборван — нет конца изображения (IEND)' }
+  return { ok: true, bytes: n, width, height, reason: null }
 }
 
 export function renderReceipt({ url, steps = [], shots = [], findings = [], verdict: v, startedAt = '', coverage } = {}) {

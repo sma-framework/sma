@@ -38,6 +38,7 @@ import {
   WARNING,
   classify,
   dedupe,
+  imageFacts,
   isStreamClose,
   missingDriverMessage,
   parseSteps,
@@ -557,6 +558,91 @@ describe('renderReceipt', () => {
   it('says so plainly when no steps were scripted', () => {
     const md = renderReceipt({ url: 'http://x', verdict: verdict([]) })
     expect(md).toContain('no steps were scripted')
+  })
+})
+
+/**
+ * ═══════ СНИМОК, КОТОРЫЙ НЕ ИЗОБРАЖЕНИЕ ═══════
+ *
+ * Внизу каждой квитанции написано «снимок доказывает, что экран нарисовался». Драйвер,
+ * который ничего не рисует, всё равно кладёт файл с расширением .png — и путь к нему уезжал
+ * в раздел «Screenshots» рядом с вердиктом PASS. Читатель верит списку; в файле — восемь
+ * байт подписи и ни одного пикселя. Один такой прогон стоил круга работы: снимок карточки
+ * искали по квитанции, у которой снимка не было вовсе.
+ *
+ * Проверяется структура файла, а НЕ его размер: у пустой страницы снимок честно маленький,
+ * и порог в килобайтах отверг бы правду вместе с ложью.
+ */
+describe('imageFacts — файл называет себя изображением или не называется снимком вовсе', () => {
+  /** Настоящий однопиксельный PNG: подпись, IHDR со сторонами, данные и IEND. */
+  const REAL_PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  )
+
+  it('признаёт настоящий PNG и называет его стороны', () => {
+    const f = imageFacts(REAL_PNG)
+    expect(f.ok).toBe(true)
+    expect(f.width).toBe(1)
+    expect(f.height).toBe(1)
+    expect(f.bytes).toBe(REAL_PNG.length)
+    expect(f.reason).toBeNull()
+  })
+
+  it('одна подпись PNG без изображения — это не снимок, и причина названа с размером', () => {
+    const f = imageFacts(Buffer.from('89504e470d0a1a0a', 'hex'))
+    expect(f.ok).toBe(false)
+    expect(f.bytes).toBe(8)
+    expect(f.reason).toContain('8 байт')
+  })
+
+  it('пустой файл, чужой формат и отсутствие файла — каждый со своей причиной, и ни одного исключения', () => {
+    expect(imageFacts(Buffer.alloc(0)).reason).toBe('файл пуст')
+    expect(imageFacts(null).reason).toBe('файл пуст')
+    expect(imageFacts(Buffer.from('GIF89a-и-дальше-что-то', 'utf8')).reason).toContain('не PNG')
+  })
+
+  it('файл, оборванный на середине, не изображение — даже когда заголовок на месте', () => {
+    const cut = REAL_PNG.subarray(0, REAL_PNG.length - 12)
+    const f = imageFacts(cut)
+    expect(f.ok).toBe(false)
+    expect(f.width).toBe(1) // заголовок прочитан честно…
+    expect(f.reason).toContain('IEND') // …но конца у файла нет
+  })
+
+  it('изображение нулевого размера — тоже не изображение', () => {
+    const zero = Buffer.from(REAL_PNG)
+    zero.writeUInt32BE(0, 16)
+    expect(imageFacts(zero).ok).toBe(false)
+    expect(imageFacts(zero).reason).toContain('нулевого размера')
+  })
+})
+
+describe('классификация: снимок-пустышка предупреждает и не публикуется снимком', () => {
+  it('называет файл, причину и размер — предупреждением, а не блокером', () => {
+    const findings = classify({ blankShots: [{ file: '01-open-desktop.png', bytes: 8, reason: 'подпись PNG без изображения — 8 байт' }] })
+    expect(findings).toHaveLength(1)
+    expect(findings[0].severity).toBe(WARNING)
+    expect(findings[0].kind).toBe('shot-not-an-image')
+    expect(findings[0].detail).toContain('01-open-desktop.png')
+    expect(findings[0].detail).toContain('8 байт')
+  })
+
+  /**
+   * ПОЧЕМУ ПРЕДУПРЕЖДЕНИЕ, А НЕ БЛОКЕР: пройденный путь от неспособности драйвера
+   * сфотографировать не портится. Ложным становился только раздел «Screenshots» — поэтому
+   * лечится он, а вердикт остаётся о том, что прогон действительно видел.
+   */
+  it('прогон с непустым путём и пустышкой вместо снимка остаётся проходным, но говорит об этом', () => {
+    const findings = classify({ blankShots: [{ file: '01-open-desktop.png', bytes: 8, reason: 'подпись PNG без изображения — 8 байт' }] })
+    const v = verdict(findings)
+    expect(v.exitCode).toBe(0)
+    expect(v.status).toBe('PASS-WITH-WARNINGS')
+    expect(v.warnings).toBe(1)
+    const md = renderReceipt({ url: 'http://x', shots: [], findings, verdict: v })
+    // Раздел снимков ПУСТ: файл на диске остался, но доказательством он не объявлен.
+    expect(md).toContain('## Screenshots\n\n_none_')
+    expect(md).toContain('shot-not-an-image')
   })
 })
 
