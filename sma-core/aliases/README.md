@@ -22,6 +22,16 @@ adds zero behavior.
 | /gsd-fast | /sma-fast | workflows/fast.md |
 | /gsd-help | /sma-help | workflows/help.md |
 
+## Commands that deliberately have NO alias here
+
+The table above is frozen at the set that existed when the rename happened. Commands added
+after it ship under `/sma-*` only — an alias for a name nobody ever had muscle memory for
+would be a second name to keep alive for no one's benefit.
+
+| Command | Workflow | Why no alias |
+|---|---|---|
+| /sma-design-phase | workflows/design-phase.md | added after the rename — never had a `/gsd-*` spelling to be compatible with |
+
 ## Removal condition (fixed when the rename was decided — not renegotiable per project)
 
 `/sma-*` is canonical from wave 0. This alias layer is DELETED as soon as the

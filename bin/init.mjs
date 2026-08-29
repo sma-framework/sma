@@ -58,6 +58,7 @@ const COMMANDS = [
   { name: 'plan-phase',    workflow: 'plan-phase.md',     description: 'Create detailed phase plan (PLAN.md) with verification loop' },
   { name: 'execute-phase', workflow: 'execute-phase.md',  description: 'Execute all plans in a phase with wave-based parallelization' },
   { name: 'discuss-phase', workflow: 'discuss-phase.md',  description: 'Gather phase context through adaptive questioning before planning' },
+  { name: 'design-phase',  workflow: 'design-phase.md',   description: 'The design stage between the plan and the code: draw the phase, write a contract of checkable points beside the drawing, and hand it to a person to confirm before anything is built' },
   { name: 'verify-work',   workflow: 'verify-work.md',    description: 'Validate built features through conversational UAT' },
   { name: 'qa',            workflow: 'qa.md',             description: 'Live QA: run the app, check every success criterion by using it, press the surface, file defects with repro steps' },
   { name: 'quick',         workflow: 'quick.md',          description: 'Execute a quick task with SMA guarantees (atomic commits, state tracking) but skip optional agents' },

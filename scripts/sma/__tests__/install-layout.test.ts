@@ -214,6 +214,7 @@ const PRESET_AGENTS = [
 const PRESET_SKILLS = [
   'sma-debug',
   'sma-deleteme',
+  'sma-design-phase',
   'sma-discuss-phase',
   'sma-execute-phase',
   'sma-fast',
