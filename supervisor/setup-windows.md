@@ -357,6 +357,61 @@ either automatic sign-in, or one manual login after a restart.
 Verified from a cold start: with both Postgres and the daemon stopped, the shortcut brings
 back **both** — the database sandbox first, then the daemon, and the window answers on 7777.
 
+### 6.8. The watchdog — installed from an ordinary session, by one command
+
+The section above brings the daemon back after a restart. A daemon that dies in the middle of
+the day is brought back by the watchdog (`supervisor/daemon-watch.mjs`), and it had the same
+problem, only sharper: its own unit — the Scheduled Task
+`sma-daemon-watch-windows.task.xml` — **cannot be registered at all** on a host without an
+administrator. Measured: both `schtasks /Create` and `Register-ScheduledTask` answer «Access is
+denied» from an ordinary session.
+
+The no-admin route is now installed by a script that ships with the product, not by hand:
+
+```powershell
+cd <SMA_HOME>
+node supervisor/install-watch-windows.mjs           # install and start it now
+node supervisor/install-watch-windows.mjs status    # what is installed, what is running
+node supervisor/install-watch-windows.mjs remove    # take it out and stop it
+```
+
+What it does, in order, and what it says out loud:
+
+- **It tries the Scheduled Task first** — that unit is better than a shortcut: it survives a
+  logoff and it can restart. The refusal is **named in words** («schtasks отказал по правам:
+  «Access is denied» — задача планировщика ставится только из окна с правами администратора»)
+  and only then is the fallback taken. An install that quietly slips into the fallback leaves
+  the owner believing a task is registered that is not there. `--no-task` skips the attempt
+  when you already know the answer.
+- **It writes the Startup shortcut** — `%APPDATA%\…\Startup\SMA daemon watch.lnk`, pointing at
+  the absolute path of `node.exe` and at `supervisor/watch-loop.mjs`. The real Startup folder
+  is asked of Windows itself: on a roaming profile it is not where a computed path would put
+  it, and a shortcut written to the wrong folder is silence instead of a watchdog.
+- **It starts the loop right now**, as a detached process: a watchdog that dies with the window
+  that installed it watches nothing. What makes it alive is not the spawn call but the **lock**
+  it took; a lock not taken within 15 seconds is a failure with the log named, not a «started».
+
+`watch-loop.mjs` is that eternal circle, and it carries the three properties of the Scheduled
+Task without which the shortcut would be a silent downgrade: the delay before the first look
+(`--delay`, 120 seconds by default — a watchdog that looks at a machine which is merely slow
+declares a fall that never happened), the restart of a fallen watchdog with a ceiling (five
+fast failures in a row are a cause the sixth start will not change: the circle stops and leaves
+it in the log), and **one watchdog per machine** (the lock at
+`~/.sma-daemon/daemon-watch.lock.json`; two would declare one fall twice and lift twice). The
+circle's own lines and the watchdog's output go to
+`~/.sma-daemon/logs/daemon-watch-<day>.log`, and which day a line belongs to is decided per line.
+
+**If you had already started a watchdog by hand** — an old shortcut with the loop written
+inside its argument string — the install rewrites that shortcut, but the ALREADY RUNNING old
+process survives it: it never took the lock and knows nothing about it. Close its window (or
+sign out and back in), or the machine carries two watchdogs until the next logon.
+
+Verified by a live run on 2026-08-29 on the reference machine with no administrator rights:
+`schtasks` answered «Access is denied» and that was printed in words; the shortcut landed in
+the Startup folder; the circle started and **survived the window that installed it** (the
+process was still alive from the next shell session); and launching that same shortcut the way
+a logon launches it brought the circle up again.
+
 ---
 
 ## First run
