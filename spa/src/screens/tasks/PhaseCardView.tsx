@@ -18,7 +18,6 @@ import type {
   PhaseFileNode,
   PhasePlan,
   PhaseStage,
-  PhaseStageStatus,
   PhaseUatItem,
   PhaseWave,
   WaveRow,
@@ -33,14 +32,17 @@ import { ArtifactViewer } from './ArtifactViewer'
 import { PhaseFolderView } from './PhaseFolder'
 import {
   doorWords,
+  gateCleared,
   isOpen,
   progressOf,
+  SHOWN_WORD,
   STAGE_LABEL,
   STAGE_ORDER,
   STAGE_WHAT,
-  STATUS_WORD,
+  stageShown,
   stageWords,
 } from './phase-shared'
+import type { StageShown } from './phase-shared'
 
 /**
  * PhaseCardView — one phase in full: four stages, the gates between them, and what is inside
@@ -104,7 +106,17 @@ type Tone = keyof typeof TONE
 
 // `skipped` носит приглушённый тон ожидания, а НЕ зелёный «готово»: фаза старше ступени, и
 // сказать о ней «сделано» значило бы приписать работу, которой не было.
-const STAGE_TONE: Record<PhaseStageStatus, Tone> = { none: 'wait', 'in-progress': 'run', done: 'ok', skipped: 'wait' }
+//
+// `awaiting` — тон решения, а не работы: ждут не работника, а ЧЕЛОВЕКА, и этим же тоном окно
+// говорит об открытых вопросах владельцу. Зелёное «готово» на неподтверждённом чертеже было
+// возвратным дефектом: экран утверждал то, что его же кнопка ниже опровергала.
+const STAGE_TONE: Record<StageShown, Tone> = {
+  none: 'wait',
+  'in-progress': 'run',
+  done: 'ok',
+  skipped: 'wait',
+  awaiting: 'dec',
+}
 
 /**
  * Слова, которыми план называет своё состояние в собственной шапке, — и ТОЛЬКО известные.
@@ -171,19 +183,19 @@ function Ribbon({ segs }: { segs: Tone[] }) {
 function StageCard({
   stage,
   index,
-  status,
+  shown,
   segs,
   picked,
   onPick,
 }: {
   stage: PhaseStage
   index: number
-  status: PhaseStageStatus
+  shown: StageShown
   segs: Tone[]
   picked: boolean
   onPick: () => void
 }) {
-  const tone = TONE[STAGE_TONE[status]]
+  const tone = TONE[STAGE_TONE[shown]]
   return (
     <button
       type="button"
@@ -198,7 +210,7 @@ function StageCard({
           Стадия {index + 1}
         </span>
         <span className="flex-1" />
-        <span className={`text-[10.5px] font-semibold ${tone.word}`}>{STATUS_WORD[status]}</span>
+        <span className={`text-[10.5px] font-semibold ${tone.word}`}>{SHOWN_WORD[shown]}</span>
       </span>
       <span className="mt-1 block text-[13px] font-semibold text-tx">{STAGE_LABEL[stage]}</span>
       <Ribbon segs={segs} />
@@ -985,39 +997,38 @@ export function PhaseCardView({
 
             {/* Дорога фазы: стадия — ворота — стадия. Ворота называют, что требуется от вас. */}
             <div className="flex items-stretch">
-              {STAGE_ORDER.map((s, i) => (
-                <span key={s} className="flex min-w-0 flex-1 items-stretch">
-                  <StageCard
-                    stage={s}
-                    index={i}
-                    status={phase.stages[s]}
-                    segs={stageSegs(s, phase, waves)}
-                    picked={s === stage}
-                    onPick={() => setPicked(s)}
-                  />
-                  {GATE_NEED[s] !== null ? (
-                    <Gate
-                      text={
-                        i === countGate
-                          ? questionsWaiting(counts.open)
-                          : i === 0 && counts.open === 0 && counts.answered > 0
-                            ? `вы ответили на ${counts.answered}`
-                            : (GATE_NEED[s] as string)
-                      }
-                      // Пропущенная стадия проходится воротами так же, как пройденная: ждать
-                      // от неё нечего, и серые ворота посреди закрытой дороги читались бы как
-                      // «здесь работа встала».
-                      tone={
-                        i === countGate
-                          ? 'dec'
-                          : phase.stages[s] === 'done' || phase.stages[s] === 'skipped'
-                            ? 'ok'
-                            : 'wait'
-                      }
+              {STAGE_ORDER.map((s, i) => {
+                // Состояние ступени ГЛАЗАМИ ЧЕЛОВЕКА, а не глазами папки: неподтверждённый
+                // чертёж лежит на диске, и «готово» о нём говорит только диск.
+                const shown = stageShown(s, phase.stages[s], phase.designTask != null)
+                return (
+                  <span key={s} className="flex min-w-0 flex-1 items-stretch">
+                    <StageCard
+                      stage={s}
+                      index={i}
+                      shown={shown}
+                      segs={stageSegs(s, phase, waves)}
+                      picked={s === stage}
+                      onPick={() => setPicked(s)}
                     />
-                  ) : null}
-                </span>
-              ))}
+                    {GATE_NEED[s] !== null ? (
+                      <Gate
+                        text={
+                          i === countGate
+                            ? questionsWaiting(counts.open)
+                            : i === 0 && counts.open === 0 && counts.answered > 0
+                              ? `вы ответили на ${counts.answered}`
+                              : (GATE_NEED[s] as string)
+                        }
+                        // Полый ромб — «ворота впереди». Заливка тут утверждает «решение
+                        // позади», и на воротах чертежа это утверждение опровергала кнопка
+                        // «Подтвердить дизайн» на этом же экране.
+                        tone={i === countGate ? 'dec' : gateCleared(shown) ? 'ok' : 'wait'}
+                      />
+                    ) : null}
+                  </span>
+                )
+              })}
             </div>
 
             {/* ПАПКА ФАЗЫ — то, что фаза оставила на диске, без посредничества проекции. Стоит
@@ -1030,8 +1041,14 @@ export function PhaseCardView({
               note={STAGE_WHAT[stage]}
             >
               <div className="flex items-center gap-3 border-b border-bd px-4 py-2.5">
-                <span className={`text-[11.5px] font-semibold ${TONE[STAGE_TONE[phase.stages[stage]]].word}`}>
-                  {STATUS_WORD[phase.stages[stage]]}
+                {/* То же слово, что и на ленте дороги: два слова об одном состоянии на одном
+                    экране — это два разных ответа на один вопрос. */}
+                <span
+                  className={`text-[11.5px] font-semibold ${
+                    TONE[STAGE_TONE[stageShown(stage, phase.stages[stage], phase.designTask != null)]].word
+                  }`}
+                >
+                  {SHOWN_WORD[stageShown(stage, phase.stages[stage], phase.designTask != null)]}
                 </span>
                 <span className="flex-1" />
                 <button
