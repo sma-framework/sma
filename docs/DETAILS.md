@@ -506,6 +506,26 @@ words each release was announced in — fix lists included, because a release no
 was broken is worth nothing to the person who hit it. Where a release's mechanism has its own
 canonical document, this history links to it instead of reprinting it.
 
+### 5.7.0 — the design stage: drawn, confirmed, then built
+
+The phase graph gained its fifth stage, between the plan and the code. The stage leaves a design
+contract in the phase folder — what stands where, what the person does, what must not be there —
+plus a self-contained HTML sketch when the work has screens. The dispatcher refuses to start
+execution of a phase whose design is not confirmed: no flag and no configuration entry disables
+the gate, and a new version of the contract closes execution again until a fresh confirmation.
+A phase that predates the stage reads «skipped», decided by a checkable trace of prior execution,
+never by a timestamp. If the drawing exposes a hole in the plan, the phase returns to planning
+with the reason carried as data. The stage vocabulary is held in lockstep across all seven places
+that name it — queue, policy, window board, phase card — by a contract test that reddens on
+drift. Two roles shipped with it: a designer persona distilled from real design resources, and
+an animator under a stated motion law (nothing over 300 ms, nothing frequent animated at all);
+six design roles now have six named callers, and the contract provably reaches the executor and
+the acceptance ritual. The card confirms the drawing where it is looked at — artifacts first,
+«Confirm design» / «Return with a comment» on the awaiting row — and the gate diamond on the
+stage strip stays hollow until a person's yes, because a drawing on disk is not a person's yes.
+The release also rewrote the front door: the README now speaks to a person seeing SMA first, the
+depth moved to docs/WHAT-IS-SMA.md, and the roadmap keeps the shape of the journey.
+
 ### 5.6.0 — the taskboard, and numbers that do not lie
 
 The task screen became the owner's workplace: every unit of work — a task, a batch, a phase —
