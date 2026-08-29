@@ -85,6 +85,13 @@
  * flagged `reconstructed` and never pretend to be live ones. Fail-open like the sweep: a
  * reconciliation that throws is journaled and the tick continues.
  *
+ * ═══════════════ И СРЫВ ПОПАДАЕТ В ЕДИНЫЙ ЖУРНАЛ САМ ═════════════════════════════
+ * Шаг (1c) — `sweepBugJournal`, сразу за сверкой: строка на каждую сорвавшуюся задачу в один
+ * файл на все проекты, со словом очереди и словом реестра РЯДОМ (экран показывает только
+ * первое из них). Проход, а не поле у двери: причину `attempts_exhausted` не пишет ни одна
+ * дверь — она выводится при чтении строки задания, — и журнал, собранный по дверям, молчал
+ * бы именно о ней. Дописывает только то, чего в журнале ещё нет; fail-open, как соседи.
+ *
  * ═══════════════════════ FAIL-OPEN HONESTY (merge-gate posture) ═══════════════════
  * The whole tick is wrapped fail-open: any thrown error is journaled and the affected
  * task is FAILED HONESTLY ('runtime_offline' on spawn infra errors) — a tick bug can
@@ -105,6 +112,7 @@ import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS, failureAwa
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
+import { sweepBugJournal } from './queue/bug-journal.mjs'
 // Потолок мест читает ДОМ ИДУЩИХ ПОПЫТОК, а не тик: одно чтение настройки на весь демон —
 // его же спрашивает дверь состояния, чтобы назвать человеку «занято X из N».
 import { concurrencyCap } from './queue/in-flight.mjs'
@@ -3396,7 +3404,23 @@ export async function tick(deps = {}) {
       if (typeof journal === 'function') journal({ type: 'reconcile-error', error: String((err && err.message) || err) })
     }
 
-    // (1c) THE COPIES OF CLOSED TASKS. Beside the two sweeps above and for the same reason:
+    // (1c) ЕДИНЫЙ ЖУРНАЛ СРЫВОВ — строка на каждую сорвавшуюся задачу, один файл на все
+    // проекты. ПОСЛЕ сверки намеренно: сверка дописывает в реестр попытки, которых никто не
+    // видел, и слово о причине у них появляется именно там — проход, шедший первым, записал
+    // бы «причина неизвестна» о срыве, объяснённом секундой позже.
+    //
+    // ПОЧЕМУ ЭТО ОТДЕЛЬНЫЙ ПРОХОД, А НЕ ПОЛЕ У ДВЕРИ. Дверей, закрывающих работу срывом,
+    // несколько, и одна из причин (`attempts_exhausted`) не пишется ни одной из них — она
+    // выводится при ЧТЕНИИ строки задания. Журнал, собранный по дверям, молчал бы ровно о том
+    // конце, который человек чаще всего и разбирает. Проход спрашивает очередь о том, что она
+    // САМА называет сорвавшимся, и потому видит все концы разом.
+    try {
+      result.bugJournal = await sweepBugJournal({ adapter, ledger, clock })
+    } catch (err) {
+      if (typeof journal === 'function') journal({ type: 'bug-journal-error', error: String((err && err.message) || err) })
+    }
+
+    // (1d) THE COPIES OF CLOSED TASKS. Beside the sweeps above and for the same reason:
     // durable leftovers nobody else audits. The approval door removes the copy of work that
     // was ACCEPTED; everything else — failed, returned, abandoned — is left standing because
     // the queue, not this tick, decides whether a retry is coming, and a copy removed under a
