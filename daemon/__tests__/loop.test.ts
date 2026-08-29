@@ -4642,10 +4642,14 @@ describe('личный слой и наши серверы доезжают до
     expect(at, 'запрет конверта не доехал до аргументов - граница осталась в журнале').toBeGreaterThan(-1)
     const expected = humanOnlyDenials(defaultEnvelope('prod')).patterns
     expect(expected.length).toBeGreaterThan(0)
-    expect(args[at + 1]).toBe(expected.join(' '))
-    expect(args[at + 1], 'сам push не назван в запрете').toContain('git push')
+    // КАЖДЫЙ ШАБЛОН — СВОИМ ЗНАЧЕНИЕМ: склеенные через пробел, они доехали бы обрывками,
+    // потому что пробел стоит внутри самого шаблона
+    expect(args.slice(at + 1, at + 1 + expected.length)).toEqual(expected)
+    expect(args.slice(at + 1).join('|'), 'сам push не назван в запрете').toContain('git push')
     // и разрешённое НЕ сузилось ради этого
-    expect(args[args.indexOf('--allowedTools') + 1]).toBe([...defaultEnvelope('prod').allowedTools].join(' '))
+    const grantAt = args.indexOf('--allowedTools')
+    const granted = [...defaultEnvelope('prod').allowedTools]
+    expect(args.slice(grantAt + 1, grantAt + 1 + granted.length)).toEqual(granted)
 
     // (2) ровно тот же массив лежит в записи попытки
     const run = JSON.parse(readFileSync(join(projectDir, '.sma', 'runs', 'BL-1_1', 'run.json'), 'utf8'))

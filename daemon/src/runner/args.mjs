@@ -197,6 +197,58 @@ const FORBIDDEN_ARG_RE = /^--(dangerous|no-hook|disable-hook|setting|permission-
 /** Strict RFC-4122-ish UUID shape — resume only ever accepts this (resolveSessionID lesson). */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+// ── the two tool lists: ONE NAME PER ARGUMENT, and the reader of the same shape ─
+
+/**
+ * toolArgv(list, flag) → the names of one tool list as SEPARATE argument values, ready to be
+ * spread into the array. Both lists go through here, because they are one decision said twice.
+ *
+ * WHY NOT ONE GLUED STRING, WHICH IS WHAT THIS USED TO PUSH. `names.join(' ')` holds exactly
+ * until the first name that contains a space — and the refusal list is made of patterns that
+ * DO: `Bash(git push:*)` has one in the middle of it. Glued, that one refusal arrives at the
+ * CLI as two fragments (`Bash(git` and `push:*)`) that name nothing, and the refusal a person
+ * counted on is silently not there. Nothing fails, nothing is logged, and the boundary is
+ * simply wider than anyone reading the envelope believes. A vector has no such edge: an
+ * argument value is delimited by the operating system, not by a character inside it, so a
+ * name travels whole no matter what it contains. That is also the shape both flags are
+ * declared in on the other side — each takes a sequence of values, not one packed string.
+ *
+ * ESCAPING WAS THE OTHER OPTION AND IS NOT USED ON PURPOSE: it survives until the first quote
+ * and then fails the same way, quietly. The delimiter is the argument boundary itself.
+ *
+ * TWO NAMED REFUSALS THE GLUED FORM DID NOT NEED. Once each name is its own argument, a name
+ * that starts with a dash is read by the CLI as a FLAG — that is the smuggle vector this
+ * module exists to close, so it gets the named error rather than a place on the command line.
+ * And an empty name would become an empty argument, i.e. a tool called «», which is a request
+ * nobody wrote; the glued form swallowed it silently, and silence is what this is fixing.
+ *
+ * @param {string[]} list
+ * @param {string} flag
+ * @returns {string[]}
+ */
+function toolArgv(list, flag) {
+  return list.map((entry) => {
+    const name = String(entry)
+    if (name.trim() === '') {
+      throw new Error(`${flag}: an empty tool name would become an empty argument — refusing a boundary nobody wrote`)
+    }
+    if (name.startsWith('-')) {
+      throw new ForbiddenFlagError(
+        `${flag}: tool name "${name}" starts with a dash and would reach the CLI as a FLAG rather than as a name — structurally refused`,
+      )
+    }
+    return name
+  })
+}
+
+/**
+ * AND THE READER OF THAT SHAPE IS RE-EXPORTED, NOT RE-IMPLEMENTED. It lives in its own
+ * import-free module because the approval wall — one of its two callers — is pinned
+ * filesystem-free by its own suite, and this module touches a disk on purpose. Re-exported
+ * here so «what a spawn stood under» is still reachable from the module that writes it.
+ */
+export { toolListInArgs } from './tool-flags.mjs'
+
 /**
  * isResumableSessionId(value) → can this be handed to `--resume` at all.
  *
@@ -437,8 +489,11 @@ export function buildClaudeArgs(opts = {}) {
   // The grant is the envelope's own list and nothing more: this widens no policy, it
   // DELIVERS one. `--dangerously-skip-permissions` stays unreachable (assertCleanArgs still
   // scans the produced array), so a lane can only ever hold the tools its envelope named.
+  //
+  // ONE NAME PER ARGUMENT — see toolArgv: a list glued into one value survives exactly until
+  // the first name with a space inside it.
   if (Array.isArray(allowedTools) && allowedTools.length > 0) {
-    args.push('--allowedTools', allowedTools.map((t) => String(t)).join(' '))
+    args.push('--allowedTools', ...toolArgv(allowedTools, '--allowedTools'))
   }
   // AND THE OTHER HALF OF THE SAME ENVELOPE — what it REFUSED.
   //
@@ -458,9 +513,15 @@ export function buildClaudeArgs(opts = {}) {
   // It narrows and only narrows: nothing here can add a right, and the same array is written
   // into the attempt's record, so what a run actually stood under is readable afterwards.
   // An empty list emits no flag — an envelope that forbids nothing must produce exactly the
-  // command line it produced before this existed.
+  // command line it produced before this existed, and never an empty argument standing in for
+  // a refusal nobody declared.
+  //
+  // AND EACH PATTERN IS ITS OWN ARGUMENT. This list is the one that made the glued form
+  // indefensible: every pattern it carries has a space in the middle of it — `Bash(git push:*)`
+  // — so joining them handed the CLI fragments instead of refusals, and the boundary was wider
+  // than the envelope said while everything downstream still read green (see toolArgv).
   if (Array.isArray(disallowedTools) && disallowedTools.length > 0) {
-    args.push('--disallowedTools', disallowedTools.map((t) => String(t)).join(' '))
+    args.push('--disallowedTools', ...toolArgv(disallowedTools, '--disallowedTools'))
   }
   if (model !== undefined) args.push('--model', String(model))
   if (effort !== undefined) args.push('--effort', String(effort))

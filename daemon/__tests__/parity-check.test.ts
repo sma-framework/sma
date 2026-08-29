@@ -89,10 +89,13 @@ const RUN = {
     '-p',
     '--output-format',
     'stream-json',
+    // одно имя — один аргумент, как их кладёт сборщик: шаблон запрета несёт пробел внутри себя
     '--allowedTools',
-    'Read Write Bash',
+    'Read',
+    'Write',
+    'Bash',
     '--disallowedTools',
-    humanOnlyDenials({ humanOnlyActions: ['push', 'merge', 'tag', 'deploy'] }).patterns.join(' '),
+    ...humanOnlyDenials({ humanOnlyActions: ['push', 'merge', 'tag', 'deploy'] }).patterns,
   ],
   envelope: {
     allowedTools: ['Read', 'Write', 'Bash'],
@@ -191,7 +194,7 @@ describe('terminal-parity-check — a complete run', () => {
   // процесса доезжала только половина конверта. Теперь оно КРАСНОЕ, потому что вторая
   // половина умеет доезжать, и её отсутствие — не оговорка, а провал.
   it('конверт назвал человеческие действия, а запрета в аргументах нет — FAIL, не WARN', () => {
-    const withoutDenials = { ...RUN, args: ['-p', '--output-format', 'stream-json', '--allowedTools', 'Read Write Bash'] }
+    const withoutDenials = { ...RUN, args: ['-p', '--output-format', 'stream-json', '--allowedTools', 'Read', 'Write', 'Bash'] }
     const r = run(fullFiles({ [`${DIR}/run.json`]: withoutDenials }))
     expect(r.line('rights')).toMatch(/^FAIL — /)
     expect(r.line('rights')).toContain('--disallowedTools')
