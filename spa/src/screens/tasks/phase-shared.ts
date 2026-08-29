@@ -51,6 +51,8 @@ export const STATUS_WORD: Record<PhaseStageStatus, string> = {
   none: 'не начата',
   'in-progress': 'идёт',
   done: 'готово',
+  // не «не начата»: этой фазы ступень не застала, и ждать от неё документа некому
+  skipped: 'пропущена',
 }
 
 /**

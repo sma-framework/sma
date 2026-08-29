@@ -385,10 +385,13 @@ describe('GET /api/phase/:id — THE CARD IS DERIVED, NEVER STORED', () => {
     // The NUMBER leads, then the words. A phase is asked for by number everywhere else in this
     // product, so the row has to say both what it is and how to ask for it.
     expect(worked.name).toBe('12 · front')
+    // ГРАНДФАЗЕР: у фазы, которая отработала ещё до появления ступени рисования, чертежа нет и
+    // не будет — её ступень «пропущена», а не «не начата». Разница не косметическая: второе
+    // слово значит «ждём чертежа», и по нему ворота исполнения заперли бы уже сделанную работу.
     expect(worked.stages).toEqual({
       discuss: 'done',
       plan: 'done',
-      design: 'none',
+      design: 'skipped',
       execute: 'done',
       verify: 'none',
     })

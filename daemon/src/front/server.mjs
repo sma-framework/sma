@@ -1844,16 +1844,25 @@ async function handleApprove({ req, res, config, deps }) {
 }
 
 /**
- * POST /api/return — return-with-comment. Body {taskId, note, title?, lane?, machine?}
- * (note <= 2000). CAS awaiting_approval→returned — or failed→returned for a row that is
- * PARKED waiting for a person (see returnCas) — then re-enqueue with source:'return' + the
- * note + attempt+1, under the SAME task id. The note is DATA. A lost race → 409.
+ * POST /api/return — return-with-comment. Body {taskId, note, title?, lane?, machine?,
+ * to_stage?} (note <= 2000). CAS awaiting_approval→returned — or failed→returned for a row
+ * that is PARKED waiting for a person (see returnCas) — then re-enqueue with source:'return'
+ * + the note + attempt+1, under the SAME task id. The note is DATA. A lost race → 409.
+ *
+ * `to_stage` — ЕДИНСТВЕННОЕ ОБРАТНОЕ РЕБРО ГРАФА ФАЗ, и оно ведёт из рисования в
+ * планирование. Смотрящий на чертёж видит не «плохо нарисовано», а «в плане дыра»: экрана,
+ * который надо нарисовать, в плане нет вовсе. Переделывать чертёж по дырявому плану — значит
+ * получить второй такой же. Поэтому чертёж закрывается возвратом, а в очередь встаёт НОВАЯ
+ * задача планирования этой фазы, и причина словами едет ей ДАННЫМИ (`note`), как всякий текст
+ * человека в этом продукте. Никакого другого адресата у ребра нет и никакого другого истока:
+ * «вернуть в разговор», «вернуть в исполнение» — это не возврат, а новая стадия, и её ставят
+ * своей дверью.
  */
 async function handleReturn({ req, res, config, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return send400(res, body.error)
   const v = body.value || {}
-  if (rejectUnknownKeys(res, v, new Set(['taskId', 'note', 'title', 'lane', 'machine']))) return undefined
+  if (rejectUnknownKeys(res, v, new Set(['taskId', 'note', 'title', 'lane', 'machine', 'to_stage']))) return undefined
   if (await proxyToMachine(res, v, deps, '/api/return', config)) return undefined
   const taskId = v.taskId
   if (!taskId || typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
@@ -1862,12 +1871,16 @@ async function handleReturn({ req, res, config, deps }) {
   if (typeof deps.casExec !== 'function' || !deps.adapter || typeof deps.adapter.enqueue !== 'function') {
     return send501(res)
   }
+  // АДРЕСАТ ПРОВЕРЯЕТСЯ ДО ЛЮБОГО CAS. Отказ после закрытия строки оставил бы работу закрытой
+  // и никуда не поставленной — потерянной ровно тем действием, которое должно было её спасти.
+  const toStage = v.to_stage === undefined || v.to_stage === null ? null : v.to_stage
+  if (toStage !== null && toStage !== BACK_EDGE_TO_STAGE) {
+    return send400(res, `to_stage: единственное обратное ребро ведёт в "${BACK_EDGE_TO_STAGE}"`)
+  }
 
-  const table = deps.taskTable || 'sma_task_attempts'
-  const cas = await returnCas(deps, { table, taskId, note })
-  if (!cas.won) return send409(res, 'return race lost (already handled)')
-
-  // Re-queue the returned task for another attempt with the founder's comment.
+  // ЧТО СТРОКА ГОВОРИЛА О СЕБЕ ДО ВОЗВРАТА. Читается ЗДЕСЬ, до CAS, по двум причинам: адресату
+  // обратного ребра нужен конверт прежней строки, чтобы отказать ДО закрытия работы, — и
+  // конверт этот всё равно нужен ниже, чтобы возвращённая задача осталась собой.
   //
   // A RETURN IS A STATE OF THE SAME TASK, so the row it puts back is called by the task's own
   // NAME. This door used to mint a heading out of the routing identifier whenever the body
@@ -1880,17 +1893,19 @@ async function handleReturn({ req, res, config, deps }) {
   let prevAttempt = 1
   let nameFromRow = ''
   let ownProject = {}
+  let prevRow = null
+  let allRows = []
   try {
-    const rows = await deps.adapter.list({})
-    const mine = rows.filter((r) => r && r.id === taskId)
+    allRows = await deps.adapter.list({})
+    const mine = allRows.filter((r) => r && r.id === taskId)
     // THE NUMBER COMES FROM THE LAST WORD ABOUT THE TASK. The rows of a returned task pile up in
     // a durable queue, and the first one handed back can be the attempt BEFORE the one standing
     // for approval — a second return in a row then mints a number the task has already used, and
     // two rows claim to be the same attempt. Same exported queue rule as the card door above.
     // The name chain below stays as it is: it looks across ALL rows on purpose, because the row
     // holding the real name may well be an older one.
-    const row = latestRowPerId(mine)[0]
-    if (row && Number.isFinite(row.attempt)) prevAttempt = row.attempt
+    prevRow = latestRowPerId(mine)[0] || null
+    if (prevRow && Number.isFinite(prevRow.attempt)) prevAttempt = prevRow.attempt
     const named = mine.find((r) => realTitleOf(r, taskId))
     if (named) nameFromRow = realTitleOf(named, taskId)
     // WHOSE WORK IT IS DOES NOT CHANGE BECAUSE IT CAME BACK — see inheritedProject.
@@ -1898,12 +1913,73 @@ async function handleReturn({ req, res, config, deps }) {
   } catch {
     /* fail-open — default to attempt 1 → requeue as attempt 2, the name falls back to the id */
   }
+  const prevData =
+    prevRow && prevRow.data && typeof prevRow.data === 'object' && !Array.isArray(prevRow.data) ? prevRow.data : null
+
+  if (toStage !== null) {
+    // ИСТОК РЕБРА — ТОЛЬКО РИСОВАНИЕ, и спрашивается это у КОНВЕРТА строки, а не у её названия:
+    // название человек может набрать руками, конверт ставит дверь.
+    if (!prevData || prevData.stage !== DESIGN_STAGE) {
+      return send400(res, `to_stage: назад в планирование возвращается только работа ступени "${DESIGN_STAGE}"`)
+    }
+    const phase = String(prevData.phase ?? '')
+    if (!PHASE_RE.test(phase)) return send400(res, 'invalid phase')
+    // ТЕМ ЖЕ ПРАВИЛОМ, ЧТО У ДВЕРИ ДИСПАТЧА: два работника, пишущих один и тот же план фазы из
+    // двух каталогов, — это не «дважды поставили», а два расходящихся плана.
+    if (liveStageRow(allRows, toStage, phase)) {
+      return send409(res, `stage "${toStage}" of phase "${phase}" is already running`)
+    }
+
+    const table = deps.taskTable || 'sma_task_attempts'
+    const cas = await returnCas(deps, { table, taskId, note })
+    if (!cas.won) return send409(res, 'return race lost (already handled)')
+
+    const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
+    const task = {
+      id: `S-${clock()}`,
+      source: 'return',
+      ...ownProject,
+      title: stageCommand(toStage, phase),
+      lane: STAGE_LANE,
+      data: { kind: stageKind(toStage), stage: toStage, phase },
+      note,
+    }
+    let norm
+    try {
+      norm = validateTask(task)
+    } catch (err) {
+      return send400(res, String((err && err.message) || 'invalid task'))
+    }
+    const enq = await enqueueOrExplain(res, deps.adapter, norm)
+    if (enq.answered) return undefined
+    // СОБЫТИЙ НЕ УБАВИЛОСЬ, и каждое сказано О СВОЕЙ строке: чертёж ЗАКРЫТ возвратом (он в
+    // очередь не встал, и «queued» о нём было бы неправдой), а поставлена — другая задача.
+    emitSafe(deps, { event: 'task.returned', taskId, status: 'returned' })
+    emitSafe(deps, { event: 'phase.stage', taskId: norm.id, phase, stage: toStage })
+    emitSafe(deps, { event: 'task.queued', taskId: norm.id, status: 'queued' })
+    return sendJson(res, 200, { ok: true, taskId, attempt: prevAttempt, stageTaskId: norm.id, phase, stage: toStage })
+  }
+
+  const table = deps.taskTable || 'sma_task_attempts'
+  const cas = await returnCas(deps, { table, taskId, note })
+  if (!cas.won) return send409(res, 'return race lost (already handled)')
+
+  // Re-queue the returned task for another attempt with the founder's comment.
+  //
+  // КОНВЕРТ И ПОЛОСА — ПРЕЖНЕЙ СТРОКИ, И ЭТО НЕ УКРАШЕНИЕ. Очередь при повторной постановке
+  // под тем же номером не дополняет запись, а ПЕРЕЗАПИСЫВАЕТ её целиком (строка уже не
+  // «queued»), поэтому всё, чего дверь не назвала, задача теряет молча. Дверь называла только
+  // имя и заметку — и документарная работа возвращалась в очередь БЕЗ конверта стадии и в
+  // полосе «prod»: тик больше не знал, каким гейтом её судить, а полосу ей выдавали чужую.
+  // Конвертом владеет дверь; вызывающие его не трогают и трогать не могут — ключа тела у него
+  // нет, потому что это не мнение человека, а факт о задаче.
   const requeue = await enqueueOrExplain(res, deps.adapter, {
     id: taskId,
     source: 'return',
     ...ownProject,
     title: (typeof v.title === 'string' && v.title.trim()) || nameFromRow || taskId,
-    lane: v.lane || 'prod',
+    lane: v.lane || (prevRow && prevRow.lane) || 'prod',
+    ...(prevData ? { data: prevData } : {}),
     note,
     attempt: prevAttempt + 1,
   })
@@ -4041,6 +4117,129 @@ const STAGE_LANE = 'paperwork'
 /** A row that is still in play: nobody may start the same stage of the same phase twice. */
 const LIVE_STATUSES = Object.freeze(['queued', 'claimed', 'awaiting_approval'])
 
+/** Ступень, чей чертёж обязан быть подтверждён до того, как кто-то начнёт писать код. */
+const DESIGN_STAGE = 'design'
+
+/**
+ * КУДА ВЕДЁТ ЕДИНСТВЕННОЕ ОБРАТНОЕ РЕБРО ГРАФА ФАЗ — и почему оно одно.
+ *
+ * Дорога фазы идёт вперёд, и каждая ступень закрывается своим документом. Ровно одна беда не
+ * чинится вперёд: чертёж нельзя нарисовать по плану, в котором нужного экрана нет. Это дыра
+ * ПЛАНА, и починить её может только планирование. Все прочие «назад» — не возвраты, а новые
+ * стадии, и у них есть своя дверь; ребро, умеющее вести куда угодно, было бы произвольным
+ * перенаправлением стадий с ключом тела вместо решения.
+ */
+const BACK_EDGE_TO_STAGE = 'plan'
+
+/**
+ * СЛОВА, КОТОРЫМИ ПРАВДА НАЗЫВАЕТ ОДИН ФАКТ: «человек сказал да этой работе».
+ *
+ * Их два, и это не небрежность, а форма продукта. Закрытый словарь статуса СТРОКИ ОЧЕРЕДИ
+ * своими словами говорит `completed` — «a person said yes»; долговечная очередь переводит
+ * принятую строку приёмки ровно туда и собственное слово таблицы попыток наружу НЕ выпускает
+ * (её `statusOf` держит закрытый словарь из пяти). Слово `approved` живёт в таблице попыток,
+ * куда CAS-ит дверь приёмки, и приходит сюда только в чтениях, которые её видят.
+ *
+ * Ворота, знающие лишь слово таблицы, отказывали бы КАЖДОМУ честно подтверждённому чертежу в
+ * бою — очередь этого слова не произносит. Ворота, знающие лишь слово очереди, ослепли бы на
+ * чтении, которое несёт слово таблицы. Поэтому принимаются оба, и БОЛЬШЕ НИКАКИЕ: «сделана,
+ * ждёт решения» — не «принята», и это ровно та разница, ради которой ступень существует.
+ */
+const APPROVED_STATUSES = Object.freeze(['completed', 'approved'])
+
+/** Когда строка встала в очередь — в миллисекундах, чем бы бэкенд ни записал этот момент. */
+function enqueuedMsOf(row) {
+  const v = row && row.enqueuedAt
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  const parsed = Date.parse(String(v ?? ''))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+/**
+ * Живая строка ступени фазы, или `undefined`. ОДНО правило «эта стадия уже идёт» на обе двери,
+ * которые его задают: дверь диспатча (второй работник писал бы те же документы из другого
+ * каталога) и обратное ребро возврата, которое ставит стадию тем же способом.
+ */
+function liveStageRow(rows, stage, phase) {
+  return (Array.isArray(rows) ? rows : []).find((r) => {
+    const d = r && r.data
+    return d && d.stage === stage && String(d.phase ?? '') === phase && LIVE_STATUSES.includes(r.status)
+  })
+}
+
+/** Строки одной ступени одной фазы — по КОНВЕРТУ, никогда по названию, которое можно набрать. */
+function stageRowsOf(rows, stage, phase) {
+  const all = Array.isArray(rows) ? rows : []
+  return latestRowPerId(
+    all.filter((r) => {
+      const d = r && r.data
+      return d && d.stage === stage && String(d.phase ?? '') === phase
+    }),
+  )
+}
+
+/**
+ * Свежейшая строка ступени, или `null`, если таких строк нет.
+ *
+ * ПРИ РАВНОМ ШТАМПЕ ПОБЕЖДАЕТ НЕПОДТВЕРЖДЁННАЯ. Две строки одной миллисекунды — случай
+ * редкий, но ворота обязаны ошибаться в сторону отказа: «не смогли различить» и «подтверждено»
+ * — разные новости, и вторая открывает исполнение.
+ */
+function freshestStageRow(rows) {
+  return rows.reduce((best, r) => {
+    if (best === null) return r
+    const d = enqueuedMsOf(r) - enqueuedMsOf(best)
+    if (d > 0) return r
+    if (d < 0) return best
+    return APPROVED_STATUSES.includes(best.status) ? r : best
+  }, null)
+}
+
+/**
+ * ВОРОТА ИСПОЛНЕНИЯ: «подтверждаем чертёж и только потом пишем код» — сказанное дверью.
+ *
+ * Возвращает строку причины отказа или `null`, если открыто. Спрашиваются ДВА уже
+ * существующих источника, и ни у одного не заводится второй копии:
+ *
+ *   · ОЧЕРЕДЬ — свежейшая строка ступени рисования этой фазы. Есть и подтверждена → открыто;
+ *     есть и не подтверждена → закрыто, и отказ называет её фактический статус. Отсюда же
+ *     сама собой берётся новая версия чертежа: свежая строка поверх старой принятой снова
+ *     закрывает исполнение, потому что свежейшая теперь она.
+ *   · ПРОЕКЦИЯ СТУПЕНЕЙ — только когда строк нет вовсе. Читается тем же деривом, которым
+ *     живёт карточка фазы, поэтому правило «какой каталог у фазы N» остаётся одно на продукт.
+ *     Слово `skipped` значит «фаза шла ещё до того, как ступень появилась» — её задним числом
+ *     не запирают. Любое другое слово — отказ.
+ *
+ * FAIL-CLOSED ВЕЗДЕ: нет дерева, нет дерива, фаза не найдена, чтение бросило — закрыто.
+ * Конфиг-ключа, открывающего обход, не существует: единственный способ открыть ворота — это
+ * подтверждённый чертёж или честный признак, что фаза старше самой ступени.
+ */
+function designGateRefusal({ rows, phase, deps }) {
+  const designRows = stageRowsOf(rows, DESIGN_STAGE, phase)
+  if (designRows.length > 0) {
+    const freshest = freshestStageRow(designRows)
+    if (APPROVED_STATUSES.includes(freshest.status)) return null
+    return (
+      `дизайн фазы "${phase}" не подтверждён — исполнение не стартует ` +
+      `(свежайшая строка рисования: ${freshest.status})`
+    )
+  }
+
+  const closed = `дизайн фазы "${phase}" не подтверждён — исполнение не стартует (чертежа фазы нет)`
+  if (typeof deps.derivePhaseCard !== 'function') return closed
+  const projectDir = phaseCycleDir(deps)
+  if (!projectDir) return closed
+  let card = null
+  try {
+    card = deps.derivePhaseCard({ projectDir, phaseId: phase, fsImpl: deps.fsImpl })
+  } catch {
+    return closed
+  }
+  const design = card && card.stages ? card.stages[DESIGN_STAGE] : null
+  if (design === 'skipped') return null
+  return closed
+}
+
 /**
  * WHERE THE PHASE CYCLE LIVES — decided by the composition root, read here.
  *
@@ -4092,18 +4291,17 @@ async function handlePhaseStage({ req, res, config, deps }) {
 
   // ALREADY RUNNING? The envelope is what identifies a stage row, so this asks the queue the
   // same question the tick answers from — never a name or a title, which a person can retype.
-  if (typeof adapter.list === 'function') {
-    const rows = await adapter.list({})
-    const live = (Array.isArray(rows) ? rows : []).find((r) => {
-      const d = r && r.data
-      return (
-        d &&
-        d.stage === stage &&
-        String(d.phase ?? '') === phase &&
-        LIVE_STATUSES.includes(r.status)
-      )
-    })
-    if (live) return send409(res, `stage "${stage}" of phase "${phase}" is already running`)
+  const rows = typeof adapter.list === 'function' ? await adapter.list({}) : []
+  if (liveStageRow(rows, stage, phase)) {
+    return send409(res, `stage "${stage}" of phase "${phase}" is already running`)
+  }
+
+  // И ТОЛЬКО ПОТОМ — ВОРОТА ЧЕРТЕЖА. Ровно одна ступень их проходит, и ровно поэтому они
+  // стоят здесь, в двери диспатча: другого пути поставить исполнение фазы у продукта нет,
+  // так что обойти их нельзя, не написав второй такой двери.
+  if (stage === EXECUTE_STAGE) {
+    const refusal = designGateRefusal({ rows, phase, deps })
+    if (refusal) return send409(res, refusal)
   }
 
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now

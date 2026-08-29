@@ -88,7 +88,9 @@ const TONE: Record<'ok' | 'run' | 'dec' | 'wait' | 'fail', { dot: string; seg: s
 
 type Tone = keyof typeof TONE
 
-const STAGE_TONE: Record<PhaseStageStatus, Tone> = { none: 'wait', 'in-progress': 'run', done: 'ok' }
+// `skipped` носит приглушённый тон ожидания, а НЕ зелёный «готово»: фаза старше ступени, и
+// сказать о ней «сделано» значило бы приписать работу, которой не было.
+const STAGE_TONE: Record<PhaseStageStatus, Tone> = { none: 'wait', 'in-progress': 'run', done: 'ok', skipped: 'wait' }
 
 /**
  * Слова, которыми план называет своё состояние в собственной шапке, — и ТОЛЬКО известные.

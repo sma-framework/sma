@@ -171,6 +171,8 @@ const STAGE_STATE: Record<PhaseStageStatus, UnitState> = {
   none: 'wait',
   'in-progress': 'run',
   done: 'ok',
+  // фаза старше самой ступени: её ждать не надо и «готово» о ней сказать нельзя
+  skipped: 'skip',
 }
 
 /**

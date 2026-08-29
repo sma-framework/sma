@@ -2100,8 +2100,12 @@ export type PhaseStage = 'discuss' | 'plan' | 'design' | 'execute' | 'verify'
 /**
  * Where a stage stands, read off the artefacts on disk rather than remembered. A stage is
  * `done` because its document exists, which is why the answer survives a restart of anything.
+ *
+ * `skipped` — фаза, чья работа началась ещё до того, как ступень появилась в дороге. Чертежа
+ * у неё нет и не будет, и требовать его задним числом означало бы объявить незавершёнными все
+ * закрытые фазы проекта. Это НЕ `none`: второе значит «ждём документа».
  */
-export type PhaseStageStatus = 'none' | 'in-progress' | 'done'
+export type PhaseStageStatus = 'none' | 'in-progress' | 'done' | 'skipped'
 
 /** One phase as the index lists it. */
 export interface PhaseIndexRow {
