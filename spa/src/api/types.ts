@@ -429,10 +429,22 @@ export interface SpendAccount extends WindowBar {
   name: string
 }
 
+/**
+ * Платный канал в трёх числах — И ВСЕ ТРИ В ДОЛЛАРАХ, что и сказано их именами.
+ *
+ * Поставщик выставляет `total_cost_usd`, продукт курс НЕ пересчитывает, и потолок задаётся в
+ * той же валюте. До уборки эти же доллары ехали в полях `todayEur/monthEur/capEur`: цифра,
+ * названная евро, читается как евро, а потолок при этом сравнивался с долларами — то есть
+ * порог остановки денег стоял не там, где думал человек. Сказать, что курса нет, — обязанность
+ * экрана (`screens/costs/money.ts`, FX_NOTE), а не имени поля.
+ *
+ * `monthUsd` — КАЛЕНДАРНЫЙ месяц с первого числа, и это ровно то число, с которым правило
+ * отката сравнивает потолок: у экрана и у порога остановки один источник (policy/spend.mjs).
+ */
 export interface ApiFallback {
-  todayEur: number
-  monthEur: number
-  capEur: number
+  todayUsd: number
+  monthUsd: number
+  capUsd: number
   switchMode: 'subscription' | 'api'
 }
 
@@ -465,16 +477,17 @@ export interface Spend {
  * One point of the cost history: one account, on one day, in one lane.
  *
  * Both figures travel because both are true: a subscription session is paid for by the plan
- * and books no euros, so tokens are what makes that work visible at all, while `eur` is the
- * API-fallback money — honestly zero when nothing was billed.
+ * and books no money, so tokens are what makes that work visible at all, while `usd` is the
+ * API-fallback money — honestly zero when nothing was billed, and dollars because that is what
+ * the provider bills and nothing here converts it.
  *
  * ЧЕТЫРЕ ЧИСЛА, ТЕМИ ЖЕ ИМЕНАМИ, КАКИМИ ИХ ЗНАЕТ КВИТАНЦИЯ (`TokenSums` выше): вход, выход,
  * чтение кэша, запись кэша. Одна колонка «Токены» складывала их в число, по которому нельзя
  * ни узнать причину дорогого дня, ни пересчитать цену: кэш стоит своих ставок.
  *
- * `apiEquivalentEur` — сколько этот же расход стоил бы, если бы работа шла по API, по ценнику
+ * `apiEquivalentUsd` — сколько этот же расход стоил бы, если бы работа шла по API, по ценнику
  * платформы (scripts/sma/lib/pricing.mjs, один на командную строку и демона). Это СПРАВОЧНАЯ
- * цифра: работа идёт по подписке, которая уже оплачена, и складывать её с `eur` — значит
+ * цифра: работа идёт по подписке, которая уже оплачена, и складывать её с `usd` — значит
  * платить дважды на бумаге. Поле отдельное именно поэтому, и экран обязан назвать его словами.
  * `unpricedTokens` — токены, чью модель ценник не знает: с ними справочная цена занижена, и
  * это видно, а не скрыто.
@@ -492,8 +505,8 @@ export interface CostPoint {
   cacheWrite: number
   /** Модель, через которую прошло большинство токенов этой полосы за день; null — не названа. */
   model: string | null
-  eur: number
-  apiEquivalentEur: number
+  usd: number
+  apiEquivalentUsd: number
   unpricedTokens: number
   taskId?: string
   machine?: string
@@ -577,7 +590,7 @@ export interface Kpis {
   queued: number
   awaitingApproval: number
   /**
-   * СИНОНИМ, А НЕ ВТОРОЕ ЧИСЛО: это ровно `costs.apiFallback.todayEur` — расход платного
+   * СИНОНИМ, А НЕ ВТОРОЕ ЧИСЛО: это ровно `costs.apiFallback.todayUsd` — расход платного
    * канала за сегодня, — и человек читает его на «Расходах», в шапке, под словами «платный
    * канал сегодня». Под СВОИМ именем это поле не рисует никто, и рисовать не надо: вторая
    * цифра того же дня на втором экране — это и есть тот способ, каким два экрана однажды
@@ -586,9 +599,9 @@ export interface Kpis {
    * Держится оно ради одного: у ключа `kpis` своя история слияния в федерации (хаб
    * складывает его отдельным проходом), и убрать поле с провода значило бы менять договор
    * между машинами ради опечатки в документации. На ОДНОЙ машине двух вычислений больше нет —
-   * дверь берёт это значение из `spend.apiFallback.todayEur`, а не считает второй раз.
+   * дверь берёт это значение из `spend.apiFallback.todayUsd`, а не считает второй раз.
    */
-  spentTodayEur: number
+  spentTodayUsd: number
   windowsOpen: number
   /**
    * Сколько мест одновременной работы занято ПРЯМО СЕЙЧАС — счётом того, кто места и раздаёт.
@@ -631,7 +644,7 @@ export interface RulesWorker {
 
 /** Where the paid channel stops. Present only when a budget is written down at all. */
 export interface BudgetStops {
-  monthlyApiCapEur: number
+  monthlyApiCapUsd: number
   warnPct?: number
 }
 
@@ -642,7 +655,7 @@ export interface BudgetStops {
  */
 export interface SubApiSwitch {
   mode: 'subscription' | 'api'
-  capEur: number
+  capUsd: number
   /** With no cap there is no paid channel to switch TO. */
   budgeted: boolean
 }

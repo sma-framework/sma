@@ -90,8 +90,14 @@
 import { readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, statSync as fsStatSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { pipelineEnabled } from '../config.mjs'
+import { apiCapUsd, pipelineEnabled } from '../config.mjs'
 import { isOpen } from '../policy/windows.mjs'
+import {
+  accountNameOf,
+  apiSpendUsd,
+  monthToDateApiSpendUsd,
+  spendAccountNames,
+} from '../policy/spend.mjs'
 import { orchestratorView } from '../policy/orchestrator.mjs'
 import {
   isBatchParent,
@@ -129,7 +135,6 @@ import {
 
 const HOUR_MS = 3600000
 const DAY_MS = 24 * HOUR_MS
-const MONTH_MS = 30 * DAY_MS
 /** Touch freshness for the «работает» presence: a claimed task touched within this. */
 const FRESH_TOUCH_SEC = 180
 const DONE_COMMIT_CAP = 10
@@ -412,12 +417,6 @@ function attemptsReader(deps) {
     }
   }
   return () => []
-}
-
-/** accountName from an account profile object or a bare string. */
-function accountNameOf(account, fallback) {
-  if (typeof account === 'string') return account
-  return (account && account.name) || fallback
 }
 
 /** The window-state function seam: windows(account) → {fiveHour, week, closedUntil?}. */
@@ -801,7 +800,7 @@ export function deriveRules(config = {}, { switchMode, configOnDisk = null } = {
   })
 
   const budget = config.budget
-  const capEur = Number(budget && budget.monthlyApiCapEur) || 0
+  const capUsd = apiCapUsd(budget)
   return {
     lanes,
     workers,
@@ -820,15 +819,15 @@ export function deriveRules(config = {}, { switchMode, configOnDisk = null } = {
     ...(budget
       ? {
           budgetStops: {
-            monthlyApiCapEur: capEur,
+            monthlyApiCapUsd: capUsd,
             ...(budget.warnPct !== undefined ? { warnPct: budget.warnPct } : {}),
           },
         }
       : {}),
     subApiSwitch: {
       mode: switchMode === 'api' ? 'api' : 'subscription',
-      capEur,
-      budgeted: capEur > 0, // no cap → there is no API fallback to switch TO
+      capUsd,
+      budgeted: capUsd > 0, // no cap → there is no API fallback to switch TO
     },
   }
 }
@@ -2906,20 +2905,31 @@ export async function deriveState(deps = {}) {
   // nobody was riding lost the very facts the screen is there to state.
   const spendAccounts = accounts.map((a) => ({ name: a.name, ...a.windows }))
 
-  const apiAccountName = (config.budget && config.budget.apiAccountName) || 'api'
-  const todayUsd = totalCost(usageReader, workersCfg, DAY_MS, now, apiAccountName)
-  const monthUsd = totalCost(usageReader, workersCfg, MONTH_MS, now, apiAccountName)
-  const capEur = Number(config.budget && config.budget.monthlyApiCapEur) || 0
+  // ОДИН НАБОР АККАУНТОВ НА ОБА ЧИСЛА — И ТОТ ЖЕ, ЧТО У ПОРОГА ОСТАНОВКИ ДЕНЕГ. Читает не
+  // этот файл: policy/spend.mjs, та же функция, из которой берёт своё число правило отката.
+  // Прежде это чтение жило здесь целиком и отличалось от чтения порога тремя вещами сразу —
+  // полем (`apiCostUsd` против `costUsd`), набором аккаунтов и окном.
+  const spendAccountsRead = spendAccountNames(config)
+  const todayUsd = apiSpendUsd({ usageReader, accountNames: spendAccountsRead, windowMs: DAY_MS, clock: () => now })
+  // «ЗА МЕСЯЦ» — ЭТО КАЛЕНДАРНЫЙ МЕСЯЦ, И ЭТО ЖЕ ЧИСЛО СРАВНИВАЕТ С ПОТОЛКОМ ПОРОГ СТОПА.
+  // Здесь стояли скользящие тридцать суток, а порог считал с первого числа: на экране одно,
+  // деньги останавливаются по другому — и человек узнаёт об этом в тот день, когда полоса
+  // встанет «раньше времени». Потолок назван «в месяц», значит месяц у него календарный.
+  const monthUsd = monthToDateApiSpendUsd({ usageReader, accountNames: spendAccountsRead, clock: () => now })
+  const capUsd = apiCapUsd(config.budget)
   const anyClosed = workers.some((w) => !isOpen(w.window, () => now))
-  const switchMode = anyClosed && capEur > 0 ? 'api' : 'subscription'
+  const switchMode = anyClosed && capUsd > 0 ? 'api' : 'subscription'
   const spend = {
     accounts: spendAccounts,
     // The figure the person reads on his own status line, carried through unchanged.
     terminal: terminalBar(deps.terminalWindows),
     apiFallback: {
-      todayEur: round2(todayUsd), // FX out of scope for the pilot (rate 1); honest label at render
-      monthEur: round2(monthUsd),
-      capEur,
+      // ДОЛЛАРЫ, И ИМЯ ПОЛЯ ЭТО ГОВОРИТ. Поставщик выставляет `total_cost_usd`, пересчёта
+      // курса в продукте нет; называть эти же числа «Eur» значило бы прятать отсутствие
+      // курса в имени поля. Сказать об этом словами — обязанность экрана (FX_NOTE).
+      todayUsd: round2(todayUsd),
+      monthUsd: round2(monthUsd),
+      capUsd,
       switchMode,
     },
   }
@@ -2960,10 +2970,10 @@ export async function deriveState(deps = {}) {
     workersTotal: workersCfg.length,
     queued: queuedRows.length,
     awaitingApproval: awaitingRows.length,
-    // СИНОНИМ `costs.apiFallback.todayEur`, и взят ИЗ НЕГО, а не посчитан второй раз. Число
+    // СИНОНИМ `costs.apiFallback.todayUsd`, и взят ИЗ НЕГО, а не посчитан второй раз. Число
     // одно, экранов у него может быть много, но выражение должно остаться одно: два
     // `round2(todayUsd)` рядом — это две правки, из которых однажды сделают одну.
-    spentTodayEur: spend.apiFallback.todayEur,
+    spentTodayUsd: spend.apiFallback.todayUsd,
     windowsOpen,
     seatsBusy,
     seatsTotal,
@@ -3013,12 +3023,15 @@ export async function deriveState(deps = {}) {
   // say); then all-windows-closed with no paid budget (nowhere to run); then a paid
   // channel that exists but is already spent (budget stop). Windows closed WITH budget
   // left is not idle — the fallback engages — so it stays unmarked. ──
-  const monthEurSpent = round2(monthUsd)
+  // ТО ЖЕ ЧИСЛО, что на «Расходах» и в пороге стопа — `spend.apiFallback.monthUsd`, взятое
+  // из него, а не посчитанное здесь заново: объяснение «деньги кончились» обязано читать ту
+  // же цифру, по которой они и кончаются.
+  const monthUsdSpent = spend.apiFallback.monthUsd
   const queueIdleReason = !pipelineEnabled(config)
     ? 'pipeline_off'
-    : windowsOpen === 0 && capEur === 0
+    : windowsOpen === 0 && capUsd === 0
       ? 'windows_closed'
-      : windowsOpen === 0 && capEur > 0 && monthEurSpent >= capEur
+      : windowsOpen === 0 && capUsd > 0 && monthUsdSpent >= capUsd
         ? 'budget_stop'
         : null
   if (queueIdleReason) for (const q of queue) q.idleReason = queueIdleReason
@@ -3081,32 +3094,6 @@ async function applyAggregator(payload, aggregator) {
   } catch {
     return payload
   }
-}
-
-/** Sum costUsd across every account over a rolling window via the injected usageReader. */
-function totalCost(usageReader, workersCfg, windowMs, now, apiAccountName) {
-  if (typeof usageReader !== 'function') return 0
-  const seen = new Set()
-  let sum = 0
-  // The paid channel books under its OWN account (it has no worker — that is what the
-  // fallback is), so a sum that walked only the workers' accounts could never see it.
-  const names = [...workersCfg.map((w) => accountNameOf(w.account, w.id)), ...(apiAccountName ? [apiAccountName] : [])]
-  for (const name of names) {
-    if (seen.has(name)) continue
-    seen.add(name)
-    try {
-      const u = usageReader({ accountName: name, windowMs, clock: () => now })
-      // The paid share ONLY. This figure renders under «платный канал», and for one
-      // release it summed every row's costUsd — so a subscription chat message read as
-      // paid-channel spend directly above the line saying the paid channel is silent
-      // (QA D4). The reader separates the two; a reader that predates the split
-      // contributes 0 here rather than a number from the wrong column.
-      sum += Number(u && u.apiCostUsd) || 0
-    } catch {
-      /* a reader failure contributes 0 — never wedges the poll */
-    }
-  }
-  return sum
 }
 
 /**

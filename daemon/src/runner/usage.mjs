@@ -333,7 +333,7 @@ export function bookUsage({ dataDir, event = {}, clock = Date.now, fsImpl } = {}
     // WHICH MONEY THIS IS. A subscription session carries a real costUsd — that is the
     // «subscriptions are never $0» differentiator — but that figure is what the plan
     // absorbed, not an invoice. Without this field the two kinds summed into one number,
-    // and one chat message showed up as «платный канал сегодня 0,12 €» directly above the
+    // and one chat message showed up as «платный канал сегодня $0,12» directly above the
     // line «платный канал не используется вовсе» (QA D4, 11.08.2026). Absent on old rows →
     // read as 'subscription', which is what every row before the paid channel ever engaged
     // actually was.
@@ -406,9 +406,9 @@ function round2(n) {
  * Two things about it are deliberate.
  *
  * TOKENS AND MONEY BOTH TRAVEL. A subscription session books no dollar cost — it is paid
- * for by the plan, not by the invoice — so a series that carried euros alone would show a
+ * for by the plan, not by the invoice — so a series that carried dollars alone would show a
  * night of real work as a flat zero (in the one place a founder actually looks
- * for it). Every point therefore carries the token counts it is made of; the euro figure is
+ * for it). Every point therefore carries the token counts it is made of; the dollar figure is
  * the API-fallback money, and it is honestly zero when nothing was billed.
  *
  * THE CONVERSATION IS ITS OWN LANE. Rows booked under the reserved `chat-` prefix are kept
@@ -420,13 +420,13 @@ function round2(n) {
  * ЧЕТЫРЕ ЧИСЛА И ЦЕНА «КАК ЕСЛИ БЫ ПО API». Точка несёт вход, выход, чтение кэша и запись
  * кэша по отдельности, потому что вопрос экрана — не только «сколько», но и «из чего»: день,
  * у которого миллион прочитан из кэша, и день, у которого тот же миллион отправлен заново,
- * стоят по-разному в разы, а по двум числам выглядят одинаково. Рядом едет `apiEquivalentEur`
+ * стоят по-разному в разы, а по двум числам выглядят одинаково. Рядом едет `apiEquivalentUsd`
  * — что этот же расход стоил бы по ценнику платформы, посчитанное ПОСТРОЧНО, каждая строка по
  * ставкам СВОЕЙ модели: день, в середине которого сменили модель, иначе оценивался бы по
  * последней из них.
  *
  * ЭТО СПРАВОЧНАЯ ЦИФРА, А НЕ СЧЁТ. Работа идёт по подписке, которая уже оплачена; сложить её
- * с `eur` значило бы выставить себе счёт дважды, поэтому это ОТДЕЛЬНОЕ поле, а обязанность
+ * с `usd` значило бы выставить себе счёт дважды, поэтому это ОТДЕЛЬНОЕ поле, а обязанность
  * назвать его словами лежит на экране. `unpricedTokens` — та часть токенов, чью модель ценник
  * не знает: без неё справочная цена молча занижается, а выглядит точной.
  *
@@ -438,7 +438,7 @@ function round2(n) {
  *
  * @param {{dataDir:string, days?:number, accounts?:string[], clock?:Function, fsImpl?:object}} opts
  * @returns {{day:string, account:string, tokensIn:number, tokensOut:number, cacheRead:number,
- *   cacheWrite:number, model:string|null, eur:number, apiEquivalentEur:number,
+ *   cacheWrite:number, model:string|null, usd:number, apiEquivalentUsd:number,
  *   unpricedTokens:number, taskId?:string}[]}
  */
 export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fsImpl } = {}) {
@@ -470,8 +470,8 @@ export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fs
         cacheRead: 0,
         cacheWrite: 0,
         model: null,
-        eur: 0,
-        apiEquivalentEur: 0,
+        usd: 0,
+        apiEquivalentUsd: 0,
         unpricedTokens: 0,
       }
       points.set(key, point)
@@ -502,12 +502,14 @@ export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fs
     // оценить.
     const usd = priceUsd({ model, ...counts })
     if (usd == null) point.unpricedTokens += rowTokens
-    else point.apiEquivalentEur += usd
+    else point.apiEquivalentUsd += usd
 
-    // The point's euro figure is what this file's own header promises: «the API-fallback
-    // money, honestly zero when nothing was billed». Subscription rows ride the token
-    // counts; their estimate never lands in a euro column (QA D4).
-    if (r.channel === 'api' && Number.isFinite(Number(r.costUsd))) point.eur += Number(r.costUsd)
+    // The point's money figure is what this file's own header promises: «the API-fallback
+    // money, honestly zero when nothing was billed» — and it is DOLLARS, the provider's own
+    // `total_cost_usd`, carried through with no conversion, which is why the field is named
+    // for the currency it holds. Subscription rows ride the token counts; their estimate
+    // never lands in a money column (QA D4).
+    if (r.channel === 'api' && Number.isFinite(Number(r.costUsd))) point.usd += Number(r.costUsd)
     // The lane is identified by one of its own real bookings — the latest one seen. The
     // point is a day's total, not one turn, and the id says only which lane it belongs to.
     if (conversation) point.taskId = taskId
@@ -517,8 +519,8 @@ export function usageSeries({ dataDir, days = 14, accounts, clock = Date.now, fs
     .map(([key, p]) => ({
       ...p,
       model: dominantModel(models.get(key)),
-      eur: round2(p.eur),
-      apiEquivalentEur: round2(p.apiEquivalentEur),
+      usd: round2(p.usd),
+      apiEquivalentUsd: round2(p.apiEquivalentUsd),
     }))
     .sort((a, b) => (a.day === b.day ? a.account.localeCompare(b.account) : a.day.localeCompare(b.day)))
 }

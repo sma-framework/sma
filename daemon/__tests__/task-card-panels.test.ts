@@ -51,7 +51,7 @@ describe('расход карточки задачи', () => {
     const rows = spendRows({
       tokens: SUMS,
       session: '$0.42 · ходов: 17',
-      spendSwitch: { mode: 'api', budgeted: true, capEur: 30 } as never,
+      spendSwitch: { mode: 'api', budgeted: true, capUsd: 30 } as never,
     })
 
     expect(rows.map((r) => r.key)).toEqual([
@@ -98,12 +98,12 @@ describe('расход карточки задачи', () => {
   })
 
   it('нулевой потолок платного канала назван выключенным, а не «без ограничения»', () => {
-    const zero = paidApiRow({ mode: 'sub', budgeted: true, capEur: 0 } as never)
+    const zero = paidApiRow({ mode: 'sub', budgeted: true, capUsd: 0 } as never)
     expect(zero.value).toBe('выключен')
     expect(zero.why).toContain('не «без ограничения»')
 
     expect(paidApiRow(null).value).toBe(NOT_MEASURED)
-    expect(paidApiRow({ mode: 'api', budgeted: true, capEur: 30 } as never).value).toBe('работа идёт за деньги')
+    expect(paidApiRow({ mode: 'api', budgeted: true, capUsd: 30 } as never).value).toBe('работа идёт за деньги')
   })
 })
 

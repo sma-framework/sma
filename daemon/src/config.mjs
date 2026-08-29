@@ -250,7 +250,10 @@ function defaultConfig(token) {
     // contents of. The knob is documented where it is read.
     pipeline: { enabled: false },
     budget: {
-      monthlyApiCapEur: 0, // 0 = no API fallback budget until the operator sets one
+      // В ДОЛЛАРАХ — как и всё на этом пути: строки расхода приходят от поставщика в долларах,
+      // и пересчёта курса продукт не делает (см. apiCapUsd). 0 = у платной полосы нет денег,
+      // пока оператор не поставит потолок сам.
+      monthlyApiCapUsd: 0,
       warnPct: [70, 90],
     },
     workers: [
@@ -951,6 +954,31 @@ export function pipelineEnabled(config) {
 }
 
 /**
+ * apiCapUsd(budget) — ПОТОЛОК ПЛАТНОЙ ПОЛОСЫ, В ДОЛЛАРАХ. Единственное место, где эта настройка
+ * читается с диска, и единственное место во всём дереве, которое ещё знает её прежнее имя.
+ *
+ * ПОЧЕМУ ИМЯ СМЕНИЛОСЬ. Потолок назывался `monthlyApiCapEur` и сравнивался с сырыми долларами
+ * поставщика (`total_cost_usd`), без всякого пересчёта: цифра, названная евро, читается как
+ * евро, и порог остановки денег стоял не там, где думал человек. Пересчёта курса в продукте
+ * нет и он сюда не заводится — это отдельное решение владельца, — поэтому честный ход один:
+ * назвать поле тем, что в нём лежит.
+ *
+ * ПОЧЕМУ ПРЕЖНЕЕ ИМЯ ВСЁ ЕЩЁ ЧИТАЕТСЯ. На дисках уже стоят файлы с `monthlyApiCapEur`, и
+ * молча забыть это число значило бы обнулить потолок, который человек однажды поставил
+ * руками: платная полоса встала бы целиком, а окно объявило бы её «не настроенной». Число
+ * переносится КАК ЕСТЬ — пересчёта не было и здесь его тоже нет, — а дверь потолка пишет уже
+ * новое имя, так что файл выправляется первым же нажатием.
+ *
+ * @param {object} [budget] the `budget` block of the daemon config
+ * @returns {number} the cap in USD; 0 (the shipped default) means the paid lane has no money
+ */
+export function apiCapUsd(budget) {
+  const b = budget && typeof budget === 'object' ? budget : {}
+  const raw = b.monthlyApiCapUsd !== undefined ? b.monthlyApiCapUsd : b.monthlyApiCapEur
+  return Number(raw) || 0
+}
+
+/**
  * HOW LONG ONE ATTEMPT MAY WALK — the turn ceiling handed to every task spawn. It lives in the
  * conveyor's own block because it is the second half of the same decision: the switch says
  * whether unattended work happens at all, this number says how far one piece of it may go.
@@ -1013,31 +1041,37 @@ export function applyPipelineToggle(config, { enabled } = {}, { env = process.en
 }
 
 /**
- * applyBudgetStop(config, {limit}, io) — set the monthly API budget stop, in euro, and
+ * applyBudgetStop(config, {limit}, io) — set the monthly API budget stop, IN DOLLARS, and
  * persist. `0` is a meaningful value and the shipped one: no money for the API lane at all,
  * so the sub→API fallback cannot be taken (policy/budget.mjs reads exactly this number).
+ *
+ * DOLLARS, AND THE SCREEN SAYS SO. The spend this cap is compared against arrives from the
+ * provider in USD and is never converted, so the cap is stated in the same currency and the
+ * field is named for it. The door that presses this number is the one place a person could
+ * still believe they were typing euros — `spa/src/screens/costs/BudgetDialog.tsx` prints the
+ * currency and the «курс не пересчитывается» note beside the input for exactly that reason.
  *
  * A HUMAN-ONLY BOUNDARY. This is the amount of the founder's money the machine may spend
  * without asking again, so it is moved by a person at a door and by nothing else: no worker,
  * no workflow and no verb has a path to this function, and the suite asserts that by reading
  * the daemon's own source rather than by trusting the sentence you just read.
  *
- * The rest of the budget block (warnPct, usdToEur, the per-task ceiling) is preserved
- * untouched — this door owns one number.
+ * The rest of the budget block (warnPct, the per-task ceiling) is preserved untouched — this
+ * door owns one number.
  *
  * @returns {object} the updated config
  */
 export function applyBudgetStop(config, { limit } = {}, { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {}) {
   if (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 0) {
-    throw new InvalidWorkerProfileError('applyBudgetStop: "limit" must be a non-negative finite number of euro')
+    throw new InvalidWorkerProfileError('applyBudgetStop: "limit" must be a non-negative finite number of dollars')
   }
   const current = config && typeof config.budget === 'object' && config.budget !== null ? config.budget : {}
-  const next = { ...config, budget: { ...current, monthlyApiCapEur: limit } }
+  const next = { ...config, budget: { ...current, monthlyApiCapUsd: limit } }
   writeConfig(next, {
     env,
     homedir,
     fsImpl,
-    fields: [['budget', 'monthlyApiCapEur']],
+    fields: [['budget', 'monthlyApiCapUsd']],
     ...(launchDir !== undefined ? { launchDir } : {}),
   })
   return next

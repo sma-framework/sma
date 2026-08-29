@@ -852,11 +852,11 @@ describe('pipelineEnabled — off by construction, on only by the literal true',
 describe('applyBudgetStop — the money the machine may spend without asking again', () => {
   it('writes the ONE number policy/budget.mjs reads, and leaves the rest of the block alone', () => {
     const cfg = loadConfig({ env: {}, homedir, repoDir: repo })
-    expect(cfg.budget.monthlyApiCapEur).toBe(0) // the shipped value: the API lane has no money
+    expect(cfg.budget.monthlyApiCapUsd).toBe(0) // the shipped value: the API lane has no money
     const next = applyBudgetStop(cfg, { limit: 50 }, { env: {}, homedir, launchDir: repo })
-    expect(next.budget.monthlyApiCapEur).toBe(50)
+    expect(next.budget.monthlyApiCapUsd).toBe(50)
     expect(next.budget.warnPct).toEqual(cfg.budget.warnPct) // untouched
-    expect(JSON.parse(readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8')).budget.monthlyApiCapEur).toBe(50)
+    expect(JSON.parse(readFileSync(resolveConfigPath({ env: {}, homedir }), 'utf8')).budget.monthlyApiCapUsd).toBe(50)
   })
 
   it('refuses anything that is not a non-negative finite number', () => {
@@ -906,7 +906,7 @@ describe('the three doors: strict bodies, and the process re-reads what it wrote
     const config: any = {
       token: TOKEN,
       pipeline: { enabled: false },
-      budget: { monthlyApiCapEur: 0, warnPct: [70, 90] },
+      budget: { monthlyApiCapUsd: 0, warnPct: [70, 90] },
       workers: [{ id: 'max-1', lane: 'prod', provider: 'claude', account: { configDir: '/x' }, enabled: true }],
     }
     const deps = {
@@ -917,7 +917,7 @@ describe('the three doors: strict bodies, and the process re-reads what it wrote
       },
       applyBudgetStop: (cfg: any, { limit }: any) => {
         order.push(`applyBudgetStop:${limit}`)
-        return { ...cfg, budget: { ...cfg.budget, monthlyApiCapEur: limit } }
+        return { ...cfg, budget: { ...cfg.budget, monthlyApiCapUsd: limit } }
       },
       applyAgentModel: ({ id, model, effort }: any) => {
         order.push(`applyAgentModel:${id}:${model}:${effort}`)
@@ -974,7 +974,7 @@ describe('the three doors: strict bodies, and the process re-reads what it wrote
     expect(res.statusCode).toBe(200)
     expect(JSON.parse(res.body)).toEqual({ ok: true, budget: { lane: 'all', limit: 50 } })
     expect(order).toEqual(['applyBudgetStop:50'])
-    expect(config.budget.monthlyApiCapEur).toBe(50)
+    expect(config.budget.monthlyApiCapUsd).toBe(50)
     expect(config.budget.warnPct).toEqual([70, 90]) // the rest of the block survived
     expect((await call(front, '/api/budget/set', { limit: 0 })).statusCode).toBe(200)
   })

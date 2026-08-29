@@ -19,7 +19,7 @@
  * ═══ ПОЧЕМУ ВТОРОГО СПИСКА НЕ БЫЛО, И ПОЧЕМУ ОН ПОЯВИЛСЯ ═══
  * «Имени поля нет в рисующих файлах» — это НЕ «человек этого не видит». Наивный поиск по имени
  * на живой работе дал ложный ответ дважды подряд: расход за сегодня был объявлен непоказанным,
- * хотя человек читает его на «Расходах» — то же число приезжает туда полем `todayEur`. Замок,
+ * хотя человек читает его на «Расходах» — то же число приезжает туда полем `todayUsd`. Замок,
  * умеющий только искать имя, повторял бы эту ошибку на каждом новом поле и уже без человека,
  * который потом перепроверит. Поэтому «показано под другим именем» — отдельный ответ, и он НЕ
  * верится на слово: названное поле обязано существовать в договоре и само встречаться в
@@ -30,7 +30,7 @@
  * (красный), то же поле с причиной (зелёный), пустая причина (красный), синоним показанного
  * (зелёный), синоним непоказанного и синоним несуществующего (красный).
  *
- * И ОТДЕЛЬНО — ОДНО ЧИСЛО ОДНИМ ВЫРАЖЕНИЕМ. `kpis.spentTodayEur` и `costs.apiFallback.todayEur`
+ * И ОТДЕЛЬНО — ОДНО ЧИСЛО ОДНИМ ВЫРАЖЕНИЕМ. `kpis.spentTodayUsd` и `costs.apiFallback.todayUsd`
  * несут ОДИН расход платного канала за сегодня. Это и есть та форма дефекта, что нашлась под
  * этой работой: не «посчитано и не показано», а «посчитано ДВАЖДЫ, показана одна копия».
  * Утверждение о равенстве стоит на настоящем derive — там, где второе выражение и появилось бы.
@@ -239,9 +239,9 @@ describe('расход за сегодня: одно число, одно выр
   const HOUR = 3600_000
   const win = (status: string, resetsAt: number | null = null) => ({ status, resetsAt, pct: null, observedAt: null })
 
-  it('kpis.spentTodayEur и costs.apiFallback.todayEur — одно и то же на настоящем derive', async () => {
+  it('kpis.spentTodayUsd и costs.apiFallback.todayUsd — одно и то же на настоящем derive', async () => {
     const config = {
-      budget: { monthlyApiCapEur: 50 },
+      budget: { monthlyApiCapUsd: 50 },
       workers: [
         { id: 'max-1', lane: 'prod', account: { name: 'max-1' } },
         { id: 'max-2', lane: 'prod', account: { name: 'max-2' } },
@@ -264,17 +264,17 @@ describe('расход за сегодня: одно число, одно выр
     // Не «оба около трёх с половиной»: РОВНО одно значение. Разойтись они могут только если
     // кто-то заведёт второе выражение — и тогда этот случай краснеет раньше, чем два экрана
     // начнут спорить между собой.
-    expect(payload.kpis.spentTodayEur).toBe(payload.costs.apiFallback.todayEur)
-    expect(payload.kpis.spentTodayEur).toBe(3.55)
+    expect(payload.kpis.spentTodayUsd).toBe(payload.costs.apiFallback.todayUsd)
+    expect(payload.kpis.spentTodayUsd).toBe(3.55)
   })
 
   it('дубликат объявлен синонимом ИМЕННО того поля, которым человек его читает', () => {
-    expect(SHOWN_AS.spentTodayEur.as).toBe('todayEur')
+    expect(SHOWN_AS.spentTodayUsd.as).toBe('todayUsd')
 
-    // И это утверждение не декларация: проверка требует, чтобы «todayEur» действительно
+    // И это утверждение не декларация: проверка требует, чтобы «todayUsd» действительно
     // называл хоть один рисующий файл. Без этого запись была бы вежливым способом промолчать.
     const { contract, render } = readTree(ROOT)
     const out = checkShown({ contract, render })
-    expect(out.findings.filter((f: any) => f.name === 'spentTodayEur')).toEqual([])
+    expect(out.findings.filter((f: any) => f.name === 'spentTodayUsd')).toEqual([])
   })
 })

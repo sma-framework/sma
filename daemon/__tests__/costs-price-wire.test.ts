@@ -34,7 +34,7 @@ const CACHE_READ = 2_000_000
 const CACHE_WRITE = 400_000
 
 /** opus по общему ценнику: 5,00 + 5,00 + 1,00 + 2,50 = 13,50 за эти четыре числа. */
-const EXPECTED_EUR = 13.5
+const EXPECTED_USD = 13.5
 
 const frame = (over: object = {}) =>
   JSON.stringify({
@@ -122,7 +122,7 @@ async function stateOver(fsImpl: object) {
     config: {
       token: TOKEN,
       workers: [{ id: 'max-1', lane: 'prod', account: { name: ACCOUNT } }],
-      budget: { monthlyApiCapEur: 40 },
+      budget: { monthlyApiCapUsd: 40 },
     },
     deps: {
       deriveState,
@@ -161,9 +161,9 @@ describe('кадр → книга → дверь состояния: четыр�
     const state = await stateOver(bookOf([frame()]))
     const point = state.costs.series[0]
 
-    expect(point.apiEquivalentEur).toBe(EXPECTED_EUR)
+    expect(point.apiEquivalentUsd).toBe(EXPECTED_USD)
     // И НЕ СЛОЖЕНА С НАСТОЯЩИМИ ДЕНЬГАМИ: работа шла по подписке, счёта за неё не было.
-    expect(point.eur).toBe(0)
+    expect(point.usd).toBe(0)
     expect(point.unpricedTokens).toBe(0)
   })
 
@@ -174,7 +174,7 @@ describe('кадр → книга → дверь состояния: четыр�
       tokensOut: OUT,
       cacheRead: CACHE_READ,
       cacheWrite: CACHE_WRITE,
-      apiEquivalentEur: EXPECTED_EUR,
+      apiEquivalentUsd: EXPECTED_USD,
     })
   })
 
@@ -184,7 +184,7 @@ describe('кадр → книга → дверь состояния: четыр�
     expect(state.costs.series[0]).toMatchObject({
       tokensIn: IN * 2,
       cacheRead: CACHE_READ * 2,
-      apiEquivalentEur: EXPECTED_EUR * 2,
+      apiEquivalentUsd: EXPECTED_USD * 2,
     })
   })
 })

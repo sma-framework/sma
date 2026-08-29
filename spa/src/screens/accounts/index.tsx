@@ -1,6 +1,7 @@
 import { useStateQuery } from '../../api/queries'
 import type { AccountEntry, RulesWorker } from '../../api/types'
 import { openScreen } from '../../shell/navigation'
+import { formatCapUsd, formatUsd } from '../costs/money'
 import { AccountRow } from './AccountRow'
 import { AddAccount } from './AddAccount'
 
@@ -46,12 +47,12 @@ import { AddAccount } from './AddAccount'
 
 /** The paid channel: not a subscription, but it belongs in this list — last, and quietly. */
 function FallbackRow({
-  todayEur,
-  capEur,
+  todayUsd,
+  capUsd,
   onApi,
 }: {
-  todayEur: number
-  capEur: number
+  todayUsd: number
+  capUsd: number
   onApi: boolean
 }) {
   return (
@@ -72,7 +73,7 @@ function FallbackRow({
         <div className="flex-1" />
 
         <span className="flex-none text-[12px] whitespace-nowrap text-tx2 tabular-nums">
-          {todayEur} € сегодня{capEur > 0 ? ` · потолок ${capEur} €/мес` : ' · потолок не задан'}
+          {formatUsd(todayUsd)} сегодня{capUsd > 0 ? ` · потолок ${formatCapUsd(capUsd)}` : ' · потолок не задан'}
         </span>
         <button
           type="button"
@@ -214,7 +215,7 @@ export function Screen() {
             )}
 
             {fallback ? (
-              <FallbackRow todayEur={fallback.todayEur} capEur={fallback.capEur} onApi={onApi} />
+              <FallbackRow todayUsd={fallback.todayUsd} capUsd={fallback.capUsd} onApi={onApi} />
             ) : null}
           </div>
 

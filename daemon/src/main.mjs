@@ -126,6 +126,7 @@ import {
 } from './front/state.mjs'
 import { resolveRoute } from './policy/routing.mjs'
 import { shouldApiFallback } from './policy/budget.mjs'
+import { spendAccountNames } from './policy/spend.mjs'
 import { windowState, terminalWindowState, isOpen } from './policy/windows.mjs'
 import { readUsage, usageSeries, bookUsage } from './runner/usage.mjs'
 import { spawnWorker } from './runner/spawn.mjs'
@@ -1410,8 +1411,17 @@ export function createDaemon(o = {}) {
     // automatic switch three screens describe («все окна закрыты — продолжаем по платному
     // каналу») never happened. Bound here, where the cap, the rate and the spend book all
     // live; the dispatcher only asks.
+    // `accountNames` is the SAME account set «Расходы» sums — the stop and the screen must
+    // never be able to answer «сколько уже потрачено» differently.
     budget: ({ task, allClosed }) =>
-      shouldApiFallback({ task, windows: allClosed, budget: config.budget ?? {}, usageReader, clock }),
+      shouldApiFallback({
+        task,
+        windows: allClosed,
+        budget: config.budget ?? {},
+        usageReader,
+        accountNames: spendAccountNames(config),
+        clock,
+      }),
     windows: windowsOpenFor,
     spawnWorker,
     // THE OTHER HALF OF THE EXECUTOR. spawnWorker has been wired since the fleet shipped;

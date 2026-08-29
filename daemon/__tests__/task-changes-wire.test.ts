@@ -88,7 +88,7 @@ async function askDiffDoor(deps: any, id: string) {
   return res
 }
 
-const config = { agingHours: 24, budget: { monthlyApiCapEur: 50 }, workers: [] as any[] }
+const config = { agingHours: 24, budget: { monthlyApiCapUsd: 50 }, workers: [] as any[] }
 const windows = () => ({
   fiveHour: { status: 'open', resetsAt: null, pct: null, observedAt: null },
   week: { status: 'open', resetsAt: null, pct: null, observedAt: null },

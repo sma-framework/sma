@@ -467,9 +467,10 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
 
     // The cost history is nested one level down, so it is merged by hand rather than by the
     // row loop above. Every point learns which machine spent it — that, and only that, is
-    // what lets «Расходы» group by machine when there is more than one. The euro figures add
-    // up for the same reason the counts do: one window, one number. The ceiling does NOT add
-    // up — it is one household setting, and the hub's copy is the household's.
+    // what lets «Расходы» group by machine when there is more than one. The dollar figures add
+    // up for the same reason the counts do: one window, one number, one currency — every
+    // machine books the provider's own `total_cost_usd` and nobody converts. The ceiling does
+    // NOT add up — it is one household setting, and the hub's copy is the household's.
     const selfCosts = base.costs && typeof base.costs === 'object' ? base.costs : {}
     const selfSeries = Array.isArray(selfCosts.series) ? selfCosts.series : []
     const peerSeries = peers.flatMap((p) => {
@@ -487,7 +488,7 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
           ? snap.state.costs.apiFallback
           : null
       if (!peerFallback) continue
-      for (const key of ['todayEur', 'monthEur']) {
+      for (const key of ['todayUsd', 'monthUsd']) {
         const add = Number(peerFallback[key])
         if (Number.isFinite(add)) fallback[key] = Math.round(((Number(fallback[key]) || 0) + add) * 100) / 100
       }
@@ -508,9 +509,9 @@ export function createFederation({ config = {}, fetchImpl, clock = Date.now } = 
         const add = Number(peerKpis[key])
         if (Number.isFinite(add)) kpis[key] = (Number(kpis[key]) || 0) + add
       }
-      const spend = Number(peerKpis.spentTodayEur)
+      const spend = Number(peerKpis.spentTodayUsd)
       if (Number.isFinite(spend)) {
-        kpis.spentTodayEur = Math.round(((Number(kpis.spentTodayEur) || 0) + spend) * 100) / 100
+        kpis.spentTodayUsd = Math.round(((Number(kpis.spentTodayUsd) || 0) + spend) * 100) / 100
       }
     }
     out.kpis = kpis

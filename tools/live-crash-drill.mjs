@@ -288,7 +288,7 @@ function writeDrillConfig(root, { port, queueUrl, tickMs, sweepExpireMs }) {
     backlogScanMinutes: 60,
     agingHours: 24,
     webhookUrl: '',
-    budget: { monthlyApiCapEur: 0, warnPct: [70, 90] },
+    budget: { monthlyApiCapUsd: 0, warnPct: [70, 90] },
     workers: [
       {
         id: 'drill-1',

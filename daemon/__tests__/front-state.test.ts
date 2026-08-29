@@ -81,7 +81,7 @@ const NOW = 1_000_000_000_000
 
 const config = {
   agingHours: 24,
-  budget: { monthlyApiCapEur: 50 },
+  budget: { monthlyApiCapUsd: 50 },
   workers: [
     { id: 'max-1', lane: 'prod', account: { name: 'max-1' } },
     { id: 'max-2', lane: 'prod', account: { name: 'max-2' } },
@@ -307,7 +307,7 @@ describe('deriveState — the one-poll payload', () => {
     expect(payload.queue[0].agedForHours).toBeUndefined()
     // spend strip: deduped accounts (max-1 once) + api-fallback cap
     expect(payload.spend.accounts.map((a: any) => a.name)).toEqual(['max-1', 'max-2', 'pro-1'])
-    expect(payload.spend.apiFallback.capEur).toBe(50)
+    expect(payload.spend.apiFallback.capUsd).toBe(50)
   })
 
   it('a CLOSED window forces «ждёт окно» even with queued work in that lane', async () => {
@@ -2000,7 +2000,7 @@ const maxTwo = { name: 'max-2', configDir: '/home/founder/.sma-accounts/max-2', 
 const rulesConfig = {
   agingHours: 24,
   machineId: 'workstation',
-  budget: { monthlyApiCapEur: 50, warnPct: [70, 90] },
+  budget: { monthlyApiCapUsd: 50, warnPct: [70, 90] },
   workers: [
     { id: 'max-1', lane: 'prod', provider: 'claude', model: 'opus', effort: 'high', account: maxOne, dayPriorityOwner: true, enabled: true },
     { id: 'max-2', lane: 'prod', provider: 'claude', model: 'sonnet', effort: 'medium', account: maxTwo, enabled: false },
@@ -2036,19 +2036,19 @@ describe('deriveRules — the «Правила» screen rides the config, never 
   })
 
   it('carries the budget stops when the config has them, and omits the section when it does not', () => {
-    expect(deriveRules(rulesConfig).budgetStops).toEqual({ monthlyApiCapEur: 50, warnPct: [70, 90] })
+    expect(deriveRules(rulesConfig).budgetStops).toEqual({ monthlyApiCapUsd: 50, warnPct: [70, 90] })
     expect('budgetStops' in deriveRules({ workers: [] })).toBe(false)
   })
 
   it('the sub→API switch reports the mode the spend strip already computed — one truth', () => {
     expect(deriveRules(rulesConfig, { switchMode: 'subscription' }).subApiSwitch).toEqual({
       mode: 'subscription',
-      capEur: 50,
+      capUsd: 50,
       budgeted: true,
     })
     expect(deriveRules(rulesConfig, { switchMode: 'api' }).subApiSwitch.mode).toBe('api')
     // no cap set → no API fallback is budgeted at all
-    expect(deriveRules({ workers: [] }).subApiSwitch).toEqual({ mode: 'subscription', capEur: 0, budgeted: false })
+    expect(deriveRules({ workers: [] }).subApiSwitch).toEqual({ mode: 'subscription', capUsd: 0, budgeted: false })
   })
 
   /**
@@ -2916,7 +2916,7 @@ describe('deriveState — idleReason on queued rows', () => {
     const payload = await deriveState({
       adapter: mkAdapter([queuedRow]),
       windows: makeWindows({ 'max-1': closed, 'max-2': closed, 'pro-1': closed }),
-      config: { ...config, budget: { monthlyApiCapEur: 0 }, pipeline: { enabled: true } },
+      config: { ...config, budget: { monthlyApiCapUsd: 0 }, pipeline: { enabled: true } },
       clock: () => NOW,
     })
     expect(payload.queue[0].idleReason).toBe('windows_closed')
@@ -2927,7 +2927,7 @@ describe('deriveState — idleReason on queued rows', () => {
     const payload = await deriveState({
       adapter: mkAdapter([queuedRow]),
       windows: makeWindows({ 'max-1': closed, 'max-2': closed, 'pro-1': closed }),
-      config: { ...config, budget: { monthlyApiCapEur: 50 }, pipeline: { enabled: true } },
+      config: { ...config, budget: { monthlyApiCapUsd: 50 }, pipeline: { enabled: true } },
       clock: () => NOW,
     })
     expect(payload.queue[0].idleReason).toBeUndefined()
