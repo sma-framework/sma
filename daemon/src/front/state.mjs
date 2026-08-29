@@ -1895,7 +1895,7 @@ function stageStatusOf(files, spec) {
 }
 
 /** {discuss,plan,execute,verify} → 'none' | 'in-progress' | 'done'. */
-function stagesOf(files) {
+export function stagesOf(files) {
   const out = {}
   for (const stage of PHASE_STAGES) out[stage] = stageStatusOf(files, STAGE_ARTIFACTS[stage])
   return out
