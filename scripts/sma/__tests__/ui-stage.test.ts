@@ -30,6 +30,7 @@ import {
   parseStageArgs,
   stageCommandArgs,
   stageConfig,
+  stageDiskConfig,
   stageUrl,
 } from '../lib/ui-stage.mjs'
 
@@ -143,6 +144,22 @@ describe('the scene config — made in memory, standing on nothing the daemon ow
 
   it('carries the port it was given, so the caller writes back the one the socket took', () => {
     expect(stageConfig({ port: 51000, token: 't' }).port).toBe(51000)
+  })
+
+  /**
+   * ФАЙЛ СЦЕНЫ НАМЕРЕННО НЕ СОВПАДАЕТ С КОПИЕЙ В ПАМЯТИ. Настройки второго класса
+   * применяются только с нового запуска демона, и увидеть, как окно об этом говорит, можно
+   * лишь там, где два значения РАЗНЫЕ: совпадающая пара доказывала бы, что экран умеет
+   * молчать. Токена в файле нет и быть не может — это отдельный закон сцены.
+   */
+  it('the scene’s file on disk differs from its in-memory copy, and carries no token', () => {
+    const memory = stageConfig({ port: 0, token: 't' })
+    const disk: any = stageDiskConfig()
+
+    expect(disk.maxConcurrentAttempts).toBe(4)
+    expect(disk.pipeline.maxTurns).toBe(400)
+    expect(disk.maxConcurrentAttempts).not.toBe((memory as any).maxConcurrentAttempts)
+    expect(disk.token, 'the scene token meets no file — showing a divergence does not lift that').toBeUndefined()
   })
 })
 

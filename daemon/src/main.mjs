@@ -60,6 +60,9 @@ import {
   applyTelegramDisconnect,
   pipelineEnabled,
 } from './config.mjs'
+// ЧТО ЛЕЖИТ В ФАЙЛЕ НАСТРОЕК ПРЯМО СЕЙЧАС — против копии, прочитанной на запуске. Настройки,
+// применяющиеся только с нового запуска, расходятся ровно с ней, и окно обязано это показать.
+import { readConfigOnDisk } from './config-restart.mjs'
 // The calling card this process leaves at the door, and the file the stop command reads to
 // prove which process is ours. Written by start(), removed by stop() — see control.mjs.
 import { writePidRecord, clearPidRecord, PID_RECORD_FILE } from './control.mjs'
@@ -964,6 +967,11 @@ export function createDaemon(o = {}) {
         // расходятся эти два счёта ровно тогда, когда потолок ведёт себя не так, как думает
         // человек, — то есть в единственный момент, когда числа и нужны.
         inFlight,
+        // ЧТО СТОИТ В ФАЙЛЕ НАСТРОЕК ПРЯМО СЕЙЧАС. Читается на КАЖДЫЙ опрос, а не один раз:
+        // весь смысл в том, что человек правит файл при живом демоне, и запомненный ответ
+        // повторил бы ровно тот дефект, который здесь и показывается. Чтение fail-open
+        // (readJsonSafe), поэтому наполовину записанный файл стоит двери ноль.
+        configOnDisk: () => readConfigOnDisk(),
         // WHAT THE DISPATCHER COULD NOT EXPLAIN, for the feedback window's diagnostics —
         // a READER, so the door owns none of the state and cannot add to it.
         unknownDispatchCodes: () => unknownDispatchCodes.codes(),
