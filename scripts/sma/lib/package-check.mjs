@@ -24,7 +24,11 @@
  *      packages, and the install page PROMISES their licences are tracked here
  *   8. a vendored package whose license sits outside the permissive allowlist —
  *      that is a decision a human makes BEFORE it rides in a published package
- *   9. the built window (`daemon/static/app/index.html`) missing from disk — it is
+ *   9. a generated window-bundle section that no longer matches `spa/package-lock.json`,
+ *      or a package the bundle carries under a license outside the allowlist — the
+ *      built window ships react, react-dom, @tanstack/react-query and Tailwind's CSS
+ *      compiled into two files, and compiled is still shipped
+ *  10. the built window (`daemon/static/app/index.html`) missing from disk — it is
  *      gitignored on purpose and `files[]` packs `daemon/` FROM DISK, so without it a
  *      release ships with no app at all and tells the person who just installed it to
  *      go and build one. Only asked where `spa/` exists: an installed copy has no
@@ -45,7 +49,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { checkBadge } from './badge.mjs'
-import { checkDaemonLicenses } from './daemon-licenses.mjs'
+import { checkDaemonLicenses, checkSpaLicenses } from './daemon-licenses.mjs'
 
 /**
  * checkPackage({pkgRoot, io}) — pure given an io; returns
@@ -91,7 +95,13 @@ export function checkPackage({ pkgRoot, io } = {}) {
   // from disk each time: the ledger is compared, never trusted.
   violations.push(...checkDaemonLicenses({ pkgRoot, io: read }).violations)
 
-  // 9. THE WINDOW MUST BE IN THE TARBALL.
+  // 9. the same question asked of the OTHER shipped surface. The window is handed
+  // over already built, so its dependencies ride to the adopter as bundle bytes —
+  // minified, but no less somebody else's code. Read from the committed lockfile
+  // rather than a node_modules tree, so the gate holds in a fresh clone too.
+  violations.push(...checkSpaLicenses({ pkgRoot, io: read }).violations)
+
+  // 10. THE WINDOW MUST BE IN THE TARBALL.
   //
   // The built app (`daemon/static/app/`) is gitignored on purpose — a 480 KB minified
   // artefact in every diff is worse than rebuilding it — and `files[]` packs `daemon/`
