@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import { useStateQuery } from '../../api/queries'
 import type { CostPoint, MachineRow } from '../../api/types'
 import { BudgetDialog } from './BudgetDialog'
-import { SpendTable, formatEur, formatTokens, rowTokens } from './SpendTable'
+import { FX_NOTE, formatUsd } from './money'
+import { SpendTable, formatTokens, rowTokens } from './SpendTable'
 import type { SpendRow } from './SpendTable'
 import { TerminalWindow } from './TerminalWindow'
 import { WindowBars } from './WindowBars'
@@ -12,8 +13,13 @@ import { WindowBars } from './WindowBars'
  *
  * Everywhere else the product speaks in windows and percentages, because that is what the
  * work actually costs: the plans are already paid for. Here, and only here, the paid
- * fallback is counted in euros — in one compact block, UNDER the windows, so the rare
+ * fallback is counted in MONEY — in one compact block, UNDER the windows, so the rare
  * question does not shout down the common one.
+ *
+ * ВАЛЮТА НАЗВАНА, А НЕ ДОМЫСЛЕНА. Все суммы здесь — доллары поставщика, ровно как он их
+ * выставил; пересчёта курса в продукте нет. Поэтому под цифрами стоит FX_NOTE: цифра, чью
+ * валюту человек домысливает сам, однажды будет домыслена неверно — и дороже всего это там,
+ * где по ней стоит потолок остановки денег.
  *
  * ═══════════════ THE CONVERSATION PAYS FOR ITSELF, IN PUBLIC ═══════════════
  *
@@ -86,8 +92,8 @@ class Bucketed {
           tokensOut: 0,
           cacheRead: 0,
           cacheWrite: 0,
-          eur: 0,
-          apiEquivalentEur: 0,
+          usd: 0,
+          apiEquivalentUsd: 0,
           unpricedTokens: 0,
           ...extra,
         },
@@ -100,8 +106,8 @@ class Bucketed {
     row.tokensOut += p.tokensOut ?? 0
     row.cacheRead += p.cacheRead ?? 0
     row.cacheWrite += p.cacheWrite ?? 0
-    row.eur += p.eur ?? 0
-    row.apiEquivalentEur += p.apiEquivalentEur ?? 0
+    row.usd += p.usd ?? 0
+    row.apiEquivalentUsd += p.apiEquivalentUsd ?? 0
     row.unpricedTokens = (row.unpricedTokens ?? 0) + (p.unpricedTokens ?? 0)
     if (p.model) {
       const tokens = (p.tokensIn ?? 0) + (p.tokensOut ?? 0) + (p.cacheRead ?? 0) + (p.cacheWrite ?? 0)
@@ -140,18 +146,18 @@ function Pill({ value, label, tone = 'text-tx' }: { value: string; label: string
  * is the one the fallback rule reads.
  */
 function FallbackCard({
-  todayEur,
-  monthEur,
-  capEur,
+  todayUsd,
+  monthUsd,
+  capUsd,
   switchMode,
 }: {
-  todayEur: number
-  monthEur: number
-  capEur: number
+  todayUsd: number
+  monthUsd: number
+  capUsd: number
   switchMode: 'subscription' | 'api'
 }) {
   const [editing, setEditing] = useState(false)
-  const pct = capEur > 0 ? Math.max(0, Math.min(100, (monthEur / capEur) * 100)) : 0
+  const pct = capUsd > 0 ? Math.max(0, Math.min(100, (monthUsd / capUsd) * 100)) : 0
   const tone = pct >= 90 ? 'bg-err' : pct >= 70 ? 'bg-warn' : 'bg-green'
 
   return (
@@ -173,18 +179,18 @@ function FallbackCard({
       <div className="mb-5 flex gap-3.5">
         <div className="flex-1 rounded-[10px] border border-bd bg-surf px-4 py-3">
           <div className="mb-1 text-[10.5px] text-tx3">Сегодня</div>
-          <div className="text-[18px] font-bold text-tx tabular-nums">{formatEur(todayEur)}</div>
+          <div className="text-[18px] font-bold text-tx tabular-nums">{formatUsd(todayUsd)}</div>
         </div>
         <div className="flex-1 rounded-[10px] border border-bd bg-surf px-4 py-3">
           <div className="mb-1 text-[10.5px] text-tx3">Месяц</div>
           <div className="text-[18px] font-bold text-tx tabular-nums">
-            {formatEur(monthEur)}
-            {capEur > 0 ? <span className="text-[12.5px] font-medium text-tx3"> из {formatEur(capEur)}</span> : null}
+            {formatUsd(monthUsd)}
+            {capUsd > 0 ? <span className="text-[12.5px] font-medium text-tx3"> из {formatUsd(capUsd)}</span> : null}
           </div>
         </div>
       </div>
 
-      {capEur > 0 ? (
+      {capUsd > 0 ? (
         <div
           className="h-2 w-full overflow-hidden rounded-full bg-track"
           role="progressbar"
@@ -211,17 +217,23 @@ function FallbackCard({
 
       <p className="m-0 mt-2 text-[11.5px] leading-[1.55] text-tx3">
         Бюджет-стоп один на всю машину: пока месячные расходы под потолком, машина может уходить
-        на платный канал; как только дошли — перестаёт. Тот же потолок виден среди правил.
+        на платный канал; как только дошли — перестаёт. «Месяц» здесь — календарный, с первого
+        числа: тот же счёт, по которому машина и останавливается. Тот же потолок виден среди
+        правил.
       </p>
 
-      {editing ? <BudgetDialog current={capEur} onClose={() => setEditing(false)} /> : null}
+      {/* Валюта — под самой цифрой, а не в справке: курс не пересчитывается, и молчание об
+          этом читалось бы как «пересчитан». */}
+      <p className="m-0 mt-2 text-[11.5px] leading-[1.55] text-tx3">{FX_NOTE}</p>
+
+      {editing ? <BudgetDialog current={capUsd} onClose={() => setEditing(false)} /> : null}
     </section>
   )
 }
 
 /**
  * The history, and the day the table below is about. Height is TOKENS — the figure every
- * session books, subscription or not. A chart drawn in euros would show a fortnight of real
+ * session books, subscription or not. A chart drawn in money would show a fortnight of real
  * work on the plans as fourteen empty columns.
  */
 function DayChart({
@@ -231,7 +243,7 @@ function DayChart({
   onSelect,
 }: {
   days: string[]
-  totals: Map<string, { tokens: number; eur: number }>
+  totals: Map<string, { tokens: number; usd: number }>
   selected: string
   onSelect: (day: string) => void
 }) {
@@ -246,7 +258,7 @@ function DayChart({
       </p>
       <div className="flex h-[92px] items-end gap-1.5">
         {days.map((day) => {
-          const total = totals.get(day) ?? { tokens: 0, eur: 0 }
+          const total = totals.get(day) ?? { tokens: 0, usd: 0 }
           const height = Math.max(3, Math.round((total.tokens / peak) * 88))
           const active = day === selected
           return (
@@ -256,10 +268,10 @@ function DayChart({
               onClick={() => onSelect(day)}
               aria-pressed={active}
               aria-label={`${dayLabel(day)}: ${formatTokens(total.tokens)} токенов${
-                total.eur > 0 ? `, ${formatEur(total.eur)}` : ', по подписке'
+                total.usd > 0 ? `, ${formatUsd(total.usd)}` : ', по подписке'
               }`}
               title={`${dayLabel(day)} · ${formatTokens(total.tokens)} токенов${
-                total.eur > 0 ? ` · ${formatEur(total.eur)}` : ''
+                total.usd > 0 ? ` · ${formatUsd(total.usd)}` : ''
               }`}
               className="flex h-full min-w-0 flex-1 cursor-pointer flex-col justify-end border-0 bg-transparent p-0"
             >
@@ -291,9 +303,9 @@ export function Screen() {
   const series: CostPoint[] = data?.costs.series ?? []
   const machines: MachineRow[] = data?.machines ?? []
   const fallback = data?.costs.apiFallback ?? {
-    todayEur: 0,
-    monthEur: 0,
-    capEur: 0,
+    todayUsd: 0,
+    monthUsd: 0,
+    capUsd: 0,
     switchMode: 'subscription' as const,
   }
 
@@ -302,11 +314,11 @@ export function Screen() {
 
   /** What each day of the window came to — one pass over the points, shared by chart and pills. */
   const totals = useMemo(() => {
-    const out = new Map<string, { tokens: number; eur: number }>()
+    const out = new Map<string, { tokens: number; usd: number }>()
     for (const p of series) {
-      const cur = out.get(p.day) ?? { tokens: 0, eur: 0 }
+      const cur = out.get(p.day) ?? { tokens: 0, usd: 0 }
       cur.tokens += (p.tokensIn ?? 0) + (p.tokensOut ?? 0)
-      cur.eur += p.eur ?? 0
+      cur.usd += p.usd ?? 0
       out.set(p.day, cur)
     }
     return out
@@ -355,16 +367,16 @@ export function Screen() {
   const accounts = data?.spend.accounts ?? []
 
   const todayTokens = totals.get(days[days.length - 1])?.tokens ?? 0
-  const capShare = fallback.capEur > 0 ? fallback.monthEur / fallback.capEur : 0
+  const capShare = fallback.capUsd > 0 ? fallback.monthUsd / fallback.capUsd : 0
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">
       <header className="sticky top-0 z-30 flex h-[58px] flex-none items-center gap-2.5 border-b border-bd bg-head px-7 backdrop-blur-[10px]">
         <h1 className="m-0 mr-2 flex-none text-[15px] font-semibold tracking-[-0.01em] text-tx">Расходы</h1>
-        <Pill value={formatEur(fallback.todayEur)} label="платный канал сегодня" />
+        <Pill value={formatUsd(fallback.todayUsd)} label="платный канал сегодня" />
         <Pill
-          value={formatEur(fallback.monthEur)}
-          label={fallback.capEur > 0 ? `из ${formatEur(fallback.capEur)} в месяц` : 'за месяц'}
+          value={formatUsd(fallback.monthUsd)}
+          label={fallback.capUsd > 0 ? `из ${formatUsd(fallback.capUsd)} в месяц` : 'за месяц'}
           tone={capShare >= 0.9 ? 'text-err-tx' : capShare >= 0.7 ? 'text-warn-tx' : 'text-tx'}
         />
         {/* OUR count, and it says so. It is honestly measured — every token this machine
@@ -388,9 +400,9 @@ export function Screen() {
         <TerminalWindow terminal={data?.spend.terminal} />
         <WindowBars accounts={accounts} />
         <FallbackCard
-          todayEur={fallback.todayEur}
-          monthEur={fallback.monthEur}
-          capEur={fallback.capEur}
+          todayUsd={fallback.todayUsd}
+          monthUsd={fallback.monthUsd}
+          capUsd={fallback.capUsd}
           switchMode={fallback.switchMode}
         />
         <DayChart days={days} totals={totals} selected={selected} onSelect={setPickedDay} />

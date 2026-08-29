@@ -5552,7 +5552,7 @@ async function handleTaskWords({ req, res, deps }) {
 /**
  * The reserved `lane` of POST /api/budget/set meaning «the whole machine».
  *
- * THE ONLY BUDGET STOP THIS PRODUCT HAS IS MACHINE-WIDE — `budget.monthlyApiCapEur`, the
+ * THE ONLY BUDGET STOP THIS PRODUCT HAS IS MACHINE-WIDE — `budget.monthlyApiCapUsd`, the
  * number policy/budget.mjs actually reads before it allows the sub→API fallback. The field
  * is accepted because the screen sends it, and its ONLY legal value is this literal: writing
  * a per-lane cap that nothing on earth reads would be worse than having no field, because a
@@ -5599,7 +5599,12 @@ async function handlePipelineToggle({ req, res, config, deps }) {
 
 /**
  * POST /api/budget/set — body {limit:number, lane?}. How much of the founder's money the
- * machine may spend on the API lane in a month, in euro.
+ * machine may spend on the API lane in a month, IN DOLLARS.
+ *
+ * The currency is the provider's own: usage rows book `total_cost_usd` and this product
+ * converts nothing, so the cap is compared against dollars and is therefore stated in them.
+ * The screen that presses this door says so beside the field — a limit a person believed was
+ * in euros is a limit standing somewhere other than where they put it.
  *
  * A HUMAN-ONLY BOUNDARY, and the door is where that is enforced structurally: it exists only
  * behind the founder's token, it is called by nothing inside this daemon, and no verb path
@@ -5617,7 +5622,7 @@ async function handleBudgetSet({ req, res, config, deps }) {
     return send400(res, `the only budget stop is machine-wide — lane must be "${BUDGET_SCOPE_ALL}" or absent`)
   }
   if (typeof b.limit !== 'number' || !Number.isFinite(b.limit) || b.limit < 0) {
-    return send400(res, 'limit must be a non-negative number of euro')
+    return send400(res, 'limit must be a non-negative number of dollars')
   }
   let next
   try {

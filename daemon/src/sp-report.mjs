@@ -4,7 +4,7 @@
  * WHAT IT IS: a deterministic, ZERO-LLM report that lets the founder compare the CUE
  * estimate against reality per SP bucket. It groups COMPLETED tasks by storyPoints and,
  * per bucket, computes the median cycle time (enqueuedAt→completedAt), median work time
- * (claimedAt→completedAt), € (total + median) and diff size, plus a 3×-median cycle-time
+ * (claimedAt→completedAt), money in USD (total + median) and diff size, plus a 3×-median cycle-time
  * outlier cut. Tasks missing a needed timestamp are SKIPPED and counted — never a crash.
  *
  * WHY IT LIVES DAEMON-SIDE: the queue timestamps this report consumes
@@ -82,7 +82,9 @@ export function buildSpReport(deps = {}) {
 async function _buildSpReport({ adapter, ledger, usageReader, clock = Date.now, windowDays = 30 } = {}) {
   const now = clock()
   const windowStart = now - windowDays * 24 * HOUR_MS
-  const eurOf = typeof usageReader === 'function' ? usageReader : () => 0
+  // ДОЛЛАРЫ, как и везде на этом пути: читатель отдаёт стоимость поставщика (`total_cost_usd`),
+  // пересчёта курса в продукте нет — поэтому и поле, и подпись в отчёте называют доллар.
+  const usdOf = typeof usageReader === 'function' ? usageReader : () => 0
 
   let rows = []
   try {
@@ -92,7 +94,7 @@ async function _buildSpReport({ adapter, ledger, usageReader, clock = Date.now, 
   }
 
   // Collect per-bucket contributing tasks; count skips for terminal-but-incomplete rows.
-  const contributors = [] // {key, id, title, storyPoints, cycleMs, workMs, eur, diff}
+  const contributors = [] // {key, id, title, storyPoints, cycleMs, workMs, usd, diff}
   let skipped = 0
 
   for (const r of rows) {
@@ -123,7 +125,7 @@ async function _buildSpReport({ adapter, ledger, usageReader, clock = Date.now, 
       storyPoints: r.storyPoints ?? null,
       cycleMs: done - enq,
       workMs: done - claim,
-      eur: Number(eurOf(r.id)) || 0,
+      usd: Number(usdOf(r.id)) || 0,
       diff: Number.isFinite(diff) ? diff : null,
     })
   }
@@ -142,8 +144,8 @@ async function _buildSpReport({ adapter, ledger, usageReader, clock = Date.now, 
       count: inBucket.length,
       medianCycleMs,
       medianWorkMs: median(inBucket.map((c) => c.workMs)),
-      totalEur: round2(sum(inBucket.map((c) => c.eur))),
-      medianEur: round2(median(inBucket.map((c) => c.eur)) ?? 0),
+      totalUsd: round2(sum(inBucket.map((c) => c.usd))),
+      medianUsd: round2(median(inBucket.map((c) => c.usd)) ?? 0),
       medianDiff: diffs.length ? median(diffs) : null,
     })
     // Outliers: cycle time beyond 3× the bucket median.
@@ -204,7 +206,7 @@ export function renderSpReport(data = {}) {
       const diff = Number.isFinite(b.medianDiff) ? `${b.medianDiff} стр.` : '—'
       lines.push(
         `  ${label}: задач ${b.count}; медиана цикла ${hrs(b.medianCycleMs)}; ` +
-          `медиана в работе ${hrs(b.medianWorkMs)}; € всего ${b.totalEur}, медиана ${b.medianEur}; медиана диффа ${diff}`,
+          `медиана в работе ${hrs(b.medianWorkMs)}; $ всего ${b.totalUsd}, медиана ${b.medianUsd}; медиана диффа ${diff}`,
       )
     }
   }

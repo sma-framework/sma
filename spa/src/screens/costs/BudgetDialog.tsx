@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ApiError, isNotReady } from '../../api/client'
 import { useBudgetSet } from '../../api/queries'
-import { formatEur } from './SpendTable'
+import { FX_NOTE, formatUsd } from './money'
 
 /**
  * The money stop, and the dialog in front of it.
@@ -9,9 +9,16 @@ import { formatEur } from './SpendTable'
  * ═════════════════ THERE IS ONE STOP, AND IT IS THE WHOLE MACHINE ═════════════════
  *
  * Not one per lane — this product reads exactly one budget stop, the monthly ceiling on the
- * paid channel, and it is the one the fallback rule consults before spending a real euro. A
+ * paid channel, and it is the one the fallback rule consults before spending real money. A
  * per-lane limit written here would be a number a person believes is in force and nothing ever
  * asks about, which is worse than no limit at all.
+ *
+ * ═════════════════ И ЭТО ДОЛЛАРЫ — ЗДЕСЬ ЭТО ВАЖНЕЕ, ЧЕМ ГДЕ БЫ ТО НИ БЫЛО ═════════════════
+ *
+ * Это единственная дверь, за которой человек ВВОДИТ сумму сам, и до уборки она спрашивала
+ * «сколько евро», а сравнивался потолок с сырыми долларами поставщика. Порог остановки денег
+ * стоял не там, где его ставил человек. Пересчёта курса продукт не делает и не заводит —
+ * поэтому валюта названа у самого поля ввода, и FX_NOTE стоит рядом.
  *
  * ═════════════════════════ ZERO IS A REAL ANSWER ═════════════════════════
  *
@@ -77,7 +84,7 @@ export function BudgetDialog({ current, onClose }: { current: number; onClose: (
 
         <div className="flex flex-col gap-1.5">
           <label htmlFor="budget-limit" className="text-[11.5px] text-tx2">
-            Сколько евро в месяц — сейчас {formatEur(current)}
+            Сколько долларов в месяц — сейчас {formatUsd(current)}
           </label>
           <input
             id="budget-limit"
@@ -91,8 +98,11 @@ export function BudgetDialog({ current, onClose }: { current: number; onClose: (
               valid ? 'border-bd focus:border-blue' : 'border-err-tx'
             }`}
           />
+          <span className="text-[11px] leading-[1.5] text-tx3">{FX_NOTE}</span>
           {valid ? null : (
-            <span className="text-[11.5px] text-err-tx">Нужно число — сколько евро в месяц, не меньше нуля.</span>
+            <span className="text-[11.5px] text-err-tx">
+              Нужно число — сколько долларов в месяц, не меньше нуля.
+            </span>
           )}
         </div>
 

@@ -94,7 +94,7 @@ const AT_BOOT = {
   ],
   activeProject: 'alpha',
   pipeline: { enabled: false, maxTurns: 40 },
-  budget: { monthlyApiCapEur: 0, warnPct: [70, 90] },
+  budget: { monthlyApiCapUsd: 0, warnPct: [70, 90] },
   federation: {
     role: 'standalone',
     peers: [{ id: 'peer-1', url: 'https://one.example', token: 'peer-1-token' }],
@@ -107,7 +107,7 @@ const BY_HAND = {
   maxConcurrentAttempts: 4,
   activeProject: 'beta',
   pipeline: { enabled: false, maxTurns: 200 },
-  budget: { monthlyApiCapEur: 0, warnPct: [55, 95] },
+  budget: { monthlyApiCapUsd: 0, warnPct: [55, 95] },
   federation: {
     role: 'hub',
     peers: [{ id: 'peer-1', url: 'https://one.example', token: 'peer-1-token' }],
@@ -163,7 +163,7 @@ const DOORS: Door[] = [
   {
     name: 'applyBudgetStop',
     press: (stale) => applyBudgetStop(stale, { limit: 42 }, io()),
-    landed: (d) => expect(d.budget.monthlyApiCapEur).toBe(42),
+    landed: (d) => expect(d.budget.monthlyApiCapUsd).toBe(42),
   },
   {
     name: 'addAccount',
@@ -292,7 +292,7 @@ describe('сосед по блоку — из файла, а не из памя�
     const stale = boot()
     applyBudgetStop(stale, { limit: 42 }, io())
     const onDisk = readFile()
-    expect(onDisk.budget.monthlyApiCapEur).toBe(42)
+    expect(onDisk.budget.monthlyApiCapUsd).toBe(42)
     expect(onDisk.budget.warnPct).toEqual([55, 95])
   })
 

@@ -83,7 +83,7 @@ describe('usageSeries — one point per day, per account, per lane', () => {
 
   it('carries the token counts a subscription row books, with euros honestly zero', () => {
     const series = call(book([row()])) // no costUsd — a subscription session
-    expect(series[0].eur).toBe(0)
+    expect(series[0].usd).toBe(0)
     expect(series[0].tokensIn + series[0].tokensOut).toBeGreaterThan(0)
   })
 
@@ -91,14 +91,14 @@ describe('usageSeries — one point per day, per account, per lane', () => {
     const series = call(
       book([row({ costUsd: 0.014, channel: 'api' }), row({ taskId: 'task-2', costUsd: 0.019, channel: 'api' })]),
     )
-    expect(series[0].eur).toBe(0.03)
+    expect(series[0].usd).toBe(0.03)
   })
 
   it('keeps a subscription estimate OUT of the euro column — the plan absorbed it (QA D4)', () => {
     // One chat message on a subscription window used to render as «платный канал сегодня
-    // 0,12 €» directly above the line saying the paid channel is silent.
+    // $0,12» directly above the line saying the paid channel is silent.
     const series = call(book([row({ costUsd: 0.12 }), row({ taskId: 'task-2', costUsd: 0.05, channel: 'api' })]))
-    expect(series[0].eur).toBe(0.05)
+    expect(series[0].usd).toBe(0.05)
     expect(series[0].tokensIn).toBeGreaterThan(0) // the work itself still shows, in tokens
   })
 })
@@ -149,7 +149,7 @@ describe('usageSeries — четыре числа, модель и справо�
         }),
       ]),
     )
-    expect(series[0].apiEquivalentEur).toBe(13.5)
+    expect(series[0].apiEquivalentUsd).toBe(13.5)
   })
 
   it('день из двух моделей оценивается по обеим, а не по одной последней', () => {
@@ -161,19 +161,19 @@ describe('usageSeries — четыре числа, модель и справо�
         row({ taskId: 'task-2', model: 'claude-haiku-4-5', inputTokens: 0, outputTokens: 1_000_000 }),
       ]),
     )
-    expect(series[0].apiEquivalentEur).toBe(7)
+    expect(series[0].apiEquivalentUsd).toBe(7)
   })
 
   it('модель вне ценника — цены НЕТ, а токены названы отдельно (не тихий ноль)', () => {
     const series = call(book([row({ model: 'gpt-нечто', inputTokens: 1_000_000, outputTokens: 1_000_000 })]))
-    expect(series[0].apiEquivalentEur).toBe(0)
+    expect(series[0].apiEquivalentUsd).toBe(0)
     expect(series[0].unpricedTokens).toBe(2_000_000)
   })
 
   it('справочная цена и настоящие евро — разные поля: подписку не выставляют счётом', () => {
     const series = call(book([row({ model: 'claude-opus-5', inputTokens: 1_000_000 })])) // без costUsd
-    expect(series[0].eur).toBe(0) // счёта не было
-    expect(series[0].apiEquivalentEur).toBe(5) // а по ценнику это стоило бы 5,00
+    expect(series[0].usd).toBe(0) // счёта не было
+    expect(series[0].apiEquivalentUsd).toBe(5) // а по ценнику это стоило бы 5,00
   })
 
   it('считает по ТОМУ ЖЕ ценнику, что и командная строка, а не по своей копии', () => {
@@ -192,7 +192,7 @@ describe('usageSeries — четыре числа, модель и справо�
     // Число берётся у общего модуля цен, а не переписывается сюда: тест, знающий ставки
     // наизусть, разрешил бы демону иметь свои — лишь бы совпали в день написания.
     const expected = Math.round((priceUsd({ model: 'claude-opus-5', ...counts }) as number) * 100) / 100
-    expect(series[0].apiEquivalentEur).toBe(expected)
+    expect(series[0].apiEquivalentUsd).toBe(expected)
   })
 })
 

@@ -1978,7 +1978,7 @@ export async function dispatchFreeTurn({ text, turnId, deps = {} } = {}) {
           model: deps.model,
           // The conversation runs on a subscription window — its cost is what the plan
           // absorbed, never paid-channel money. One chat message showing up as «платный
-          // канал сегодня 0,12 €» is exactly the QA D4 finding this field exists for.
+          // канал сегодня $0,12» is exactly the QA D4 finding this field exists for.
           channel: 'subscription',
         }),
       })

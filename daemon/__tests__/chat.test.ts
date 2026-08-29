@@ -1088,7 +1088,7 @@ describe('POST /api/chat — the conversation, reached through the front', () =>
       deriveState: async () => ({
         activeProject: 'sma',
         projects: [{ id: 'sma', name: 'sma', connected: true, taskCounts: { queued: 2 } }],
-        kpis: { queued: 2, awaitingApproval: 12, workersBusy: 0, workersTotal: 1, spentTodayEur: 3 },
+        kpis: { queued: 2, awaitingApproval: 12, workersBusy: 0, workersTotal: 1, spentTodayUsd: 3 },
         awaiting: awaitingRows,
         queue: [],
       }),

@@ -57,8 +57,8 @@ describe('buildSpReport — deterministic zero-LLM calibration data', () => {
   it('sums and medians € and diff size per bucket', async () => {
     const data = await buildSpReport(makeDeps())
     const sp3 = data.buckets.find((b: any) => b.storyPoints === 3)
-    expect(sp3.totalEur).toBe(15) // 5 + 7 + 3
-    expect(sp3.medianEur).toBe(5) // median of [3,5,7]
+    expect(sp3.totalUsd).toBe(15) // 5 + 7 + 3
+    expect(sp3.medianUsd).toBe(5) // median of [3,5,7]
     expect(sp3.medianDiff).toBe(12) // median of [4,12,100]
   })
 

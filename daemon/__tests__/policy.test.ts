@@ -366,10 +366,14 @@ describe('policy/windows — only what the provider actually said', () => {
 
 describe('policy/budget — sub→API switch + monthly budget stop', () => {
   const clock = () => new Date(2026, 6, 17, 12, 0, 0).getTime()
-  // cap 100 EUR, 1:1 USD→EUR so boundary math is exact.
-  const budget = { monthlyApiCapEur: 100, usdToEur: 1, warnPct: [70, 90], apiAccountName: 'api' }
-  // Fake reader: month-to-date API spend of `costUsd` on the API account.
-  const reader = (costUsd) => () => ({ inputTokens: 0, outputTokens: 0, costUsd, rows: 1 })
+  // Потолок 100 ДОЛЛАРОВ — в той же валюте, в какой поставщик выставляет расход, потому что
+  // пересчёта курса в продукте нет. Прежде здесь стояли «100 EUR» и курс `usdToEur: 1`: пока
+  // курс единица, разницы не видно, и ровно поэтому она дожила бы до дня, когда станет видна.
+  const budget = { monthlyApiCapUsd: 100, warnPct: [70, 90], apiAccountName: 'api' }
+  // Подделка читателя: расход ПЛАТНОГО канала (`apiCostUsd`) — то самое поле, которое читает
+  // и экран. `costUsd` (все каналы) намеренно другое: читатель, у которого эти два числа
+  // совпадают, не поймал бы того, что порог и экран смотрели в разные колонки.
+  const reader = (apiCostUsd) => () => ({ inputTokens: 0, outputTokens: 0, costUsd: apiCostUsd + 1000, apiCostUsd, rows: 1 })
 
   it('windows still open → wait_for_window, never spends', () => {
     const r = shouldApiFallback({ task: { lane: 'prod' }, windows: { allClosed: false }, budget, usageReader: reader(0), clock })
@@ -403,7 +407,7 @@ describe('policy/budget — sub→API switch + monthly budget stop', () => {
 
   it('per-task cost ceiling that would breach the cap → budget_stop', () => {
     const r = shouldApiFallback({
-      task: { lane: 'prod', apiCostCeilingEur: 10 },
+      task: { lane: 'prod', apiCostCeilingUsd: 10 },
       windows: { allClosed: true },
       budget,
       usageReader: reader(95), // 95 + 10 ceiling = 105 > 100
@@ -423,7 +427,7 @@ describe('policy/budget — sub→API switch + monthly budget stop', () => {
    * never set. The word is now the state's own.
    */
   it('no monthly cap configured (0) → api_cap_unset, NOT «the money ran out»', () => {
-    const r = shouldApiFallback({ task: { lane: 'prod' }, windows: { allClosed: true }, budget: { monthlyApiCapEur: 0 }, usageReader: reader(0), clock })
+    const r = shouldApiFallback({ task: { lane: 'prod' }, windows: { allClosed: true }, budget: { monthlyApiCapUsd: 0 }, usageReader: reader(0), clock })
     expect(r.fallback).toBe(false)
     expect(r.reason).toBe('api_cap_unset')
     // …and it is emphatically NOT the word that means a ceiling was reached: the two send a

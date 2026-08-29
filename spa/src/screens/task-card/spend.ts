@@ -1,5 +1,6 @@
 import type { SubApiSwitch, TokenSums } from '../../api/types'
 import { NOT_MEASURED, compactNumber } from '../../shell/stats'
+import { formatCapUsd } from '../costs/money'
 
 /**
  * «РАСХОД» КАРТОЧКИ ЗАДАЧИ — шесть строк, и ни одна не сочинена.
@@ -63,7 +64,7 @@ function missing(key: string, label: string, why: string): SpendRow {
  */
 export function paidApiRow(sw: SubApiSwitch | undefined | null): SpendRow {
   if (!sw) return missing('paidApi', 'Платный API', WHY_NO_SWITCH)
-  if (!sw.budgeted || sw.capEur <= 0) {
+  if (!sw.budgeted || sw.capUsd <= 0) {
     return {
       key: 'paidApi',
       label: 'Платный API · потолок 0',
@@ -74,7 +75,7 @@ export function paidApiRow(sw: SubApiSwitch | undefined | null): SpendRow {
   }
   return known(
     'paidApi',
-    `Платный API · потолок ${sw.capEur} €/мес`,
+    `Платный API · потолок ${formatCapUsd(sw.capUsd)}`,
     sw.mode === 'api' ? 'работа идёт за деньги' : 'молчит',
   )
 }

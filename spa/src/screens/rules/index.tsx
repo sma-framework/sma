@@ -1,6 +1,7 @@
 import { useStateQuery } from '../../api/queries'
 import type { BudgetStops, SubApiSwitch } from '../../api/types'
 import { openScreen } from '../../shell/navigation'
+import { formatCapUsd } from '../costs/money'
 import { LaneTable } from './LaneTable'
 
 /**
@@ -23,7 +24,8 @@ import { LaneTable } from './LaneTable'
  * ═══════════════════════ ONE LINE OF MONEY, AND ONLY ONE ═══════════════════════
  *
  * The park is paid for by the plans, so this screen speaks in lanes, profiles and windows.
- * The budget stop is the single exception: it is a EURO ceiling, it is a rule, and «Расходы»
+ * The budget stop is the single exception: it is a MONEY ceiling — dollars, unconverted (see
+ * screens/costs/money.ts) — it is a rule, and «Расходы»
  * itself sends a person here to read it. It gets one line, and the spending it limits stays
  * on the screen that owns money.
  */
@@ -92,14 +94,19 @@ function SwitchState({ sw }: { sw: SubApiSwitch }) {
   )
 }
 
-/** The budget stop: the one euro figure this screen is allowed to print. */
+/**
+ * The budget stop: the one money figure this screen is allowed to print.
+ *
+ * В ДОЛЛАРАХ, и это сказано знаком: потолок сравнивается с расходом поставщика как он
+ * выставлен, без пересчёта курса. Знак евро здесь стоял ровно над теми же долларами.
+ */
 function budgetCaption(stops: BudgetStops | undefined, sw: SubApiSwitch): string {
   if (!sw.budgeted) return 'Потолок не задан — запасному каналу нечего разрешать, он не включится.'
-  const cap = stops?.monthlyApiCapEur ?? sw.capEur
+  const cap = stops?.monthlyApiCapUsd ?? sw.capUsd
   const warn = stops?.warnPct
   return warn !== undefined
-    ? `Потолок ${cap} €/мес · предупреждение на ${warn}%`
-    : `Потолок ${cap} €/мес`
+    ? `Потолок ${formatCapUsd(cap)} · предупреждение на ${warn}%`
+    : `Потолок ${formatCapUsd(cap)}`
 }
 
 /**
@@ -151,7 +158,7 @@ export function Screen() {
   const lanes = rules?.lanes ?? []
   const workers = rules?.workers ?? []
   const budgetStops = rules?.budgetStops
-  const subApiSwitch: SubApiSwitch = rules?.subApiSwitch ?? { mode: 'subscription', capEur: 0, budgeted: false }
+  const subApiSwitch: SubApiSwitch = rules?.subApiSwitch ?? { mode: 'subscription', capUsd: 0, budgeted: false }
   const enabled = workers.filter((w) => w.enabled).length
 
   return (

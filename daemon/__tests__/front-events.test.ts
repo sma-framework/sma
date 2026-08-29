@@ -643,11 +643,11 @@ describe('server.mjs — costs.series rides GET /api/state', () => {
     const config = {
       token: TOKEN,
       workers: [{ id: 'max-1', lane: 'prod', account: { name: 'max-1' } }],
-      budget: { monthlyApiCapEur: 40 },
+      budget: { monthlyApiCapUsd: 40 },
     }
     const usageSeries = () => [
-      { account: 'max-1', day: '2026-07-01', tokensIn: 100, tokensOut: 50, eur: 0.3 },
-      { account: 'max-1', day: '2026-07-02', tokensIn: 200, tokensOut: 90, eur: 0.6 },
+      { account: 'max-1', day: '2026-07-01', tokensIn: 100, tokensOut: 50, usd: 0.3 },
+      { account: 'max-1', day: '2026-07-02', tokensIn: 200, tokensOut: 90, usd: 0.6 },
     ]
     const front = createFrontServer({
       config,
@@ -664,7 +664,7 @@ describe('server.mjs — costs.series rides GET /api/state', () => {
     const out = JSON.parse(res.body)
     expect(out.costs.series).toHaveLength(2)
     expect(out.costs.series[0]).toMatchObject({ account: 'max-1', day: '2026-07-01' })
-    expect(out.costs.apiFallback.capEur).toBe(40)
+    expect(out.costs.apiFallback.capUsd).toBe(40)
   })
 })
 

@@ -10,7 +10,7 @@
  * отвечают «почему»: день, где миллион прочитан из кэша, и день, где тот же миллион отправлен
  * заново, отличаются в цене в разы и в одной колонке выглядят одинаково.
  *
- * ДВЕ ДЕНЕЖНЫЕ КОЛОНКИ, И ИХ НЕЛЬЗЯ ПУТАТЬ. «Деньги» — настоящие евро платного канала: у
+ * ДВЕ ДЕНЕЖНЫЕ КОЛОНКИ, И ИХ НЕЛЬЗЯ ПУТАТЬ. «Деньги» — настоящие доллары платного канала: у
  * строки по подписке их нет, и она так и говорит — «по подписке», потому что ноль в денежной
  * колонке читается как «бесплатно», а план не бесплатен, он уже оплачен. «Как если бы по API»
  * — справочная оценка того же расхода по ценнику платформы: её никто не выставлял и никому не
@@ -19,6 +19,8 @@
  */
 
 import type { ReactNode } from 'react'
+
+import { formatUsd } from './money'
 
 export interface SpendRow {
   key: string
@@ -29,9 +31,10 @@ export interface SpendRow {
   tokensOut: number
   cacheRead: number
   cacheWrite: number
-  eur: number
-  /** «Как если бы по API» — справочная цена по ценнику платформы, не счёт. */
-  apiEquivalentEur: number
+  /** Деньги платного канала — ДОЛЛАРЫ поставщика, без пересчёта (см. money.ts). */
+  usd: number
+  /** «Как если бы по API» — справочная цена по ценнику платформы, не счёт. Те же доллары. */
+  apiEquivalentUsd: number
   /** Токены, чью модель ценник не знает: справочная цена на них молчит, и это видно. */
   unpricedTokens?: number
   /** The conversation's own line, which the screen sets apart from the working lanes. */
@@ -41,11 +44,6 @@ export interface SpendRow {
 /** A count a person can read at a glance — thin spaces between thousands, as Russian sets them. */
 export function formatTokens(n: number): string {
   return Math.round(Math.max(0, n)).toLocaleString('ru-RU')
-}
-
-/** Money, to the cent, with the sign a person expects after it. */
-export function formatEur(n: number): string {
-  return `${Math.max(0, n).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`
 }
 
 /** Сумма всех четырёх чисел строки — то, чем строки сортируются и меряется день. */
@@ -67,8 +65,8 @@ export function SpendTable({ title, rows, empty }: { title: string; rows: SpendR
   const tokensOut = rows.reduce((sum, r) => sum + r.tokensOut, 0)
   const cacheRead = rows.reduce((sum, r) => sum + r.cacheRead, 0)
   const cacheWrite = rows.reduce((sum, r) => sum + r.cacheWrite, 0)
-  const eur = rows.reduce((sum, r) => sum + r.eur, 0)
-  const apiEquivalentEur = rows.reduce((sum, r) => sum + r.apiEquivalentEur, 0)
+  const usd = rows.reduce((sum, r) => sum + r.usd, 0)
+  const apiEquivalentUsd = rows.reduce((sum, r) => sum + r.apiEquivalentUsd, 0)
   const unpriced = rows.reduce((sum, r) => sum + (r.unpricedTokens ?? 0), 0)
 
   return (
@@ -109,8 +107,8 @@ export function SpendTable({ title, rows, empty }: { title: string; rows: SpendR
               <span className="text-right text-[13px] text-tx tabular-nums">{formatTokens(r.cacheRead)}</span>
               <span className="text-right text-[13px] text-tx tabular-nums">{formatTokens(r.cacheWrite)}</span>
               <span className="text-right text-[13px] tabular-nums">
-                {r.eur > 0 ? (
-                  <span className="text-tx">{formatEur(r.eur)}</span>
+                {r.usd > 0 ? (
+                  <span className="text-tx">{formatUsd(r.usd)}</span>
                 ) : (
                   <span className="text-tx3">по подписке</span>
                 )}
@@ -123,7 +121,7 @@ export function SpendTable({ title, rows, empty }: { title: string; rows: SpendR
                     : 'Справочно: столько стоил бы этот расход по ценнику платформы. По подписке за него не платили.'
                 }
               >
-                ≈ {formatEur(r.apiEquivalentEur)}
+                ≈ {formatUsd(r.apiEquivalentUsd)}
                 {(r.unpricedTokens ?? 0) > 0 ? <span className="text-tx3"> +?</span> : null}
               </span>
             </div>
@@ -138,10 +136,10 @@ export function SpendTable({ title, rows, empty }: { title: string; rows: SpendR
               {formatTokens(cacheWrite)}
             </span>
             <span className="text-right text-[13px] font-semibold text-tx tabular-nums">
-              {eur > 0 ? formatEur(eur) : <span className="font-normal text-tx3">по подписке</span>}
+              {usd > 0 ? formatUsd(usd) : <span className="font-normal text-tx3">по подписке</span>}
             </span>
             <span className="text-right text-[13px] font-semibold text-tx2 tabular-nums">
-              ≈ {formatEur(apiEquivalentEur)}
+              ≈ {formatUsd(apiEquivalentUsd)}
             </span>
           </div>
 

@@ -40,7 +40,7 @@ function res(status: number, body: any) {
 /** A peer /api/state payload in the frozen shape (only the fields we merge). */
 function peerState(o: { machine: string; title: string; project: string; queueId: string; doneId: string }) {
   return {
-    kpis: { workersBusy: 1, workersTotal: 2, queued: 1, awaitingApproval: 1, spentTodayEur: 1.5, windowsOpen: 1 },
+    kpis: { workersBusy: 1, workersTotal: 2, queued: 1, awaitingApproval: 1, spentTodayUsd: 1.5, windowsOpen: 1 },
     queue: [{ id: o.queueId, title: 'q', status: 'queued', project: o.project, machine: o.machine, position: 1 }],
     awaiting: [
       { id: `${o.queueId}-w`, title: 'w', status: 'awaiting_approval', project: o.project, machine: o.machine, position: 1 },
@@ -51,15 +51,15 @@ function peerState(o: { machine: string; title: string; project: string; queueId
     projects: [{ id: o.project, name: o.project, taskCounts: { total: 2 } }],
     activeProject: o.project,
     federation: { role: 'peer', hubReachable: true },
-    spend: { accounts: [], apiFallback: { capEur: 0 } },
-    costs: { series: [], apiFallback: { capEur: 0 } },
+    spend: { accounts: [], apiFallback: { capUsd: 0 } },
+    costs: { series: [], apiFallback: { capUsd: 0 } },
   }
 }
 
 /** The hub's OWN derive payload (one machine, its own rows). */
 function selfState() {
   return {
-    kpis: { workersBusy: 0, workersTotal: 1, queued: 2, awaitingApproval: 1, spentTodayEur: 0.5, windowsOpen: 1 },
+    kpis: { workersBusy: 0, workersTotal: 1, queued: 2, awaitingApproval: 1, spentTodayUsd: 0.5, windowsOpen: 1 },
     queue: [{ id: 'BL-self', title: 's', status: 'queued', project: 'home', machine: 'this-pc', position: 1 }],
     awaiting: [{ id: 'BL-self-w', title: 'sw', status: 'awaiting_approval', project: 'home', position: 1 }],
     workers: [{ id: 'self-1', lane: 'prod', presence: 'свободен', account: 'max-9', window: { pct5h: 0, pctWeek: 0, estimated: true } }],
@@ -68,8 +68,8 @@ function selfState() {
     projects: [{ id: 'home', name: 'Дом', taskCounts: { total: 2 } }],
     activeProject: 'home',
     federation: { role: 'hub', hubReachable: true },
-    spend: { accounts: [], apiFallback: { capEur: 0 } },
-    costs: { series: [], apiFallback: { capEur: 0 } },
+    spend: { accounts: [], apiFallback: { capUsd: 0 } },
+    costs: { series: [], apiFallback: { capUsd: 0 } },
   }
 }
 
@@ -258,7 +258,7 @@ describe('createFederation — the cost history merges like the rows do', () => 
     account: 'клод-основной',
     tokensIn: 10,
     tokensOut: 5,
-    eur: 0.25,
+    usd: 0.25,
     ...over,
   })
 
@@ -266,8 +266,8 @@ describe('createFederation — the cost history merges like the rows do', () => 
     const fetchImpl = async () => {
       const state: any = peerState({ machine: 'self', title: 'Mac mini', project: 'shop', queueId: 'BL-A1', doneId: 'BL-A0' })
       state.costs = {
-        series: [costPoint({ account: 'кодекс', eur: 1.5 })],
-        apiFallback: { todayEur: 1.5, monthEur: 9, capEur: 0, switchMode: 'api' },
+        series: [costPoint({ account: 'кодекс', usd: 1.5 })],
+        apiFallback: { todayUsd: 1.5, monthUsd: 9, capUsd: 0, switchMode: 'api' },
       }
       return res(200, state)
     }
@@ -280,7 +280,7 @@ describe('createFederation — the cost history merges like the rows do', () => 
     const own: any = selfState()
     own.costs = {
       series: [costPoint()],
-      apiFallback: { todayEur: 0.25, monthEur: 4, capEur: 400, switchMode: 'subscription' },
+      apiFallback: { todayUsd: 0.25, monthUsd: 4, capUsd: 400, switchMode: 'subscription' },
     }
     return fed.aggregateState(own)
   }
@@ -295,9 +295,9 @@ describe('createFederation — the cost history merges like the rows do', () => 
 
   it('adds the api-fallback money up, and keeps ONE household ceiling', async () => {
     const agg = await hubWithCosts()
-    expect(agg.costs.apiFallback.todayEur).toBe(1.75)
-    expect(agg.costs.apiFallback.monthEur).toBe(13)
-    expect(agg.costs.apiFallback.capEur).toBe(400) // the hub's setting, never a sum
+    expect(agg.costs.apiFallback.todayUsd).toBe(1.75)
+    expect(agg.costs.apiFallback.monthUsd).toBe(13)
+    expect(agg.costs.apiFallback.capUsd).toBe(400) // the hub's setting, never a sum
   })
 
   it('leaves the payload key set untouched', async () => {
