@@ -57,7 +57,36 @@ Always use the exact name from this list — do not fall back to 'general-purpos
 - sma-ui-checker — Reviews UI implementation quality
 - sma-ui-auditor — Audits UI against design requirements
 - sma-ui-qa — Runs the app and walks the task path; the only reviewer that presses buttons
+- sma-animator — Specifies movement, and only where the design contract says movement exists
 </available_agent_types>
+
+<design_contract>
+The design stage runs between the plan and the code, and it leaves a contract in the phase
+folder: `{padded_phase}-DESIGN.md`. Detect it once, before the waves:
+
+```bash
+DESIGN_CONTRACT=$(ls "${phase_dir}"/*-DESIGN.md 2>/dev/null | head -1)
+```
+
+**When a contract exists, three things follow — none of them optional:**
+
+1. **It is mandatory reading for every executor of this phase.** The path goes into each
+   executor's `<files_to_read>` block below. A drawing a person confirmed and an executor
+   never opened is a drawing that changed nothing; the whole stage exists to prevent that.
+2. **Its contract points are acceptance criteria for the work.** Each row of the contract's
+   points table is a checkable statement. A plan whose task touches the surface a row
+   describes is not done while that row is false, and the executor reports each touched row
+   as met or not met in its SUMMARY.
+3. **A non-empty `Motion` table calls the animator.** In an interactive session spawn
+   `sma-animator` for the movement rows; in a headless session (no subagent tool) read
+   `agents/sma-animator.md` and apply its law inline — frequent actions unanimated, durations
+   under 300 ms, motion that explains a state change or is deleted. **An empty `Motion` table
+   is a complete answer:** the animator is not called and no movement is invented.
+
+Archived versions (`{padded_phase}-DESIGN.v{K}.md`) are history, not the contract — read the
+plain name only. When no contract file exists, this block is a no-op and execution proceeds
+as before.
+</design_contract>
 
 <process>
 
@@ -743,6 +772,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
        - ${PROJECT_ROOT}/.planning/PROJECT.md (Project context — core value, requirements, evolution rules)
        - ${PROJECT_ROOT}/.planning/STATE.md (State)
        - ${PROJECT_ROOT}/.planning/config.json (Config, if exists)
+       ${DESIGN_CONTRACT ? `- ${PROJECT_ROOT}/${DESIGN_CONTRACT} (Design contract, confirmed by a person — MANDATORY: its contract points are acceptance criteria for this work; a non-empty Motion table means the animator's law applies)` : ''}
        ${CONTEXT_WINDOW >= 500000 ? `
        - ${PROJECT_ROOT}/${phase_dir}/*-CONTEXT.md (User decisions from discuss-phase — honors locked choices)
        - ${PROJECT_ROOT}/${phase_dir}/*-RESEARCH.md (Technical research — pitfalls and patterns to follow)

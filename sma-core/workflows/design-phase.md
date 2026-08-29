@@ -210,19 +210,35 @@ Agent(prompt=research_prompt, subagent_type="sma-ui-researcher", model="{UI_RESE
 
 A canvas design tool, when the session has one, is the better hand here: the drawing is
 edited by eye and the file (`${padded_phase}-design-{name}.dc.html`) lands in the phase
-folder like any other sketch. Without one, write the self-contained HTML exactly as step H1
-describes, snapshot included.
+folder like any other sketch. Without one, the sketch is the self-contained HTML of step H1,
+snapshot included.
 
-The designer persona is a separate role. If `sma-designer` is not installed in this session,
-say so plainly and draft inline instead:
+The drawing is the designer's own job, so spawn the designer:
+
+```bash
+DESIGNER_MODEL=$(sma_run query resolve-model sma-designer --raw)
+AGENT_SKILLS_DESIGNER=$(sma_run query agent-skills sma-designer)
+```
+
+Spawn `sma-designer` with the phase plans, CONTEXT.md and RESEARCH.md, the material the
+researcher returned, and `references/ui-brand.md` as its reading. It draws the sketches and
+derives the contract from them; it does not write `checker_verdict` — that field belongs to
+the checker in the next step.
 
 ```
-designer persona not installed, drafting inline
+Agent(prompt=design_prompt, subagent_type="sma-designer", model="{DESIGNER_MODEL}",
+      description="Draw Phase {N}")
 ```
 
-Never silently substitute a different agent for it.
+> After calling Agent(), stop working on this task until the subagent returns.
 
-Then write the contract from `templates/DESIGN.md`, points derived from the drawing.
+If `sma-designer` is genuinely not installed in this session, say so plainly and draft inline
+from `agents/sma-designer.md` instead — never silently substitute a different agent for it.
+
+The contract comes back written from `templates/DESIGN.md`, its points derived from the
+drawing. Movement is marked, not specified, at this stage: the `Motion` table names where
+movement exists and stays empty otherwise. **An empty table is a complete answer** — the
+partner for movement, `sma-animator`, joins after the contract is confirmed, not here.
 
 ### I3. Check before the gate — delegated
 

@@ -142,6 +142,49 @@ UI checkpoints: {N} auto-verified, {M} queued for manual review
 
 </step>
 
+<step name="design_contract_acceptance">
+**A phase with a design contract is accepted against that contract.**
+
+```bash
+DESIGN_CONTRACT=$(ls "${PHASE_DIR}"/*-DESIGN.md 2>/dev/null | head -1)
+```
+
+If `DESIGN_CONTRACT` is empty, skip this step entirely — nothing changes for phases that
+never went through the design stage. Archived versions (`*-DESIGN.v{K}.md`) are history and
+are not read here; only the plain name is the contract.
+
+**If it exists, read it and take its contract points table.** Each row is a checkable
+statement someone can be right or wrong about: what stands where, what the person does, what
+must not be there. Acceptance walks that table row by row — **every row gets its own verdict
+in the report**, and "the phase looks fine" is not a verdict for any of them.
+
+**For phases with screens, two reviewers run before a person is asked anything:**
+
+| Reviewer | What it does | How it runs |
+|----------|--------------|-------------|
+| `sma-ui-auditor` | Audits the built code against its own measurements and against the contract's rows | Interactive session: spawn it. Headless session: read `agents/sma-ui-auditor.md` and apply its measurements inline — a fleet session has no subagent tool, and a step that calls for one there hangs instead of failing. |
+| `sma-ui-qa` | Runs the app and presses the surface — the only reviewer that actually uses the thing | Same rule: spawn when the session can, apply `agents/sma-ui-qa.md` inline when it cannot. |
+
+A run that did not happen is never recorded as a pass. When the app could not be started or
+no driver was available, the row says so in those words, and the phase does not reach a
+person as verified.
+
+**Report shape — one line per contract row:**
+
+```
+Design contract — Phase {N} (version {K}, checker: {PASS / FLAG / BLOCK})
+
+| # | Contract point | Verdict | Evidence |
+|---|----------------|---------|----------|
+| 1 | {the row, as written in the contract} | met / not met / not checked | {audit finding, QA step, or the reason it was not checked} |
+```
+
+Rows marked `not met` are gaps and feed `plan_gap_closure` like any other gap. Rows marked
+`not checked` are not gaps and not passes — they are missing evidence, and they are shown to
+the person as such.
+
+</step>
+
 <step name="find_summaries">
 **Find what to test:**
 

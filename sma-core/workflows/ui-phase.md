@@ -1,3 +1,10 @@
+<!--
+SUPERSEDED BY INSERTION POINT. This workflow runs BEFORE planning and hands its contract to
+the planner. The design stage that ships now runs AFTER the plan and BEFORE the code, and its
+contract is confirmed by a person before any execution starts — see `design-phase.md`.
+Nothing here is deleted or rewritten: projects already using this workflow keep working, and
+its UI-SPEC.md is still read where it exists. New work goes through the design stage.
+-->
 <purpose>
 Generate a UI design contract (UI-SPEC.md) for frontend phases. Orchestrates sma-ui-researcher and sma-ui-checker with a revision loop. Inserts between discuss-phase and plan-phase in the lifecycle.
 

@@ -138,6 +138,8 @@
     "sma-ui-checker":             { "golden": "sonnet", "balanced": "sonnet", "budget": "haiku",  "phaseType": "verification", "routingTier": "light" },
     "sma-ui-auditor":             { "golden": "sonnet", "balanced": "sonnet", "budget": "haiku",  "phaseType": "verification", "routingTier": "light" },
     "sma-ui-qa":                  { "golden": "opus",   "balanced": "sonnet", "budget": "sonnet", "phaseType": "verification", "routingTier": "standard" },
+    "sma-designer":               { "golden": "opus",   "balanced": "sonnet", "budget": "haiku",  "phaseType": "planning",     "routingTier": "standard" },
+    "sma-animator":               { "golden": "sonnet", "balanced": "sonnet", "budget": "haiku",  "phaseType": "execution",    "routingTier": "light" },
     "sma-doc-writer":             { "golden": "opus",   "balanced": "sonnet", "budget": "haiku",  "phaseType": "execution",    "routingTier": "standard" },
     "sma-doc-verifier":           { "golden": "sonnet", "balanced": "sonnet", "budget": "haiku",  "phaseType": "verification", "routingTier": "light" },
 
