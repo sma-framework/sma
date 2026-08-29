@@ -25,10 +25,22 @@ import { join } from 'node:path'
 /** Имя дневного журнала запусков: тот же день, что у журнала демона, и явно другое имя. */
 export const LIFT_LOG_PREFIX = 'daemon-lift-'
 
+/**
+ * dayLogPath(logDir, prefix, at) — «…/logs/<префикс>20260829.log».
+ *
+ * ОДНО МЕСТО РЕШАЕТ, КАКОМУ ДНЮ ПРИНАДЛЕЖИТ СТРОКА. Виндовая обёртка заплатила за второе
+ * такое место сутками строк, ушедших в файл предыдущего дня, — с тех пор день считается на
+ * каждую строку и ровно одной функцией. Здесь та же функция: журнал запусков и журнал
+ * вечного круга различаются только префиксом, а не своим представлением о полуночи.
+ */
+export function dayLogPath(logDir, prefix = LIFT_LOG_PREFIX, at = new Date()) {
+  const stamp = at.toISOString().slice(0, 10).replace(/-/g, '')
+  return join(logDir, `${prefix}${stamp}.log`)
+}
+
 /** liftLogPath(logDir, at) — «…/logs/daemon-lift-20260829.log». */
 export function liftLogPath(logDir, at = new Date()) {
-  const stamp = at.toISOString().slice(0, 10).replace(/-/g, '')
-  return join(logDir, `${LIFT_LOG_PREFIX}${stamp}.log`)
+  return dayLogPath(logDir, LIFT_LOG_PREFIX, at)
 }
 
 /**
@@ -42,8 +54,8 @@ export function liftLogPath(logDir, at = new Date()) {
  * `'ignore'` остаётся только как ПОСЛЕДНЕЕ средство — когда каталог не создаётся и файл не
  * открывается. Раньше это был штатный путь на Windows, и ровно он сделал провал невидимым.
  */
-export function openLiftLog(logDir, { at, mkdir = mkdirSync, open = openSync } = {}) {
-  const path = liftLogPath(logDir, at)
+export function openLiftLog(logDir, { at, prefix = LIFT_LOG_PREFIX, mkdir = mkdirSync, open = openSync } = {}) {
+  const path = dayLogPath(logDir, prefix, at)
   try {
     mkdir(logDir, { recursive: true })
     const fd = open(path, 'a')

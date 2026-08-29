@@ -54,6 +54,21 @@ host-agnostic by design; the OS binding is a thin supervisor layer only).
   this folder. On the Mac the daemon's own plist already relifts it, so what the watchdog adds
   there is the TELLING — between the death and launchd's relift both channels are silent, and
   that silence is indistinguishable from a quiet afternoon.
+- **And that unit is installable without an administrator** — `install-watch-windows.mjs`
+  (`node supervisor/install-watch-windows.mjs`, plus `status` and `remove`). On the reference
+  Windows host the Scheduled Task above cannot be registered at all: `schtasks /Create` and
+  `Register-ScheduledTask` both answer «Access is denied» from an ordinary session, and the
+  watchdog was living in a hand-made Startup shortcut with its loop typed inside an argument
+  string. The command tries the task FIRST (it is the better unit), **names the refusal in
+  words** instead of swallowing it, and only then writes the shortcut — asking Windows itself
+  where the Startup folder really is, because a shortcut written to a computed path on a
+  roaming profile is silence rather than a watchdog. It then starts the circle as a detached
+  process that outlives the window it was installed from, and calls it running only once the
+  circle has taken its lock. The circle itself is `watch-loop.mjs`: the delay before the first
+  look, the restart of a fallen watchdog with a ceiling, and one watchdog per machine — the
+  three properties of the Scheduled Task, so the no-admin route is a route and not a downgrade.
+  The decision table lives in `daemon/src/watch-install.mjs` and is proved with no process, no
+  scheduler and no shortcut.
 - **And the proof that the whole chain happens:** `live-outage-drill.mjs` boots a real daemon on a
   scratch queue of its own, kills the process outright, and watches the fall, the lift, the return
   and both messages on real sockets — the send is the real client pointed at a stand-in Bot API, so
