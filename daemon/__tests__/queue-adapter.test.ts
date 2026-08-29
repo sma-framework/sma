@@ -442,7 +442,7 @@ describe("taskContext — the human's snapshot of what this task is about, livin
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 23-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 24-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -464,6 +464,14 @@ describe('constants — taxonomy', () => {
       // — nothing to fix in the work — and apart from it because the cause is ours, not the
       // vendor's, and the answer is a bigger ceiling or a smaller task
       'turns_exhausted',
+      // the THIRD expense an attempt spends, after money and turns: ROOM. Its context window
+      // filled up, the CLI compacted it away, and the session played on against a retelling of
+      // its own context until it finished with nothing to show. Named apart from
+      // turns_exhausted because no ceiling of ours stopped anything — there is no number to
+      // raise here — and apart from agent_error because nothing is wrong with the work: the
+      // only honest answer is a smaller task, and no card could offer it while the reason
+      // read «ошибка работника»
+      'context_exhausted',
       'tests_red',
       'needs_decision',
       'missing_access',

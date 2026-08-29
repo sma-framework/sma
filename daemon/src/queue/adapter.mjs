@@ -253,6 +253,13 @@ export const TASK_STATUSES = Object.freeze([
  *                     on its own command line and stopped there, leaving neither note nor
  *                     receipt because it was stopped. Apart from provider_error because the
  *                     decision was ours, and the remedy is a bigger ceiling or a smaller task
+ *   context_exhausted — the run that ran OUT OF ROOM: its context window filled up, the CLI
+ *                     compacted it away, and the attempt finished with nothing to show. The
+ *                     third resource an attempt spends, after money and turns, and the last one
+ *                     the daemon learned to see. Apart from turns_exhausted because no ceiling
+ *                     of ours stopped anything — the session kept running, on summaries of its
+ *                     own context — and apart from agent_error because nothing is wrong with
+ *                     the work: the only honest remedy is a SMALLER task
  *   tests_red       — a red reverify receipt (targeted tests failed)
  *   needs_decision  — the worker surfaced a call only a human can make
  *   missing_access  — credentials / permissions absent
@@ -330,6 +337,13 @@ export const FAIL_REASONS = Object.freeze([
   // agent_error because nothing is wrong with the work: a card saying «ошибка работника» here
   // sends somebody to fix a number he set himself.
   'turns_exhausted',
+  // И ТРЕТИЙ РАСХОД ПОПЫТКИ — МЕСТО, а не деньги и не ходы. Окно контекста переполнилось,
+  // CLI сжал его в пересказ, и попытка доработала на пересказе пересказа, не оставив ни
+  // квитанции, ни записки. Отдельно от turns_exhausted: там прогон ОСТАНОВИЛ наш потолок, здесь
+  // никто ничего не останавливал — сессия шла дальше, просто уже почти вслепую, и поднимать
+  // тут нечего. Отдельно от agent_error: с работой всё в порядке, ей не хватило места, и
+  // карточка «ошибка работника» посылает человека чинить размер задания, не называя его.
+  'context_exhausted',
   'tests_red',
   'needs_decision',
   'missing_access',
@@ -425,6 +439,9 @@ export const REASON_LABELS = Object.freeze({
   // равно перезапускала задачу с тем же потолком — слова и поведение противоречили друг другу.
   turns_exhausted:
     'работа не поместилась в отведённые ходы — ждёт человека: поднять потолок ходов, разбить задачу на части или отменить',
+  // НАЗЫВАЕТ РАЗМЕР, А НЕ ВИНОВАТОГО: у этой причины ровно одна честная починка, и повтор той
+  // же задачи в том же виде к ней не ведёт — окно наполнится снова на том же месте.
+  context_exhausted: 'кончился контекст — работа не поместилась в окно попытки: разбить задачу на части или сузить задание',
   tests_red: 'тесты красные',
   needs_decision: 'нужно решение человека',
   missing_access: 'нужен человек: не хватает доступа',

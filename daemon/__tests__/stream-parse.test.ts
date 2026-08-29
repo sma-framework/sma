@@ -222,6 +222,39 @@ describe('parseClaudeEvent — the subscription window reading', () => {
   })
 })
 
+/**
+ * THE COMPACTION FRAME — the only place on this stream where the CONTEXT WINDOW speaks. The
+ * parser states what the frame said and judges nothing: which trigger means «the context ran
+ * out» is the reader's decision (loop.mjs), and a parser that decided it here would put the
+ * policy in the one file that must stay a transform.
+ */
+describe('parseClaudeEvent — the context window reading', () => {
+  const frame = (o: object) => JSON.stringify({ type: 'system', subtype: 'compact_boundary', session_id: 's', ...o })
+
+  it('reads the trigger and the size the window reached — the shape the CLI actually sends', () => {
+    const e: any = parseClaudeEvent(frame({ compact_metadata: { trigger: 'auto', pre_tokens: 152000 } }))
+    expect(e.type).toBe('system')
+    expect(e.subtype).toBe('compact_boundary')
+    expect(e.compaction).toEqual({ trigger: 'auto', preTokens: 152000 })
+  })
+
+  it('a manual compaction is passed through as itself — the parser does not judge it', () => {
+    const e: any = parseClaudeEvent(frame({ compact_metadata: { trigger: 'manual', pre_tokens: 60000 } }))
+    expect(e.compaction.trigger).toBe('manual')
+  })
+
+  it('a frame with no metadata is still a compaction, with nulls — never a throw', () => {
+    const e: any = parseClaudeEvent(frame({}))
+    expect(e.compaction).toEqual({ trigger: null, preTokens: null })
+  })
+
+  it('an ordinary system frame carries NO compaction key: absence is not an empty reading', () => {
+    const e: any = parseClaudeEvent(JSON.stringify({ type: 'system', subtype: 'init', session_id: 's' }))
+    expect(e.subtype).toBe('init')
+    expect('compaction' in e).toBe(false)
+  })
+})
+
 describe('parseCodexEvent (pure, never throws)', () => {
   it('extracts threadId + the final usage token counts over the whole fixture', () => {
     const events = codexFixture.split('\n').filter((l) => l.trim()).map(parseCodexEvent)

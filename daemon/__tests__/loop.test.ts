@@ -56,6 +56,7 @@ import {
   runDaemon,
   classifyFailure,
   turnCapHitOf,
+  contextExhaustedOf,
   changedFilesOnBranch,
   unregisteredMcpTools,
   DENIAL_LINES_CAP,
@@ -1315,6 +1316,61 @@ describe('turnCapHitOf — упор в потолок ходов, названн
   })
 })
 
+/**
+ * ═══════ КОНЧИВШИЙСЯ КОНТЕКСТ — ТРЕТИЙ РАСХОД ПОПЫТКИ, КОТОРОГО ДЕМОН НЕ ВИДЕЛ ═══════
+ *
+ * Деньги и ходы демон читал с потока и называл своими словами; МЕСТО — не читал вовсе. Попытка,
+ * у которой переполнилось окно, доигрывала на пересказе собственного контекста и заканчивалась
+ * без квитанции и без записки, то есть выглядела ровно как плохая работа.
+ *
+ * ПРИЗНАК — ПОЛЕ КАДРА, А НЕ РЕЧЬ, ровно как у двух соседних распознавателей: работник, вслух
+ * обсуждающий компактификацию, не должен становиться от этого переполненным.
+ */
+describe('contextExhaustedOf — переполнение окна, названное кадром CLI', () => {
+  const compact = (meta: object | null, extra: object = {}) =>
+    JSON.stringify({ type: 'system', subtype: 'compact_boundary', ...extra, ...(meta ? { compact_metadata: meta } : {}) })
+
+  it('автоматическое сжатие → переполнение, со счётом сжатий и самым большим окном', () => {
+    const lines = [
+      compact({ trigger: 'auto', pre_tokens: 120_000 }),
+      JSON.stringify({ type: 'assistant', message: { model: 'claude', content: [] } }),
+      compact({ trigger: 'auto', pre_tokens: 151_000 }),
+    ]
+    expect(contextExhaustedOf(lines)).toEqual({ compactions: 2, preTokens: 151_000 })
+  })
+
+  it('РУЧНОЕ сжатие не считается: это решение работника, а не конец места', () => {
+    expect(contextExhaustedOf([compact({ trigger: 'manual', pre_tokens: 90_000 })])).toBe(null)
+  })
+
+  it('сжатие без названного повода не считается тоже — неназванное поле не улика', () => {
+    expect(contextExhaustedOf([compact(null)])).toBe(null)
+    expect(contextExhaustedOf([compact({ pre_tokens: 90_000 })])).toBe(null)
+  })
+
+  it('окно ДЕЛЕГИРОВАННОЙ сессии — не окно этой попытки', () => {
+    expect(contextExhaustedOf([compact({ trigger: 'auto', pre_tokens: 140_000 }, { parent_tool_use_id: 'toolu_01' })])).toBe(null)
+  })
+
+  it('размер окна — необязательная часть ответа: без него сжатие всё равно сжатие', () => {
+    expect(contextExhaustedOf([compact({ trigger: 'auto' })])).toEqual({ compactions: 1, preTokens: null })
+  })
+
+  it('речь работника о компактификации признаком НЕ является', () => {
+    const said = JSON.stringify({
+      type: 'assistant',
+      message: { model: 'claude', content: [{ type: 'text', text: 'context low, compact_boundary trigger auto' }] },
+    })
+    expect(contextExhaustedOf([said])).toBe(null)
+  })
+
+  it('поток без кадров сжатия и мусор на входе — пусто, без единого броска', () => {
+    expect(contextExhaustedOf(['не json вовсе', JSON.stringify({ type: 'system', subtype: 'init' })])).toBe(null)
+    expect(contextExhaustedOf([])).toBe(null)
+    expect(contextExhaustedOf(undefined as any)).toBe(null)
+  })
+})
+
 describe('classifyFailure — the taxonomy (pure)', () => {
   const cases: Array<[string, any, string]> = [
     ['spawn infra error → runtime_offline', { spawnError: new Error('offline'), exitCode: null }, 'runtime_offline'],
@@ -1396,6 +1452,33 @@ describe('classifyFailure — the taxonomy (pure)', () => {
   it('но обрыв провайдера остаётся сильнее потолка — порядок ветвей соблюдён', () => {
     expect(classifyFailure({ providerAbort: { status: 529 }, turnCapHit: { turns: 80 }, exitCode: 1 })).toBe('provider_error')
     expect(classifyFailure({ spawnError: new Error('offline'), turnCapHit: { turns: 80 } })).toBe('runtime_offline')
+  })
+
+  /**
+   * ПЕРЕПОЛНЕННОЕ ОКНО СТОИТ НАМНОГО НИЖЕ ПОТОЛКА, И РАССТОЯНИЕ МЕЖДУ НИМИ — ЭТО И ЕСТЬ
+   * СУЖДЕНИЕ. Сжатие не терминальное событие: прогон идёт дальше, — поэтому «окно наполнилось»
+   * никогда не доказывает, что попытку остановили, и не смеет отменять то, что она ОСТАВИЛА.
+   * Где не оставлено ничего, это самое точное, что о таком конце можно честно сказать.
+   */
+  it('нечего судить + переполненное окно → context_exhausted, а не «ошибка работника»', () => {
+    expect(classifyFailure({ contextExhausted: { compactions: 2 }, exitCode: 1, receipt: null })).toBe('context_exhausted')
+    expect(classifyFailure({ contextExhausted: { compactions: 2 }, exitCode: 0, receipt: null })).toBe('context_exhausted')
+  })
+
+  it('но всё, что попытка оставила, сильнее переполненного окна', () => {
+    const ctx = { compactions: 3 }
+    expect(classifyFailure({ contextExhausted: ctx, exitCode: 1, receipt: { verdict: 'red', ref: 'r' } })).toBe('tests_red')
+    expect(classifyFailure({ contextExhausted: ctx, exitCode: 1, workerMarker: 'NEEDS_DECISION' })).toBe('needs_decision')
+    expect(
+      classifyFailure({ contextExhausted: ctx, exitCode: 0, receipt: { verdict: 'green', ref: 'r' }, journalComplete: false }),
+    ).toBe('no_journal')
+  })
+
+  it('и всё, что остановило прогон снаружи, сильнее тоже — порядок ветвей соблюдён', () => {
+    const ctx = { compactions: 3 }
+    expect(classifyFailure({ contextExhausted: ctx, turnCapHit: { turns: 80 }, receipt: null })).toBe('turns_exhausted')
+    expect(classifyFailure({ contextExhausted: ctx, providerAbort: { status: 529 }, receipt: null })).toBe('provider_error')
+    expect(classifyFailure({ contextExhausted: ctx, spawnError: new Error('offline') })).toBe('runtime_offline')
   })
 })
 
