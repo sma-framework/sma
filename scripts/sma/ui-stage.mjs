@@ -103,7 +103,13 @@ import { appendTurn, readHistory } from '../../daemon/src/front/chat.mjs'
 import { createEventHub } from '../../daemon/src/front/events.mjs'
 import { readHarness } from '../../daemon/src/front/harness.mjs'
 import { createFrontServer } from '../../daemon/src/front/server.mjs'
-import { deriveBacklog, deriveCoordination, derivePhaseIndex, deriveState } from '../../daemon/src/front/state.mjs'
+import {
+  deriveBacklog,
+  deriveCoordination,
+  derivePhaseCard,
+  derivePhaseIndex,
+  deriveState,
+} from '../../daemon/src/front/state.mjs'
 import { recordAttempt } from '../../daemon/src/queue/attempt-ledger.mjs'
 import { readCoordinationLedger } from '../../daemon/src/main.mjs'
 import { scopeClaimSlug } from './lib/collision.mjs'
@@ -336,6 +342,12 @@ async function main() {
       // The shell asks for the phase list on every screen; without this the door answers 501
       // and the run engine reports it as a blocking finding — rightly, so it is wired.
       derivePhaseIndex,
+      // …И САМА КАРТОЧКА ФАЗЫ. Список фаз открывается кликом, и до этого клика вся работа со
+      // ступенями — стадии, их артефакты, ворота, которые ждут слова человека — на сцене просто
+      // не существовала: дверь карточки отвечала 501, и обход упирался в неё первым же шагом.
+      // Строки очереди дверь берёт у сцены сама (её `adapter` выше), поэтому ждущий чертёж
+      // приезжает на карточку ровно тем путём, каким приезжает в бою.
+      derivePhaseCard,
       // ── the four read models that used to refuse, each now given something to read ──
       // The board over the project's own file. There is no writing collaborator beside it,
       // which is the strongest form the «this door never edits your backlog» rule can take.
