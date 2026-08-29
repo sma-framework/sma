@@ -43,10 +43,14 @@ const RUN = {
     '-p',
     '--output-format',
     'stream-json',
+    // ОДНО ИМЯ — ОДИН АРГУМЕНТ, как их кладёт сборщик запуска: у каждого шаблона запрета
+    // пробел стоит внутри имени, и склейка развалила бы его на куски, не запрещающие ничего.
     '--allowedTools',
-    'Read Write Bash',
+    'Read',
+    'Write',
+    'Bash',
     '--disallowedTools',
-    DENIALS.join(' '),
+    ...DENIALS,
   ],
   envelope: {
     allowedTools: ['Read', 'Write', 'Bash'],
@@ -271,12 +275,12 @@ describe('parity-receipts — (d) skills: a project with none says so honestly',
 
 describe('parity-receipts — (e) rights: both halves of the envelope, measured separately', () => {
   it('the same set in either order is a match — the flag is a set, not a sequence', () => {
-    const run = runWith({ args: ['--allowedTools', 'Bash Read Write', '--disallowedTools', [...DENIALS].reverse().join(' ')] })
+    const run = runWith({ args: ['--allowedTools', 'Bash', 'Read', 'Write', '--disallowedTools', ...[...DENIALS].reverse()] })
     expect(evalWith({ run }).of('rights').status).toBe('ok')
   })
 
   it('a spawn narrower than the envelope is a FAILURE that names the difference', () => {
-    const run = runWith({ args: ['--allowedTools', 'Read', '--disallowedTools', DENIALS.join(' ')] })
+    const run = runWith({ args: ['--allowedTools', 'Read', '--disallowedTools', ...DENIALS] })
     const r = evalWith({ run }).of('rights')
     expect(r.status).toBe('fail')
     expect(r.detail).toContain('Write')
@@ -293,7 +297,7 @@ describe('parity-receipts — (e) rights: both halves of the envelope, measured 
   // ЭТО СОСТОЯНИЕ КВИТАНЦИЯ УДОСТОВЕРЯЛА РАНЬШЕ — жёлтым с оговоркой. Оно провал: конверт
   // называет действия, оставленные человеку, а до процесса от них не доехало ничего.
   it('конверт запрещает, а в аргументах запрета нет — это ПРОВАЛ, а не предупреждение', () => {
-    const run = runWith({ args: ['--allowedTools', 'Read Write Bash'] })
+    const run = runWith({ args: ['--allowedTools', 'Read', 'Write', 'Bash'] })
     const r = evalWith({ run }).of('rights')
     expect(r.status).toBe('fail')
     expect(r.detail).toMatch(/--disallowedTools/)
@@ -301,7 +305,7 @@ describe('parity-receipts — (e) rights: both halves of the envelope, measured 
   })
 
   it('запрет доехал наполовину — провал с перечислением того, чего нет', () => {
-    const run = runWith({ args: ['--allowedTools', 'Read Write Bash', '--disallowedTools', 'Bash(git push:*)'] })
+    const run = runWith({ args: ['--allowedTools', 'Read', 'Write', 'Bash', '--disallowedTools', 'Bash(git push:*)'] })
     const r = evalWith({ run }).of('rights')
     expect(r.status).toBe('fail')
     expect(r.detail).toContain('Bash(git merge:*)')
@@ -309,7 +313,7 @@ describe('parity-receipts — (e) rights: both halves of the envelope, measured 
 
   it('в аргументах запрет, которого конверт не объявлял, — тоже расхождение', () => {
     const run = runWith({
-      args: ['--allowedTools', 'Read Write Bash', '--disallowedTools', [...DENIALS, 'Bash(rm:*)'].join(' ')],
+      args: ['--allowedTools', 'Read', 'Write', 'Bash', '--disallowedTools', ...DENIALS, 'Bash(rm:*)'],
     })
     const r = evalWith({ run }).of('rights')
     expect(r.status).toBe('fail')
@@ -319,26 +323,30 @@ describe('parity-receipts — (e) rights: both halves of the envelope, measured 
   it('человеческое действие без единого шаблона запрета — провал: такой запрет не доехал никуда', () => {
     const run = runWith({
       envelope: { allowedTools: ['Read', 'Write', 'Bash'], humanOnlyActions: ['push', 'подписать-релиз'] },
-      args: ['--allowedTools', 'Read Write Bash', '--disallowedTools', humanOnlyDenials({ humanOnlyActions: ['push'] }).patterns.join(' ')],
+      args: ['--allowedTools', 'Read', 'Write', 'Bash', '--disallowedTools', ...humanOnlyDenials({ humanOnlyActions: ['push'] }).patterns],
     })
     const r = evalWith({ run }).of('rights')
     expect(r.status).toBe('fail')
     expect(r.detail).toContain('подписать-релиз')
   })
 
-  // Шаблон запрета несёт пробел ВНУТРИ скобок. Читатель, который делит строку по пробелам,
-  // разорвёт его на два куска, не совпадающих ни с чем, и объявит расхождение, которого нет.
-  it('шаблон с пробелом внутри скобок читается целиком, а не разрывается на куски', () => {
-    expect(disallowedToolsInArgs(['--disallowedTools', 'Bash(git push:*) Bash(npm publish:*)'])).toEqual([
+  // ШАБЛОН ЗАПРЕТА НЕСЁТ ПРОБЕЛ ВНУТРИ СЕБЯ, и раньше это была забота читателя: список уезжал
+  // в процесс склеенным, а здесь разбирался обратно с оглядкой на скобки. Провод исправлен —
+  // каждое имя едет отдельным значением, — поэтому читателю больше нечего угадывать: он берёт
+  // значения до следующего флага, и имя с пробелом доезжает целым, потому что его границы
+  // поставила операционная система, а не символ внутри него.
+  it('имя с пробелом внутри читается целиком — по одному значению на имя', () => {
+    expect(disallowedToolsInArgs(['--disallowedTools', 'Bash(git push:*)', 'Bash(npm publish:*)', '--model', 'opus'])).toEqual([
       'Bash(git push:*)',
       'Bash(npm publish:*)',
     ])
-    expect(allowedToolsInArgs(['--allowedTools', 'Read Grep Bash'])).toEqual(['Read', 'Grep', 'Bash'])
+    expect(allowedToolsInArgs(['--allowedTools', 'Read', 'Grep', 'Bash'])).toEqual(['Read', 'Grep', 'Bash'])
     expect(disallowedToolsInArgs(['-p'])).toBe(null)
+    expect(disallowedToolsInArgs(['--disallowedTools'])).toBe(null)
   })
 
   it('конверт без человеческих действий вовсе — зелено, и это сказано словами', () => {
-    const run = runWith({ envelope: { allowedTools: ['Read', 'Write', 'Bash'] }, args: ['--allowedTools', 'Read Write Bash'] })
+    const run = runWith({ envelope: { allowedTools: ['Read', 'Write', 'Bash'] }, args: ['--allowedTools', 'Read', 'Write', 'Bash'] })
     const r = evalWith({ run }).of('rights')
     expect(r.status).toBe('ok')
     expect(r.detail).toContain('не назвал ни одного человеческого действия')
@@ -390,7 +398,7 @@ describe('a receipt never states a fact about something nobody looked at', () =>
   const runWith = (extra: Record<string, unknown> = {}) => ({
     startedAt: '2026-01-01T00:00:00.000Z',
     endedAt: '2026-01-01T00:01:00.000Z',
-    args: ['--allowedTools', 'Read Bash'],
+    args: ['--allowedTools', 'Read', 'Bash'],
     envelope: { allowedTools: ['Read', 'Bash'] },
     ...extra,
   })

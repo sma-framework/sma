@@ -305,9 +305,17 @@ describe('the module keeps its stated disciplines', () => {
     expect(src).not.toMatch(/require\('pg/)
   })
 
-  it('touches no filesystem and no network — node:crypto is the only import', () => {
+  // ДВА ИМПОРТА, И ВТОРОЙ НЕ ОСЛАБЛЯЕТ ДИСЦИПЛИНУ, А ПРОВЕРЯЕТСЯ ВМЕСТЕ С НЕЙ. Читатель формы
+  // аргументов запуска один на весь продукт — иначе стена ниже разбирала бы её вторым разбором,
+  // расходящимся со сборщиком. Он вынесен в модуль, который САМ не импортирует ничего, поэтому
+  // «ни диска, ни сети» остаётся правдой не по обещанию, а по прочитанному здесь файлу.
+  it('touches no filesystem and no network — node:crypto and the import-free argv reader', () => {
     const imports = [...src.matchAll(/^import .*? from '([^']+)'/gm)].map((m) => m[1])
-    expect(imports).toEqual(['node:crypto'])
+    expect(imports).toEqual(['node:crypto', '../runner/tool-flags.mjs'])
+
+    const reader = readFileSync(new URL('../src/runner/tool-flags.mjs', import.meta.url), 'utf8')
+    expect([...reader.matchAll(/^import .*? from '([^']+)'/gm)].map((m) => m[1])).toEqual([])
+    expect(reader).not.toMatch(/node:fs|node:net|node:http|child_process/)
   })
 
   it('never writes the reserved push literal (a comment discipline is not the point — the code is)', () => {
@@ -443,7 +451,9 @@ describe('DANGER_CLASS_HUMAN_ACTIONS — карта «класс билета �
 })
 
 describe('approvalWall — три состояния ответа, а не два', () => {
-  const deniedArgs = (patterns: string[]) => ['--model', 'x', '--disallowedTools', patterns.join(' ')]
+  // КАЖДЫЙ ШАБЛОН — ОТДЕЛЬНЫМ ЗНАЧЕНИЕМ, ровно так, как их кладёт сборщик аргументов: у всех
+  // трёх пробел стоит внутри имени, и склейка через пробел развалила бы их на куски.
+  const deniedArgs = (patterns: string[]) => ['--model', 'x', '--disallowedTools', ...patterns]
   const allPush = ['Bash(git push:*)', 'Bash(git remote:*)', 'Bash(git config:*)']
 
   it('билет класса отправки при запрещённой отправке → упрётся, и действие названо', () => {
@@ -483,6 +493,19 @@ describe('approvalWall — три состояния ответа, а не дв�
   it('часть шаблонов действия запрещена, часть нет → неизвестно, а не выдуманный вердикт', () => {
     const wall = approvalWall({ ticketClass: 'push', spawnArgs: deniedArgs(['Bash(git push:*)']) })
     expect(wall.state).toBe('unknown')
+  })
+
+  // ЗАПИСЬ СТАРОГО ПРОВОДА. До починки список уезжал одним склеенным значением, и такие
+  // записи попыток лежат на дисках. Ни один шаблон в них не совпадает целиком — и ответить
+  // на это «не упрётся» значило бы успокоить человека ровно перед стеной.
+  it('склеенный список из старой записи → неизвестно, а не «не упрётся»', () => {
+    const glued = ['--model', 'x', '--disallowedTools', allPush.join(' ')]
+    expect(approvalWall({ ticketClass: 'push', spawnArgs: glued }).state).toBe('unknown')
+  })
+
+  it('флаг без единого значения — поломанная запись, а не «ничего не запрещено»', () => {
+    expect(approvalWall({ ticketClass: 'push', spawnArgs: ['--disallowedTools'] }).state).toBe('unknown')
+    expect(approvalWall({ ticketClass: 'push', spawnArgs: ['--disallowedTools', '--model', 'x'] }).state).toBe('unknown')
   })
 
   it('аргументов нет — отвечает конверт полосы, и он называет себя источником', () => {
@@ -541,7 +564,10 @@ describe('право на инструмент навыков — провод �
   const argvFor = (lane: string) => buildClaudeArgs(envelopeSpawnOptions(defaultEnvelope(lane as any)))
   const grantOf = (argv: string[]) => {
     const i = argv.indexOf('--allowedTools')
-    return i >= 0 && i + 1 < argv.length ? String(argv[i + 1]).split(' ') : []
+    if (i < 0) return []
+    const out: string[] = []
+    for (let k = i + 1; k < argv.length && !argv[k].startsWith('--'); k += 1) out.push(argv[k])
+    return out
   }
 
   it('Skill reaches spawn argv — слово доехало до массива аргументов, а не осталось строкой таблицы', () => {

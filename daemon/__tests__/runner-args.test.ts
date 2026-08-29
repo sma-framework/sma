@@ -1189,16 +1189,29 @@ describe('profile parity also guards what the argument array cannot show', () =>
 describe('the envelope refusal travels as --disallowedTools, and the boundary is a denial not a shorter grant', () => {
   const DENIALS = ['Bash(git config:*)', 'Bash(git push:*)', 'Bash(git remote:*)']
 
-  it('the refusal is one argument, and its value is the patterns joined by spaces', () => {
+  /**
+   * The values of one flag read off the produced array BY POSITION — deliberately not with the
+   * module's own reader. A writer verified by its own reader agrees with itself no matter what
+   * shape it writes; this walks the array the way an operating system hands it to a child.
+   */
+  const valuesAfter = (args: string[], flag: string): string[] | null => {
+    const at = args.indexOf(flag)
+    if (at < 0) return null
+    const out: string[] = []
+    for (let i = at + 1; i < args.length && !args[i].startsWith('--'); i += 1) out.push(args[i])
+    return out
+  }
+
+  it('the refusal travels as a VECTOR — one argument per pattern, not one glued string', () => {
     const args = buildClaudeArgs({ disallowedTools: DENIALS })
-    const i = args.indexOf('--disallowedTools')
-    expect(i, 'the refusal never reached the command line').toBeGreaterThan(-1)
-    expect(args[i + 1]).toBe(DENIALS.join(' '))
+    expect(args.indexOf('--disallowedTools'), 'the refusal never reached the command line').toBeGreaterThan(-1)
+    expect(valuesAfter(args, '--disallowedTools')).toEqual(DENIALS)
   })
 
   it('the refusal lands DIRECTLY AFTER the grant — the two halves of one envelope are read side by side', () => {
-    const args = buildClaudeArgs({ allowedTools: ['Read', 'Bash'], disallowedTools: DENIALS, model: 'opus' })
-    expect(args.indexOf('--disallowedTools')).toBe(args.indexOf('--allowedTools') + 2)
+    const tools = ['Read', 'Bash']
+    const args = buildClaudeArgs({ allowedTools: tools, disallowedTools: DENIALS, model: 'opus' })
+    expect(args.indexOf('--disallowedTools')).toBe(args.indexOf('--allowedTools') + 1 + tools.length)
     expect(args.indexOf('--model')).toBeGreaterThan(args.indexOf('--disallowedTools'))
   })
 
@@ -1214,8 +1227,54 @@ describe('the envelope refusal travels as --disallowedTools, and the boundary is
     // class that once cost this product every task in its history
     const tools = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash']
     const args = buildClaudeArgs({ allowedTools: tools, disallowedTools: DENIALS })
-    expect(args[args.indexOf('--allowedTools') + 1]).toBe(tools.join(' '))
+    expect(valuesAfter(args, '--allowedTools')).toEqual(tools)
     expect(args).not.toContain('--tools')
+  })
+
+  // ═══ A NAME WITH A SPACE IN IT — the failure the glued form had and this one cannot ═══
+  //
+  // `names.join(' ')` reads correctly until the first name that contains a space, and every
+  // pattern in the refusal list contains one: `Bash(git push:*)`. Glued, that single refusal
+  // reached the CLI as `Bash(git` and `push:*)` — two names that forbid nothing, while the
+  // refusal a person was counting on was simply absent. Nothing threw, nothing was logged, and
+  // the boundary was wider than the envelope said. These tests measure the REAL builder, and
+  // they are about the argument vector rather than about any escaping of the space.
+
+  it('a refusal whose name contains a space arrives as ONE value, not as two names that forbid nothing', () => {
+    const denials = ['Bash(git push:*)', 'Bash(npm publish --access public:*)']
+    const args = buildClaudeArgs({ disallowedTools: denials })
+    expect(valuesAfter(args, '--disallowedTools')).toEqual(denials)
+    // the pieces a glued list would have torn this into are nowhere in the array
+    expect(args).not.toContain('Bash(git')
+    expect(args).not.toContain('push:*)')
+  })
+
+  it('the same holds for the grant — both halves come out of one assembler, so both are measured', () => {
+    const tools = ['Read', 'Bash(git status:*)', 'Skill(memory pipeline)']
+    const args = buildClaudeArgs({ allowedTools: tools })
+    expect(valuesAfter(args, '--allowedTools')).toEqual(tools)
+    expect(args).not.toContain('Bash(git')
+  })
+
+  it('an empty list becomes no flag at all — never a flag with an empty argument standing in for it', () => {
+    for (const opts of [{ allowedTools: [] }, { disallowedTools: [] }, { allowedTools: [], disallowedTools: [] }]) {
+      const args = buildClaudeArgs(opts)
+      expect(args).not.toContain('--allowedTools')
+      expect(args).not.toContain('--disallowedTools')
+      expect(args, 'an empty argument is a tool named «», which is a boundary nobody wrote').not.toContain('')
+    }
+  })
+
+  it('an empty NAME inside a list is refused by name — the glued form used to swallow it', () => {
+    expect(() => buildClaudeArgs({ disallowedTools: ['Bash(git push:*)', ''] })).toThrow(/empty tool name/)
+    expect(() => buildClaudeArgs({ allowedTools: ['Read', '   '] })).toThrow(/empty tool name/)
+  })
+
+  it('a name that starts with a dash would reach the CLI as a FLAG — structurally refused', () => {
+    // the hazard the vector introduces and the glued form did not have: once each name is its
+    // own argument, a name spelled like an option is parsed like one
+    expect(() => buildClaudeArgs({ allowedTools: ['--dangerously-skip-permissions'] })).toThrow(ForbiddenFlagError)
+    expect(() => buildClaudeArgs({ disallowedTools: ['--permission-mode'] })).toThrow(ForbiddenFlagError)
   })
 
   it('the guard still refuses every hyphenated spelling — the smuggled forms keep the named error', () => {

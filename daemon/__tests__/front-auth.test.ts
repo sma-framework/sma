@@ -2836,7 +2836,8 @@ describe('server.mjs — GET /api/task/:id говорит, упрётся ли �
     })
 
   const ALL_PUSH = ['Bash(git ' + 'push' + ':*)', 'Bash(git remote:*)', 'Bash(git config:*)']
-  const argsDenying = (patterns: string[]) => ['--model', 'opus', '--disallowedTools', patterns.join(' ')]
+  // каждый шаблон отдельным значением — так их кладёт сборщик аргументов, и так их читает стена
+  const argsDenying = (patterns: string[]) => ['--model', 'opus', '--disallowedTools', ...patterns]
 
   it('билет упирающегося класса: дверь называет стену и действие, рядом с самим билетом', async () => {
     const dir = mkProject()

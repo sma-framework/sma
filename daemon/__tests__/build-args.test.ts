@@ -684,7 +684,7 @@ describe('buildArgs — a stage of the phase cycle is a command, everything else
     const spec = build()(task(), route(), { allowedTools: tools })
     const i = spec.args.indexOf('--allowedTools')
     expect(i, 'the spawn carries no tool grant — the worker would be read-only').toBeGreaterThan(-1)
-    expect(spec.args[i + 1]).toBe(tools.join(' '))
+    expect(spec.args.slice(i + 1, i + 1 + tools.length)).toEqual(tools)
   })
 
   it('no grant is passed when the envelope names no tools — absence stays absence', () => {
@@ -701,9 +701,12 @@ describe('buildArgs — a stage of the phase cycle is a command, everything else
     const spec = build()(task(), route(), { allowedTools: ['Read', 'Bash'], disallowedTools: denials })
     const i = spec.args.indexOf('--disallowedTools')
     expect(i, 'the spawn carries no refusal — the boundary would exist only in the journal').toBeGreaterThan(-1)
-    expect(spec.args[i + 1]).toBe(denials.join(' '))
+    // ONE ARGUMENT PER PATTERN, and every one of these has a space inside it: glued into a
+    // single value they would arrive as fragments that forbid nothing at all
+    expect(spec.args.slice(i + 1, i + 1 + denials.length)).toEqual(denials)
     // and the grant is not narrowed to compensate: a denial was ADDED, nothing was taken away
-    expect(spec.args[spec.args.indexOf('--allowedTools') + 1]).toBe('Read Bash')
+    const g = spec.args.indexOf('--allowedTools')
+    expect(spec.args.slice(g + 1, g + 3)).toEqual(['Read', 'Bash'])
   })
 
   it('an old caller that names no refusal gets a byte-identical argument array', () => {

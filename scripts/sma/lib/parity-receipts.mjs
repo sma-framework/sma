@@ -80,6 +80,10 @@
 // and drift on every day after, and the first person to notice would be holding a green
 // receipt over a run whose boundary never travelled.
 import { humanOnlyDenials } from '../../../daemon/src/queue/capability-envelope.mjs'
+// AND SO IS THE READER OF THE COMMAND LINE, for the same reason: what a spawn stood under is
+// read back in the exact shape the argument builder pushed it in, by the module that owns that
+// shape — never by a private copy of the rule living here.
+import { toolListInArgs } from '../../../daemon/src/runner/tool-flags.mjs'
 
 /** The five receipts, in the fixed order they are always evaluated and printed. */
 export const PARITY_RECEIPTS = Object.freeze([
@@ -237,58 +241,37 @@ function checkSkills({ run, receipt }) {
 // ── (e) rights ────────────────────────────────────────────────────────────────
 
 /**
- * The tool list as it actually appears on the command line: ONE `--allowedTools` argument
- * whose value is the names joined by spaces (the shape the argument builder produces). It is
- * read from the arguments rather than from anybody's intention — «what the envelope said» and
- * «what the process was given» are two claims, and this receipt exists to compare them.
- */
-/**
- * One flag's value split back into the entries the builder joined with spaces.
+ * The tool list as it actually appears on the command line: the `--allowedTools` flag followed
+ * by ONE ARGUMENT PER NAME (the shape the argument builder produces). It is read from the
+ * arguments rather than from anybody's intention — «what the envelope said» and «what the
+ * process was given» are two claims, and this receipt exists to compare them.
  *
- * SPLITTING ON WHITESPACE ALONE WOULD BE WRONG, and quietly so. A plain tool name has no
- * spaces, but a REFUSAL pattern does — `Bash(git push:*)` — so a naive split turns one
- * pattern into two fragments that match nothing, and the comparison below would then report a
- * difference that exists only in the reader. The parenthesis depth is tracked for exactly
- * that reason: a space inside the brackets belongs to the pattern, a space outside them
- * separates two of them.
+ * THE READER IS IMPORTED, NOT WRITTEN HERE, and that is the whole point of the import. This
+ * module used to split the flag's single glued value back apart on its own, tracking bracket
+ * depth so that a space inside `Bash(git push:*)` would not tear the pattern in half — a
+ * careful reader compensating for a lossy writer. The writer is fixed: names travel as
+ * separate argument values, delimited by the operating system rather than by a character that
+ * also occurs inside them. A private copy of the reading rule here would be a second opinion
+ * about a shape that has one owner, and it would drift from that owner the next time it moves.
+ *
+ * `null` — the flag is not on the command line at all. A record written by the OLDER wire
+ * reads as ONE entry containing every pattern, which matches no name and shows up as a
+ * divergence: the safe direction, a boundary that is looked at rather than one that passes.
  */
-function splitToolList(value) {
-  const out = []
-  let depth = 0
-  let cur = ''
-  for (const ch of String(value)) {
-    if (ch === '(') depth += 1
-    else if (ch === ')') depth = Math.max(0, depth - 1)
-    if (depth === 0 && /\s/.test(ch)) {
-      if (cur) out.push(cur)
-      cur = ''
-      continue
-    }
-    cur += ch
-  }
-  if (cur) out.push(cur)
-  return out
-}
-
-function toolListInArgs(args, flag) {
-  const list = Array.isArray(args) ? args.map(String) : []
-  const at = list.indexOf(flag)
-  if (at < 0 || at === list.length - 1) return null
-  return splitToolList(list[at + 1])
-}
-
 export function allowedToolsInArgs(args) {
-  return toolListInArgs(args, '--allowedTools')
+  const values = toolListInArgs(args, '--allowedTools')
+  return values === null || values.length === 0 ? null : values
 }
 
 /**
- * The REFUSAL list as it actually appears on the command line — one `--disallowedTools`
- * argument, the patterns joined by spaces. Read the same way and for the same reason as the
- * grant: this receipt's whole job is to compare what the envelope said against what the
- * process was given, and an intention read off the envelope twice would compare nothing.
+ * The REFUSAL list as it actually appears on the command line — the `--disallowedTools` flag
+ * and one argument per pattern. Read the same way and for the same reason as the grant: this
+ * receipt's whole job is to compare what the envelope said against what the process was given,
+ * and an intention read off the envelope twice would compare nothing.
  */
 export function disallowedToolsInArgs(args) {
-  return toolListInArgs(args, '--disallowedTools')
+  const values = toolListInArgs(args, '--disallowedTools')
+  return values === null || values.length === 0 ? null : values
 }
 
 /** Two tool lists as SETS: the order on a command line carries no meaning. */
