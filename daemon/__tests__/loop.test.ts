@@ -66,6 +66,10 @@ import {
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { createAgingMemory } from '../src/policy/aging-memory.mjs'
 import { createMemoryQueue, REASON_LABELS } from '../src/queue/adapter.mjs'
+// Единый журнал срывов — читается и пишется здесь через те же две функции, что демон
+// подаёт тику швом `ledger`: тест о том, что срыв доезжает до журнала САМ, не имеет права
+// подсовывать проходу свой журнал в памяти.
+import { appendBug, readBugs } from '../src/queue/bug-journal.mjs'
 // Imported for the cases at the foot of this file: the wire from a worker's stdout to the
 // screen's payload. Every joint of that path had a green test of its own while the path
 // itself was cut, so the case has to cross the module boundary the defect hid behind.
@@ -1022,6 +1026,94 @@ describe('the tick runs the reconciliation pass', () => {
     const res = await tick(deps)
     expect(journalled.some((e: any) => e.type === 'reconcile-error')).toBe(true)
     expect(res.error).toBeUndefined() // the tick itself did not fall over
+  })
+})
+
+// ═══ И СРЫВ ДОПИСЫВАЕТСЯ В ЕДИНЫЙ ЖУРНАЛ САМ ══════════════════════
+//
+// Смысл этих трёх случаев — не в том, что функция вызвана, а в том, что НИКТО НЕ ДОЛЖЕН
+// ВСПОМИНАТЬ о журнале: задача сорвалась — строка появилась. Ровно этого не было у трёх
+// прежних мест записи, каждое из которых знало про срыв свою половину.
+
+describe('the tick writes the bug journal', () => {
+  const bugDirs: string[] = []
+  afterAll(() => {
+    for (const d of bugDirs) {
+      try {
+        rmSync(d, { recursive: true, force: true })
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+  })
+
+  it('reports the pass in its summary, and stays silent without the journal seams', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const { deps } = makeDeps({ adapter, clockObj: c })
+
+    const res = await tick(deps)
+    expect(res.bugJournal).toEqual({ examined: 0, appended: 0, skipped: 0 })
+  })
+
+  it('a failed task the queue knows lands in the journal, with BOTH words about its cause', async () => {
+    const c = mkClock()
+    const dir = mkdtempSync(join(tmpdir(), 'sma-tick-bugs-'))
+    bugDirs.push(dir)
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const attempts = [{ taskId: 'BL-7', attempt: 2, outcome: 'failed', failureReason: 'turns_exhausted' }]
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      deps: {
+        // The queue says a person stopped it; the ledger says it had already walked into the
+        // turn ceiling. The card shows the first word only — the journal keeps both.
+        adapter: { ...adapter, list: async () => [{ id: 'BL-7', status: 'failed', project: 'sma', attempt: 2, failure_reason: 'manual' }] },
+        ledger: {
+          readAttempts: () => attempts,
+          readBugs: () => readBugs(dir),
+          appendBug: (entry: any) => appendBug(dir, entry),
+        },
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.bugJournal).toMatchObject({ appended: 1 })
+    expect(readBugs(dir)).toMatchObject([{ taskId: 'BL-7', reason: 'manual', cause: 'turns_exhausted', project: 'sma' }])
+  })
+
+  it('a bug-journal pass that throws is journaled and never wedges the tick (fail-open)', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const { deps, journalled } = makeDeps({
+      adapter,
+      clockObj: c,
+      deps: {
+        ledger: {
+          readAttempts: () => [],
+          readBugs: () => {
+            throw new Error('журнал не читается')
+          },
+          appendBug: () => {
+            throw new Error('журнал не пишется')
+          },
+        },
+        adapter: {
+          ...adapter,
+          list: async () => {
+            throw new Error('очередь молчит')
+          },
+        },
+      },
+    })
+
+    const res = await tick(deps)
+    // Обе двери прохода fail-open изнутри, поэтому тик получает честный ноль, а не исключение;
+    // проверяется здесь именно то, что тик от этого не падает и не теряет своего шага.
+    expect(res.bugJournal).toEqual({ examined: 0, appended: 0, skipped: 0 })
+    expect(journalled.some((e: any) => e.type === 'tick-error')).toBe(false)
+    expect(res.error).toBeUndefined()
   })
 })
 

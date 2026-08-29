@@ -79,6 +79,7 @@ import {
   createAttemptLogWriter,
   readAttemptLog,
 } from './queue/attempt-ledger.mjs'
+import { appendBug, readBugs } from './queue/bug-journal.mjs'
 import { cleanupTaskWorktree, createWorktreeSweeper } from './queue/worktree-cleanup.mjs'
 import { scanBacklog } from './intake/backlog-scan.mjs'
 import { createInFlight } from './queue/in-flight.mjs'
@@ -646,6 +647,11 @@ export function createDaemon(o = {}) {
       // the decision journal rides the same ledger dir — same seam, same object
       appendJournal: (entry) => appendJournalEntry(ledgerDir, entry),
       readJournalEntries: (taskId) => readJournalEntries(ledgerDir, taskId),
+      // …и ЕДИНЫЙ ЖУРНАЛ СРЫВОВ — там же, потому что сводит он именно то, что лежит здесь:
+      // слово очереди и слово реестра об одной задаче. Один файл на все проекты; проект
+      // назван в строке (bug-journal.mjs).
+      appendBug: (entry) => appendBug(ledgerDir, entry, { now: clock }),
+      readBugs: () => readBugs(ledgerDir),
       // …and so does the LIVE log: the worker's stdout, appended while the process is still
       // alive, one file per attempt. A write that fails reaches the daemon's log ONCE and
       // changes nothing else — the transcript is an observation of the work, not a condition
