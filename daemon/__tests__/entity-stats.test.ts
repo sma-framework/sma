@@ -77,7 +77,7 @@ const MINUTE = 60_000
 const PHASE_CARD: any = {
   id: '17.7-telefon',
   name: 'Фаза 17.7 · Телефон',
-  stages: { discuss: 'done', plan: 'done', execute: 'in-progress', verify: 'none' },
+  stages: { discuss: 'done', plan: 'done', design: 'done', execute: 'in-progress', verify: 'none' },
   questions: [],
   plans: [1, 2, 3, 4].map((n) => ({ name: `17.7-0${n}-PLAN.md`, path: `phases/17.7-telefon/0${n}` })),
   waves: [],
@@ -92,7 +92,7 @@ describe('окошко показателей фазы', () => {
   it('известные числа → каждый показатель равен тому, что сказала дверь', () => {
     const stats = phaseStats(PHASE_CARD, START + 160 * MINUTE)
 
-    expect(by(stats, 'stage').value).toBe('3 из 4')
+    expect(by(stats, 'stage').value).toBe('4 из 5')
     expect(by(stats, 'plans').value).toBe('4')
     expect(by(stats, 'tasks').value).toBe('6/9')
     expect(by(stats, 'attempts').value).toBe('41')

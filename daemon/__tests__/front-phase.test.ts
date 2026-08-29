@@ -301,14 +301,14 @@ describe('POST /api/phase/stage — A STAGE IS A TASK, NEVER A REQUEST', () => {
       expect(String(template), stage).not.toMatch(/--(bare|dangerously-skip-permissions|permission-mode)/)
     }
     expect(Object.isFrozen(STAGE_COMMANDS)).toBe(true)
-    expect(Object.keys(STAGE_COMMANDS).sort()).toEqual(['discuss', 'execute', 'plan', 'verify'])
+    expect(Object.keys(STAGE_COMMANDS).sort()).toEqual(['design', 'discuss', 'execute', 'plan', 'verify'])
 
     // and every string the door actually hands to the queue
     const { front, enqueued } = mkFront()
-    for (const stage of ['discuss', 'plan', 'execute', 'verify']) {
+    for (const stage of ['discuss', 'plan', 'design', 'execute', 'verify']) {
       await call(front, { method: 'POST', url: '/api/phase/stage', body: { phase: '12', stage } })
     }
-    expect(enqueued).toHaveLength(4)
+    expect(enqueued).toHaveLength(5)
     for (const task of enqueued) {
       expect(String(task.title).toLowerCase()).not.toContain('auto')
     }
@@ -385,7 +385,13 @@ describe('GET /api/phase/:id — THE CARD IS DERIVED, NEVER STORED', () => {
     // The NUMBER leads, then the words. A phase is asked for by number everywhere else in this
     // product, so the row has to say both what it is and how to ask for it.
     expect(worked.name).toBe('12 · front')
-    expect(worked.stages).toEqual({ discuss: 'done', plan: 'done', execute: 'done', verify: 'none' })
+    expect(worked.stages).toEqual({
+      discuss: 'done',
+      plan: 'done',
+      design: 'none',
+      execute: 'done',
+      verify: 'none',
+    })
     expect(worked).toMatchObject({ open: 0, answered: 0 })
 
     const parked = payload.phases[0]
@@ -398,17 +404,24 @@ describe('GET /api/phase/:id — THE CARD IS DERIVED, NEVER STORED', () => {
     // The card does not own this map — it imports the one the tick's exit gate uses.
     expect(STAGE_ARTIFACTS.discuss.produces).toBe('-CONTEXT.md')
     expect(STAGE_ARTIFACTS.plan.produces).toBe('-PLAN.md')
+    expect(STAGE_ARTIFACTS.design.produces).toBe('-DESIGN.md')
     expect(STAGE_ARTIFACTS.execute.produces).toBe('-SUMMARY.md')
     expect(STAGE_ARTIFACTS.verify.produces).toBe('-VERIFICATION.md')
     expect(STAGE_ARTIFACTS.discuss.checkpoint).toBe(CHECKPOINT_SUFFIX)
     expect(STAGE_ARTIFACTS.execute.checkpoint).toBe(EXEC_CHECKPOINT_SUFFIX)
 
-    // and it really is READ: a bare directory is four «none», and each artefact of the map —
-    // and nothing else — flips exactly its own stage
+    // and it really is READ: a bare directory is «none» all the way across, and each artefact of
+    // the map — and nothing else — flips exactly its own stage
     const bare = `${PROJECT}/.planning/phases/40-bare`
     const io = fakeFs({ [`${bare}/40-NOTES.md`]: 'ничего из карты' })
     const stagesNow = () => derivePhaseIndex({ projectDir: PROJECT, fsImpl: io }).phases[0].stages
-    expect(stagesNow()).toEqual({ discuss: 'none', plan: 'none', execute: 'none', verify: 'none' })
+    expect(stagesNow()).toEqual({
+      discuss: 'none',
+      plan: 'none',
+      design: 'none',
+      execute: 'none',
+      verify: 'none',
+    })
 
     io.files.set(norm(`${bare}/40${CHECKPOINT_SUFFIX}`), checkpoint({ 'о': [{ question: 'а?' }] }))
     expect(stagesNow().discuss).toBe('in-progress') // parked, not finished

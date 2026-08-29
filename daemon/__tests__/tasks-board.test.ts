@@ -38,7 +38,10 @@ import type {
   WorkerRow,
 } from '../../spa/src/api/types'
 
-const STAGES: PhaseStage[] = ['discuss', 'plan', 'execute', 'verify']
+// ЕЩЁ ОДНА РУКОПИСНАЯ КОПИЯ ДОРОГИ — своя, потому что список стадий экрана задач модулю-соседу
+// не виден. Она обязана совпадать с ним ровно и в том же порядке: пары «стадия N ↔ столбик N»
+// ниже строятся по индексу, и список короче настоящего сдвинул бы каждую пару молча.
+const STAGES: PhaseStage[] = ['discuss', 'plan', 'design', 'execute', 'verify']
 
 /** Ряд указателя фаз с названными стадиями — остальное умолчаниями двери. */
 function phaseRow(
@@ -126,7 +129,7 @@ describe('фаза стоит в столбике своей стадии', () =
     },
   )
 
-  it('все четыре стадии пройдены — фаза в «Готово»', () => {
+  it('все стадии пройдены — фаза в «Готово»', () => {
     const all = Object.fromEntries(STAGES.map((s) => [s, 'done' as PhaseStageStatus]))
     expect(whereSingle(units({ phases: [phaseRow(all)] }))).toBe('done')
   })
