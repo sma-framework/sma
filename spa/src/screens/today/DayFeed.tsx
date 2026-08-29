@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { openScreen } from '../../shell/navigation'
-import type { DoneRow, QueueRow, ReceiptSummary } from '../../api/types'
+import type { DoneRow, FailureAction, QueueRow, ReceiptSummary } from '../../api/types'
 import {
   acceptanceList,
   accentFor,
@@ -11,6 +11,8 @@ import {
   plural,
   receiptChecks,
 } from '../../shell/format'
+import { actOf, actableActions, spentLine, spentOf } from './offer'
+import type { OfferAct } from './offer'
 
 /**
  * DayFeed — what happened while nobody was watching, in the order a person needs it.
@@ -111,27 +113,122 @@ function DecisionCard({
   )
 }
 
-function FailedCard({ row, selected, onOpen }: { row: DoneRow; selected: boolean; onOpen: (id: string) => void }) {
-  const failed = row.failed
+/**
+ * ТРИ ДЕЙСТВИЯ ЧЕЛОВЕКА — КНОПКАМИ, А НЕ ПЕРЕЧИСЛЕНИЕМ В ТЕКСТЕ.
+ *
+ * Работа, за которой повтора нет, стоит до его решения, и красная карточка без единого слова о
+ * том, что делать, отправляет человека разбирать журнал попытки руками — по такой карточке
+ * решение и принималось: шесть работ за сутки, каждая через терминал. Названия и подписи
+ * приходят от двери целиком; экран знает только, чем каждое имя ДЕЛАЕТСЯ, и не рисует того,
+ * чего не умеет (см. `offer.ts`).
+ *
+ * ОТМЕНА СПРАШИВАЕТ ЕЩЁ РАЗ. Она терминальна — после неё на эту работу не будет потрачено ни
+ * одной попытки, — а стоит в одном ряду с двумя обратимыми соседями и ровно там, где палец
+ * идёт мимо. Два других нажатия вопроса не задают: обе поправимы следующим движением.
+ */
+function OfferActions({
+  actions,
+  onAct,
+}: {
+  actions: FailureAction[]
+  onAct: (act: OfferAct) => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+  if (actions.length === 0) return null
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(row.id)}
+    <div className="mt-3 flex flex-col gap-2">
+      <div className="text-[11px] font-semibold text-tx">Ваш ход:</div>
+      {actions.map((a) => {
+        const act = actOf(a.id)
+        if (act === null) return null
+        return (
+          <div key={a.id} className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            {act === 'cancel' && confirming ? (
+              <>
+                <span className="text-[11.5px] font-semibold text-tx">Отменить насовсем?</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirming(false)
+                    onAct(act)
+                  }}
+                  className="rounded-[9px] border border-err-bd bg-err-s px-3 py-1.5 text-[11.5px] font-semibold text-err-tx"
+                >
+                  Да, отменить
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirming(false)}
+                  className="rounded-[9px] border border-bd2 px-3 py-1.5 text-[11.5px] text-tx2 hover:text-tx"
+                >
+                  Нет
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => (act === 'cancel' ? setConfirming(true) : onAct(act))}
+                  className="flex-none rounded-[9px] border border-bd2 bg-card px-3 py-1.5 text-[11.5px] font-semibold text-tx hover:bg-card-hov"
+                >
+                  {a.label}
+                </button>
+                {/* Подпись двери — рядом со СВОЕЙ кнопкой: по ней и выбирают, а название кнопки
+                    без неё говорит только половину. */}
+                <span className="min-w-0 text-[11px] text-tx3">{a.detail}</span>
+              </>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function FailedCard({
+  row,
+  selected,
+  onOpen,
+  onAct,
+}: {
+  row: DoneRow
+  selected: boolean
+  onOpen: (id: string) => void
+  onAct: (taskId: string, act: OfferAct) => void
+}) {
+  const failed = row.failed
+  const offer = failed?.offer ?? null
+  // НА ЧТО УШЛИ ХОДЫ — одной строкой, потому что от неё зависит выбор человека. «Сожжено сто
+  // ходов» само по себе не говорит, поднимать потолок или резать работу; разбивка по роду
+  // говорит. Считает её не разметка — `offer.ts`, и там же она и проверяется прогоном.
+  const line = spentLine(spentOf(offer, failed?.spent))
+  const actions = actableActions(offer?.actions)
+  return (
+    <div
       className={`w-full rounded-[13px] border bg-err-s px-[18px] py-4 text-left ${
         selected ? 'border-blue' : 'border-err-bd'
       }`}
     >
-      <div className="flex items-center gap-2.5">
-        <LaneBadge lane={row.workerId} title={row.title} />
-        <span className="min-w-0 flex-1 text-[13px] leading-[1.5] text-tx">
-          <span className="font-semibold">{row.title ?? 'Без названия'}</span>
-          {failed?.reasonLabel ? ` — ${failed.reasonLabel}` : ' — причина не записана'}
-        </span>
-      </div>
-      <div className="mt-2 text-[11.5px] text-tx2">
-        {attemptsLabel(failed?.attemptsCount ?? row.attempts)}, дальше не пробую, чтобы не жечь ресурс.
-      </div>
-    </button>
+      {/*
+        Карточка перестала быть ОДНОЙ кнопкой: кнопка внутри кнопки разметкой не разрешена, а
+        три действия обязаны нажиматься. Открывает карточку та её часть, которая о прошлом, —
+        заголовок с причиной и числами; предложение о будущем стоит рядом и жмётся само.
+      */}
+      <button type="button" onClick={() => onOpen(row.id)} className="w-full text-left">
+        <div className="flex items-center gap-2.5">
+          <LaneBadge lane={row.workerId} title={row.title} />
+          <span className="min-w-0 flex-1 text-[13px] leading-[1.5] text-tx">
+            <span className="font-semibold">{row.title ?? 'Без названия'}</span>
+            {failed?.reasonLabel ? ` — ${failed.reasonLabel}` : ' — причина не записана'}
+          </span>
+        </div>
+        <div className="mt-2 text-[11.5px] text-tx2">
+          {attemptsLabel(failed?.attemptsCount ?? row.attempts)}, дальше не пробую, чтобы не жечь ресурс.
+        </div>
+        {line ? <div className="mt-2 text-[11.5px] text-tx2 tabular-nums">{line}</div> : null}
+      </button>
+      <OfferActions actions={actions} onAct={(act) => onAct(row.id, act)} />
+    </div>
   )
 }
 
@@ -229,6 +326,7 @@ export function DayFeed({
   waiting,
   selectedId,
   onOpen,
+  onAct,
 }: {
   decisions: QueueRow[]
   failed: DoneRow[]
@@ -236,6 +334,13 @@ export function DayFeed({
   waiting: QueueRow[]
   selectedId: string | null
   onOpen: (id: string) => void
+  /**
+   * ДЕЛО ПО ПРЕДЛОЖЕНИЮ КРАСНОЙ КАРТОЧКИ — экрану, а не ленте. Лента остаётся показом: она
+   * называет человеку выбор и говорит, какое из трёх он сделал, а двери зовёт тот, кто на
+   * этом экране за них отвечает. Иначе «ничего своего у демона не спрашивает» перестало бы
+   * быть правдой ровно на одной карточке.
+   */
+  onAct: (taskId: string, act: OfferAct) => void
 }) {
   const [doneOpen, setDoneOpen] = useState(true)
 
@@ -292,7 +397,7 @@ export function DayFeed({
           <p className="m-0 px-0.5 text-[12px] text-tx3">Ничего не сломалось.</p>
         ) : (
           failed.map((row) => (
-            <FailedCard key={row.id} row={row} selected={row.id === selectedId} onOpen={onOpen} />
+            <FailedCard key={row.id} row={row} selected={row.id === selectedId} onOpen={onOpen} onAct={onAct} />
           ))
         )}
       </section>

@@ -106,6 +106,8 @@ import {
   latestRowPerId,
   waveAddressOf,
   REASON_LABELS,
+  failureAwaitsAPerson,
+  turnCapOffer,
 } from '../queue/adapter.mjs'
 import { readWaveHolds } from '../queue/wave-holds.mjs'
 // ПОТОЛОК МЕСТ читается ТЕМ ЖЕ выражением, которым его читает тик перед тем, как отказать в
@@ -3238,15 +3240,30 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machi
   // failed red-card fields.
   if (r.status === 'failed') {
     const reason = r.failure_reason ?? (last && last.failureReason) ?? null
+    // НА ЧТО УШЛИ ХОДЫ — у КАЖДОЙ красной карточки, а не только у той, что упёрлась в
+    // потолок. Попытка, съевшая девяносто ходов и упавшая на красных тестах, и попытка,
+    // упавшая на третьем, — разные события, и до сих пор экран показывал их одинаково.
+    // Читается с последней попытки: строка реестра пишется ею же и её потолком.
+    const spent = turnSpentOf(last)
     out.failed = {
       reason,
       reasonLabel: reason ? REASON_LABELS[reason] ?? null : null,
       attemptsCount: attempts.length || (Number.isFinite(r.attempt) ? r.attempt : 0),
-      // НА ЧТО УШЛИ ХОДЫ — у КАЖДОЙ красной карточки, а не только у той, что упёрлась в
-      // потолок. Попытка, съевшая девяносто ходов и упавшая на красных тестах, и попытка,
-      // упавшая на третьем, — разные события, и до сих пор экран показывал их одинаково.
-      // Читается с последней попытки: строка реестра пишется ею же и её потолком.
-      spent: turnSpentOf(last),
+      spent,
+      // ПРЕДЛОЖЕНИЕ — ТОЛЬКО ТАМ, ГДЕ СЛЕДУЮЩЕЙ ПОПЫТКИ НЕ БУДЕТ. У всех прочих концов её
+      // делает очередь сама, и три кнопки над строкой, которая и так поедет снова, — это
+      // выбор, которого у человека не спрашивали. Развилка не выводится здесь заново:
+      // спрашивается тот же список, по которому тик выбирает дверь (`AWAITS_A_PERSON`), —
+      // второе место, где живёт то же правило, разошлось бы с первым молча.
+      ...(failureAwaitsAPerson(reason)
+        ? {
+            offer: turnCapOffer({
+              turnsBurned: spent ? spent.used : null,
+              cap: spent ? spent.cap : null,
+              kinds: spent ? spent.kinds : null,
+            }),
+          }
+        : {}),
     }
   }
   return out
