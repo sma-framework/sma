@@ -178,7 +178,11 @@ Run through this before hashing a UI check:
 > selectors, your fixtures and your product's own claims still belong in your repository.
 > And it holds the rule that matters here — **a run that did not happen is never a pass**:
 > with no driver it exits 3 and says `NOT RUN`, rather than returning an empty finding list
-> that reads as clean.
+> that reads as clean. The same rule now covers the evidence it hands back: every capture is
+> read off the disk before it is published, and a file that is not a decodable image is
+> **named as a finding instead of being listed as a screenshot**. A driver that renders
+> nothing still writes a `.png`; a receipt that lists it beside a PASS is a receipt promising
+> evidence it does not have, and that promise once cost a whole round of work.
 - **A self-removal condition.** If a platform ships genuinely replayable browser checks —
   a recorded session that re-derives its own verdict byte for byte — this recipe shrinks
   to one line pointing at it. A bridge is supposed to become unnecessary.
@@ -210,6 +214,12 @@ Run through this before hashing a UI check:
    пикселей и таймингу анимаций; мерцающая квитанция хуже её отсутствия. Пиксельное
    сравнение годится для ревью, но не как доказательство. Вердикт модели по скриншоту
    запрещён по той же причине.
+
+И то же правило — про сам снимок: `ui-drive` читает каждый файл, который положил драйвер, и
+**не объявляет снимком то, что изображением не является**. Драйвер, который ничего не рисует,
+всё равно оставляет файл с расширением `.png`; квитанция, перечисляющая такой файл рядом с
+вердиктом PASS, обещает доказательство, которого нет. Теперь такой файл едет в находки —
+с именем, размером и причиной словами, — а раздел «Screenshots» остаётся пустым.
 
 Проверьте по чеклисту из раздела 5: фиксированный вьюпорт, отключённые анимации,
 засеянные фикстуры, ожидание условия вместо паузы, никакой сторонней сети, в выводе нет

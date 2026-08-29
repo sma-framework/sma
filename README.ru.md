@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.6.1-3B82F6" alt="версия 5.6.1">
-  <img src="https://img.shields.io/badge/tests-5343%2F5343-3CC0A0" alt="тесты 5343/5343">
+  <img src="https://img.shields.io/badge/tests-5350%2F5350-3CC0A0" alt="тесты 5350/5350">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -731,7 +731,7 @@ node scripts/sma/cli.mjs grill --gate      # допросить каждое о�
 - **[docs/FLEET-INVARIANTS.md](docs/FLEET-INVARIANTS.md)** — восемь инвариантов парка, записанных как закон: именованная машина состояний и её контракты переходов, конверт возможностей, штамп попытки, как свойство-тесты и дриллы бьют по каждому — и §5, где прямо сказано, что целью **не** является и где проходит каждый оставшийся край теперь, когда демон через этот слой действительно ходит: три поля штампа, которые продукту нечем вычислить, поимённо освобождённые переходы и та досягаемость, которую конверт не ограничивает.
 - **[docs/FEATURE-GATE.md](docs/FEATURE-GATE.md)** — пять элементов, которые новая фича обязана объявить, прежде чем попадёт в путь по умолчанию: класс сбоя, который она закрывает, записанный бейзлайн для сравнения, опровержимый прогноз с числовым порогом и командой, которая это число даёт, что означает приёмка и как фича откатывается. Проверяется командой `sma eval gate`.
 - **[docs/INSTALL.md](docs/INSTALL.md)** — флаги установки, список устанавливаемых файлов, удаление.
-- **[docs/recipes/browser-check-command.md](docs/recipes/browser-check-command.md)** — как UI-проверка становится перезапускаемой квитанцией: headless-скрипт «команда + код возврата», браузерная библиотека в *Ваших* devDependencies (ядро SMA остаётся браузер-свободным) и почему пиксель-диффы запрещены как доказательство.
+- **[docs/recipes/browser-check-command.md](docs/recipes/browser-check-command.md)** — как UI-проверка становится перезапускаемой квитанцией: headless-скрипт «команда + код возврата», браузерная библиотека в *Ваших* devDependencies (ядро SMA остаётся браузер-свободным) почему пиксель-диффы запрещены как доказательство и почему файл, не оказавшийся изображением, едет в находки, а не в список снимков.
 - **[sma-core/references/fanout-ladder.md](sma-core/references/fanout-ladder.md)** — рой или соло: четыре детерминированных сигнала (делимость на непересекающиеся файловые скоупы, риск-класс, размер, остаток бюджета), которые решают фан-аут, и что уже делают команды продукта.
 - **[scripts/sma/README.md](scripts/sma/README.md)** — каждая подкоманда CLI, флаг, событие хука и выключатель.
 - **[PASSPORT.md](PASSPORT.md)** — паспорт калибровки: реальный процент попаданий и размер выборки, воспроизводимые на свежей копии.
