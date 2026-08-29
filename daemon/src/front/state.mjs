@@ -1605,7 +1605,7 @@ export function deriveBacklog({ config, fsImpl } = {}) {
 // is the only root that door opens. The directory this all sits under stays on this side.
 
 /** The four stages, in the order a phase goes through them. */
-const PHASE_STAGES = Object.freeze(['discuss', 'plan', 'execute', 'verify'])
+export const PHASE_STAGES = Object.freeze(['discuss', 'plan', 'execute', 'verify'])
 
 /** Where phases live under a checkout, in the forward-slashed form the artefact door takes. */
 const PHASES_PATH = '.planning/phases'

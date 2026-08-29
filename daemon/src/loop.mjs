@@ -564,7 +564,7 @@ function parkedRound(deps, task, cwd) {
  * documentGate(deps, task, cwd) → {receiptRef} when a documentary stage really produced its
  * document, or {reason, detail} naming why not. Fail-closed on an undeclared stage.
  */
-function documentGate(deps, task, cwd) {
+export function documentGate(deps, task, cwd) {
   const { stage, phase } = stageDataOf(task)
   const spec = STAGE_ARTIFACTS[stage]
   if (!spec) {
