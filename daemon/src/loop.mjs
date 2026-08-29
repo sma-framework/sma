@@ -853,6 +853,60 @@ export function turnCapHitOf(lines, maxTurns = null) {
 }
 
 /**
+ * contextExhaustedOf(lines) → `{compactions, preTokens}` when THIS attempt ran out of context
+ * window, else null.
+ *
+ * WHY IT IS READ AT ALL — the third way an attempt is stopped by something other than the work.
+ * A run whose context window fills up is compacted by the CLI and carries on with a summary in
+ * place of everything it had learned; do it two or three times and the session finishes with no
+ * receipt and no note, having lost the plot rather than failed at it. The turn ceiling and the
+ * provider's cut are already named; this one arrived at the exit gate INDISTINGUISHABLE FROM BAD
+ * WORK, so a person was sent to look at code whose author had simply run out of room. The remedy
+ * is a smaller task, and no screen can offer it without knowing the window filled.
+ *
+ * WHAT COUNTS AS THE SIGNAL, and the boundary is the same one the two recognisers above draw:
+ * the CLI's own `compact_boundary` frame and the `trigger` field on it — never the text of
+ * anything. A worker discussing compaction says the word out loud in its own output, and a
+ * diagnosis made by eavesdropping is worse than the fault it replaces.
+ *
+ * ONLY `auto` COUNTS. An automatic compaction is the window filling up by itself — the fact this
+ * function exists to report. A MANUAL one is a worker's own housekeeping, deliberate and often
+ * cheap, and counting it would turn good practice into a failure reason. A frame whose trigger
+ * the vendor did not state counts as neither: an unstated field is not evidence.
+ *
+ * AND ONLY THE MAIN SESSION'S. With subagent text forwarded onto this stream, a delegated
+ * session's compaction rides here too — but a subagent's window filling is not the attempt's
+ * window filling, and the subagent's own summary is handed back to a main session that never
+ * saw its context. Provenance is already on every event, so the line is drawn by reading it.
+ *
+ * WHY A COUNT AND NOT A FLAG. Once is ordinary on a long piece of work and says «this was big»;
+ * three times says the session has been living on summaries of summaries, which is the thing a
+ * person is choosing to cut in half. The number goes to the operator's log rather than into the
+ * verdict — the verdict is decided by what the attempt LEFT (see classifyFailure).
+ *
+ * @param {string[]} lines — the attempt's stdout, as collected
+ * @returns {{compactions:number, preTokens:number|null}|null}
+ */
+export function contextExhaustedOf(lines) {
+  if (!Array.isArray(lines)) return null
+  let compactions = 0
+  let preTokens = null
+  for (const line of lines) {
+    if (typeof line !== 'string' || !line.includes('compact_boundary')) continue
+    const event = parseClaudeEvent(line)
+    if (!event || event.type !== 'system' || !event.compaction) continue
+    if (event.subagent === true) continue // a delegated window is not this attempt's window
+    if (event.compaction.trigger !== 'auto') continue
+    compactions += 1
+    // THE BIGGEST THE WINDOW EVER GOT, not the last: what a person wants is the high-water mark
+    // of the work, and the final compaction of a run is often the smallest of them.
+    const pre = event.compaction.preTokens
+    if (Number.isFinite(pre) && (preTokens === null || pre > preTokens)) preTokens = pre
+  }
+  return compactions > 0 ? { compactions, preTokens } : null
+}
+
+/**
  * argMaxTurns(args) → the turn ceiling THIS spawn was actually given, read back off its own
  * argument array, or null.
  *
@@ -902,6 +956,7 @@ function turnRecordOf(args, lines) {
  *   worker marker NEEDS_DECISION   → 'needs_decision'   (a call only a human can make)
  *   worker marker MISSING_ACCESS   → 'missing_access'   (credentials/permissions absent)
  *   red reverify receipt           → 'tests_red'        (targeted tests failed)
+ *   nothing left + window filled   → 'context_exhausted' (the run that ran out of room)
  *   no receipt + nonzero exit      → 'agent_error'      (the worker crashed)
  *   no receipt + exit 0            → 'no_receipt'        (claimed done, never certified)
  *   green receipt + no note        → 'no_journal'       (certified, never explained)
@@ -923,10 +978,21 @@ function turnRecordOf(args, lines) {
  * binary happens to use for it is NOT part of the signal — it has never been measured, and an
  * unmeasured number must not quietly become half a diagnosis.
  *
- * @param {{spawnError?:any, providerAbort?:object|null, turnCapHit?:object|null, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean}} [o]
+ * A CONTEXT WINDOW THAT FILLED UP SITS MUCH LOWER, INSIDE THE RECEIPTLESS BRANCH, and the
+ * distance between it and the two above is the whole judgement. A compaction is not a terminal
+ * event: the run continues past it, so «the window filled» never proves the attempt was stopped —
+ * only that it was working on summaries of its own context. It may therefore not overrule
+ * anything the attempt actually LEFT. A worker's own closing marker is its own word and beats it;
+ * a red re-verification is a measured fact about a branch and beats it; a green receipt with a
+ * missing note names the omission a person still has to act on. Where the attempt left NOTHING —
+ * no receipt at all — the filled window is the sharpest true thing anyone can say about it, and
+ * it replaces «нет квитанции» / «ошибка работника», which sent a person to fix work that had
+ * simply run out of room. The remedy is a smaller task, and only this word offers it.
+ *
+ * @param {{spawnError?:any, providerAbort?:object|null, turnCapHit?:object|null, contextExhausted?:object|null, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean}} [o]
  * @returns {string}
  */
-export function classifyFailure({ spawnError, providerAbort, turnCapHit, exitCode, receipt, workerMarker, journalComplete, lessonComplete } = {}) {
+export function classifyFailure({ spawnError, providerAbort, turnCapHit, contextExhausted, exitCode, receipt, workerMarker, journalComplete, lessonComplete } = {}) {
   if (spawnError) return 'runtime_offline'
   if (providerAbort) return 'provider_error'
   if (turnCapHit) return 'turns_exhausted'
@@ -934,6 +1000,7 @@ export function classifyFailure({ spawnError, providerAbort, turnCapHit, exitCod
   if (workerMarker === 'MISSING_ACCESS') return 'missing_access'
   if (receipt && receipt.verdict === 'red') return 'tests_red'
   if (!receipt) {
+    if (contextExhausted) return 'context_exhausted'
     return Number.isFinite(exitCode) && exitCode !== 0 ? 'agent_error' : 'no_receipt'
   }
   if (receipt.verdict === 'green' && journalComplete === false) return 'no_journal'
@@ -4108,6 +4175,11 @@ export async function tick(deps = {}) {
       // отсюда в каталог прогона и дальше в квитанцию — один разбор на двух читателей.
       const attemptTokens = bookAttemptUsage(deps, task, route, streamLines, now(), attemptStartedAt)
       unbookedSpend = null // paid — the catch below must not pay it a second time
+      // И СКОЛЬКО МЕСТА ЕЙ НЕ ХВАТИЛО — второй расход той же попытки, прочитанный в том же
+      // месте и из того же потока, что и первый. Окно контекста тратится ровно как деньги и
+      // ходы, и до этого чтения оно было единственным из трёх, о котором демон не знал ничего:
+      // переполнившаяся попытка приходила на выходной гейт неотличимой от плохой работы.
+      const contextExhausted = contextExhaustedOf(streamLines)
 
       // (7b) THE APPROACH NOTE — read off the same stream, appended as the journal's
       // approach layer, and then REQUIRED by the gate exactly as the receipt is required.
@@ -4203,6 +4275,21 @@ export async function tick(deps = {}) {
             `провайдер оборвал прогон (${providerAbort.reason}` +
             `${providerAbort.status ? ` ${providerAbort.status}` : ''})` +
             `${providerAbort.said ? `: ${providerAbort.said}` : ''}`,
+        })
+      }
+      // AND A WINDOW THAT FILLED UP IS A FACT ABOUT THE SIZE OF THIS TASK — worth saying even
+      // when the attempt squeaked through, because the next one may not. It deliberately does
+      // NOT join the infra short-circuit above: a compaction is not a terminal event, and a
+      // round that went on to park on a question or to write its document really did produce
+      // that outcome. What it decides is only the NAME of a refusal that left nothing behind.
+      if (contextExhausted) {
+        writeLog(deps, {
+          type: 'task.context_exhausted',
+          taskId: task.id,
+          reason: 'context_exhausted',
+          detail:
+            `окно контекста переполнилось: сжатий=${contextExhausted.compactions}` +
+            (contextExhausted.preTokens !== null ? ` (перед самым большим — ${contextExhausted.preTokens} токенов)` : ''),
         })
       }
 
@@ -4421,6 +4508,7 @@ export async function tick(deps = {}) {
           spawnError: exit.spawnError,
           providerAbort,
           turnCapHit,
+          contextExhausted,
           exitCode: exit.code,
           receipt,
           workerMarker: marker,

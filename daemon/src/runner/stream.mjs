@@ -37,6 +37,23 @@
  * is gone. `utilization` is still read here, and is null on every real frame today, so that the
  * day the vendor starts sending a fraction the screen shows its number and nobody's arithmetic.
  *
+ * THE COMPACTION FRAME — the only place on this stream where the CONTEXT WINDOW speaks. The CLI
+ * announces every compaction with a `system` frame of its own:
+ *
+ *     {"type":"system","subtype":"compact_boundary",
+ *      "compact_metadata":{"trigger":"auto","pre_tokens":152000}}
+ *
+ * Read here for the same reason the spend beside it is read: it is the vendor's own statement
+ * about a resource this daemon hands out and cannot otherwise measure. Until it was read, an
+ * attempt whose window filled up arrived at the exit gate with no note and no receipt, shaped
+ * exactly like bad work — and a person was sent to fix a worker that had simply run out of room.
+ *
+ * `trigger` is the load-bearing field and it is passed through verbatim rather than judged here:
+ * `auto` is the window filling up by itself, `manual` is a worker compacting on purpose, and the
+ * two are different facts. Which of them means «the context ran out» is a decision for the reader
+ * (loop.mjs), not for the parser — this file states what the frame said. An absent metadata object
+ * parses to nulls: a compaction whose trigger nobody stated is not silently called automatic.
+ *
  * ASSUMPTION A4 (Codex, MEDIUM confidence — verified in the pilot): `codex exec --json`
  * emits a thread-start event carrying `thread_id` and a final `turn.completed` event
  * carrying a `usage` object with token counts sufficient for the ledger. If the final
@@ -173,7 +190,25 @@ function eventFromFrame(obj) {
   }
 
   if (type === 'system') {
-    return { type, ...who, subtype: strOrNull(obj.subtype), sessionId: strOrNull(obj.session_id ?? obj.sessionId) }
+    const subtype = strOrNull(obj.subtype)
+    const ev = { type, ...who, subtype, sessionId: strOrNull(obj.session_id ?? obj.sessionId) }
+    // WHAT THE WINDOW SAID ABOUT ITSELF — see THE COMPACTION FRAME above. The key exists only on
+    // the frame that announces a compaction: an ordinary `system` line states nothing about the
+    // context, and giving it an empty reading would make «no compaction» and «a compaction the
+    // frame did not describe» the same answer.
+    if (subtype === 'compact_boundary') {
+      const meta =
+        obj.compact_metadata && typeof obj.compact_metadata === 'object'
+          ? obj.compact_metadata
+          : obj.compactMetadata && typeof obj.compactMetadata === 'object'
+            ? obj.compactMetadata
+            : {}
+      ev.compaction = {
+        trigger: strOrNull(meta.trigger),
+        preTokens: numOrNull(meta.pre_tokens ?? meta.preTokens),
+      }
+    }
+    return ev
   }
 
   if (type === 'assistant') {
