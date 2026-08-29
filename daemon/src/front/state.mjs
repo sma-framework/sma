@@ -1610,6 +1610,15 @@ export const PHASE_STAGES = Object.freeze(['discuss', 'plan', 'design', 'execute
 /** Where phases live under a checkout, in the forward-slashed form the artefact door takes. */
 const PHASES_PATH = '.planning/phases'
 
+/**
+ * Ступень, чей результат подтверждает ЧЕЛОВЕК ГЛАЗАМИ, а не ворота по документу на диске.
+ *
+ * Названа здесь ровно затем, чтобы карточка ниже спрашивала о ней у той же карты припаркованных
+ * строк, что и вопросы, — второе написание этого слова было бы вторым ответом на «какая ступень
+ * ждёт человека».
+ */
+const DESIGN_STAGE = 'design'
+
 /** A UAT file of a phase: the acceptance record `/sma-verify-work` keeps. */
 const UAT_FILE_RE = /-UAT[^/\\]*\.md$/
 
@@ -2311,6 +2320,15 @@ export function derivePhaseCard({ projectDir, phaseId, fsImpl, parkedRows, taskR
     // than looking the directory up a second time: two spellings of one rule is how a screen
     // ends up reading one file while a write lands in another.
     ...(acceptance.document ? { uatDocument: acceptance.document } : {}),
+    // ЧЕРТЁЖ, КОТОРЫЙ ЖДЁТ СЛОВА ЧЕЛОВЕКА — номером строки, и только когда она правда стоит.
+    //
+    // Это НЕ новое чтение: `parked` выше уже сложил карту «ступень → строка, ждущая решения»
+    // ради вопросов, и номер строки чертежа лежал в ней невостребованным. Ворота дизайна на
+    // стекле открываются ТОЙ ЖЕ дверью приёмки, что и всякая работа, а дверь эта generic по
+    // номеру задачи — без номера кнопка на карточке была бы нарисованной: посчитано, но никому
+    // не предъявлено. Поле ОТСУТСТВУЕТ, когда ждущей строки нет: `null` на этом месте пришлось
+    // бы отличать от «демон постарше и полей таких не знает», а отсутствие говорит и то, и то.
+    ...(parked.get(DESIGN_STAGE) ? { designTask: { id: parked.get(DESIGN_STAGE) } } : {}),
   }
 }
 

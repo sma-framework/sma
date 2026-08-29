@@ -287,21 +287,28 @@ function sinceClaim(claimedAt: number | null | undefined, now: number): number |
 function phaseUnit(row: PhaseIndexRow): WorkUnit {
   const segs = STAGES.map((s) => STAGE_STATE[row.stages[s]])
   const doneCount = segs.filter((s) => s === 'ok').length
+  // ДАЛЬШЕ ЭТА СТАДИЯ НЕ ПОЙДЁТ — пройдена ИЛИ пропущена, и по этому числу фаза называется
+  // закрытой. Ступень рисования появилась позже, чем начались работы, и у старой фазы её не
+  // будет никогда: счёт, знающий одно слово «пройдена», держал бы каждую закрытую фазу дома в
+  // «идёт» вечно — ждущей чертежа, которого никто не нарисует.
+  const settledCount = segs.filter((s) => s === 'ok' || s === 'skip').length
   const running = segs.some((s) => s === 'run')
   // «Не начата» принадлежит фазе, у которой не пройдено НИ ОДНОЙ стадии. Пройденная стадия —
   // это уже начало: живая проверка показала восемь фаз со словом «Не начата» и тремя закрытыми
   // стадиями в той же строке, и строка спорила сама с собой прямо на экране.
   const started = running || doneCount > 0
   const state: UnitState =
-    row.open > 0 ? 'dec' : doneCount === STAGES.length ? 'ok' : started ? 'run' : 'wait'
+    row.open > 0 ? 'dec' : settledCount === STAGES.length ? 'ok' : started ? 'run' : 'wait'
 
   const answered = row.answered > 0 ? ` · отвечено вопросов: ${row.answered}` : ''
+  // ЧИСЛО СТАДИЙ НИГДЕ НЕ НАПИСАНО ЦИФРОЙ — оно считается по списку. Слово «четыре» стояло тут
+  // словом и разошлось с дорогой ровно в тот день, когда дорога стала длиннее.
   const inner = `пройдено ${doneCount} из ${STAGES.length} стадий${answered}`
   const next =
     row.open > 0
       ? `Ждёт вас: ${row.open} ${row.open === 1 ? 'вопрос' : 'вопроса'} на стадиях фазы`
       : state === 'ok'
-        ? 'Все четыре стадии пройдены'
+        ? 'Все стадии пройдены'
         : running
           ? 'Стадия идёт — вопросов к вам нет'
           : started
@@ -675,7 +682,11 @@ export function columnOf(unit: WorkUnit): BoardColumn {
   if (unit.state === 'dec') return 'you'
   if (unit.kind === 'phase' && unit.segs.length === STAGES.length) {
     const running = unit.segs.indexOf('run')
-    const at = running !== -1 ? running : unit.segs.findIndex((s) => s !== 'ok')
+    // ПЕРВАЯ, КОТОРАЯ ЕЩЁ ПОЙДЁТ. Пропущенная стадия — закрытая: её никто не ждёт и ждать
+    // некому. Поиск, знающий одно слово «пройдена», ставил бы всякую фазу старше ступени
+    // рисования в столбик «Дизайн» — навсегда, включая закрытые, — и человек читал бы это как
+    // «дом ждёт от меня семь чертежей».
+    const at = running !== -1 ? running : unit.segs.findIndex((s) => s !== 'ok' && s !== 'skip')
     return at === -1 ? 'done' : STAGE_COLUMN[at]
   }
   return unit.state === 'run' || unit.state === 'wait' ? 'execute' : 'done'

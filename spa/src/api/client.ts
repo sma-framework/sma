@@ -347,6 +347,13 @@ export function approve(taskId: string, opts: { machine?: string } = {}): Promis
 /**
  * Send work back with a comment. The comment travels as text, never as an instruction.
  * Собственное имя машины сюда не передаётся — своя машина — это отсутствие ключа.
+ *
+ * `to_stage` — АДРЕСАТ ВОЗВРАТА, и у графа фаз он ровно один: назад в планирование, и только
+ * из рисования. Без него возврат значит «переделай то же самое»; с ним — «план дырявый, и
+ * чертить по нему нечего»: дверь закрывает чертёж насовсем и ставит НОВУЮ задачу планирования,
+ * а причина словами едет ей той же `note`, данными. Второго адресата у ребра нет, и окно его
+ * не придумывает — дверь отвечает на всякое другое слово отказом. Ключ пишется ровно так, как
+ * его слышит дверь: имена ключей тела — её словарь, не наш.
  */
 export function returnTask(input: {
   taskId: string
@@ -354,6 +361,7 @@ export function returnTask(input: {
   title?: string
   lane?: string
   machine?: string
+  to_stage?: 'plan'
 }): Promise<ReturnResult> {
   return postJson<ReturnResult>(
     '/api/return',
@@ -361,6 +369,7 @@ export function returnTask(input: {
       title: input.title,
       lane: input.lane,
       machine: input.machine,
+      to_stage: input.to_stage,
     }),
   )
 }

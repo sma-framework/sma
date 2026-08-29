@@ -45,7 +45,7 @@ export type ConsoleContextKind = 'list' | 'phase' | 'task' | 'screen'
 
 export interface ConsoleContext {
   kind: ConsoleContextKind
-  /** Одна строка в шапку окна: «фаза 14 · стадия 3 из 4», «Задачи · 6 единиц работы». */
+  /** Одна строка в шапку окна: «фаза 14 · стадия 3 из 5», «Задачи · 6 единиц работы». */
   line: string
   /** Задача на глазу — окну есть кому передать поправку. */
   taskId?: string

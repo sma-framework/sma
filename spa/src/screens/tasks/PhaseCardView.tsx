@@ -1,8 +1,21 @@
 import { useState } from 'react'
-import { useDecisionAnswer, usePhaseQuery, usePhaseStage, usePhaseUat, useStateQuery } from '../../api/queries'
+import { useQueryClient } from '@tanstack/react-query'
+import {
+  PHASE_KEY,
+  useApprove,
+  useDecisionAnswer,
+  usePhaseFileQuery,
+  usePhaseFilesQuery,
+  usePhaseQuery,
+  usePhaseStage,
+  usePhaseUat,
+  useReturnTask,
+  useStateQuery,
+} from '../../api/queries'
 import type {
   PhaseArtifact,
   PhaseCard,
+  PhaseFileNode,
   PhasePlan,
   PhaseStage,
   PhaseStageStatus,
@@ -14,6 +27,7 @@ import { DecisionCard, EMPTY_DRAFT } from '../../shell/DecisionCard'
 import type { DecisionDraft } from '../../shell/DecisionCard'
 import { EntitySummary } from '../../shell/EntitySummary'
 import { LiveTimer } from '../../shell/LiveTimer'
+import { approvalRefusal } from '../../shell/format'
 import { currentStage, phaseStats } from '../../shell/stats'
 import { ArtifactViewer } from './ArtifactViewer'
 import { PhaseFolderView } from './PhaseFolder'
@@ -276,6 +290,315 @@ function WaveColumn({
   )
 }
 
+/**
+ * ЧТО СЧИТАЕТСЯ АРТЕФАКТОМ РИСОВАНИЯ — окончания имён, и ничего сверх них.
+ *
+ * Договор — тот же файл, на котором стоят ворота ступени у демона; наброски — то, чем чертёж
+ * показывают: холст, страница, картинка. Список суффиксов, а не разбор содержимого: экран,
+ * решающий по нутру файла, что он «похож на набросок», однажды спрячет от человека тот самый
+ * файл, ради которого он открыл карточку.
+ *
+ * `.dc.html` названо отдельно, хотя `.html` его и накрывает: холст — это то, что человек
+ * рисовал, и его имя обязано быть видно ЗДЕСЬ, а не выводиться читателем из общего правила.
+ */
+const DESIGN_CONTRACT_SUFFIX = '-DESIGN.md'
+const DESIGN_SKETCH_SUFFIXES = ['.dc.html', '.html', '.png'] as const
+
+function isDesignArtifact(name: string): boolean {
+  if (name.endsWith(DESIGN_CONTRACT_SUFFIX)) return true
+  return DESIGN_SKETCH_SUFFIXES.some((suffix) => name.endsWith(suffix))
+}
+
+/**
+ * Файлы ступени, собранные по дереву папки фазы — ВТОРОЙ ДВЕРИ ЧТЕНИЯ ЗДЕСЬ НЕТ.
+ *
+ * Дерево приезжает существующей дверью папки фазы, у которой свой замок и свой потолок; здесь
+ * оно только ПРОСЕИВАЕТСЯ. Дверь, открытая ради «показать чертежи», была бы вторым местом, где
+ * решается, что этому окну позволено прочитать с диска.
+ *
+ * Обход рекурсивный: набросок кладут и в подпапку, а список, знающий только корень, промолчал
+ * бы о файле, который на диске есть, — и молчание это неотличимо от «его не рисовали».
+ */
+function designArtifacts(nodes: PhaseFileNode[]): PhaseFileNode[] {
+  const out: PhaseFileNode[] = []
+  const walk = (list: PhaseFileNode[]) => {
+    for (const node of list) {
+      if (node.kind === 'dir') walk(node.children ?? [])
+      else if (isDesignArtifact(node.name)) out.push(node)
+    }
+  }
+  walk(nodes)
+  // Договор — первым: он и есть то, что подтверждают, а наброски к нему приложение.
+  return out.sort((a, b) => {
+    const ac = a.name.endsWith(DESIGN_CONTRACT_SUFFIX) ? 0 : 1
+    const bc = b.name.endsWith(DESIGN_CONTRACT_SUFFIX) ? 0 : 1
+    return ac !== bc ? ac - bc : a.path.localeCompare(b.path)
+  })
+}
+
+/**
+ * ВОРОТА СТУПЕНИ РИСОВАНИЯ — то, что человек видит, и то, что он этим делает.
+ *
+ * ═════════════════════ ПОКАЗ ПЕРВЫМ, НАЖАТИЕ ВТОРЫМ ═════════════════════
+ *
+ * Артефакты стоят НАД кнопками и рисуются до всякого нажатия. Подтверждение, до которого надо
+ * докликаться, чтобы увидеть подтверждаемое, — это подтверждение вслепую, и оно ничего не
+ * стоит: человек жмёт «да» на слово системы о том, что чертёж есть.
+ *
+ * ═════════════════════ ДВЕРИ — ТЕ ЖЕ, ЧТО У ПРИЁМКИ РАБОТ ═════════════════════
+ *
+ * `useApprove` и `useReturnTask` — те самые помощники, которыми окно принимает и возвращает
+ * ЛЮБУЮ работу, и дверь приёмки generic по номеру задачи. Отсюда два следствия, оба нарочные:
+ * своего запроса эта панель не делает вовсе, и право, уже стоящее у доверенного терминала на
+ * приёмку работ, покрывает подтверждение чертежа без новой поверхности разрешений.
+ *
+ * ═════════════════════ У ВОЗВРАТА ЕСТЬ АДРЕСАТ ═════════════════════
+ *
+ * «В дизайн» — переделать чертёж. «В планирование» — единственное обратное ребро графа фаз:
+ * смотрящий увидел не «плохо нарисовано», а «в плане дыра», и рисовать по тому же плану значит
+ * получить тот же чертёж. Причина словами обязательна для обоих: возврат без слов не говорит
+ * работнику ничего, а «поправь» без «что» — это ещё один круг.
+ */
+function DesignGate({ id, taskId }: { id: string; taskId: string | null }) {
+  const folder = usePhaseFilesQuery(id)
+  const queryClient = useQueryClient()
+  const approve = useApprove()
+  const returnTask = useReturnTask()
+
+  const [returning, setReturning] = useState(false)
+  const [note, setNote] = useState('')
+  const [target, setTarget] = useState<'design' | 'plan'>('design')
+  const [problem, setProblem] = useState<string | null>(null)
+  /** ЧТО ИМЕННО ПРОИЗОШЛО ПО НАЖАТИЮ — словами, пока человек ещё смотрит на это место. */
+  const [said, setSaid] = useState<string | null>(null)
+  const [reading, setReading] = useState<PhaseFileNode | null>(null)
+  const file = usePhaseFileQuery(id, reading ? reading.path : null)
+
+  const artifacts = designArtifacts(folder.data?.entries ?? [])
+  const busy = approve.isPending || returnTask.isPending
+
+  /**
+   * КАРТОЧКА ПЕРЕЧИТЫВАЕТСЯ САМА. Приёмка звенит про ЗАДАЧУ, а человек смотрит на ФАЗУ: без
+   * этого кнопки оставались бы на стекле после удавшегося нажатия, и второе нажатие ушло бы в
+   * дверь по работе, которой уже нет.
+   */
+  const rereadPhase = () => {
+    void queryClient.invalidateQueries({ queryKey: PHASE_KEY })
+  }
+
+  const doApprove = () => {
+    if (!taskId) return
+    setProblem(null)
+    approve.mutate(
+      { taskId },
+      {
+        // Дверь отвечает 200 и на ОТКАЗЕ (`ok:false`), поэтому успех запроса — ещё не приёмка:
+        // панель, исчезающая на отказе, показала бы самый убедительный вид успеха.
+        onSuccess: (out) => {
+          const refused = approvalRefusal(out)
+          if (refused) {
+            setProblem(refused)
+            return
+          }
+          setSaid('Дизайн подтверждён — исполнение этой фазы больше не заперто.')
+          rereadPhase()
+        },
+        onError: (err) => setProblem(doorWords(err)),
+      },
+    )
+  }
+
+  const doReturn = () => {
+    if (!taskId) return
+    const text = note.trim()
+    if (text.length === 0) {
+      setProblem(
+        target === 'plan'
+          ? 'Напишите, какой дыры в плане не хватило — планировщик получит эти слова.'
+          : 'Напишите, что поправить в чертеже — работник вернётся именно к этому.',
+      )
+      return
+    }
+    setProblem(null)
+    returnTask.mutate(
+      { taskId, note: text, ...(target === 'plan' ? { to_stage: 'plan' as const } : {}) },
+      {
+        // ЧЕЛОВЕК УЗНАЁТ, ЧТО ИМЕННО ВСТАЛО В ОЧЕРЕДЬ. Возврат в планирование закрывает чертёж
+        // НАСОВСЕМ и ставит ДРУГУЮ задачу — своим номером (`stageTaskId`, у обычного возврата
+        // его нет вовсе). Панель после нажатия честно скажет «слова от вас никто не ждёт»: без
+        // этой строки человек прочёл бы это как «кнопка ничего не сделала».
+        onSuccess: (out) => {
+          setReturning(false)
+          setNote('')
+          setSaid(
+            target === 'plan'
+              ? out.stageTaskId
+                ? `Чертёж закрыт. Планирование этой фазы поставлено заново — задача ${out.stageTaskId}.`
+                : 'Чертёж закрыт, планирование этой фазы поставлено заново.'
+              : 'Чертёж вернулся работнику следующим подходом — с вашими словами.',
+          )
+          rereadPhase()
+        },
+        onError: (err) => setProblem(doorWords(err)),
+      },
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-3 p-4">
+      <p className="m-0 text-[11.5px] text-tx3">
+        {folder.isLoading
+          ? 'Читаю папку фазы…'
+          : artifacts.length === 0
+            ? 'Чертежа и набросков в папке фазы не видно — подтверждать пока нечего.'
+            : `на ступени: ${artifacts.length} · договор и наброски · читаются из папки фазы`}
+      </p>
+
+      {artifacts.length > 0 ? (
+        <div className="overflow-hidden rounded-[9px] border border-bd">
+          {artifacts.map((node) => (
+            <button
+              key={node.path}
+              type="button"
+              onClick={() => setReading(reading?.path === node.path ? null : node)}
+              aria-current={reading?.path === node.path ? 'true' : undefined}
+              className={`flex w-full items-baseline gap-3 border-t border-bd px-4 py-2.5 text-left first:border-t-0 hover:bg-surf ${
+                reading?.path === node.path ? 'bg-blue-s' : ''
+              }`}
+            >
+              <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-tx">{node.name}</span>
+              <span className="flex-none text-[11.5px] text-blue-d">
+                {reading?.path === node.path ? 'Свернуть' : 'Открыть'}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {reading ? (
+        <div className="rounded-[9px] border border-bd bg-surf px-4 py-3">
+          <div className="truncate font-mono text-[11px] font-semibold text-tx2">{reading.path}</div>
+          {file.isLoading ? <p className="m-0 mt-2 text-[12px] text-tx2">Открываю файл…</p> : null}
+          {/* Картинку эта дверь текстом не отдаёт, и так и сказано: молчаливая пустота на месте
+              наброска читается как «его нет», а он есть — просто не читается буквами. */}
+          {file.isError ? (
+            <p className="m-0 mt-2 text-[12px] text-err-tx">
+              Файл не открылся текстом. Так отвечает дверь на картинку и на файл больше
+              показываемого размера — сам файл на месте, он лежит в папке фазы.
+            </p>
+          ) : null}
+          {file.data !== undefined ? (
+            <pre className="m-0 mt-2 max-h-[320px] overflow-auto font-mono text-[11.5px] leading-[1.65] whitespace-pre-wrap text-tx2">
+              {file.data}
+            </pre>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* СКАЗАННОЕ ПЕРЕЖИВАЕТ ИСЧЕЗНОВЕНИЕ КНОПОК: удавшееся нажатие уносит строку из ждущих, и
+          человек остаётся смотреть на место, где только что были кнопки. Без этой строки он
+          читал бы это как «нажалось впустую» — ровно так однажды и прочли живую приёмку. */}
+      {said ? (
+        <p className="m-0 rounded-[9px] border border-ok-tx/30 bg-ok-s px-3 py-2 text-[12px] text-ok-tx">{said}</p>
+      ) : null}
+
+      {taskId === null ? (
+        <p className="m-0 text-[12.5px] text-tx2">
+          Слова от вас сейчас никто не ждёт: чертёж либо ещё рисуется, либо уже подтверждён.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2.5 border-t border-bd pt-3">
+          {problem ? <p className="m-0 text-[11.5px] text-err-tx">{problem}</p> : null}
+          {returning ? (
+            <>
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder={
+                  target === 'plan' ? 'Чего не хватает в плане' : 'Комментарий: что поправить в чертеже'
+                }
+                rows={3}
+                className="w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2.5 text-[12.5px] text-tx outline-none focus:border-blue"
+              />
+              {/* КУДА ВЕРНУТЬ — выбор, а не догадка по тексту замечания. Два адресата значат
+                  разное для работы: первый переделывает чертёж, второй закрывает его насовсем
+                  и ставит планирование заново. */}
+              <div className="flex items-center gap-2">
+                <span className="text-[11.5px] text-tx3">вернуть:</span>
+                {(
+                  [
+                    { key: 'design' as const, word: 'в дизайн', why: 'перерисовать по тому же плану' },
+                    { key: 'plan' as const, word: 'в планирование', why: 'чертить не по чему — дыра в плане' },
+                  ]
+                ).map((option) => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    onClick={() => setTarget(option.key)}
+                    aria-pressed={target === option.key}
+                    title={option.why}
+                    className={`rounded-[8px] border px-3 py-1.5 text-[11.5px] ${
+                      target === option.key
+                        ? 'border-blue bg-blue-s text-blue-d'
+                        : 'border-bd2 text-tx2 hover:text-tx'
+                    }`}
+                  >
+                    {option.word}
+                  </button>
+                ))}
+              </div>
+              <p className="m-0 text-[11px] text-tx3">
+                {target === 'plan'
+                  ? 'Чертёж закроется, а ваши слова уедут новой задаче планирования этой фазы.'
+                  : 'Чертёж вернётся тому же работнику следующим подходом, с вашими словами.'}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={doReturn}
+                  disabled={busy}
+                  className="flex-1 rounded-[9px] bg-blue py-2.5 text-[12px] font-semibold text-white hover:bg-blue-d disabled:opacity-60"
+                >
+                  {returnTask.isPending ? 'Возвращаю…' : 'Вернуть с комментарием'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReturning(false)
+                    setProblem(null)
+                  }}
+                  className="rounded-[9px] border border-bd2 px-3.5 py-2.5 text-[12px] text-tx2 hover:text-tx"
+                >
+                  Отмена
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={doApprove}
+                disabled={busy}
+                className="flex-1 rounded-[9px] bg-blue py-2.5 text-[12px] font-semibold text-white hover:bg-blue-d disabled:opacity-60"
+              >
+                {approve.isPending ? 'Подтверждаю…' : 'Подтвердить дизайн'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setReturning(true)}
+                disabled={busy}
+                className="flex-1 rounded-[9px] border border-bd2 py-2.5 text-[12px] text-tx2 hover:text-tx disabled:opacity-60"
+              >
+                Вернуть с комментарием
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** One document, by its name — the reading of it happens in the viewer, one click away. */
 function ArtifactRow({ artifact, onOpen }: { artifact: PhaseArtifact; onOpen: () => void }) {
   return (
@@ -385,8 +708,27 @@ function questionsWaiting(n: number): string {
  *
  * Планирование стоит особняком: планировщик и проверяющий планов работают без человека, и это
  * сказано словами, чтобы отсутствие числа на этих воротах не читалось как «данные потерялись».
+ *
+ * ВОРОТА НАЗВАНЫ СТАДИЕЙ, ЗА КОТОРОЙ СТОЯТ, А НЕ НОМЕРОМ В РЯДУ, и это не стиль. Пока это был
+ * список из трёх строк, дорога, выросшая на стадию рисования, не получила последних ворот
+ * вовсе, а подпись «ответить на вопросы исполнения» молча съехала на промежуток ПЕРЕД
+ * исполнением — стояла не на своём месте и обещала человеку не то. Исчерпывающая запись по
+ * стадиям делает такой пропуск красной сборкой: новая стадия обязана сказать, что стоит за ней.
+ *
+ * `null` — «ворот за этой стадией нет», и это ОТВЕТ, а не пропуск: за последней стадией дороги
+ * ничего не следует, и промежутка там не существует.
+ *
+ * ВОРОТА ЗА РИСОВАНИЕМ — ЕДИНСТВЕННЫЕ, ГДЕ ЧЕЛОВЕК СМОТРИТ ГЛАЗАМИ. Два других человеческих
+ * промежутка — про ответы на вопросы; этот про чертёж, и слово «подтвердить» здесь ровно то же,
+ * которым подписана кнопка панели ниже: одна речь на одни ворота.
  */
-const GATE_NEED = ['ответить на вопросы обсуждения', 'человек не требуется', 'ответить на вопросы исполнения']
+const GATE_NEED: Record<PhaseStage, string | null> = {
+  discuss: 'ответить на вопросы обсуждения',
+  plan: 'человек не требуется',
+  design: 'подтвердить чертёж',
+  execute: 'ответить на вопросы исполнения',
+  verify: null,
+}
 
 /**
  * Отрезки ленты стадии — ТОЛЬКО там, где движок реально хранит шаги этой стадии.
@@ -462,7 +804,7 @@ export function PhaseCardView({
    * Стадия на глазу: выбранная человеком, иначе та, на которой фаза стоит.
    *
    * ПРАВИЛО «ГДЕ СЕЙЧАС ФАЗА» ЖИВЁТ В ОДНОМ МЕСТЕ (`currentStage`) — им же считается «стадия N
-   * из 4» в окошке показателей. Пока правил было два, число и раскрытая стадия могли назвать
+   * из N» в окошке показателей. Пока правил было два, число и раскрытая стадия могли назвать
    * разные стадии одной фазы, и человек читал бы это как ошибку экрана.
    */
   const stage: PhaseStage = picked ?? (phase ? currentStage(phase.stages) : STAGE_ORDER[0])
@@ -520,7 +862,9 @@ export function PhaseCardView({
    * всех воротах значило бы утроить его.
    */
   const runningIdx = phase ? STAGE_ORDER.findIndex((s) => phase.stages[s] === 'in-progress') : -1
-  const countGate = counts.open > 0 ? Math.min(runningIdx < 0 ? 0 : runningIdx, GATE_NEED.length - 1) : -1
+  // Последние ворота дороги — те, что за предпоследней стадией: за последней промежутка нет.
+  const lastGateIdx = STAGE_ORDER.length - 2
+  const countGate = counts.open > 0 ? Math.min(runningIdx < 0 ? 0 : runningIdx, lastGateIdx) : -1
 
   /**
    * Путь: предки, потом сама фаза, потом открытый документ.
@@ -651,16 +995,25 @@ export function PhaseCardView({
                     picked={s === stage}
                     onPick={() => setPicked(s)}
                   />
-                  {i < GATE_NEED.length ? (
+                  {GATE_NEED[s] !== null ? (
                     <Gate
                       text={
                         i === countGate
                           ? questionsWaiting(counts.open)
                           : i === 0 && counts.open === 0 && counts.answered > 0
                             ? `вы ответили на ${counts.answered}`
-                            : GATE_NEED[i]
+                            : (GATE_NEED[s] as string)
                       }
-                      tone={i === countGate ? 'dec' : phase.stages[STAGE_ORDER[i]] === 'done' ? 'ok' : 'wait'}
+                      // Пропущенная стадия проходится воротами так же, как пройденная: ждать
+                      // от неё нечего, и серые ворота посреди закрытой дороги читались бы как
+                      // «здесь работа встала».
+                      tone={
+                        i === countGate
+                          ? 'dec'
+                          : phase.stages[s] === 'done' || phase.stages[s] === 'skipped'
+                            ? 'ok'
+                            : 'wait'
+                      }
                     />
                   ) : null}
                 </span>
@@ -726,6 +1079,12 @@ export function PhaseCardView({
                   )}
                 </div>
               ) : null}
+
+              {/* ВОРОТА РИСОВАНИЯ — на самой карточке, а не в отдельном месте: человек
+                  подтверждает там же, где смотрит. Панель рисуется на ступени всегда — сначала
+                  показать, что нарисовано, — а кнопки внутри неё появляются только у строки,
+                  которая правда ждёт слова. */}
+              {stage === 'design' ? <DesignGate id={id} taskId={phase.designTask?.id ?? null} /> : null}
 
               {stage === 'plan' ? (
                 phase.plans.length === 0 ? (

@@ -543,3 +543,49 @@ describe('Д · ступень дизайна у фазы, которая нач
     expect(card?.stages.design).toBe('skipped')
   })
 })
+
+// ═════ Е · ПРОВОД: НОМЕР ЖДУЩЕГО ЧЕРТЕЖА ДОЕЗЖАЕТ ДО КАРТОЧКИ ═══════════════════════════
+//
+// Без номера строки кнопка «подтвердить» на карточке была бы НАРИСОВАННОЙ: дверь приёмки
+// generic по номеру задачи, и нажимать ей нечем. Номер этот проекция уже считала — карта
+// припаркованных строк строилась ради вопросов, — и просто никому не отдавала. Утверждается
+// именно ПЕРЕДАЧА, а не вычисление: карточка, а не внутренняя функция.
+
+describe('Е · строка чертежа, ждущая слова человека, названа на карточке НОМЕРОМ', () => {
+  /** Фаза с чертежом на диске: ступень пройдена, а строка ждёт слова человека. */
+  const drawnPhase = () =>
+    fakeFs({
+      [`${DIR}/${PHASE}-CONTEXT.md`]: '# о чём фаза',
+      [`${DIR}/${PHASE}-DESIGN.md`]: '# чертёж',
+    })
+
+  const cardWith = (rows: any[], io: any = drawnPhase()) =>
+    derivePhaseCard({ projectDir: PROJECT, phaseId: PHASE, fsImpl: io, parkedRows: rows })
+
+  it('ждущая строка дизайна названа номером — тем самым, который примет дверь приёмки', () => {
+    const card = cardWith([designRow({ status: 'awaiting_approval' })])
+    expect(card?.designTask).toEqual({ id: 'S-100' })
+  })
+
+  it('строки нет вовсе — поля нет: пустое место не подсовывает кнопке номер, которого не было', () => {
+    expect(cardWith([])).not.toHaveProperty('designTask')
+  })
+
+  it('чертёж УЖЕ подтверждён (строка не ждёт) — поля нет: подтверждать нечего', () => {
+    expect(cardWith([designRow({ status: 'completed' })])).not.toHaveProperty('designTask')
+  })
+
+  it('ждёт строка ДРУГОЙ ступени — поле не появляется: ворота только у чертежа', () => {
+    const planRow = designRow({
+      id: 'S-777',
+      status: 'awaiting_approval',
+      data: { kind: 'document', stage: 'plan', phase: PHASE },
+    })
+    expect(cardWith([planRow])).not.toHaveProperty('designTask')
+  })
+
+  it('ждёт чертёж ДРУГОЙ фазы — поле не появляется: чужой номер тут был бы чужой кнопкой', () => {
+    const alien = designRow({ id: 'S-555', status: 'awaiting_approval', data: { kind: 'document', stage: 'design', phase: '77' } })
+    expect(cardWith([alien])).not.toHaveProperty('designTask')
+  })
+})
