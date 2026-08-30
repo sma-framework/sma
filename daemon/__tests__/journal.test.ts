@@ -795,11 +795,17 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     // door rather than by a caller and stays last. Every tail-relative pin below moved by
     // three and is re-pinned in the case that owns it — nobody may shift this block without
     // reading why it is where it is.
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(37)
+    //
+    // RE-PINNED ONCE MORE, and again with the reason in words: the row gained `failureDetail` —
+    // ПОЧЕМУ отказ случился, словами, рядом с кодом, который называет только дверь. Оно
+    // дописано ЗА девятью закреплёнными именами (сразу за `receiptRef`), чтобы ни один
+    // пре-существующий индекс не поехал, — поэтому здесь меняются только длина и один
+    // абсолютный указатель ниже, а все хвостовые остаются на месте.
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(38)
     expect(ALLOWED_ATTEMPT_KEYS.at(-1)).toBe('conflictsWith')
     expect(ALLOWED_ATTEMPT_KEYS.slice(-4, -1)).toEqual(['turnCap', 'turnsUsed', 'turnKinds'])
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(37) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(38) // no duplicate name
   })
 
   /**
@@ -859,10 +865,29 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     // shift this block again without reading why it is where it is.
     expect(ALLOWED_ATTEMPT_KEYS.slice(-19, -13)).toEqual(COPY_KEYS)
     expect(ALLOWED_ATTEMPT_KEYS.slice(-13, -9)).toEqual(CHANGED_KEYS)
-    expect(ALLOWED_ATTEMPT_KEYS.slice(0, 18)[17]).toBe('reconstructed')
+    // Сдвинулось на один: `failureDetail` дописано сразу за `receiptRef`, впереди этого имени.
+    expect(ALLOWED_ATTEMPT_KEYS.slice(0, 19)[18]).toBe('reconstructed')
     // What the account actually held when this attempt ran, and which servers it was given.
     // Both are digests of a decision, not the decision's contents — the row stays a record.
     expect(ALLOWED_ATTEMPT_KEYS.slice(-9, -7)).toEqual(['personalLayer', 'mcpConfig'])
+  })
+
+  /**
+   * ПОЧЕМУ ОТКАЗ СЛУЧИЛСЯ — СЛОВАМИ, А НЕ ОДНИМ КОДОМ ДВЕРИ.
+   *
+   * Код причины закрыт списком и одинаков у трёх подряд отказов с тремя разными причинами;
+   * строка рядом с ним — про ЭТУ попытку. Ключа нет, когда сказать нечего: пустая строка на
+   * карточке читается как «причина не записана», то есть как другое утверждение.
+   */
+  it('carries failureDetail beside the code — and no key at all when there is nothing to say', () => {
+    const detail = 'стадия "plan" не оставила файла · последняя ошибка в стенограмме: Error: Key not found'
+    recordAttempt(dir, { taskId: 'BL-WHY', attempt: 1, outcome: 'failed', failureReason: 'no_artifact', failureDetail: detail })
+    const [row] = readAttempts(dir, 'BL-WHY')
+    expect(row.failureReason).toBe('no_artifact')
+    expect(row.failureDetail).toBe(detail)
+
+    recordAttempt(dir, { taskId: 'BL-NOWHY', attempt: 1, outcome: 'failed', failureReason: 'no_artifact' })
+    expect(Object.hasOwn(readAttempts(dir, 'BL-NOWHY')[0], 'failureDetail')).toBe(false)
   })
 
   // The eighteenth key, added with the live attempt log. It is NOT a stamp field either: a

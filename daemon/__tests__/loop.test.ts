@@ -57,6 +57,8 @@ import {
   classifyFailure,
   turnCapHitOf,
   contextExhaustedOf,
+  lastToolErrorOf,
+  TRANSCRIPT_ERROR_MAX,
   changedFilesOnBranch,
   unregisteredMcpTools,
   DENIAL_LINES_CAP,
@@ -695,6 +697,126 @@ describe('a document stage completes on a committed artifact — and on nothing 
 
     expect(res.failed).toMatchObject({ taskId: 'ST-1', reason: 'no_artifact' })
     expect(String(res.failed.detail)).toContain('ponder')
+  })
+})
+
+/**
+ * ═══════ ОТКАЗ СТУПЕНИ ГОВОРИТ СЛОВАМИ, А НЕ ОДНИМ ИМЕНЕМ ГЕЙТА ═══════════════════════
+ *
+ * Живой случай, ради которого это написано. Пакетный вызов настроек упал на одном ключе;
+ * работник вежливо вышел, не оставив файла; гейт честно отказал `no_artifact`. Карточка
+ * сказала «стадия не оставила файла» — правду о последствии и ничего о причине, — и так ТРИ
+ * попытки подряд, каждая под одной и той же подписью. Причина всё это время лежала в
+ * стенограмме первой из них.
+ *
+ * Проверяется вся дорога, а не её куски: строка стенограммы → тик → строка реестра → payload,
+ * который читает экран. Каждый стык этой дороги имел свой зелёный тест, пока сама дорога была
+ * разорвана, — поэтому последний случай пересекает границу модулей.
+ */
+describe('a refused stage carries the last error of its own transcript', () => {
+  /** Кадр результата инструмента в той же форме, в какой его шлёт CLI. */
+  const toolResult = (text: string, isError = true) =>
+    JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', is_error: isError, content: text }] },
+    })
+
+  const KEY_ERROR = 'Error: Key not found: workflow.mvp_mode'
+
+  it('lastToolErrorOf берёт ПОСЛЕДНЮЮ ошибку: работа идёт вперёд, кончилась она на ней', () => {
+    const lines = [toolResult('Error: первая, её обошли'), 'что-то сказал работник', toolResult(KEY_ERROR)]
+
+    expect(lastToolErrorOf(lines)).toBe(KEY_ERROR)
+  })
+
+  it('удачный результат ошибкой не считается, и без ошибок ответ — null', () => {
+    expect(lastToolErrorOf([toolResult('всё хорошо', false), 'stream line'])).toBeNull()
+    expect(lastToolErrorOf(['stream line', 'APPROACH_NOTE: прямой путь'])).toBeNull()
+    expect(lastToolErrorOf(['{не json'])).toBeNull()
+    expect(lastToolErrorOf(null as any)).toBeNull()
+  })
+
+  it('ошибка без слов пропускается — сказать человеку нечего, ищем глубже', () => {
+    expect(lastToolErrorOf([toolResult(KEY_ERROR), toolResult('   ')])).toBe(KEY_ERROR)
+  })
+
+  it('длинная ошибка обрезается и говорит об этом', () => {
+    const long = `${'ы'.repeat(TRANSCRIPT_ERROR_MAX + 50)}`
+    const got = String(lastToolErrorOf([toolResult(long)]))
+
+    expect(got.length).toBe(TRANSCRIPT_ERROR_MAX + 1)
+    expect(got.endsWith('…')).toBe(true)
+  })
+
+  it('слова ошибки едут в отказ тика и на строку реестра, рядом с именем гейта', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'plan', phase: 12 }))
+    const { deps, attempts } = stageDeps({
+      adapter,
+      spawnWorker: makeSpawnWorker(undefined, {
+        lines: [toolResult(KEY_ERROR), 'APPROACH_NOTE: спросил настройку пакетом'],
+      }),
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-CONTEXT.md`]: 'ctx' }),
+        execGit: makeGit({ '.planning/phases/12-front/12-CONTEXT.md': 'deadbee' }),
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed.reason).toBe('no_artifact')
+    // ИМЯ ГЕЙТА ОСТАЁТСЯ — оно про последствие, и оно по-прежнему нужно…
+    expect(String(res.failed.detail)).toContain('не оставила файла')
+    // …а рядом с ним теперь стоит то, на чём работа споткнулась в последний раз.
+    expect(String(res.failed.detail)).toContain(KEY_ERROR)
+    const failedRow = attempts.find((a: any) => a.outcome === 'failed')
+    expect(String(failedRow.failureDetail)).toContain(KEY_ERROR)
+    expect(String(failedRow.failureDetail)).toContain('не оставила файла')
+  })
+
+  it('отказ без единой ошибки в стенограмме не выдумывает слов', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'plan', phase: 12 }))
+    const { deps, attempts } = stageDeps({
+      adapter,
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-CONTEXT.md`]: 'ctx' }),
+        execGit: makeGit({ '.planning/phases/12-front/12-CONTEXT.md': 'deadbee' }),
+      },
+    })
+
+    const res = await tick(deps)
+
+    expect(String(res.failed.detail)).toContain('не оставила файла')
+    expect(String(res.failed.detail)).not.toContain('последняя ошибка')
+    const failedRow = attempts.find((a: any) => a.outcome === 'failed')
+    expect(String(failedRow.failureDetail)).not.toContain('последняя ошибка')
+  })
+
+  it('и доезжают до КАРТОЧКИ — той самой, что говорила только имя гейта', async () => {
+    const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'plan', phase: 12 }))
+    const { deps, attempts } = stageDeps({
+      adapter,
+      spawnWorker: makeSpawnWorker(undefined, {
+        lines: [toolResult(KEY_ERROR), 'APPROACH_NOTE: спросил настройку пакетом'],
+      }),
+      deps: {
+        fsImpl: makeFs({ [`${PHASE_DIR}/12-CONTEXT.md`]: 'ctx' }),
+        execGit: makeGit({ '.planning/phases/12-front/12-CONTEXT.md': 'deadbee' }),
+      },
+    })
+
+    await tick(deps)
+
+    // Строка задачи, как её видит экран после того, как очередь исчерпала перевыдачи.
+    const payload: any = await deriveState({
+      adapter: { async list() { return [{ id: 'ST-1', title: 'стадия фазы', status: 'failed', failure_reason: 'no_artifact', attempt: 3, completedAt: new Date(0).toISOString() }] } },
+      ledger: (id: string) => attempts.filter((a: any) => a.taskId === id),
+      config: { workers: [], machineId: 'self' },
+      clock: () => 0,
+    })
+
+    const card = payload.done.find((d: any) => d.id === 'ST-1')
+    expect(card.failed.reasonLabel).toBe(REASON_LABELS['no_artifact'])
+    expect(String(card.failed.detail)).toContain(KEY_ERROR)
   })
 })
 

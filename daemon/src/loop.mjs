@@ -914,6 +914,74 @@ export function contextExhaustedOf(lines) {
   return compactions > 0 ? { compactions, preTokens } : null
 }
 
+/** Сколько букв последней ошибки едет на карточку: фраза, а не стена. */
+export const TRANSCRIPT_ERROR_MAX = 200
+
+/**
+ * lastToolErrorOf(lines) → СЛОВА ПОСЛЕДНЕЙ ОШИБКИ ЭТОЙ ПОПЫТКИ, или null, если ошибок не было.
+ *
+ * ЗАЧЕМ ЭТО ЧИТАЕТСЯ. Карточка отказавшей ступени до сих пор несла имя гейта и только его —
+ * «нет документа — стадия не оставила своего файла». Это правда о ПОСЛЕДСТВИИ и ничего о
+ * причине: почему файла нет, знала одна стенограмма попытки, которую надо открыть, найти и
+ * прочитать. Живой случай: пакетный вызов настроек упал на одном ключе, работник вежливо вышел
+ * без файла, гейт честно отказал — и так три попытки подряд, каждая под одной и той же
+ * подписью, пока причина лежала в потоке первой.
+ *
+ * ЧТО СЧИТАЕТСЯ ОШИБКОЙ, и граница здесь та же, что у соседних распознавателей: СОБСТВЕННОЕ
+ * ПОЛЕ CLI на кадре результата инструмента — `is_error` — и текст, который этот же кадр
+ * принёс. Не речь работника: сессия, обсуждающая чужую поломку, произносит слово «ошибка»
+ * вслух, и диагноз по подслушанному был бы хуже той беды, которую он лечит.
+ *
+ * ПОСЛЕДНЯЯ, А НЕ ПЕРВАЯ. Работа идёт вперёд: ранняя ошибка чаще всего та, которую сессия
+ * обошла и пошла дальше, а последняя — та, на которой всё кончилось. Поиск идёт с конца и
+ * останавливается на первом же кадре с текстом; ошибка с пустым текстом сказать человеку
+ * нечего, поэтому поиск продолжается дальше вглубь.
+ *
+ * ОШИБКА ПОДАГЕНТА — ТОЖЕ ОШИБКА ЭТОЙ ПОПЫТКИ, в отличие от переполненного окна по соседству:
+ * окно подагента — не окно попытки, а вот делегированный вызов сделала именно эта попытка, и
+ * упал он в её работе.
+ *
+ * @param {string[]} lines — поток попытки, как он собран
+ * @returns {string|null}
+ */
+export function lastToolErrorOf(lines) {
+  if (!Array.isArray(lines)) return null
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]
+    if (typeof line !== 'string' || !line.includes('tool_result')) continue
+    const { event, frame } = parseClaudeFrame(line)
+    if (!event || event.type !== 'user' || !frame) continue
+    const blocks = toolResultsOf(frame)
+    for (let b = blocks.length - 1; b >= 0; b -= 1) {
+      const block = blocks[b]
+      if (!block || block.is_error !== true) continue
+      const text = String(resultTextOf(block) ?? '').replace(/\s+/g, ' ').trim()
+      if (text === '') continue // ошибка без слов человеку ничего не говорит
+      return text.length > TRANSCRIPT_ERROR_MAX ? `${text.slice(0, TRANSCRIPT_ERROR_MAX)}…` : text
+    }
+  }
+  return null
+}
+
+/**
+ * stageRefusalDetail(gateDetail, transcriptError) → одна строка причины отказа ступени: чем
+ * отказал гейт И на чём в последний раз споткнулась попытка.
+ *
+ * СОБИРАЕТСЯ В ОДНОМ МЕСТЕ, потому что читателей у неё двое — журнал оператора и карточка, — и
+ * две сборки разошлись бы словами в первый же день. Пусто с обеих сторон — null: пустая строка
+ * на карточке читается как «причина не записана», а это другое утверждение.
+ *
+ * @param {string|null|undefined} gateDetail
+ * @param {string|null|undefined} transcriptError
+ * @returns {string|null}
+ */
+export function stageRefusalDetail(gateDetail, transcriptError) {
+  const parts = []
+  if (gateDetail) parts.push(String(gateDetail))
+  if (transcriptError) parts.push(`последняя ошибка в стенограмме: ${transcriptError}`)
+  return parts.length ? parts.join(' · ') : null
+}
+
 /**
  * argMaxTurns(args) → the turn ceiling THIS spawn was actually given, read back off its own
  * argument array, or null.
@@ -4338,9 +4406,15 @@ export async function tick(deps = {}) {
         const reason =
           infraReason ?? (gate.receiptRef ? (noteWritten ? lessonReason : 'no_journal') : gate.reason)
         if (reason) {
-          if (gate.detail) writeLog(deps, { type: 'task.refused', taskId: task.id, reason, detail: gate.detail })
-          await failTask(deps, task, { reason, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
-          result.failed = { taskId: task.id, reason, ...(gate.detail ? { detail: gate.detail } : {}) }
+          // ЧЕМ ОТКАЗАЛ ГЕЙТ И НА ЧЁМ В ПОСЛЕДНИЙ РАЗ СПОТКНУЛАСЬ ПОПЫТКА — одной строкой, и
+          // едет она ДАЛЬШЕ журнала оператора: на строку реестра, а оттуда на карточку. Имя
+          // гейта называет последствие; слова из стенограммы называют причину, и без них
+          // человек открывает поток вручную — или, как случалось, не открывает вовсе и платит
+          // за три одинаковых попытки.
+          const detail = stageRefusalDetail(gate.detail, lastToolErrorOf(streamLines))
+          if (detail) writeLog(deps, { type: 'task.refused', taskId: task.id, reason, detail })
+          await failTask(deps, task, { reason, failureDetail: detail, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
+          result.failed = { taskId: task.id, reason, ...(detail ? { detail } : {}) }
         } else {
           await completeTask(deps, task, { receiptRef: gate.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
           result.completed = task.id
@@ -5165,7 +5239,7 @@ function changedFields(changed) {
   }
 }
 
-async function failTask(deps, task, { reason, receiptRef, branch, route, now, envelope, from, sessionId, startedAt, worktree, turns }) {
+async function failTask(deps, task, { reason, failureDetail, receiptRef, branch, route, now, envelope, from, sessionId, startedAt, worktree, turns }) {
   const { adapter, ledger, report } = deps
   // THE VERDICT FIRST, THE ROW SECOND. The five parity receipts are computed here rather than
   // where the receipt file is written, because the ledger row below is appended BEFORE that
@@ -5235,6 +5309,12 @@ async function failTask(deps, task, { reason, receiptRef, branch, route, now, en
         provider: route && route.provider,
         outcome: 'failed',
         failureReason: reason,
+        // И ТО ЖЕ САМОЕ СЛОВАМИ. Код причины — это имя двери, в которую попытка не прошла; он
+        // одинаков у трёх подряд отказов с тремя разными причинами. Слова пишутся на строку
+        // рядом с кодом, потому что читатель у них один и тот же и приходит он ПОСЛЕ: поток
+        // попытки к тому времени свёрнут, а карточка — единственное, что осталось.
+        // Отсутствие остаётся отсутствием: сказать нечего — ключа нет.
+        failureDetail: failureDetail || undefined,
         // A failed attempt owes the same answer a finished one does: when did it start, and
         // how long did it burn before it gave up.
         ...(Number.isFinite(startedAt) ? { startedAt: new Date(startedAt).toISOString() } : {}),

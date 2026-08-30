@@ -3282,6 +3282,12 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machi
     out.failed = {
       reason,
       reasonLabel: reason ? REASON_LABELS[reason] ?? null : null,
+      // ПОЧЕМУ ИМЕННО У ЭТОЙ ПОПЫТКИ. Подпись выше — про КЛАСС отказа и одинакова у всех
+      // отказов этого рода; строка ниже — про эту попытку: чем отказал гейт и на чём она в
+      // последний раз споткнулась. Пока её не было, три подряд сгоревшие попытки выглядели
+      // на экране одной и той же фразой, а причина оставалась в стенограмме, которую надо
+      // открыть. `null` — сказать нечего: пустая строка читалась бы как молчание о причине.
+      detail: (last && typeof last.failureDetail === 'string' && last.failureDetail.trim() !== '' ? last.failureDetail : null),
       attemptsCount: attempts.length || (Number.isFinite(r.attempt) ? r.attempt : 0),
       spent,
       // ПРЕДЛОЖЕНИЕ — ТОЛЬКО ТАМ, ГДЕ СЛЕДУЮЩЕЙ ПОПЫТКИ НЕ БУДЕТ. У всех прочих концов её
