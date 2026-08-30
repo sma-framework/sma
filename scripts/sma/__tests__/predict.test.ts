@@ -607,6 +607,23 @@ describe('exit code as a unit of measurement', () => {
     expect(records).toEqual([])
     expect(invalid[0].errors.join(' ')).toContain('measure')
   })
+
+  it('the verdict-code synonym validates and scores exactly as exit-code — the vocabulary meets the immutable record', () => {
+    const runner = () => ranWith('some log line\n', 0)
+    const p = writePlan(entryYaml({ measure: '"verdict-code"', comparator: '"=="', threshold: 0 }))
+    const { records, invalid } = scorePlan({ planPath: p, runCommand: runner })
+    expect(invalid).toEqual([])
+    expect(records[0].verdict).toBe('hit')
+    expect(records[0].actual).toBe(0)
+  })
+
+  it('verdict-code exiting 1 under «== 0» is a MISS — the synonym can be wrong, like any real claim', () => {
+    const runner = () => ranWith('log\n', 1)
+    const p = writePlan(entryYaml({ measure: '"verdict-code"', comparator: '"=="', threshold: 0 }))
+    const { records } = scorePlan({ planPath: p, runCommand: runner })
+    expect(records[0].verdict).toBe('miss')
+    expect(records[0].actual).toBe(1)
+  })
 })
 
 describe('the safety boundary did NOT move (reverse checks)', () => {

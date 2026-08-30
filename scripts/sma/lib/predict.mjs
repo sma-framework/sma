@@ -260,7 +260,7 @@ export function validatePrediction(entry) {
   }
   // `measure` is OPTIONAL — absent means the historical last-line reading, so
   // every entry written before the field existed stays valid. When present it
-  // must name one of the two known ways: a typo falling back silently would
+  // must name one of the known ways: a typo falling back silently would
   // turn an exit-code claim into a guaranteed non-verdict, which is the very
   // failure this field was added to end.
   if (e.measure != null && e.measure !== '' && !MEASURES.includes(String(e.measure))) {
@@ -309,10 +309,18 @@ function compare(actual, comparator, threshold) {
  * one. The exit code is DATA, and reading it costs the command allowlist
  * nothing: not one character of SAFE_COMMAND_CHARSET or SAFE_COMMAND_PATTERNS
  * moves for it.
+ *
+ * `verdict-code` is a SYNONYM for exit-code: pre-registered plans exist whose
+ * blocks say `measure: "verdict-code"` meaning exactly «the check's exit code»,
+ * and those blocks are immutable (PRED-POSTEDIT). The vocabulary comes to meet
+ * the record — the record is never edited to meet the vocabulary. Normalized
+ * in measureOf, the ONE place a measure is read; everything downstream sees
+ * exit-code and cannot tell the spellings apart.
  */
 export const MEASURE_LAST_LINE = 'last-line'
 export const MEASURE_EXIT_CODE = 'exit-code'
-export const MEASURES = [MEASURE_LAST_LINE, MEASURE_EXIT_CODE]
+export const MEASURE_VERDICT_CODE = 'verdict-code'
+export const MEASURES = [MEASURE_LAST_LINE, MEASURE_EXIT_CODE, MEASURE_VERDICT_CODE]
 
 /**
  * RUN_BUDGET_MS — the wall-clock budget one check_command is given.
@@ -386,10 +394,12 @@ export function makeExecRunner({ execSync, cwd, timeoutMs } = {}) {
   }
 }
 
-/** The declared measure of an entry, defaulting to the historical one. */
+/** The declared measure of an entry, defaulting to the historical one.
+ * The verdict-code synonym collapses here — downstream code never sees it. */
 export function measureOf(entry) {
   const m = String((entry && entry.measure) != null ? entry.measure : '').trim()
-  return m === '' ? MEASURE_LAST_LINE : m
+  if (m === '') return MEASURE_LAST_LINE
+  return m === MEASURE_VERDICT_CODE ? MEASURE_EXIT_CODE : m
 }
 
 /**
