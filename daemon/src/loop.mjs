@@ -3083,6 +3083,53 @@ function runSpawn(spawnWorker, spec, onLine) {
 }
 
 /**
+ * closeCoordinationSession(deps, {sessionId, cwd, taskId}) — END the coordination window this
+ * attempt opened. Awaited, fail-open, and worth exactly one CLI call per attempt.
+ *
+ * ── ЧТО ЗДЕСЬ ЗАКРЫВАЕТСЯ, И ПОЧЕМУ ЭТО ДЕЛАЕТ ТИК ──────────────────────────────────────
+ * Всякая сессия работника при старте регистрируется в координации: хук начала заводит окну
+ * читаемое имя и лизу в общем каталоге проекта. Закрывает эту запись ПАРНЫЙ хук конца сессии —
+ * и он живёт ВНУТРИ того самого процесса, который умирает. Процесс, убитый сторожем, оборванный
+ * провайдером или ушедший по любой из дюжины дорог этого файла, парного хука не исполняет
+ * вовсе. За вечер шести сгоревших попыток в реестре осталось шесть окон подряд, за которыми не
+ * стоит ни одного процесса; их читает статус, по ним расходятся заявки на файлы, и живой
+ * человек получает шторм ложных соседей.
+ *
+ * Поручать уборку тому, кого убирают, нельзя — поэтому закрытие стоит в тике, единственном
+ * месте, которое ПЕРЕЖИВАЕТ попытку при любом её исходе, и вызывается из его последнего
+ * `finally`, а не со счастливой дороги.
+ *
+ * АДРЕС ОКНА — ТОКЕН СЕССИИ, И БОЛЬШЕ НИЧЕГО. Имя файла лизы выводится из идентичности окна, а
+ * идентичность — из токена; выводить её здесь значило бы завести второе мнение о вопросе, у
+ * которого есть один ответ и одна библиотека. Тик называет вербу токен, который прочитал из
+ * потока (то же число, которым он продолжает сессию после поправки), и разрешение имени
+ * остаётся там, где выдавалось. НЕТ ТОКЕНА — НЕТ И ЗАКРЫТИЯ: демон не закрывает окна, о
+ * котором ничего не знает, и молчание здесь честнее догадки.
+ *
+ * ГДЕ ОН ЕЁ ЗОВЁТ. В дереве ПРОЕКТА, а не в копии попытки: координационный корень у них общий
+ * (он разрешается через основной чекаут), а дерево проекта переживает уборку копии.
+ *
+ * FAIL-OPEN И ВСЛУХ: отказ верба не стоит попытке ничего, но и молчанием не остаётся — иначе
+ * закрытие могло бы перестать работать ровно так же незаметно, как незаметно не работал хук.
+ */
+async function closeCoordinationSession(deps, { sessionId, cwd, taskId } = {}) {
+  const token = typeof sessionId === 'string' ? sessionId.trim() : ''
+  if (!token || !cwd) return false
+  const res = await invokeVerb(deps.verbRunner, 'session-end', ['--window-token', token], cwd)
+  if (res && res.code === 0 && !res.error) {
+    writeLog(deps, { type: 'task.session_closed', taskId, sessionId: token })
+    return true
+  }
+  writeLog(deps, {
+    type: 'task.session_close_failed',
+    taskId,
+    sessionId: token,
+    detail: String((res && res.error) || `session-end вернул ${res && res.code}`),
+  })
+  return false
+}
+
+/**
  * steeredSpawn(deps, taskId, spawnWorker) → a spawnWorker that leaves a KILL-HANDLE behind.
  *
  * ── THE STEERING WHEEL, IN ONE PLACE ──
@@ -3363,6 +3410,16 @@ export async function tick(deps = {}) {
    * и исключение. Забытое место дороже отсутствия потолка: конвейер встал бы навсегда и молча.
    */
   let seat = null
+  /**
+   * ОКНО КООРДИНАЦИИ, КОТОРОЕ ОТКРЫЛА ЭТА ПОПЫТКА — и которое обязано закрыться вместе с ней.
+   *
+   * Объявлено ЗДЕСЬ, выше общего try, по той же причине, что и место в доме: закрыть его
+   * обязан ЛЮБОЙ выход из тика, а не счастливая дорога. Заполняется в момент, когда процесс
+   * появляется (обе точки запуска — код и кузница), и читается ровно один раз, в `finally`.
+   * Пустое поле `sessionOf` — «процесса не было или он не назвал сессии»: тогда закрывать
+   * нечего, и молчание здесь честнее догадки.
+   */
+  const attemptWindow = { sessionOf: null, cwd: null, taskId: null }
 
   // (0) IS THE CONVEYOR SWITCHED ON? Asked FIRST, before the sweep and before the intake,
   // because «off» here means the machine does nothing at all — not «claims nothing». The
@@ -3654,7 +3711,9 @@ export async function tick(deps = {}) {
       // gate is a DETERMINISTIC draft lint, not reverify (a draft is a definition file). The
       // «Создатель» never activates anything — it commits a draft on the branch, full stop.
       if (task.lane === 'forge') {
-        return await runForgeTask(deps, task, route, result, now, envelope)
+        // ОКНО ЭТОЙ ПОЛОСЫ ЗАКРЫВАЕТ ТОТ ЖЕ `finally` — поэтому держатель едет внутрь: у кузницы
+        // свой запуск и свой поток, а «конец попытки закрывает сессию» — закон обеих дорог.
+        return await runForgeTask(deps, task, route, result, now, envelope, attemptWindow)
       }
 
       // IS THIS WORK MADE OF CODE OR OF PROSE? The answer decides two
@@ -4050,6 +4109,13 @@ export async function tick(deps = {}) {
         // would be filed as the project's.
         { workDir, accountDir: spec.env && spec.env.CLAUDE_CONFIG_DIR },
       )
+      // С ЭТОЙ СТРОКИ У ПОПЫТКИ ЕСТЬ ОКНО КООРДИНАЦИИ, КОТОРОЕ ПРИДЁТСЯ ЗАКРЫТЬ. Держатель
+      // заполняется РАНЬШЕ запуска, а не после него: между спавном и любым `return` ниже лежит
+      // дюжина дорог, и та, что уносит попытку в исключение, обязана унести её мимо открытого
+      // окна ровно так же, как счастливая. Читателем остаётся один `finally` тика.
+      attemptWindow.sessionOf = sessionOf
+      attemptWindow.cwd = taskTreeDir(deps, config, task)
+      attemptWindow.taskId = task.id
       // ── THE STEERING WHEEL (phase «Двигатель», recon 11.08) ──
       // Every spawn of this attempt registers its kill-handle under the TASK id, so the
       // redirect door can end the live child («Перебить сейчас») and the correction then
@@ -4572,6 +4638,20 @@ export async function tick(deps = {}) {
     // выше. Стоит на самом внешнем уровне именно поэтому: выходов из тика много, и пропущенный
     // хотя бы один означал бы дом, который никогда не пустеет, и конвейер, вставший молча.
     if (seat && deps.inFlight && typeof deps.inFlight.release === 'function') deps.inFlight.release(seat)
+    // И ОКНО КООРДИНАЦИИ ЗАКРЫВАЕТСЯ ВСЕГДА — по той же причине и в том же месте. Мёртвая
+    // попытка не исполняет своего прощального хука (он внутри убитого процесса), и до этой
+    // строки каждая такая попытка оставляла в реестре окно, за которым никто не стоит.
+    try {
+      if (attemptWindow.sessionOf) {
+        await closeCoordinationSession(deps, {
+          sessionId: attemptWindow.sessionOf(),
+          cwd: attemptWindow.cwd,
+          taskId: attemptWindow.taskId,
+        })
+      }
+    } catch {
+      /* уборка никогда не решает судьбу попытки — верб уже фейл-открыт, это второй пояс */
+    }
   }
 }
 
@@ -4611,7 +4691,7 @@ function listCommittedDrafts(execGit, branch, cwd, kind) {
  * string prefix, and `envelopeAllows` answers on a SEGMENT boundary with traversal refused,
  * so `.claude/agents-elsewhere/x.md` passes the first and is refused by the second.
  */
-async function runForgeTask(deps, task, route, result, now, envelope) {
+async function runForgeTask(deps, task, route, result, now, envelope, attemptWindow = {}) {
   // `adapter` is NOT destructured here any more: its only use in this lane was the throttled
   // touch, which now lives inside the shared stream reader with the log it belongs next to.
   const { verbRunner, spawnWorker, buildArgs, config } = deps
@@ -4811,6 +4891,11 @@ async function runForgeTask(deps, task, route, result, now, envelope) {
     { accountName: spec.accountName, dataDir: config.dataDir },
     { workDir: worktreePath, accountDir: spec.env && spec.env.CLAUDE_CONFIG_DIR },
   )
+  // И У ЭТОЙ ПОЛОСЫ ЕСТЬ ОКНО КООРДИНАЦИИ — закрывает его `finally` тика, тем же ходом и по
+  // той же причине: закон «конец попытки закрывает сессию» не знает полос.
+  attemptWindow.sessionOf = sessionOf
+  attemptWindow.cwd = taskTreeDir(deps, config, task)
+  attemptWindow.taskId = task.id
   // The steering wheel, same as the code path: the founder's «Перебить сейчас» must be able
   // to end a forge turn too, and a spawn nobody registered is a door that answers and does
   // nothing.
