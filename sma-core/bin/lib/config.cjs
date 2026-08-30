@@ -27,7 +27,7 @@ const modelProfiles = require("./model-profiles.cjs");
 const { VALID_PROFILES, getAgentToModelMapForProfile, formatAgentToModelMapAsTable } = modelProfiles;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const configSchema = require("./config-schema.cjs");
-const { VALID_CONFIG_KEYS, isValidConfigKey, getCapabilityConfigSchema } = configSchema;
+const { VALID_CONFIG_KEYS, isValidConfigKey, getCapabilityConfigSchema, configKeyDefault } = configSchema;
 const secrets_cjs_1 = require("./secrets.cjs");
 const review_reviewer_selection_cjs_1 = require("./review-reviewer-selection.cjs");
 const configuration_cjs_1 = require("./configuration.cjs");
@@ -57,16 +57,16 @@ const SHIP_PR_BODY_TEMPLATE_TOKENS = new Set([
 ]);
 const SHIP_PR_BODY_SOURCE_RE = /^(ROADMAP|PLAN|SUMMARY|VERIFICATION|STATE|REQUIREMENTS|CONTEXT)\.md\s+##\s+[^\r\n#][^\r\n]*$/;
 /**
- * Schema-level defaults for well-known config keys.
- * When a key is absent from config.json and no --default flag was supplied,
- * cmdConfigGet checks here before emitting "Key not found".
+ * Schema-level defaults for well-known config keys live in the SCHEMA MANIFEST
+ * (shared/config-schema.manifest.json, the `defaults` field) and are read from there via
+ * configKeyDefault(). When a key is absent from config.json and no --default flag was
+ * supplied, cmdConfigGet asks the manifest before emitting "Key not found".
+ *
+ * The map used to be a literal right here, one file away from the list of keys it answered
+ * for — so the schema could call a key known while nothing said what it was worth, and a key
+ * the planner asks for every run («workflow.mvp_mode») ended a query with exit 1. A batched
+ * query dies whole on that one exit code.
  */
-const SCHEMA_DEFAULTS = {
-    'context_window': 200000,
-    'executor.stall_detect_interval_minutes': 5,
-    'executor.stall_threshold_minutes': 10,
-    'git.create_tag': true,
-};
 // ─── Validation helpers ───────────────────────────────────────────────────────
 function validateKnownConfigKeyPath(keyPath) {
     const suggested = CONFIG_KEY_SUGGESTIONS[keyPath];
@@ -759,6 +759,8 @@ function cmdConfigGet(cwd, keyPath, raw, defaultValue) {
     }
     // After the error() guard, keyPath is narrowed to string.
     const kp = keyPath;
+    // Asked ONCE, for all three ways this key can turn out to be absent below.
+    const schemaDefault = configKeyDefault(kp);
     let config = {};
     try {
         if (node_fs_1.default.existsSync(configPath)) {
@@ -769,9 +771,8 @@ function cmdConfigGet(cwd, keyPath, raw, defaultValue) {
             output(defaultValue, raw, String(defaultValue));
             return;
         }
-        else if (Object.prototype.hasOwnProperty.call(SCHEMA_DEFAULTS, kp)) {
-            const def = SCHEMA_DEFAULTS[kp];
-            output(def, raw, String(def));
+        else if (schemaDefault.has) {
+            output(schemaDefault.value, raw, String(schemaDefault.value));
             return;
         }
         else {
@@ -793,9 +794,8 @@ function cmdConfigGet(cwd, keyPath, raw, defaultValue) {
                 output(defaultValue, raw, String(defaultValue));
                 return;
             }
-            if (Object.prototype.hasOwnProperty.call(SCHEMA_DEFAULTS, kp)) {
-                const def = SCHEMA_DEFAULTS[kp];
-                output(def, raw, String(def));
+            if (schemaDefault.has) {
+                output(schemaDefault.value, raw, String(schemaDefault.value));
                 return;
             }
             error(`Key not found: ${kp}`, ERROR_REASON.CONFIG_KEY_NOT_FOUND);
@@ -808,9 +808,8 @@ function cmdConfigGet(cwd, keyPath, raw, defaultValue) {
             output(defaultValue, raw, String(defaultValue));
             return;
         }
-        if (Object.prototype.hasOwnProperty.call(SCHEMA_DEFAULTS, kp)) {
-            const def = SCHEMA_DEFAULTS[kp];
-            output(def, raw, String(def));
+        if (schemaDefault.has) {
+            output(schemaDefault.value, raw, String(schemaDefault.value));
             return;
         }
         error(`Key not found: ${kp}`, ERROR_REASON.CONFIG_KEY_NOT_FOUND);

@@ -222,6 +222,11 @@ function FailedCard({
             {failed?.reasonLabel ? ` — ${failed.reasonLabel}` : ' — причина не записана'}
           </span>
         </div>
+        {/* ПОЧЕМУ ИМЕННО ЭТА ПОПЫТКА. Подпись над строкой называет класс отказа и одинакова у
+            всех отказов такого рода — три подряд сгоревшие попытки читались одной фразой. Здесь
+            стоят слова из стенограммы: чем отказал гейт и на чём работа споткнулась в последний
+            раз. Нет слов — нет и строки: пустая читалась бы как молчание о причине. */}
+        {failed?.detail ? <div className="mt-2 text-[11.5px] text-tx2">{failed.detail}</div> : null}
         <div className="mt-2 text-[11.5px] text-tx2">
           {attemptsLabel(failed?.attemptsCount ?? row.attempts)}, дальше не пробую, чтобы не жечь ресурс.
         </div>

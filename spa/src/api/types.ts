@@ -428,6 +428,12 @@ export interface FailureSummary {
   reason: string | null
   /** The reason in words, from the daemon's own closed vocabulary. */
   reasonLabel: string | null
+  /**
+   * Почему именно у ЭТОЙ попытки: чем отказал гейт и на чём она в последний раз споткнулась —
+   * последняя ошибка из её собственной стенограммы. Подпись выше одинакова у всех отказов
+   * этого рода, а эта строка — про одну попытку. `null` — строке реестра сказать нечего.
+   */
+  detail?: string | null
   attemptsCount: number
   /** На что ушли ходы последней попытки. Отсутствует, когда строка попытки об этом молчит. */
   spent?: TurnSpend | null

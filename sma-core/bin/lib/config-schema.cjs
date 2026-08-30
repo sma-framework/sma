@@ -67,9 +67,27 @@ function isValidConfigKey(keyPath, cwd) {
         return true;
     return isCapabilityConfigKey(keyPath, cwd);
 }
+/**
+ * configKeyDefault(keyPath) → `{has, value}` — what the SCHEMA says a key is worth when the
+ * project never wrote it down, or `{has:false}` when the schema says nothing about it.
+ *
+ * `{has, value}` rather than a bare value because `false`, `0` and `null` are legitimate
+ * defaults: a caller testing the returned value alone could not tell «умолчание — false» from
+ * «умолчания нет», which is exactly the confusion that turns a described key into an error.
+ * Ownership is asked with hasOwnProperty, so `constructor` and friends never answer with
+ * something off the prototype.
+ */
+function configKeyDefault(keyPath) {
+    if (typeof keyPath !== 'string' || !Object.prototype.hasOwnProperty.call(configuration_cjs_1.CONFIG_KEY_DEFAULTS, keyPath)) {
+        return { has: false, value: undefined };
+    }
+    return { has: true, value: configuration_cjs_1.CONFIG_KEY_DEFAULTS[keyPath] };
+}
 module.exports = {
     VALID_CONFIG_KEYS: configuration_cjs_1.VALID_CONFIG_KEYS,
     RUNTIME_STATE_KEYS: configuration_cjs_1.RUNTIME_STATE_KEYS,
+    CONFIG_KEY_DEFAULTS: configuration_cjs_1.CONFIG_KEY_DEFAULTS,
+    configKeyDefault,
     DYNAMIC_KEY_PATTERNS: configuration_cjs_1.DYNAMIC_KEY_PATTERNS,
     isCapabilityConfigKey,
     isCentralConfigKey,
