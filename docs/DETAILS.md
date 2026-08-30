@@ -506,6 +506,22 @@ words each release was announced in — fix lists included, because a release no
 was broken is worth nothing to the person who hit it. Where a release's mechanism has its own
 canonical document, this history links to it instead of reprinting it.
 
+### 5.7.1 — the release gate that can be satisfied
+
+Four honest repairs to the predictions-lint leg of the release ritual — the slow leg that lints
+the whole plans tree before a publish. The two rules that judge prediction form — the metric
+contract and post-edit immutability — now MARK history closed before the boundary day instead of
+demanding its rewrite: a warn saying «marked, pre-registered history is immutable», the same
+posture the self-check rule always had; open plans and new work stay critical. The measure
+vocabulary learned `verdict-code` as a synonym of `exit-code`: pre-registered blocks in the wild
+say it and are immutable, so the vocabulary came to meet the record, never the record the
+vocabulary. And two disconnected wires that made the leg impossible to satisfy were connected:
+the leg judged another house's plans against the caller's own calibration ledger — a directory
+the owed verdicts never reach — and now resolves the ledger beside the plans tree it lints; and
+the clean corpus the leg substitutes for the local one lived at a path that did not exist, so a
+phantom registry finding reddened every run regardless of the plans. Each repair carries its
+test, including the leg's first green-path case — a gate that can never exit 0 gates nothing.
+
 ### 5.7.0 — the design stage: drawn, confirmed, then built
 
 The phase graph gained its fifth stage, between the plan and the code. The stage leaves a design
