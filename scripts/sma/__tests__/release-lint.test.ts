@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -76,6 +76,37 @@ describe('release-lint — нога предсказаний в ритуале �
       const res = runLeg({ SMA_LINT_PLANS_DIR: tmp })
       expect(res.status).not.toBe(0)
       expect(res.stdout + res.stderr).toContain('PRED-SELFTEST')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  // The corpus-substitution wire. The leg swaps the local memory corpus for the
+  // bundled clean fixture so ONLY the plans tree can redden the verdict — and
+  // for a while the named path did not exist (fixtures live under __tests__/),
+  // so the verb linted a void corpus and MEM-VOCAB reddened every leg run: a
+  // leg that can never exit 0 gates nothing. The three locks: the fixture is
+  // there, the leg names THAT fixture, and a green tree draws no corpus noise.
+  it('чистая фикстура существует и нога называет именно её — путь в пустоту делал ногу вечно красной', () => {
+    const fixture = join(__dirname, 'fixtures', 'lint', 'clean')
+    expect(existsSync(join(fixture, 'TAGS.md'))).toBe(true)
+    expect(existsSync(join(fixture, 'MEMORY.md'))).toBe(true)
+    // Source-grep lock (house pattern): the leg's corpus constant walks through
+    // __tests__ — the segment whose absence was the whole defect.
+    const src = readFileSync(LEG, 'utf8')
+    expect(src).toContain(`'__tests__', 'fixtures', 'lint', 'clean'`)
+  })
+
+  it('дерево с одним ЧИСТЫМ планом: шума корпуса нет — MEM-VOCAB из подменённой фикстуры не приходит', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-relint-green-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'beta-01-PLAN.md'), SELFTEST_PLAN.replace('cli.mjs batch --selftest-riskfilter', 'cli.mjs lint --json'))
+      execFileSync('git', ['add', '.'], { cwd: tmp })
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'clean plan'], { cwd: tmp })
+      const res = runLeg({ SMA_LINT_PLANS_DIR: tmp })
+      expect(res.stdout + res.stderr).toContain('linting plans in')
+      expect(res.stdout + res.stderr).not.toContain('tag registry not found')
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
     }

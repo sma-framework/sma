@@ -37,7 +37,7 @@ const CLI = join(REPO_ROOT, 'scripts', 'sma', 'cli.mjs')
  * memory corpus — a release hostage to one machine's private notes would gate the
  * wrong thing — so the verb is pointed at the bundled clean fixture corpus, which
  * is green by construction, and only the plans tree can redden the leg. */
-const CLEAN_CORPUS = join(REPO_ROOT, 'scripts', 'sma', 'fixtures', 'lint', 'clean')
+const CLEAN_CORPUS = join(REPO_ROOT, 'scripts', 'sma', '__tests__', 'fixtures', 'lint', 'clean')
 
 function configuredPlansDir() {
   const env = process.env.SMA_LINT_PLANS_DIR
