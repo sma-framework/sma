@@ -20,7 +20,7 @@ import { mkdtempSync, cpSync, rmSync, appendFileSync, writeFileSync, readFileSyn
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 
-import { LINT_CHECKS, runLint, computeTreeHash } from '../lib/lint.mjs'
+import { LINT_CHECKS, runLint, computeTreeHash, plansHouseCalibrationDir } from '../lib/lint.mjs'
 import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
 // LINK-PROSE обязано различать форму ТЕМ ЖЕ разбором, что сборщик описи — паритет
 // утверждается прогоном обоих на одном плане, а не чтением кода.
@@ -1831,6 +1831,122 @@ describe('PRED-SELFTEST — самопроверка не предсказани
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
     }
+  })
+})
+
+// ── PRED-NOMETRIC / PRED-POSTEDIT: the legacy boundary marks, never rewrites ──
+// Pre-registered blocks are immutable (PRED-POSTEDIT itself), so a form defect
+// inside a CLOSED plan cannot be repaired without rewriting closed history. A
+// plan closed before PREDICTIONS_MEASURE_WORK_FROM is MARKED (warn) — the same
+// posture, and the same boundary day, as PRED-SELFTEST; open plans and plans
+// closed after the boundary remain debt (critical).
+
+const NOMETRIC_LEGACY_ENTRY =
+  '  - id: P1\n    claim: "x"\n    metric: exit_code\n    comparator: "=="\n' +
+  '    threshold: 0\n    horizon: "h"\n    domain: tech.test\n' // no check_command
+
+describe('PRED-NOMETRIC/PRED-POSTEDIT — легаси-рубеж метит, не переписывает', () => {
+  it('Test 1: неполная запись в плане, ЗАКРЫТОМ ДО рубежа → WARN со словом marked', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-nometric-legacy-1-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'beta-01-PLAN.md'), planWithPredictions(NOMETRIC_LEGACY_ENTRY))
+      writeFileSync(join(tmp, 'beta-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommitAt(tmp, 'closed before the boundary', '2026-08-21T10:00:00')
+      const f = findingsOf(runPredLint(tmp, { execGit }), 'PRED-NOMETRIC')
+      expect(f).toHaveLength(1)
+      expect(f[0].tier).toBe('warn')
+      expect(f[0].message).toContain('marked')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 2: неполная запись в плане, закрытом ПОСЛЕ рубежа → CRITICAL', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-nometric-legacy-2-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'beta-01-PLAN.md'), planWithPredictions(NOMETRIC_LEGACY_ENTRY))
+      writeFileSync(join(tmp, 'beta-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommitAt(tmp, 'closed after the boundary', '2026-08-26T10:00:00')
+      const f = findingsOf(runPredLint(tmp, { execGit }), 'PRED-NOMETRIC')
+      expect(f).toHaveLength(1)
+      expect(f[0].tier).toBe('critical')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 3: блок правлен после первого коммита, план ЗАКРЫТ ДО рубежа → WARN со словом marked', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-postedit-legacy-1-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'beta-01-PLAN.md'), planWithPredictions(GOOD_ENTRY))
+      gitCommitAt(tmp, 'first commit locks the predictions', '2026-08-18T10:00:00')
+      writeFileSync(join(tmp, 'beta-01-PLAN.md'), planWithPredictions(GOOD_ENTRY.replace('threshold: 0', 'threshold: 5')))
+      writeFileSync(join(tmp, 'beta-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommitAt(tmp, 'revised in the planning loop, closed before the boundary', '2026-08-21T10:00:00')
+      const f = findingsOf(runPredLint(tmp, { execGit }), 'PRED-POSTEDIT')
+      expect(f).toHaveLength(1)
+      expect(f[0].tier).toBe('warn')
+      expect(f[0].message).toContain('marked')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 4: блок правлен, план закрыт ПОСЛЕ рубежа → CRITICAL с требованием revert', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-postedit-legacy-2-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'beta-01-PLAN.md'), planWithPredictions(GOOD_ENTRY))
+      gitCommitAt(tmp, 'first commit locks the predictions', '2026-08-18T10:00:00')
+      writeFileSync(join(tmp, 'beta-01-PLAN.md'), planWithPredictions(GOOD_ENTRY.replace('threshold: 0', 'threshold: 5')))
+      writeFileSync(join(tmp, 'beta-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommitAt(tmp, 'edited and closed after the boundary', '2026-08-26T10:00:00')
+      const f = findingsOf(runPredLint(tmp, { execGit }), 'PRED-POSTEDIT')
+      expect(f).toHaveLength(1)
+      expect(f[0].tier).toBe('critical')
+      expect(f[0].message).toContain('revert')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+})
+
+// ── plansHouseCalibrationDir: the house's verdicts judge the house's plans ───
+// The wire, not the computation (the 12.08 class): release-lint points the verb
+// at ANOTHER house's plans tree, and the owed verdicts are appended by THAT
+// house's predict-score ritual into THAT house's .sma/calibration. The verb
+// must hand PRED-UNSCORED that directory — its own ledger is one the verdicts
+// never reach, an accusation no ritual can answer.
+
+describe('plansHouseCalibrationDir — вердикты дома судят его же планы', () => {
+  it('дерево <дом>/.planning/phases с леджером → .sma/calibration ТОГО дома', () => {
+    const house = mkdtempSync(join(tmpdir(), 'sma-house-'))
+    try {
+      mkdirSync(join(house, '.planning', 'phases'), { recursive: true })
+      mkdirSync(join(house, '.sma', 'calibration'), { recursive: true })
+      const resolved = plansHouseCalibrationDir(join(house, '.planning', 'phases'), 'FALLBACK')
+      expect(resolved).toBe(join(house, '.sma', 'calibration'))
+    } finally {
+      rmSync(house, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('дерево без леджера в каноничном месте → откат на леджер вызывающего, как до провода', () => {
+    const house = mkdtempSync(join(tmpdir(), 'sma-house-'))
+    try {
+      mkdirSync(join(house, '.planning', 'phases'), { recursive: true })
+      expect(plansHouseCalibrationDir(join(house, '.planning', 'phases'), 'FALLBACK')).toBe('FALLBACK')
+    } finally {
+      rmSync(house, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('без plansDir резолвер молчит — остаётся леджер вызывающего', () => {
+    expect(plansHouseCalibrationDir(undefined, 'FALLBACK')).toBe('FALLBACK')
+    expect(plansHouseCalibrationDir('', 'FALLBACK')).toBe('FALLBACK')
   })
 })
 

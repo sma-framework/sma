@@ -1267,10 +1267,14 @@ async function cmdLint({ flags, dirs }) {
     ...(statePath ? { statePath } : {}),
     ...(profilePath ? { profilePath } : {}),
     ...(plansDir ? { plansDir } : {}),
-    // PRED-UNSCORED needs to know where the verdicts are written; the verb has
-    // already resolved that directory, so it is handed over rather than
-    // re-derived. Absent, the rule reports a degradation and judges nobody.
-    ...(dirs && dirs.calibrationDir ? { calibrationDir: dirs.calibrationDir } : {}),
+    // PRED-UNSCORED needs to know where the verdicts are written. Verdicts for
+    // a plans tree are appended by ITS house's predict-score ritual, so when the
+    // tree under lint belongs to another house (--plans / config pointing
+    // outside this checkout) the ledger is resolved BESIDE that tree; absent
+    // there, the verb's own directory stands, degrading exactly as before.
+    ...((d) => (d ? { calibrationDir: d } : {}))(
+      lint.plansHouseCalibrationDir(plansDir, dirs && dirs.calibrationDir ? dirs.calibrationDir : undefined),
+    ),
     // MEM-OFFPIPELINE needs the write pipeline's own journal — the ONE machine
     // record of which notes actually walked it. The verb has already resolved
     // that directory (the same one `memory write` appends to), so it is handed

@@ -351,6 +351,25 @@ export function extractPredictionsBlock(text) {
 }
 
 /**
+ * The calibration ledger a plans TREE is judged against: the .sma/calibration
+ * of the HOUSE the tree belongs to (canonical layout <house>/.planning/phases),
+ * because that is the directory the house's own predict-score ritual appends
+ * to. Without this wire, linting another house's plans (release-lint's leg
+ * points at the drafting office's tree) judged them against the CALLER's
+ * ledger — a directory the owed verdicts never reach, so PRED-UNSCORED could
+ * never be satisfied by the ritual it names. A tree that keeps no ledger in
+ * the canonical spot falls back to the caller's own, degrading exactly as
+ * before this wire existed.
+ */
+export function plansHouseCalibrationDir(plansDir, fallback, existsFn = existsSync) {
+  if (typeof plansDir === 'string' && plansDir.trim() !== '') {
+    const house = join(plansDir, '..', '..', '.sma', 'calibration')
+    if (existsFn(house)) return house
+  }
+  return fallback
+}
+
+/**
  * Where the product states its own version. capability.json is the single version
  * truth of this product (package.json is pinned TO it, never the other way round),
  * so the fingerprint epoch comparison reads THIS file and nothing else.
@@ -1179,18 +1198,39 @@ const PRED_NOMETRIC = {
   title: 'Prediction entries carry the full metric contract (B18/B19)',
   tier: 'critical',
   run(ctx) {
+    // The metric contract became law at the same boundary as measure-the-work:
+    // a plan CLOSED before it carries free-form entries that predate the form,
+    // and the blocks are immutable (PRED-POSTEDIT) — so the history is MARKED
+    // (warn), never rewritten to flatter the number. Open plans and plans
+    // closed after the boundary are current work: critical, repair the plan.
     const out = []
+    const dates = summaryCloseDates(ctx)
+    const summaryByName = new Map()
+    for (const s of ctx.summaries ?? []) summaryByName.set(basename(s.path), s)
     for (const plan of ctx.plans) {
       // Field validation is DELEGATED to predict.mjs's validatePrediction —
       // one boundary, never duplicated.
       const { predictions } = parsePredictions(plan.path, { readFn: () => plan.text })
+      const invalid = []
       for (const entry of predictions) {
         const v = validatePrediction(entry)
-        if (v.valid) continue
+        if (!v.valid) invalid.push({ entry, v })
+      }
+      if (!invalid.length) continue
+      // Same boundary mechanics as PRED-SELFTEST: closed and dated before the
+      // boundary softens, and so does a close git cannot date — an accusation
+      // must not stand on the rule's own blindness.
+      const summary = summaryByName.get(basename(plan.path).replace(/-PLAN\.md$/i, '-SUMMARY.md'))
+      let legacy = false
+      if (summary) {
+        const closedOn = dates ? dates.dates.get(dates.prefix + toPosixPath(relative(ctx.plansDir, summary.path))) : undefined
+        legacy = closedOn === undefined || closedOn < PREDICTIONS_MEASURE_WORK_FROM
+      }
+      for (const { entry, v } of invalid) {
         const parts = []
         if (v.missing.length) parts.push(`missing ${v.missing.join(', ')}`)
         if (v.errors.length) parts.push(v.errors.join('; '))
-        out.push(finding('PRED-NOMETRIC', 'critical', basename(plan.path), `prediction "${entry.id ?? '<no id>'}" in ${basename(plan.path)}: ${parts.join('; ')} — a prediction without a machine-checkable metric/check_command/comparator/threshold cannot be scored (HARKing guard)`))
+        out.push(finding('PRED-NOMETRIC', legacy ? 'warn' : 'critical', basename(plan.path), `prediction "${entry.id ?? '<no id>'}" in ${basename(plan.path)}: ${parts.join('; ')} — a prediction without a machine-checkable metric/check_command/comparator/threshold cannot be scored (HARKing guard)${legacy ? ` (closed before ${PREDICTIONS_MEASURE_WORK_FROM}: marked, pre-registered history is immutable)` : ''}`))
       }
     }
     return out
@@ -1397,6 +1437,16 @@ const PRED_POSTEDIT = {
       return out
     }
     const first = firstCommitTexts(ctx)
+    // The boundary softening mirrors PRED-SELFTEST: before the form became law,
+    // the planning loop legitimately revised blocks between the plan's first
+    // commit and execution (checker-revision commits, measured on the live
+    // corpus: every flagged legacy diff sits in a pre-execution plan revision).
+    // A plan CLOSED before the boundary is MARKED (warn) — demanding a revert
+    // NOW would itself edit closed history. Open plans and plans closed after
+    // the boundary stay critical: the block lands in the first commit and holds.
+    const dates = summaryCloseDates(ctx)
+    const summaryByName = new Map()
+    for (const s of ctx.summaries ?? []) summaryByName.set(basename(s.path), s)
     let done = 0
     for (const plan of ctx.plans) {
       if (ctx.overBudget && ctx.overBudget()) {
@@ -1411,7 +1461,13 @@ const PRED_POSTEDIT = {
       const firstBlock = extractPredictionsBlock(firstText)
       if (nowBlock === '' && firstBlock === '') continue
       if (sha256(nowBlock) !== sha256(firstBlock)) {
-        out.push(finding('PRED-POSTEDIT', 'critical', basename(plan.path), `predictions block in ${basename(plan.path)} differs from the plan's first commit — pre-registered predictions are immutable (HARKing guard); revert the block, new claims go in a NEW plan`))
+        const summary = summaryByName.get(basename(plan.path).replace(/-PLAN\.md$/i, '-SUMMARY.md'))
+        let legacy = false
+        if (summary) {
+          const closedOn = dates ? dates.dates.get(dates.prefix + toPosixPath(relative(ctx.plansDir, summary.path))) : undefined
+          legacy = closedOn === undefined || closedOn < PREDICTIONS_MEASURE_WORK_FROM
+        }
+        out.push(finding('PRED-POSTEDIT', legacy ? 'warn' : 'critical', basename(plan.path), `predictions block in ${basename(plan.path)} differs from the plan's first commit — pre-registered predictions are immutable (HARKing guard)${legacy ? ` (closed before ${PREDICTIONS_MEASURE_WORK_FROM}: marked, pre-registered history is immutable — reverting a closed plan would itself rewrite history)` : '; revert the block, new claims go in a NEW plan'}`))
       }
     }
     return out
