@@ -10,7 +10,7 @@
  * from the prior hand-written .cjs; only types are added.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DYNAMIC_KEY_PATTERNS = exports.RUNTIME_STATE_KEYS = exports.VALID_CONFIG_KEYS = exports.CONFIG_DEFAULTS = void 0;
+exports.DYNAMIC_KEY_PATTERNS = exports.CONFIG_KEY_DEFAULTS = exports.RUNTIME_STATE_KEYS = exports.VALID_CONFIG_KEYS = exports.CONFIG_DEFAULTS = void 0;
 exports.normalizeLegacyKeys = normalizeLegacyKeys;
 exports.mergeDefaults = mergeDefaults;
 exports.migrateOnDisk = migrateOnDisk;
@@ -46,6 +46,13 @@ const VALID_CONFIG_KEYS = new Set(SCHEMA_MANIFEST.validKeys);
 exports.VALID_CONFIG_KEYS = VALID_CONFIG_KEYS;
 const RUNTIME_STATE_KEYS = new Set(SCHEMA_MANIFEST.runtimeStateKeys);
 exports.RUNTIME_STATE_KEYS = RUNTIME_STATE_KEYS;
+// The schema's own answer for a key nobody wrote down — read from the manifest, never
+// re-declared in code. A key the schema knows and the project simply never set used to end
+// a query with «Key not found» and exit 1, which poisons a batch of queries around it; the
+// map that fixed that lived as a literal beside the reader, so the manifest said a key was
+// known while a second list decided what it was worth. One place says both now.
+const CONFIG_KEY_DEFAULTS = Object.freeze({ ...(SCHEMA_MANIFEST.defaults ?? {}) });
+exports.CONFIG_KEY_DEFAULTS = CONFIG_KEY_DEFAULTS;
 const DYNAMIC_KEY_PATTERNS = SCHEMA_MANIFEST.dynamicKeyPatterns.map((p) => {
     const pattern = new RegExp(p.source);
     return {

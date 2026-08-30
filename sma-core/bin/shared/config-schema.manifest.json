@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical schema manifest for valid config key paths. This manifest is the single CJS source of truth for valid config keys; dynamicKeyPatterns source strings are recompiled to RegExp at runtime by config-schema.cjs. runtimeStateKeys mirrors RUNTIME_STATE_KEYS.",
+  "_comment": "Canonical schema manifest for valid config key paths. This manifest is the single CJS source of truth for valid config keys; dynamicKeyPatterns source strings are recompiled to RegExp at runtime by config-schema.cjs. runtimeStateKeys mirrors RUNTIME_STATE_KEYS. defaults holds the schema-level answer for a key the project never wrote down: config-get returns it instead of failing, so a described key that is simply absent from config.json costs a caller a value rather than an exit code. Flat key PATHS on purpose — this map answers a question asked one key at a time, while config-defaults.manifest.json carries the nested object loadConfig merges. Where both name the same path they must agree; the suite asserts it.",
   "validKeys": [
     "mode",
     "granularity",
@@ -101,6 +101,13 @@
   "runtimeStateKeys": [
     "workflow._auto_chain_active"
   ],
+  "defaults": {
+    "context_window": 200000,
+    "executor.stall_detect_interval_minutes": 5,
+    "executor.stall_threshold_minutes": 10,
+    "git.create_tag": true,
+    "workflow.mvp_mode": false
+  },
   "dynamicKeyPatterns": [
     {
       "topLevel": "agent_skills",
