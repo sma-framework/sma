@@ -2814,6 +2814,12 @@ function attemptStream(deps, task, streamLines, now, subscription = {}, scope = 
       parentId: event.parentId,
       ...(summary.length ? { summary } : {}),
     })
+    // A PARTIAL FRAME IS NOT PROOF OF LIFE. `stream_event` is a piece of a message that has
+    // not finished — the vendor streams deltas for a generation that may never reach a whole
+    // frame. Renewing the lease on one would let the watchdog be fed by a stream that has
+    // delivered nothing, so only WHOLE frames renew. The daemon does not request partial
+    // frames today; this guard is the decision standing even on the day somebody does.
+    if (frame && frame.type === 'stream_event') return
     const t = now()
     if (t - lastTouchAt >= TOUCH_THROTTLE_MS) {
       lastTouchAt = t

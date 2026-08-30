@@ -81,10 +81,23 @@ const backlog = (over: any = {}) => ({
  * that turns a config into that one number, so the two cannot drift apart by construction.
  */
 describe('resolveExpireMs — the ONE liveness value both the sweep and the lease read', () => {
+  /**
+   * THE NUMBER IS MEASURED, NOT GUESSED — and this assertion is what makes changing it a
+   * decision instead of a drive-by. Across 121 attempts that finished ALIVE in the fleet's
+   * own ledgers, a quarter sat silent longer than the old 120s default (an attempt that
+   * thinks, or writes a long note, streams nothing while it does) — under a clock-only
+   * sweep the old ceiling condemned every fourth successful attempt. The longest honest
+   * silence observed is just over 600s, and it is structural, not accidental: a parked
+   * dangerous call waits up to TICKET_OWN_DEADLINE_MS (600s) for a person, in silence, and
+   * then CONTINUES. 900s is that longest structural silence plus half again as margin —
+   * and it is the number the operator's hand-edited config already ran on for days of
+   * heavy fleet work with zero false kills, now promoted to the shipped default so the
+   * hand-edit is no longer needed.
+   */
   it('a config that names no expiry yields the shipped default', () => {
     expect(resolveExpireMs({})).toBe(DEFAULT_EXPIRE_MS)
     expect(resolveExpireMs(undefined)).toBe(DEFAULT_EXPIRE_MS)
-    expect(DEFAULT_EXPIRE_MS).toBe(120000)
+    expect(DEFAULT_EXPIRE_MS).toBe(900000)
   })
 
   it('an operator value is honoured exactly', () => {

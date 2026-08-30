@@ -537,8 +537,25 @@ export function turnCapOffer({ turnsBurned, cap, kinds } = {}) {
  * Nothing said so; the two clocks simply disagreed. The constant and the resolver live HERE,
  * in the interface both the sweep and every backend already build against, so neither side
  * owns a private copy of the number.
+ *
+ * WHY 900s, AND NOT THE 120s THAT STOOD HERE. The number was measured off the fleet's own
+ * ledgers, not chosen: of the attempts that finished alive, a QUARTER sat silent longer than
+ * 120s — an attempt that thinks hard or writes one long note streams nothing while it does —
+ * so under a clock-only sweep (a restarted daemon, a foreign machine: no process handle to
+ * ask) the old default condemned every fourth successful attempt. The longest honest silence
+ * observed is just over 600s and it is STRUCTURAL: a parked dangerous call waits up to the
+ * approval gate's own deadline (600s, tool-gate.mjs) for a person, in silence, and then
+ * continues working. The ceiling must clear that wait or the gate becomes a death sentence;
+ * 900s clears it with half again as margin, and it is the value the operator's hand-edited
+ * config already proved over days of heavy fleet work with zero false kills — promoted here
+ * so the hand edit is no longer load-bearing. The cost is bounded and paid knowingly: a
+ * dead worker is now noticed in fifteen minutes instead of two — and a re-issue costs
+ * minutes, while a falsely killed live attempt costs the whole attempt and once cost a
+ * burned subscription window. The asymmetry is the argument: this ceiling decides when to
+ * START asking questions about a silent attempt, and the process probe behind it (see
+ * liveness.mjs) already keeps a live silent worker from being killed once they are asked.
  */
-export const DEFAULT_EXPIRE_MS = 120000
+export const DEFAULT_EXPIRE_MS = 900000
 
 /**
  * THE ONE ATTEMPT BORDER. How many times a row may be handed back after a lost lease —

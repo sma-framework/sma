@@ -222,6 +222,50 @@ describe('ПРОВОД: пока работник пишет, аренда ег�
     ])
   })
 
+  it('a partial frame does NOT renew the lease — a delta is not proof of life', async () => {
+    // РЕШЕНИЕ, А НЕ СЛУЧАЙНОСТЬ. Частичный кадр (`stream_event`) — это кусок ЕЩЁ НЕ
+    // ЗАКОНЧЕННОГО сообщения: провайдер шлёт дельты и для генерации, которая никогда не
+    // доедет до целого кадра. Кормить ими сторожа значило бы держать аренду на потоке,
+    // который ничего не довёз, — жизнь доказывает только ЦЕЛЫЙ кадр. Сегодня демон эти
+    // кадры и не заказывает; утверждение здесь — замок на день, когда кто-нибудь закажет.
+    const c = mkClock()
+    const start = c.clock()
+    const { adapter, renewals } = queueWithLeaseCounter(c.clock)
+    await adapter.enqueue(task({ id: 'BL-partial' }))
+
+    const partial = JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'полсл' } },
+      session_id: 'sess-partial',
+    })
+
+    const { deps } = makeDeps({
+      adapter,
+      clock: c.clock,
+      spawnWorker: streamingWorker(
+        [
+          // первая строка попытки — целый кадр, продление уходит сразу
+          { line: 'APPROACH_NOTE: прямой путь' },
+          // частичный кадр ЗА окном троттлинга — окно открыто, но продления быть не должно
+          { afterMs: THROTTLE_MS + 1, line: partial },
+          // целый кадр за окном — продление, и ровно от него
+          { afterMs: THROTTLE_MS + 1, line: 'LESSON_NONE: тестовый работник' },
+        ],
+        c,
+      ),
+    })
+
+    await tick(deps)
+    await settle()
+
+    // Два продления от двух ЦЕЛЫХ кадров; момент второго доказывает, что частичный не
+    // продлил и не сдвинул окно — иначе тут стояло бы третье продление или другой момент.
+    expect(renewals).toEqual([
+      { taskId: 'BL-partial', at: start },
+      { taskId: 'BL-partial', at: start + 2 * (THROTTLE_MS + 1) },
+    ])
+  })
+
   it('a renewal that throws does NOT kill the attempt, and leaves ONE line in its journal', async () => {
     const c = mkClock()
     const { adapter, attempted } = queueWithBrokenLease(c.clock)

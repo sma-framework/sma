@@ -49,7 +49,7 @@
  * authoritative state (existence, status, retries, timestamps) lives in pg-boss.
  *
  * LIVENESS (Paperclip contract, falls out of the library): every send carries
- * `expireInSeconds` (derived from `expireMs`, default 120s) + `retryLimit`/
+ * `expireInSeconds` (derived from `expireMs`, default 900s) + `retryLimit`/
  * `retryBackoff` — a silent worker's job expires and pg-boss requeues it («замолчал —
  * задача вернулась в очередь»). The explicit sweep (liveness.mjs) is the belt-and-
  * suspenders audit on top.
