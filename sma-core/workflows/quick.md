@@ -784,7 +784,9 @@ After executor returns:
 
    # Prefer the bounded cleanup helper. It verifies branch identity, expected
    # base, deletion diffs, merge result, and worktree removal before branch
-   # deletion. If it blocks, resolve the reported manifest entry and rerun.
+   # deletion. The merge itself goes through the serialized merge ritual with a
+   # smoke on the merged tree — a red smoke blocks the entry and keeps the
+   # worktree intact. If it blocks, resolve the reported manifest entry and rerun.
    # Fail closed: SDK refusal (safety guard #3174/#3384) must surface — do not swallow exit 1.
    sma_run query worktree.cleanup-wave --manifest "$QUICK_WORKTREE_MANIFEST" || exit 1
    ```

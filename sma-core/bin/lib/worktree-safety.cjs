@@ -498,8 +498,53 @@ function rescueSummaryArtifacts(worktreePath, repoRoot, deps) {
     }
     return { rescuedRelPaths, failures };
 }
-function executeWorktreeWaveCleanupPlan(plan, deps = {}) {
+/**
+ * The one door a wave entry takes into the trunk — the merge RITUAL, never a bare
+ * `git merge`.
+ *
+ * This used to be a plain `git merge --no-ff` inline below: no run on the merged
+ * tree, no receipt in the journal, and the only refusal it knew was git's own
+ * conflict — a red suite did not stop a wave merge at all, while the terminal
+ * merge verb and the daemon's approval door both went through runMerge with its
+ * smoke. Our own pipeline bypassed the gate it had built. Every wave merge now
+ * takes the same ritual: slot -> merge WITHOUT committing -> smoke on the merged
+ * tree -> decide -> receipt. The price — one smoke per executor branch — was
+ * accepted out loud; a silent bypass already cost a lost shift of somebody
+ * else's work.
+ *
+ * The ritual lives in the project's V1 runtime (scripts/sma/lib). Resolution
+ * order mirrors the install layout: the TARGET repo's own copy first (the
+ * installer always places scripts/sma at the project root, while sma-core may
+ * sit under .claude/ or even in a global config dir), then the copy beside this
+ * module (the development tree, where sma-core and scripts are siblings). No
+ * copy anywhere -> the cleanup FAILS CLOSED in words: an ungated merge is not a
+ * fallback, it is the defect this function replaced.
+ */
+function defaultRunWaveMerge(o) {
+    const { pathToFileURL } = require('node:url');
+    const candidates = [
+        node_path_1.default.join(o.repoRoot, 'scripts', 'sma', 'lib'),
+        node_path_1.default.join(__dirname, '..', '..', '..', 'scripts', 'sma', 'lib'),
+    ];
+    const libDir = candidates.find((dir) => node_fs_1.default.existsSync(node_path_1.default.join(dir, 'merge-gate.mjs')));
+    if (!libDir) {
+        return Promise.reject(new Error('ритуал слияния (scripts/sma/lib/merge-gate.mjs) не найден ни в целевом дереве, ни рядом с этим модулем — уборка волны остановлена: голое git merge мимо смока здесь больше не выполняется'));
+    }
+    return Promise.all([
+        import(pathToFileURL(node_path_1.default.join(libDir, 'merge-gate.mjs')).href),
+        import(pathToFileURL(node_path_1.default.join(libDir, 'merge-smoke.mjs')).href),
+    ]).then(([gate, smoke]) => gate.runMerge({
+        branch: o.branch,
+        by: 'wave-cleanup',
+        runTests: smoke.runMergeSmoke,
+        claimsDir: node_path_1.default.join(o.repoRoot, '.sma', 'claims'),
+        journalDir: node_path_1.default.join(o.repoRoot, '.sma', 'journal'),
+        cwd: o.repoRoot,
+    }));
+}
+async function executeWorktreeWaveCleanupPlan(plan, deps = {}) {
     const execGit = deps.execGit || execGitDefault;
+    const runWaveMerge = deps.runWaveMerge || defaultRunWaveMerge;
     const entries = Array.isArray(plan?.entries) ? plan.entries : [];
     if (!plan || plan.action !== 'cleanup_wave' || entries.length === 0) {
         return {
@@ -607,16 +652,53 @@ function executeWorktreeWaveCleanupPlan(plan, deps = {}) {
             ok = false;
             break;
         }
-        const merge = execGit(['merge', entry.branch, '--no-ff', '--no-edit', '-m', `chore: merge executor worktree (${entry.branch})`], { cwd: plan.repoRoot });
-        if (!gitResultOk(merge)) {
+        // The merge itself — through the ritual. `merged: true` is the ONLY green;
+        // every other answer stops the wave HERE, keeps this worktree and branch
+        // intact for a human decision, and leaves the rest of the wave pending.
+        let ritual;
+        try {
+            ritual = await runWaveMerge({ branch: entry.branch, repoRoot: plan.repoRoot });
+        }
+        catch (err) {
+            ritual = { ok: false, message: err && err.message ? err.message : String(err) };
+        }
+        if (!ritual || ritual.merged !== true) {
             result.status = 'blocked';
-            result.reason = 'merge_failed';
-            result.stderr = merge?.stderr || merge?.stdout || '';
+            if (ritual && ritual.refused === true) {
+                // The smoke on the merged tree was red: the ritual aborted the merge,
+                // the tip never moved, and the refusal receipt is already journaled.
+                result.reason = 'merge_refused_tests_red';
+                result.stderr = (ritual.receipt && ritual.receipt.reason)
+                    || 'прогон на сведённом дереве красный — слияние волны остановлено';
+            }
+            else if (ritual && ritual.softDenied === true) {
+                // Another merge holds the slot — a wave merge waits in the same queue
+                // as every other integration, it does not cut past it.
+                result.reason = 'merge_slot_held';
+                result.stderr = ritual.override || '';
+            }
+            else {
+                // Conflict or any other failure inside the ritual: its fail-open catch
+                // already aborted the half-merge, so the shared tree is left clean —
+                // the bare merge this replaced used to strand conflict markers here.
+                result.reason = 'merge_failed';
+                result.stderr = (ritual && ritual.message) || '';
+            }
+            if (ritual && ritual.unfinishedMerge && ritual.howToClear) {
+                result.stderr = result.stderr ? `${result.stderr}; ${ritual.howToClear}` : ritual.howToClear;
+            }
             results.push(result);
             pending.push(...entries.slice(i + 1));
             ok = false;
             break;
         }
+        // The ritual's verdict travels on the entry: which sha the wave produced and
+        // whether anything ran on the merged tree (null = honestly «прогона не было»).
+        result.merge = {
+            resultSha: ritual.resultSha || null,
+            testsPassed: ritual.testsPassed === undefined ? null : ritual.testsPassed,
+            ...(ritual.testsNote ? { testsNote: ritual.testsNote } : {}),
+        };
         let remove = execGit(['worktree', 'remove', entry.worktree_path, '--force'], { cwd: plan.repoRoot });
         if (!gitResultOk(remove)) {
             // Locked worktrees require unlock before remove (or --force --force).
@@ -655,7 +737,7 @@ function executeWorktreeWaveCleanupPlan(plan, deps = {}) {
         pending,
     };
 }
-function cmdWorktreeCleanupWave(cwd, args = []) {
+async function cmdWorktreeCleanupWave(cwd, args = []) {
     const manifestFlagIndex = args.indexOf('--manifest');
     const manifestPath = manifestFlagIndex >= 0 ? args[manifestFlagIndex + 1] : '';
     if (!manifestPath) {
@@ -677,7 +759,7 @@ function cmdWorktreeCleanupWave(cwd, args = []) {
         return;
     }
     const plan = planWorktreeWaveCleanup(cwd, manifest);
-    const result = executeWorktreeWaveCleanupPlan(plan);
+    const result = await executeWorktreeWaveCleanupPlan(plan);
     const response = {
         ok: result.ok,
         plan: {

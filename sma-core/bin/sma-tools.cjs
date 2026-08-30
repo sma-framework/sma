@@ -2194,7 +2194,9 @@ async function runCommand(command, args, cwd, raw, defaultValue, originalCommand
       const subcommand = args[1];
       const worktreeSafety = require('./lib/worktree-safety.cjs');
       if (subcommand === 'cleanup-wave') {
-        worktreeSafety.cmdWorktreeCleanupWave(cwd, args.slice(2));
+        // Async since the wave merge goes through the merge ritual (smoke on the
+        // merged tree); un-awaited, the process would exit before the verdict.
+        await worktreeSafety.cmdWorktreeCleanupWave(cwd, args.slice(2));
       } else if (subcommand === 'record-agent') {
         worktreeSafety.cmdWorktreeRecordAgent(cwd, args.slice(2));
       } else if (subcommand === 'reap-orphans') {
