@@ -18,7 +18,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdtempSync, cpSync, rmSync, appendFileSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 
 import { LINT_CHECKS, runLint, computeTreeHash, plansHouseCalibrationDir } from '../lib/lint.mjs'
 import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
@@ -1908,6 +1908,33 @@ describe('PRED-NOMETRIC/PRED-POSTEDIT — легаси-рубеж метит, н
       expect(f).toHaveLength(1)
       expect(f[0].tier).toBe('critical')
       expect(f[0].message).toContain('revert')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+})
+
+// ── The lint verb's git probes owe the terminal nothing ──────────────────────
+// The PRED walks probe history for files that moved between commits, and every
+// probe failure is already handled (fail-soft, «no evidence — no accusation»).
+// Without GIT_READ_STDIO on the verb's runner, a renamed plan printed git's
+// «fatal: path … exists on disk, but not in …» straight onto the release
+// ritual's screen — ~50 lines of noise reading as breakage during a publish.
+
+describe('git-пробы верба lint не печатают fatal на экран', () => {
+  it('переехавший план: прогон целиком через CLI — на stderr ни одного fatal', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-lint-noise-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      writeFileSync(join(tmp, 'old-01-PLAN.md'), planWithPredictions(GOOD_ENTRY))
+      gitCommit(tmp, 'first commit under the old name')
+      execGit(['mv', 'old-01-PLAN.md', 'beta-01-PLAN.md'], { cwd: tmp })
+      gitCommit(tmp, 'the plan moved — the probe must stay silent')
+      const cli = join(__dirname, '..', 'cli.mjs')
+      const res = spawnSync(process.execPath, [cli, 'lint', '--plans', tmp, '--corpus', join(FIX, 'clean'), '--json'], {
+        encoding: 'utf8',
+      })
+      expect(res.stderr).not.toContain('fatal')
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
     }

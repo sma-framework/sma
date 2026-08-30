@@ -1235,7 +1235,12 @@ async function cmdLint({ flags, dirs }) {
   const { existsSync } = await import('node:fs')
   const defaultPlans = join('.planning', 'phases')
   const plansDir = typeof flags.plans === 'string' ? flags.plans : existsSync(defaultPlans) ? defaultPlans : undefined
-  const execGit = (args, o = {}) => execFileSync('git', args, { encoding: 'utf8', ...o })
+  // GIT_READ_STDIO: the PRED walks probe history for files that moved between
+  // commits, and a probe whose failure the checks already handle (fail-soft,
+  // «no evidence — no accusation») owes the terminal nothing. Without it, a
+  // renamed plan printed git's «fatal: path … exists on disk, but not in …»
+  // straight onto the release ritual's screen — noise reading as breakage.
+  const execGit = (args, o = {}) => execFileSync('git', args, { encoding: 'utf8', stdio: GIT_READ_STDIO, ...o })
 
   // STATE-SIZE: the state path is injected — --state overrides; the
   // default is the house .planning/STATE.md when present (fail-soft to none).
