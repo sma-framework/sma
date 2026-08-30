@@ -902,6 +902,10 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    Prefer the bounded helper, which validates branch identity, expected base, deletion
    diffs, merge result, and worktree removal before deleting the temporary branch.
+   Each entry merges through the serialized merge ritual (slot → uncommitted merge →
+   smoke on the merged tree → decide → receipt), never a bare `git merge`: a red smoke
+   blocks the entry with `merge_refused_tests_red`, leaves the worktree and branch
+   intact, and keeps the rest of the wave pending.
    If the helper reports a blocked cleanup, resolve the reported manifest entry and
    rerun the same command. Do not fall back to broad worktree discovery.
 

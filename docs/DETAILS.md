@@ -967,7 +967,7 @@ flowchart LR
     MG --> SHIP["push stays human-ordered<br>the ship ritual + sma preship"]
 ```
 
-`sma merge` never pushes and never deploys: it acquires the merge slot (a concurrent merge gets a soft-deny), merges **locally**, runs targeted tests on the *merged* tree — because two individually green branches can be red together — journals a receipt, and releases the slot.
+`sma merge` never pushes and never deploys: it acquires the merge slot (a concurrent merge gets a soft-deny), merges **locally**, runs targeted tests on the *merged* tree — because two individually green branches can be red together — journals a receipt, and releases the slot. The same ritual is the **only** door into the trunk for the phase machinery too: the wave cleanup that merges executor worktree branches back (`worktree cleanup-wave`) goes through it entry by entry — a red smoke stops the wave in words, leaves the worktree and branch intact for a human decision, and keeps the rest of the wave pending; it used to run a bare `git merge --no-ff` past the gate.
 
 #### Worker copy: what it carries and how it is removed
 
