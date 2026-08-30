@@ -49,7 +49,7 @@ import {
   lockVerdict,
   shortcutPathFromOutput,
   shortcutPlan,
-  shortcutScript,
+  shortcutScriptBytes,
   taskXmlFor,
   watchLoopCommand,
   watchLockPath,
@@ -77,10 +77,12 @@ function run(cmd, args) {
  * withTempFile(bytes, extension, body) — временный файл, который убирается за собой.
  *
  * КОДИРОВКА ЗДЕСЬ НЕ ДЕТАЛЬ, и оба вызывающих ниже передают байты сами:
- *   - .ps1 идёт с меткой порядка байтов. Windows PowerShell 5.1 читает файл без метки как
- *     ANSI, и первый же не-ASCII знак (русские слова здесь, возможно — русское имя
- *     пользователя в пути) превращается в кавычку, после которой скрипт не разбирается
- *     вовсе. Отгружаемая обёртка запуска уже заплатила эту цену целиком.
+ *   - .ps1 идёт с меткой порядка байтов, и собирает его `shortcutScriptBytes` — там же, где
+ *     живёт текст скрипта, и там же, где байты видит тест. Windows PowerShell 5.1 читает файл
+ *     без метки как ANSI, и первый же не-ASCII знак (русские слова здесь, русское имя ярлыка
+ *     из `--name`, возможно — русское имя пользователя в пути) превращается в кавычку, после
+ *     которой скрипт не разбирается вовсе. Отгружаемая обёртка запуска уже заплатила эту цену
+ *     целиком.
  *   - .xml идёт в UTF-16, потому что ровно это написано в его собственном объявлении и
  *     ровно этого ждёт schtasks: файл, чьи байты спорят с объявлением, он отвергает как
  *     испорченный — и человек читает «задача не встала» вместо «прав не хватило».
@@ -136,7 +138,7 @@ function tryTask(taskName) {
 
 /** Ставит ярлык и возвращает путь, который PowerShell назвал САМ. */
 function installShortcut(plan) {
-  const res = withTempFile(Buffer.from(`﻿${shortcutScript(plan)}\n`, 'utf8'), '.ps1', (path) =>
+  const res = withTempFile(shortcutScriptBytes(plan), '.ps1', (path) =>
     run('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path]),
   )
   const written = shortcutPathFromOutput(res.output)

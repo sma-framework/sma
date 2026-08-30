@@ -15,7 +15,9 @@
  *       можно прочитать, а не сном внутри строки ярлыка, который прочитать нельзя;
  *   (в) круг поднимает упавшего сторожа, но не бесконечно, и прожитая минута обнуляет счёт;
  *   (г) один круг на машину: замок держит живой процесс, а не файл, оставшийся от мёртвого;
- *   (д) вывод консоли в кодовой странице Windows читается словами, а не знаками замены.
+ *   (д) вывод консоли в кодовой странице Windows читается словами, а не знаками замены;
+ *   (е) временный .ps1 объявляет свою кодировку меткой, и кириллическое имя ярлыка доезжает
+ *       до PowerShell целым — файла в индексе git нет, правило класса его не ловит.
  */
 
 import { readFileSync } from 'node:fs'
@@ -34,6 +36,7 @@ import {
   shortcutPathFromOutput,
   shortcutPlan,
   shortcutScript,
+  shortcutScriptBytes,
   startupDir,
   taskXmlFor,
   watchLockPath,
@@ -119,6 +122,40 @@ describe('скрипт, который пишет ярлык', () => {
     const odd = shortcutPlan({ smaHome: "C:\\it's\\sma", name: "SMA's watch", nodeBin: 'node.exe', io: { env: WINDOWS_ENV } })
     expect(shortcutScript(odd)).toContain("'SMA''s watch.lnk'")
     expect(psQuote("d'Arc")).toBe("'d''Arc'")
+  })
+})
+
+/**
+ * ВРЕМЕННЫЙ .ps1 — ЕДИНСТВЕННЫЙ POWERSHELL ПРОДУКТА, КОТОРОГО НЕТ В ИНДЕКСЕ GIT.
+ *
+ * Отгружаемые .ps1 держит правило «чистый ASCII или метка порядка байтов»
+ * (scripts/sma/__tests__/windows-scripts.test.ts): Windows PowerShell 5.1 читает файл без
+ * метки как ANSI, и один не-ASCII знак способен закрыть строку раньше времени — после чего
+ * скрипт не разбирается целиком, не выполнив ни строки и не оставив ни слова о причине.
+ * Этот скрипт правило по имени файла не ловит: он собирается на машине человека в момент
+ * постановки, и с `--name «Сторож демона»` не-ASCII в нём становится ещё и ИМЯ, под которым
+ * ярлык должен лечь в автозагрузку. Проверяется поэтому не файл, а байты.
+ */
+describe('временный .ps1: кириллическое имя ярлыка доезжает до PowerShell целым', () => {
+  const NAME = 'Сторож демона'
+  const plan = shortcutPlan({ smaHome: 'C:\\sma', name: NAME, nodeBin: 'node.exe', io: { env: WINDOWS_ENV } })
+  const bytes = shortcutScriptBytes(plan)
+
+  it('первыми идут три байта метки — ими Windows и узнаёт кодировку', () => {
+    expect(Array.from(bytes.subarray(0, 3))).toEqual([0xef, 0xbb, 0xbf])
+  })
+
+  it('за меткой лежит ровно тот скрипт, который собрал план, и перевод строки в конце', () => {
+    expect(bytes.subarray(3).toString('utf8')).toBe(`${shortcutScript(plan)}\n`)
+  })
+
+  it('имя ярлыка внутри — кириллицей и в кавычках PowerShell', () => {
+    expect(bytes.toString('utf8')).toContain(`'${NAME}.lnk'`)
+  })
+
+  it('те же байты, прочитанные однобайтовой таблицей, имени уже не несут — вот цена потерянной метки', () => {
+    // Ровно это делает 5.1 с файлом без метки: каждый байт — свой знак, и имя рассыпается.
+    expect(bytes.toString('latin1')).not.toContain(NAME)
   })
 })
 

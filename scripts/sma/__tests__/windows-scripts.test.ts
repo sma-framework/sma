@@ -32,6 +32,8 @@ import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
 
+import { shortcutPlan, shortcutScriptBytes } from '../../../daemon/src/watch-install.mjs'
+
 const REPO_ROOT = resolve(__dirname, '..', '..', '..')
 
 /** The PowerShell files the package actually ships, straight from the index. */
@@ -89,6 +91,34 @@ describe('shipped PowerShell scripts survive Windows PowerShell 5.1', () => {
   it('the daemon start script keeps its BOM — the file the rule was written for', () => {
     const bytes = readFileSync(join(REPO_ROOT, 'supervisor', 'start-daemon-windows.ps1'))
     expect(hasBom(bytes)).toBe(true)
+  })
+})
+
+/**
+ * The rule above reads `git ls-files`, and one PowerShell script this product runs is not in
+ * it. The watchdog installer BUILDS a .ps1 on the operator's machine and hands it to
+ * `powershell -File`: same shell, same either/or, same invisible BOM — plus one aggravation
+ * the tracked files do not have. Its text is assembled at run time and carries a shortcut name
+ * the operator chose (`--name`), so "is this one pure ASCII?" is not a question a reviewer can
+ * settle by looking at a file. The bytes therefore come from a single place — the decision
+ * table's `shortcutScriptBytes` — and the class rule is applied to them here.
+ */
+describe('the PowerShell the watchdog installer writes at run time obeys the same rule', () => {
+  const bytes: Buffer = shortcutScriptBytes(
+    shortcutPlan({ smaHome: 'C:\\sma', name: 'Сторож демона', nodeBin: 'node.exe' }),
+  )
+
+  it('is not pure ASCII — the case below would be vacuous if it were', () => {
+    expect(firstNonAsciiLine(bytes.subarray(3))).not.toBeNull()
+  })
+
+  it('is pure ASCII, or declares itself with a BOM — with a Cyrillic shortcut name in it', () => {
+    expect(
+      hasBom(bytes) || firstNonAsciiLine(bytes) === null,
+      'the .ps1 the installer writes carries no BOM and is not pure ASCII. Windows PowerShell ' +
+        '5.1 reads it as ANSI and the script fails to parse entirely — leaving no log to say ' +
+        'why, because it never runs a line, and no watchdog on the machine.',
+    ).toBe(true)
   })
 })
 
