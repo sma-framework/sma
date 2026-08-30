@@ -1581,6 +1581,32 @@ export function createDaemon(o = {}) {
       // the durable adapter owns its connection + queue provisioning — it must come up
       // BEFORE the tick can claim or the front can enqueue (the pilot finding).
       if (typeof durable.start === 'function') await durable.start()
+      // THE RECORD IS WRITTEN WHEN THE DOOR IS BOUND, not before: it is a claim about the
+      // address, and a claim made a second earlier would be a claim about a port this
+      // process may still fail to take. `sma daemon stop` reads it to name THIS process —
+      // the alternative is hunting the process table for a binary called `node`, which is
+      // how a stop command kills somebody else's work (daemon/src/control.mjs).
+      //
+      // ─ И ДВЕРЬ ОТКРЫВАЕТСЯ ДО УБОРКИ, А НЕ ПОСЛЕ НЕЁ ────────────────────────────────
+      // ЗАМЕР 31.08: после подъёма дверь честно молчит ~45 секунд (29.08 наблюдалось до ~2
+      // минут), и молчала она ровно потому, что стояла ЗА стартовым обходом копий. Обход не
+      // держит поток — он спрашивает верб проекта отдельным процессом на каждое дерево, — но
+      // держал ОЧЕРЕДЬ ЗАГРУЗКИ: пока он шёл, порт не был занят, записи о процессе не
+      // существовало, и снаружи поднимающийся демон был неотличим от мёртвого. Сторож на такое
+      // молчание отвечает подъёмом ВТОРОГО демона поверх первого, и они дерутся за один адрес.
+      // Уборке не нужно, чтобы дверь была закрыта; двери нужно, чтобы её было слышно. Тик
+      // по-прежнему стартует ПОСЛЕ обхода — вот его уборка касается напрямую.
+      front.listen(() => {
+        try {
+          writePidRecord({ config })
+        } catch (err) {
+          // Fail-soft, and loud: a daemon that could not leave its calling card still serves.
+          // Only the штатная остановка is lost, and the operator is told which.
+          console.error(
+            `[SmaDaemon] не смог записать ${PID_RECORD_FILE}: ${String((err && err.message) || err)} — штатная остановка не сможет назвать этот процесс.`,
+          )
+        }
+      })
       // The connected project is watched while the daemon runs. It is started AFTER the
       // queue and BEFORE the front only for tidiness — it owns nothing the others need, and
       // a project that cannot be watched degrades inside watchProject rather than here.
@@ -1597,22 +1623,6 @@ export function createDaemon(o = {}) {
         console.error(`[SmaDaemon] worktree sweep at boot failed: ${maskSecrets(String((err && err.message) || err))}`)
       }
       retargetProjectWatch()
-      // THE RECORD IS WRITTEN WHEN THE DOOR IS BOUND, not before: it is a claim about the
-      // address, and a claim made a second earlier would be a claim about a port this
-      // process may still fail to take. `sma daemon stop` reads it to name THIS process —
-      // the alternative is hunting the process table for a binary called `node`, which is
-      // how a stop command kills somebody else's work (daemon/src/control.mjs).
-      front.listen(() => {
-        try {
-          writePidRecord({ config })
-        } catch (err) {
-          // Fail-soft, and loud: a daemon that could not leave its calling card still serves.
-          // Only the штатная остановка is lost, and the operator is told which.
-          console.error(
-            `[SmaDaemon] не смог записать ${PID_RECORD_FILE}: ${String((err && err.message) || err)} — штатная остановка не сможет назвать этот процесс.`,
-          )
-        }
-      })
       daemon.start()
       // ── ЕСЛИ ЭТО ВОЗВРАЩЕНИЕ, А НЕ ПРОСТО ЗАПУСК, ЧЕЛОВЕК УЗНАЕТ ОБ ЭТОМ ОТ МЕНЯ ───────
       //

@@ -38,7 +38,7 @@ import {
   riseWords,
   stampOutage,
 } from '../src/outage.mjs'
-import { createWatch, KNOCK_PATH, KNOCK_TIMEOUT_MS } from '../src/watch.mjs'
+import { createWatch, KNOCK_PATH, KNOCK_TIMEOUT_MS, LIFT_DOOR_WAIT_MS } from '../src/watch.mjs'
 import { noteLift, openLiftLog, spawnLiftLogged, tailLiftLog } from '../../supervisor/lift-log.mjs'
 import { probeDoor } from '../src/control.mjs'
 import { telegramApiBase, TELEGRAM_API_BASE } from '../src/telegram/client.mjs'
@@ -104,6 +104,10 @@ describe('сторож — молчание двери превращается 
         }
       },
       readRecord: () => live,
+      // ЗДЕСЬ ПРОВЕРЯЕТСЯ МЁРТВЫЙ ДЕМОН: запись осталась от процесса, которого уже нет. Шов
+      // назван ЯВНО, а не оставлен на умолчание, потому что умолчание спрашивает у настоящей
+      // системы про настоящий номер 4242 — и однажды попало бы сигналом в чужую работу.
+      isAlive: () => false,
       lift: { cmd: 'подъём', args: ['раз'], cwd: '.' },
       spawnLift: () => {
         lifts.push({ at: clock.now() })
@@ -174,7 +178,11 @@ describe('сторож — молчание двери превращается 
     }
     expect(w.lifts).toHaveLength(1)
 
-    w.clock.advance(120000)
+    // ВЫДЕРЖКА БОЛЬШЕ НЕ ГЛАВНАЯ ВЕЛИЧИНА: повтор невозможен раньше, чем назван исход прошлой
+    // попытки, а исход называет дверь — за LIFT_DOOR_WAIT_MS, и с 31.08 этот срок покрывает
+    // стартовую уборку копий (замер: ~45 с, наблюдалось до ~2 минут). Пока он идёт, круг честно
+    // отвечает «down»: демон может быть в середине boot'а.
+    w.clock.advance(LIFT_DOOR_WAIT_MS + 1000)
     const round = await w.watch.tick()
     expect(round.phase).toBe('lifting')
     expect(w.lifts).toHaveLength(2)
@@ -335,6 +343,7 @@ describe('сторож — молчание двери превращается 
       config,
       probe: async () => ({ answered: false, status: 0, state: null, reason: 'ECONNREFUSED' }),
       readRecord: () => ({ pid: 7, bind: '127.0.0.1', port: 7791, startedAt: '', path: '' }),
+      isAlive: () => false, // запись мёртвого процесса: у настоящей системы про номер 7 не спрашиваем
       lift: { cmd: 'подъём', args: [], cwd: '.' },
       spawnLift: () => lifts.push(clock.now()),
       notify: async () => ({ sent: false, reason: 'бот не подключён' }),
@@ -385,6 +394,7 @@ describe('сторож — запущенный подъём доводится 
       // дверь молчит ВСЕГДА: сколько ни поднимай, никто не отвечает
       probe: async () => ({ answered: false, status: 0, state: null, reason: 'ECONNREFUSED', kind: 'refused' }),
       readRecord: () => ({ pid: 4242, bind: '127.0.0.1', port: 7791, startedAt: '', path: '' }),
+      isAlive: () => false, // здесь демон МЁРТВ: гасить некого, и настоящий номер 4242 не трогаем
       lift: { cmd: 'подъём', args: ['раз'], cwd: '.' },
       spawnLift: () => {
         if (spawnThrows) throw new Error('powershell не найден')

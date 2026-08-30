@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.7.1-3B82F6" alt="version 5.7.1">
-  <img src="https://img.shields.io/badge/tests-5575%2F5575-3CC0A0" alt="tests 5575/5575">
+  <img src="https://img.shields.io/badge/tests-5610%2F5610-3CC0A0" alt="tests 5610/5610">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -228,6 +228,8 @@ A daemon on your machine runs worker sessions around the clock, and serves its o
 - **Steering, not just watching.** Text typed at a running task has three declared fates: reach the turn mid-run at the next tool-call boundary, wait for the turn's end, or interrupt now — with your correction written to disk *before* anything is killed. A returned task resumes the session you already paid for.
 - **A stop that tells the truth.** A worker that halts with a question shows up in the «waiting on you» column and on the card, with how long it has waited; your answer continues the same session. A whole wave can be told to stand, finishes the move it is in, and survives a daemon restart on disk.
 - **A failure lands in one journal.** Three places know why a task broke — the queue row, the attempt ledger, the worker's own note — and the card shows one of them, so a stop by hand hides the turn ceiling the attempt had already walked into. Every tick the daemon gathers them into one append-only journal: one line per failure, one file for every project, the queue's word and the ledger's word side by side. The same pass gathers the history behind you, in one command.
+
+- **«Alive» and «answering» are not the same fact.** A process can hold its port and stop serving it, and from outside that reads exactly like a quiet afternoon. The watchdog knocks at the cheapest door with patience measured against that door's own latency under load, and calls it a death only after a **series** of silences — never one. A process that is alive and no longer answering is then treated as the death it is: stopped first, lifted second, because a lift over a hung process only loses the race for its port. The first minutes after a lift are the daemon's own start-up cleanup, and they are never mistaken for a jam.
 
 The daemon needs a local PostgreSQL for its queue (or the bundled sandbox for a machine with no PostgreSQL and no admin rights) and one visit with a token to open the app. Setup, supervision, autostart, the watchdog, Telegram pairing, machine sizing — measured, not guessed: [docs/DETAILS.md](docs/DETAILS.md) and [docs/INSTALL.md](docs/INSTALL.md).
 
