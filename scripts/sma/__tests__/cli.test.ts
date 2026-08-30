@@ -310,6 +310,47 @@ describe('cli.mjs window-stable identity across sequential hook PROCESSES (R7 re
     runCli(['collision-check'], { stdin: editStdin('window-beta'), terminalName: 'exec' })
     expect(sessionFileCount()).toBe(2)
   })
+
+  /**
+   * КОНЕЦ СЕССИИ ЗАКРЫВАЕТ ОКНО — и закрыть его можно СНАРУЖИ, назвав токен.
+   *
+   * До этого лиза исчезала единственной дорогой — жнецом, который ждёт весь срок аренды с
+   * запасом и отказывается трогать окно, у которого свежие правки в объявленной области. Для
+   * окна, о котором ничего не слышно, это правильная осторожность; для окна, которое САМО
+   * сказало «я закончило», это полчаса призрака в реестре. Флоту цена этой разницы известна
+   * поимённо: демон открывает сессию на каждую попытку, и вечер шести сгоревших попыток
+   * оставил шесть окон, за которыми не стоит ни одного процесса.
+   *
+   * Флаг существует ровно потому, что мёртвый процесс своего прощального хука не исполняет:
+   * поручать уборку тому, кого убирают, — это и есть тот дефект. Закрывает ВСЕГДА только своё
+   * окно: адрес выводится из названного токена, а не из перебора каталога.
+   */
+  it('session-end --window-token закрывает ИМЕННО ЭТО окно, соседнее остаётся живым', () => {
+    runCli(['collision-check'], { stdin: editStdin('window-alpha'), terminalName: 'exec' })
+    runCli(['collision-check'], { stdin: editStdin('window-beta'), terminalName: 'exec' })
+    expect(sessionFileCount()).toBe(2)
+
+    const { status } = runCli(['session-end', '--window-token', 'window-alpha'], { terminalName: 'exec' })
+
+    expect(status).toBe(0)
+    expect(sessionFileCount()).toBe(1)
+  })
+
+  it('повторное закрытие того же окна — обычный исход, а не ошибка', () => {
+    runCli(['collision-check'], { stdin: editStdin('window-alpha'), terminalName: 'exec' })
+    runCli(['session-end', '--window-token', 'window-alpha'], { terminalName: 'exec' })
+    const again = runCli(['session-end', '--window-token', 'window-alpha'], { terminalName: 'exec' })
+
+    expect(again.status).toBe(0)
+    expect(sessionFileCount()).toBe(0)
+  })
+
+  it('без токена и без кадра на входе не закрывается ничего — демон не гадает', () => {
+    runCli(['collision-check'], { stdin: editStdin('window-alpha'), terminalName: 'exec' })
+    runCli(['session-end'], { terminalName: 'exec' })
+
+    expect(sessionFileCount()).toBe(1)
+  })
 })
 
 describe('cli.mjs subagent-receipts --stat (honest stat surface)', () => {

@@ -29,6 +29,28 @@
  * remembered at the point of editing. Both callers get that guard by construction, because
  * both go through `stageCommand`.
  *
+ * ═══════ AN ANSWER IS NOT AN AUTO-MODE, AND THE DIFFERENCE IS THE WHOLE OF THIS FILE ═══════
+ * `--auto` hands EVERY question of a workflow to the machine, including the ones only a
+ * founder may settle — which is why it is forbidden two constants below. A flag that states
+ * ONE mechanical answer is the opposite move: it takes a question OFF the machine's plate by
+ * deciding it here, in a frozen constant a person can read, before any session exists.
+ *
+ * The cost of not making that distinction was measured. The plan stage's guide asks whether to
+ * research before planning; in text mode it prints the two options and waits for a number. A
+ * daemon session has nobody to type one, so the model recommended, stopped, and exited cleanly
+ * — six attempts in one evening, about seventy seconds each, zero files. The gate then refused
+ * them honestly for producing no artifact, which is the correct behaviour of a gate and no help
+ * at all to the person reading the card.
+ *
+ * So the plan command carries `--skip-research`: the stage plans from the phase's own context
+ * and requirements, and does not start a fresh investigation nobody asked for. Existing
+ * research is unaffected — the guide uses a RESEARCH.md that is already there without asking
+ * anybody — so the flag says «start no new research», not «ignore what the phase knows». When
+ * a phase does need investigation first, that is a person's call and it has its own command.
+ * Every OTHER question the plan guide can reach is answered by the guide's own headless
+ * section, which reads the env marker the spawn sets; a question that can only be answered by
+ * a founder is PARKED as an artifact, as it always was.
+ *
  * Zero imports on purpose: a frozen vocabulary that everything may depend on must depend on
  * nothing.
  */
@@ -44,7 +66,9 @@
  */
 export const STAGE_COMMANDS = Object.freeze({
   discuss: '/sma-discuss-phase {phase} --batch --text',
-  plan: '/sma-plan-phase {phase} --text',
+  // `--skip-research` is the stage's answer to its OWN question, not an auto-mode: see the
+  // header. Without it the guide prints two options and waits for a number nobody can type.
+  plan: '/sma-plan-phase {phase} --text --skip-research',
   // the drawing stage, between the plan and the work. Same frozen shape as the others, and
   // deliberately no flag that would let the machine settle a design question in a person's
   // place — a drawing nobody chose is the one artefact of a phase that cannot be re-derived

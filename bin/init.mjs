@@ -122,9 +122,12 @@ export const SMA_HOOKS = [
   // matchers (end reason, compaction trigger, subagent type); leaving the field
   // out is how one entry covers every value of them, which is what all three
   // want.
-  //   session-end releases the claims this window is holding, so a terminal
-  //   that was simply closed never leaves a teammate blocked on a scope nobody
-  //   is editing any more.
+  //   session-end releases the claims this window is holding AND drops the
+  //   window's own session lease, so a terminal that was simply closed never
+  //   leaves a teammate blocked on a scope nobody is editing any more, and
+  //   never lingers in the registry as a window with no process behind it.
+  //   A session the hook cannot run for — one that was killed — is closed from
+  //   outside by whoever was watching it: `session-end --window-token <id>`.
   { event: 'SessionEnd', matcher: null, command: 'node "${CLAUDE_PROJECT_DIR:-.}/scripts/sma/cli.mjs" session-end', timeout: 10 },
   //   precompact-capsule writes the flight capsule BEFORE the context is
   //   trimmed. It walks git and the working tree to build one, and a capsule

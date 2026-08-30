@@ -329,6 +329,44 @@ function resolveSessionsDir(opts = {}) {
   return opts.smaRoot ? join(root, 'sessions') : SESSIONS_DIR
 }
 
+/**
+ * dropSession({identity, sessionsDir, smaRoot}) — remove THIS terminal's OWN lease file, so a
+ * session that has ended stops being counted as one that is running.
+ *
+ * WHY A SESSION MUST BE ABLE TO END AT ALL. A lease is created by the first beat and renewed by
+ * every later one; until this function existed, the ONLY way one ever disappeared was the reaper,
+ * which waits out the whole TTL plus its grace and refuses outright when the claimed scope has
+ * fresh mtimes. That is the right posture for a window nobody has heard from — «missing» is not
+ * «finished» — and it is the wrong one for a window that SAID it was finished. A fleet that
+ * starts a session per attempt filled the registry with windows no process stands behind
+ * («Окно-26»…«Окно-31» in one evening), and every one of them was counted as a live neighbour by
+ * the collision check.
+ *
+ * OWN ONLY, and that is the whole safety of it: the file is addressed by the identity handed in,
+ * which the caller resolves from ITS OWN window token. There is no scan, no name matching and no
+ * heuristic that could reach a stranger's lease — the deliberate contrast with `reapStale`, which
+ * judges other sessions and therefore has to wait, probe and refuse.
+ *
+ * IDEMPOTENT AND FAIL-OPEN (C9, P4): an absent file is `{dropped:false}`, never an error, so
+ * ending a session twice is ordinary rather than exceptional.
+ *
+ * @param {{identity?:Object, sessionsDir?:string, smaRoot?:string, env?:Object, pid?:number, sessionToken?:string}} [opts]
+ * @returns {{dropped:boolean, error?:boolean}}
+ */
+export function dropSession(opts = {}) {
+  try {
+    const identity = opts.identity ?? resolveTerminalIdentity(opts)
+    const terminalId = identity && identity.terminalId
+    if (!terminalId) return { dropped: false }
+    const file = join(resolveSessionsDir(opts), `${terminalId}.json`)
+    if (!fsExistsSync(file)) return { dropped: false }
+    fsRmSync(file)
+    return { dropped: true }
+  } catch {
+    return { dropped: false, error: true } // a lease that will not unlink stays for the reaper
+  }
+}
+
 /** True when two scope objects declare the same globs (order-sensitive) + description. */
 function scopeUnchanged(a, b) {
   if (!a || !b) return a === b

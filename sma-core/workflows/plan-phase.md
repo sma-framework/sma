@@ -53,6 +53,23 @@ never stop based on a self-assessed "I think Agent is unavailable." If the call
 fails with a tool-unavailable error, log the gap and stop — do NOT collapse
 researcher/planner/checker roles inline. Independent agent contexts are required
 for the plan-checker gate to be meaningful.
+
+**A session with nobody at the keyboard (`SMA_HEADLESS=1`):**
+The rule above is about a session a person is watching, and it stays exactly as it
+is for one. A session started by the daemon is a different situation and it is
+declared, not guessed: the environment carries `SMA_HEADLESS=1`, and such a copy
+holds only what was materialised into it — settings, memory, skills, the project's
+rules. Agent DEFINITIONS are not among them, so `sma-planner` and its two
+colleagues are names that resolve to nothing there; a grant of the subagent tool
+would not change that by one line. Spawning is therefore not "worse quality" in a
+headless session, it is an attempt that hangs until somebody kills it.
+
+So a headless session takes **§2.6, the headless path**: the three roles are
+performed inline, in this session, from the same instructions the agents carry.
+What that costs is stated where it is spent — the plan-checker's independence —
+and the plan says so about itself in writing. This is the same choice
+`design-phase.md` already makes for the same reason, and it is not available to an
+interactive session: with a person at the keyboard the roles stay separate.
 </runtime_compatibility>
 
 <process>
@@ -159,6 +176,8 @@ fi
 
 Set `TEXT_MODE=true` if `--text` is present in $ARGUMENTS OR `text_mode` from init JSON is `true`. When `TEXT_MODE` is active, replace every `AskUserQuestion` call with a plain-text numbered list and ask the user to type their choice number. This is required for Claude Code remote sessions (`/rc` mode) where TUI menus don't work through the Claude App.
 
+`TEXT_MODE` says HOW a question is rendered; it never says whether to ask one. Whether there is anybody to answer is a separate fact and it has its own name: `SMA_HEADLESS=1`, resolved in §2.6 below. In a headless run every question in this workflow is already answered there, and no numbered list is printed to a room with nobody in it.
+
 **MVP_MODE resolution.** Resolve `MVP_MODE` once via the centralized `phase.mvp-mode` query verb. Precedence (first hit wins): CLI flag → ROADMAP.md `**Mode:** mvp` → `workflow.mvp_mode` config → false. The verb is the single source of truth — do not re-implement the chain.
 
 ```bash
@@ -229,6 +248,57 @@ ask for it by name ("run cross-AI review for phase {N}"); it is a workflow
 Then re-run /sma-plan-phase {N} --reviews
 ```
 Exit workflow.
+
+## 2.6. Headless Mode — Nobody Is at the Keyboard
+
+```bash
+HEADLESS="${SMA_HEADLESS:-}"
+```
+
+`SMA_HEADLESS=1` is set by the daemon in every session it starts. It is a statement
+about the ROOM, not about the output format: `--text` only says "render menus as
+plain text", and a `/rc` session in text mode has a person reading it who types the
+number. Never treat `--text` as permission to answer for anybody.
+
+**Two rules, and they hold for every step below.**
+
+**Rule 1 — ask nobody, answer from the phase.** Every question this workflow asks is
+answered here, in advance, by its documented default. The answers are chosen so that
+a headless run changes nothing a person would have to undo:
+
+| Gate | Headless answer | Why this one |
+|------|-----------------|--------------|
+| §4 — no CONTEXT.md | Continue without context | Capturing context is a conversation with a person; planning from requirements alone is the option that needs nobody. Never dispatch discuss-phase from here. |
+| §5.1 — research? | Skip new research (the command already carries `--skip-research`) | An existing RESEARCH.md is still used; what is refused is starting a fresh investigation nobody asked for. |
+| §9b — phase split | Proceed anyway (option 2) | Splitting a phase is surgery on the roadmap and belongs to a person. Record the planner's split proposal verbatim in the plan docs so it is not lost. |
+| §9c — source-audit gaps | Add plans for the missing items (option 1), ONE revision pass only | The repair is local and cheap. If the gap survives that pass, note it and proceed — a second loop buys nothing and spends a window. |
+| §13 — requirements coverage | Proceed anyway, gap recorded | Re-planning in a loop is the expensive answer; the gap is written down where verify-phase will surface it. |
+| §13a — decision coverage | Proceed anyway, override recorded in STATE.md | Same reason, and the step already defines exactly how an override is recorded. |
+
+Anything NOT in this table that would block on a person is **parked, never guessed**:
+write the question into the phase's checkpoint file, commit it, and end the turn.
+The answer comes back from the screen and re-runs this same command.
+
+Whatever a gate answered, say it in the run's output as `[headless] <gate>:
+<answer>` — a decision a machine made for a person must be readable by that person
+afterwards.
+
+**Rule 2 — spawn nothing; the roles are performed inline.** A headless copy carries
+no agent definitions (see `<runtime_compatibility>`), so `Agent(...)` there is a call
+into a name that does not exist. Wherever a step below says to spawn an agent, read
+that agent's own file and apply it yourself, in this session, in this order:
+
+1. **researcher** (`agents/sma-phase-researcher.md`) — skipped by the answer above
+   unless `RESEARCH.md` already exists; when it does, read it as input.
+2. **planner** (`agents/sma-planner.md`) — write the `PLAN.md` files exactly as that
+   file specifies. **This is the product of the stage**: `{phase_dir}/{padded_phase}-{NN}-PLAN.md`.
+3. **plan-checker** (`agents/sma-plan-checker.md`) — apply its checks to the plans you
+   just wrote, then stop after at most **two** revision rounds — one tighter than §12's
+   three, because a loop nobody is watching pays for itself in window, not in quality.
+
+The plan-checker's independence is the price of this path, and it is paid openly: put
+`checker: inline (headless)` in the plan's front matter, so nobody reads that verdict
+as a second opinion. A laundered verdict would be worse than none.
 
 ## 3. Validate Phase
 
@@ -377,6 +447,11 @@ Read discuss mode for context gate label:
 DISCUSS_MODE=$(sma_run query config-get workflow.discuss_mode 2>/dev/null || echo "discuss")
 ```
 
+**If `SMA_HEADLESS=1` (§2.6): do not ask.** Continue without context, print
+`[headless] no CONTEXT.md: continuing without it`, and proceed to step 5. Dispatching
+discuss-phase from here is forbidden in a headless run — that stage is a conversation,
+and starting one nobody is in the room for is how a stage burns a window saying nothing.
+
 If `TEXT_MODE` is true, present as a plain-text numbered list:
 ```
 No CONTEXT.md found for Phase {X}. Plans will use research and requirements only — your design preferences won't be included.
@@ -455,6 +530,11 @@ fi
 **If `has_research` is true (from init) AND no `--research` flag:** Use existing, skip to step 6.
 
 **If RESEARCH.md missing OR `--research` flag:**
+
+**If `SMA_HEADLESS=1` (§2.6): do not ask.** Skip new research, print
+`[headless] research: skipped (no new investigation without a person)`, and go to step
+6. The stage command a daemon starts already carries `--skip-research`, so this branch
+is the belt to that brace: a headless run must never print two options and wait.
 
 **If no explicit flag (`--research` or `--skip-research`) and not `--auto`:**
 Ask the user whether to research, with a contextual recommendation based on the phase:
@@ -1155,6 +1235,12 @@ rest become a follow-up phase
 
 Use AskUserQuestion with these 3 options.
 
+**If `SMA_HEADLESS=1` (§2.6): do not ask.** Take option 2 — proceed anyway — print
+`[headless] phase split: proceeding, proposal recorded`, and copy the planner's split
+proposal verbatim into the phase's CONTEXT.md `## Deferred Ideas`. Splitting a phase
+rewrites the roadmap, which is a person's decision; recording the proposal is how it
+survives until that person sees it.
+
 **If "Split":** Use `/sma-phase --insert` to create the sub-phases, then replan each.
 **If "Proceed":** Return to planner with instruction to attempt all items at full fidelity, accepting more plans/tasks.
 **If "Prioritize":** Use AskUserQuestion (multiSelect) to let user pick which items are "now" vs "later". Create CONTEXT.md for each sub-phase with the selected items.
@@ -1182,6 +1268,12 @@ Options:
 ```
 
 Use AskUserQuestion for each gap (or batch if multiple gaps).
+
+**If `SMA_HEADLESS=1` (§2.6): do not ask.** Take option 1 for every gap — add plans
+covering the missing items — and make **exactly one** revision pass. Print
+`[headless] source audit: {N} gaps, one revision pass`. If a gap survives that pass,
+write it into the plan's `## Deferred Ideas` and proceed: a second loop spends a
+window to learn what the first one already answered.
 
 **If "Add plan":** Return to planner (step 8) with instruction to add plans covering the missing items, preserving existing plans.
 **If "Split":** Use `/sma-phase --insert` for overflow items, then replan.
@@ -1489,6 +1581,11 @@ Options:
 3. Proceed anyway — accept coverage gaps
 ```
 
+**If `SMA_HEADLESS=1` (§2.6): do not ask.** Take option 3 — proceed anyway — print
+`[headless] requirements coverage: {M}/{N}, proceeding with the gap recorded`, and
+write the uncovered REQ-IDs into STATE.md so verify-phase surfaces them. Re-planning
+in a loop is the expensive answer to a gap a person may have meant.
+
 If `TEXT_MODE` is true, present as a plain-text numbered list (options already shown in the block above). Otherwise use AskUserQuestion to present the options.
 
 ## 13a. Decision Coverage Gate
@@ -1547,6 +1644,10 @@ Options:
 2. Edit CONTEXT.md to mark dropped decisions as [informational] / Discretion
 3. Proceed anyway — accept the coverage gap
 ```
+
+**If `SMA_HEADLESS=1` (§2.6): do not ask.** Take option 3 — proceed anyway — print
+`[headless] decision coverage: {M}/{N}, override recorded`, and record the override in
+STATE.md exactly as the paragraph below defines it, naming every uncovered decision id.
 
 If `TEXT_MODE` is true, present as a plain-text numbered list. Otherwise use
 AskUserQuestion. Selecting "Proceed anyway" continues to step 13b but

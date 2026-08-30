@@ -11435,24 +11435,46 @@ async function cmdMemoryPreview({ flags, dirs }) {
 }
 
 /**
- * session-end (HOOK_FACING) — the SessionEnd hook.
- * Release ALL of this window's own claims (marked «сессия завершена»). Silent, exit-0
- * unconditional (main() wraps HOOK_FACING). It does NOT touch the Stop hook — Stop
- * fires per turn, so releasing claims there would drop a live claim mid-session.
+ * session-end (HOOK_FACING) — the SessionEnd hook, and the one call that ENDS a window.
+ *
+ * Two things happen, in this order: every claim this window holds goes back (marked «сессия
+ * завершена»), and the window's own session lease is dropped so the registry stops counting a
+ * finished session among the running ones. Silent, exit-0 unconditional (main() wraps
+ * HOOK_FACING). It does NOT touch the Stop hook — Stop fires per turn, so releasing claims
+ * there would drop a live claim mid-session.
+ *
+ * WHY THE LEASE IS DROPPED HERE. Until it was, a window could only ever leave the registry
+ * through the reaper — which waits out the lease TTL plus its grace, by design, because a
+ * window that went quiet is not a window that finished. A session that says it is over is a
+ * different fact, and this is the one place that hears it said. The fleet is where the
+ * difference became expensive: a daemon starts a session per attempt, and six dead attempts in
+ * one evening left six windows that no process stood behind, each of them counted as a live
+ * neighbour by every collision check for the next half hour.
+ *
+ * WHOSE WINDOW — TWO WAYS TO SAY IT, ONE ANSWER. Inside the hook the token arrives on stdin, as
+ * it always has. `--window-token <id>` is the same statement made by a CALLER STANDING OUTSIDE
+ * the process that ended: the fleet's tick knows the session id of the attempt it just watched
+ * die, and a dead process cannot run its own farewell hook — trusting it to would be trusting
+ * the thing being cleaned up to do the cleaning. The flag wins over stdin when both are there:
+ * an explicit argument is a deliberate address, and a hook frame is ambient.
+ *
  * Tolerant hook-stdin read; fully fail-open.
  */
-async function cmdSessionEnd({ dirs }) {
+async function cmdSessionEnd({ flags = {}, dirs }) {
   // Declared out here so the farewell move below can speak about the SAME session the
   // release path resolved. The hook's stdin can be read exactly once, so re-deriving the
   // identity in the second block would read an empty frame and address the wrong window.
   let identity = null
   try {
-    const evt = readStdinJson()
-    const sessionToken = windowTokenFrom(evt)
+    const named = typeof flags['window-token'] === 'string' ? flags['window-token'].trim() : ''
+    const evt = named ? null : readStdinJson()
+    const sessionToken = named || windowTokenFrom(evt)
     const registry = await import('./lib/registry.mjs')
     const claims = await import('./lib/claims.mjs')
     identity = registry.resolveTerminalIdentity({ sessionToken })
     claims.sessionEnd({ identity, claimsDir: dirs.claimsDir, journalDir: dirs.journalDir })
+    // AND THE WINDOW ITSELF CLOSES — own lease only, addressed by the identity just resolved.
+    registry.dropSession({ identity, sessionsDir: dirs.sessionsDir })
   } catch {
     /* fail-open — a session-end failure must never surface */
   }
