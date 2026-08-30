@@ -31,8 +31,12 @@
  * injected so the whole suite runs against fakes and never shells out or touches a repo.
  */
 
-/** `- [ ] **BL-007** · Title — desc …` (open) / `- [x] …` (closed). Ported verbatim. */
-const ITEM_RE = /^-\s+\[([ xX])\]\s+\*\*(BL-\d+)\*\*\s*(.*)$/
+/** `- [ ] **BL-007** · Title — desc …` (open) / `- [x] …` (closed). The id prefix is
+ * the house's own registry name — an installed project mints its own series
+ * (uppercase letters and digits, a dash, a number), and a scanner that only
+ * knew one house's prefix read every other house's backlog as empty. The rest
+ * of the line grammar is ported verbatim. */
+const ITEM_RE = /^-\s+\[([ xX])\]\s+\*\*([A-Z][A-Z0-9]*-\d+)\*\*\s*(.*)$/
 
 /** A `key:value` tag in backticks, e.g. `size:M` / `sp:3`. Ported verbatim. */
 const TAG_RE = /`([a-z]+):([^`]+)`/gi

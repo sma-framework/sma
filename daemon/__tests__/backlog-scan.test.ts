@@ -56,6 +56,17 @@ describe('parseBacklogContent — faithful platform parser port', () => {
     expect(items.find((i) => i.id === 'BL-305').storyPoints).toBe(21)
   })
 
+  it('чужая серия реестра парсится: префикс дома не обязан называться BL', () => {
+    // A scanner that only knew one house's prefix read every other house's
+    // backlog as empty — the whole intake silently idle.
+    const items = parseBacklogContent(
+      '## Backlog\n- [ ] **AB2-17** · Чужая серия — работа как работа. `size:S` `sp:3`\n- [ ] **x-1** · строчный мусор — не id',
+    )
+    expect(items.map((i) => i.id)).toEqual(['AB2-17'])
+    expect(items[0].storyPoints).toBe(3)
+    expect(items[0].title).toBe('Чужая серия')
+  })
+
   it('is CRLF-safe and never throws on malformed input', () => {
     const crlf = BACKLOG_FIXTURE.replace(/\n/g, '\r\n')
     expect(parseBacklogContent(crlf).map((i) => i.id)).toContain('BL-300')
