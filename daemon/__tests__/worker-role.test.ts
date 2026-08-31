@@ -8,7 +8,7 @@
  * модели. Рукой это лечили выключением тридцати восьми строк из очереди — лекарство, которое
  * держится ровно до следующей правки конфига, и никак не связанное с самой болезнью.
  *
- * ПЯТЬ ВОПРОСОВ, ПО ОДНОМУ describe НА КАЖДЫЙ, И ВСЕ ПЯТЬ — ПРО УСТРОЙСТВО:
+ * СЕМЬ ВОПРОСОВ, ПО ОДНОМУ describe НА КАЖДЫЙ, И ВСЕ СЕМЬ — ПРО УСТРОЙСТВО:
  *
  *   1. КТО ЭТОТ РАБОТНИК ПО РОЛИ — выводится из того, что в конфиге УЖЕ есть (имя описания
  *      агента), а не из второго словаря рядом. Работник без описания — исполнитель, и это не
@@ -21,7 +21,13 @@
  *   4. РОЛИ, КОТОРОЙ НЕТ НИ У КОГО, ЕСТЬ СВОЁ СЛОВО. `role_unavailable` — не «нет окна»: чинится
  *      оно человеком, а не ожиданием, поэтому оно И в закрытом словаре диспетчера, И в таксономии
  *      провалов, И среди тех концов, за которыми нет следующей попытки.
- *   5. СТАРОЕ ПОВЕДЕНИЕ НЕ СЛОМАНО. Поставочный конфиг (никаких описаний вовсе) маршрутизируется
+ *   5. НАЗВАННОГО СПЕЦИАЛИСТА НЕ ПОДМЕНЯЮТ МОЛЧА. Выключенный, но названный поимённо, отвечает
+ *      тем же `role_unavailable`, а не «нет окна» и не платным каналом: определение агента
+ *      выдаётся сессии только через выбранного работника, поэтому откат означал бы обычную
+ *      сессию под именем исследователя — ту же подмену, за деньги и молча.
+ *   6. КОГО МОЖНО НАЗВАТЬ ПРИ ПОСТАНОВКЕ — список, который читает форма. Свёрнут по ролям, счёт
+ *      включённых отдельно от общего, верхушки в нём нет, порядок свой, а не конфигов.
+ *   7. СТАРОЕ ПОВЕДЕНИЕ НЕ СЛОМАНО. Поставочный конфиг (никаких описаний вовсе) маршрутизируется
  *      ровно как раньше; занятость, окна и деньги остаются своими причинами, а не подменяются
  *      ролью; пустой пул отвечает тем же словом, что и всегда.
  *
@@ -36,10 +42,12 @@ import {
   isExecutor,
   normalizeRole,
   roleFromDefinitionPath,
+  roleIsNamed,
   roleOf,
   roleWanted,
 } from '../src/policy/worker-role.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
+import { deriveRoles } from '../src/front/state.mjs'
 import { AWAITS_A_PERSON, FAIL_REASONS, REASON_LABELS, validateTask } from '../src/queue/adapter.mjs'
 import { DISPATCH_REASONS } from '../src/front/journal.mjs'
 
@@ -192,6 +200,87 @@ describe('роли, которой нет ни у кого, есть своё с
   it('у каждой причины провала есть подпись — новое слово не приезжает немым', () => {
     const unlabelled = FAIL_REASONS.filter((r: string) => typeof REASON_LABELS[r] !== 'string')
     expect(unlabelled).toEqual([])
+  })
+})
+
+describe('названного специалиста не подменяют молча', () => {
+  // Ровно состав 28.08 после лечения рукой: специалисты выключены из очереди, исполнители нет.
+  const offline = { ...specialist('sma-ai-researcher'), enabled: false }
+  const pool = [offline, executor('sma-executor')]
+  /** Деньги разрешают откат: без этого шва проверка «не ушло в платный канал» ничего не значит. */
+  const budget = () => ({ fallback: true })
+
+  it('выключенный, но названный поимённо, — это role_unavailable, а не «нет окна»', () => {
+    const route = resolveRoute(task({ id: 'R-13', role: 'ai-researcher' }), { ...deps, workers: pool, budget })
+    expect(route.workerId).toBeNull()
+    expect(route.reasonCode).toBe('role_unavailable')
+  })
+
+  it('и НЕ платный канал: он роли не несёт, и подмена прошла бы за деньги и молча', () => {
+    // Определение агента выдаётся сессии только через выбранного работника (loop.mjs). Откат
+    // на платный канал означал бы обычную сессию под именем исследователя — та же болезнь,
+    // ради которой заведена задача, только с другого конца.
+    const route = resolveRoute(task({ id: 'R-14', role: 'ai-researcher' }), { ...deps, workers: pool, budget })
+    expect(route.useApiFallback).toBe(false)
+  })
+
+  it('слова различают «нет такого» и «выключен» — действия человека тут разные', () => {
+    const off = resolveRoute(task({ id: 'R-15', role: 'ai-researcher' }), { ...deps, workers: pool })
+    const none = resolveRoute(task({ id: 'R-16', role: 'debugger' }), { ...deps, workers: pool })
+    expect(off.reason).toContain('выключен')
+    expect(none.reason).not.toContain('выключен')
+  })
+
+  it('безымянная работа старого поведения не теряет: выключенный пул отвечает как всегда', () => {
+    // Асимметрия намеренная. Машина, у которой выключены все работники, никого не называла —
+    // и получает то же, что получала всегда: закрытые окна и правило денег.
+    const allOff = pool.map((w) => ({ ...w, enabled: false }))
+    const route = resolveRoute(task({ id: 'R-17' }), { ...deps, workers: allOff, budget })
+    expect(route.reasonCode).not.toBe('role_unavailable')
+    expect(route.useApiFallback).toBe(true)
+  })
+
+  it('«названа ли роль» — вопрос отдельный от «кого просит работа»', () => {
+    expect(roleIsNamed(task())).toBe(false)
+    expect(roleIsNamed(task({ role: 'ai-researcher' }))).toBe(true)
+    expect(roleIsNamed(task({ role: '   ' }))).toBe(false)
+  })
+})
+
+describe('кого можно назвать при постановке — список ролей для формы', () => {
+  it('исполнитель первым, специалисты по алфавиту: порядок строк конфига тут не решает', () => {
+    const roles = deriveRoles({ workers: POOL })
+    expect(roles[0].role).toBe(EXECUTOR_ROLE)
+    expect(roles.map((r) => r.role)).toEqual([
+      EXECUTOR_ROLE,
+      'advisor-researcher',
+      'ai-researcher',
+      'assumptions-analyzer',
+      'code-fixer',
+      'code-reviewer',
+    ])
+  })
+
+  it('выключенные посчитаны, но готовыми не притворяются', () => {
+    const roles = deriveRoles({ workers: [{ ...specialist('sma-ai-researcher'), enabled: false }, executor('sma-executor')] })
+    const researcher = roles.find((r) => r.role === 'ai-researcher')
+    expect(researcher).toMatchObject({ ready: 0, total: 1, executor: false })
+    expect(roles.find((r) => r.role === EXECUTOR_ROLE)).toMatchObject({ ready: 1, total: 1, executor: true })
+  })
+
+  it('имя, под которым человек видит его в окне, едет вместе с ролью', () => {
+    // На «Агентах» он подписан `sma-ai-researcher`; форма обязана называть его так же, иначе
+    // человек выбирает не того, кого узнал.
+    expect(deriveRoles({ workers: POOL }).find((r) => r.role === 'ai-researcher')?.title).toBe('sma-ai-researcher')
+  })
+
+  it('верхушку предложить нельзя — она не берёт инлайн-задач ни при какой роли', () => {
+    const roles = deriveRoles({ workers: [{ id: 'orchestrator', role: 'orchestrator', provider: 'claude' }, executor('sma-executor')] })
+    expect(roles.map((r) => r.role)).toEqual([EXECUTOR_ROLE])
+  })
+
+  it('машина без работников отвечает пустым списком, а не отсутствием списка', () => {
+    expect(deriveRoles({})).toEqual([])
   })
 })
 

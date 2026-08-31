@@ -843,6 +843,59 @@ export function deriveRules(config = {}, { switchMode, configOnDisk = null } = {
 }
 
 /**
+ * deriveRoles(config) → КОГО ВООБЩЕ МОЖНО НАЗВАТЬ, СТАВЯ ЗАДАЧУ. Одна строка на РОЛЬ, а не на
+ * работника: форма постановки спрашивает «кто это сделает», и ответом на этот вопрос является
+ * роль, а не конкретный счёт.
+ *
+ * ЗАЧЕМ ЭТО ЕСТЬ. Разведение работников и агентов оставляло человеку половину: окно говорило
+ * «чтобы отдать инлайн-задачу специалисту, назовите его роль при постановке» — а назвать её
+ * было негде, поле `role` существовало только для того, кто пишет запросы руками. Обещание,
+ * которое окно даёт и само же не держит, хуже отсутствия обещания.
+ *
+ * ЧТО В СТРОКЕ:
+ *   • `role` — каноническое имя, ровно то, которое поедет на задаче и которое сравнит
+ *     маршрутизатор (одна нормализация на обе стороны, policy/worker-role.mjs);
+ *   • `title` — имя, под которым человек видит этого работника в окне (идентификатор первой
+ *     строки конфига с такой ролью): в списке агентов он читает `sma-ai-researcher`, и форма
+ *     обязана называть его так же;
+ *   • `executor` — ИСПОЛНИТЕЛЬ ли это, приезжает СЧИТАННЫМ. Экран, сравнивающий имя роли со
+ *     словом «executor» у себя, завёл бы второй словарь ролей в другом языке;
+ *   • `ready` — сколько таких работников включено ПРЯМО СЕЙЧАС. Ноль означает «есть, но
+ *     выключен»: маршрут на названную роль ответит `role_unavailable`, и форма не должна
+ *     предлагать выбор, который заведомо вернётся человеку;
+ *   • `total` — сколько их всего, включая выключенных, чтобы окно могло сказать, скольких
+ *     человек не видит в списке и почему.
+ *
+ * ВЕРХУШКА СЮДА НЕ ПОПАДАЕТ ВОВСЕ — она не берёт инлайн-задач ни при какой роли, и предложить
+ * её значило бы предложить выбор, который маршрутизатор отвергает первой же строкой фильтра.
+ *
+ * ПОРЯДОК: исполнитель первым (это выбор по умолчанию), остальные по алфавиту. Порядок строк
+ * конфига здесь не сохраняется намеренно: именно он и был той «случайностью», из-за которой
+ * задача заведена.
+ *
+ * @param {object} config
+ * @returns {{role:string, title:string, executor:boolean, ready:number, total:number}[]}
+ */
+export function deriveRoles(config = {}) {
+  const workersCfg = Array.isArray(config.workers) ? config.workers : []
+  const byRole = new Map()
+  for (const w of workersCfg) {
+    if (!w || isOrchestrator(w)) continue
+    const role = roleOf(w)
+    let entry = byRole.get(role)
+    if (!entry) {
+      entry = { role, title: w.id ?? role, executor: isExecutor(w), ready: 0, total: 0 }
+      byRole.set(role, entry)
+    }
+    entry.total += 1
+    if (w.enabled !== false) entry.ready += 1
+  }
+  return [...byRole.values()].sort((a, b) =>
+    a.executor === b.executor ? a.role.localeCompare(b.role) : a.executor ? -1 : 1,
+  )
+}
+
+/**
  * deriveAccounts(config, windows) → the «Аккаунты» read model: one entry per SUBSCRIPTION
  * (deduped — several workers ride one account), its window bars, the workers riding it, and
  * the MACHINE it lives on.
@@ -3121,6 +3174,10 @@ export async function deriveState(deps = {}) {
     waves,
     awaiting,
     workers,
+    // КОГО МОЖНО НАЗВАТЬ ПРИ ПОСТАНОВКЕ — рядом с ростером, потому что это тот же состав,
+    // свёрнутый по ролям. Ключ присутствует ВСЕГДА: пустой список на машине без работников —
+    // это факт, а отсутствующий ключ форма прочла бы как «выбирать тут нечего никогда».
+    roles: deriveRoles(config),
     orchestrator,
     done,
     spend,

@@ -3020,7 +3020,16 @@ function detectMarker(lines) {
 function eligibleLanes(deps) {
   const { routing, config, windows, clock } = deps
   const workers = Array.isArray(config.workers) ? config.workers : []
-  const roles = [...new Set(workers.filter((w) => w && w.enabled !== false).map((w) => roleOf(w)))]
+  // РАЗНЫЕ РОЛИ СОБИРАЮТСЯ СПИСКОМ И `includes`, А НЕ МНОЖЕСТВОМ. Дисциплина этого файла —
+  // никаких ключевых коллекций в памяти процесса (журнал стережёт её grep-ом): состояние тика
+  // живёт в очереди и на диске, а не в структуре, которая переживает перезапуск только в
+  // головах. Ролей в пуле обычно одна-две, и цена линейного поиска здесь — ничто.
+  const roles = []
+  for (const w of workers) {
+    if (!w || w.enabled === false) continue
+    const role = roleOf(w)
+    if (!roles.includes(role)) roles.push(role)
+  }
   if (roles.length === 0) roles.push(EXECUTOR_ROLE)
   const out = []
   for (const lane of LANES) {

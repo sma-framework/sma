@@ -105,15 +105,21 @@ describe('the dispatcher vocabulary, named word for word', () => {
     'window_exhausted',
     'day_priority_protected',
     'worker_busy',
+    // ТРИНАДЦАТОЕ СЛОВО, И РЕШЕНИЕ ЗА НИМ НАЗВАНО ВСЛУХ, как этот список и требует. «Нет
+    // работника с нужной ролью» отделено от «нет окна» потому, что чинится оно единственным
+    // способом, и этот способ не «подождать»: включить или завести такого работника. Пока
+    // слова не было, задача, названная поимённо, отправляла человека ждать окна, которое ей
+    // ничем не помогло бы, — а иногда и молча уезжала в платный канал, роли не несущий.
+    'role_unavailable',
     'wait_for_window',
     'budget_stop',
     'api_cap_unset',
     'budget_declined',
   ]
 
-  it('carries exactly these twelve codes, in this order', () => {
+  it('carries exactly these thirteen codes, in this order', () => {
     expect(Object.keys(DISPATCH_REASONS)).toEqual(CANON)
-    expect(Object.keys(DISPATCH_REASONS)).toHaveLength(12)
+    expect(Object.keys(DISPATCH_REASONS)).toHaveLength(13)
   })
 
   it('carries a подпись for the busy seat — the word the router used before anyone could sign it', () => {

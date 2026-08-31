@@ -188,15 +188,20 @@ function WorkerRow({ agent, roster }: { agent: AgentCard; roster: readonly Agent
       {open ? (
         <div className="flex flex-col gap-1.5 border-t border-bd pt-2.5 pl-11">
           <div className="flex flex-wrap items-center gap-x-[18px] gap-y-1 text-[12px] text-tx2">
+            {/*
+              ПОСТАВЩИК, А НЕ «ИСПОЛНИТЕЛЬ». Исполнитель теперь означает роль работника — того,
+              кто пишет код, — и оставить это слово за сервисом значило бы назвать одним именем
+              два разных факта на одной карточке.
+            */}
             <span>
-              Исполнитель: <span className="font-semibold text-tx">{providerLabel}</span>
+              Поставщик: <span className="font-semibold text-tx">{providerLabel}</span>
             </span>
             <span>
               Модель:{' '}
-              <span className="font-semibold text-tx">{agent.model ?? 'по умолчанию исполнителя'}</span>
+              <span className="font-semibold text-tx">{agent.model ?? 'по умолчанию поставщика'}</span>
             </span>
             <span>
-              Усилие: <span className="font-semibold text-tx">{agent.effort ?? 'по умолчанию исполнителя'}</span>
+              Усилие: <span className="font-semibold text-tx">{agent.effort ?? 'по умолчанию поставщика'}</span>
             </span>
             <button
               type="button"

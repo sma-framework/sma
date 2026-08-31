@@ -68,7 +68,7 @@
 
 import { DISPATCH_REASONS } from '../front/journal.mjs'
 import { isOrchestrator } from './orchestrator.mjs'
-import { holdsRole, roleOf, roleWanted } from './worker-role.mjs'
+import { holdsRole, roleIsNamed, roleOf, roleWanted } from './worker-role.mjs'
 
 /** Default lane → provider routing. Config may override via config.laneRouting. */
 export const DEFAULT_LANE_ROUTING = Object.freeze({
@@ -260,7 +260,23 @@ export function resolveRoute(task = {}, deps = {}) {
   // чем отвечала всегда (ниже по течению — «нет открытого окна» или платный канал): сказать
   // ей «нет работника с ролью исполнителя» значило бы назвать частный случай общей пустоты
   // именем, которое посылает человека не туда.
-  const roleHeldBySomebody = workers.length === 0 || workers.some((w) => !isOrchestrator(w) && holdsRole(w, wantedRole))
+  //
+  // И ВЫКЛЮЧЕННЫЙ СПЕЦИАЛИСТ — ЭТО ТОТ ЖЕ ФАКТ СОСТАВА, КОГДА ЕГО НАЗВАЛИ ПОИМЁННО. Роль,
+  // которую держат только выключенные строки, проходила эту проверку и умирала ниже: кандидатов
+  // нет → «нет окна» → платный канал. А платный канал роли не несёт вовсе — определение агента
+  // выдаётся сессии ТОЛЬКО через выбранного работника (loop.mjs, resolveWorkerContext), — и
+  // человек, назвавший исследователя, получил бы обычную сессию, не узнав об этом ниоткуда.
+  // Это ровно та подмена, из-за которой задача и заведена, только с другого конца.
+  //
+  // СПРАШИВАЕТСЯ ЭТО ТОЛЬКО У НАЗВАННОЙ РОЛИ, и асимметрия здесь намеренная. Безымянная работа
+  // никого не называла: машина, у которой выключены все работники, отвечает ей тем же, чем
+  // отвечала всегда (закрытые окна, платный канал по правилу денег), и менять это значило бы
+  // чинить не ту болезнь. Названная роль — это выбор человека, и выбор либо исполняется, либо
+  // о нём говорят вслух.
+  const roleHolders = workers.filter((w) => !isOrchestrator(w) && holdsRole(w, wantedRole))
+  const roleHeldBySomebody =
+    workers.length === 0 ||
+    (roleIsNamed(task) ? roleHolders.some((w) => w && w.enabled !== false) : roleHolders.length > 0)
   if (!roleHeldBySomebody) {
     journalDecision(sink, task, 'role_unavailable', { lane, role: wantedRole }, unknownSink)
     return {
@@ -269,7 +285,12 @@ export function resolveRoute(task = {}, deps = {}) {
       model: null,
       effort: null,
       useApiFallback: false,
-      reason: `на этой машине нет работника с ролью «${wantedRole}»`,
+      // ДВА СЛУЧАЯ, И ОНИ РАЗЛИЧЕНЫ СЛОВАМИ: такого работника нет вовсе — или он есть, но
+      // выключен. Действие человека в этих случаях разное (завести против включить), а фраза
+      // «нет работника с такой ролью» о выключенном звучала бы как ложь: он его видит в окне.
+      reason: roleHolders.length
+        ? `работник с ролью «${wantedRole}» на этой машине выключен`
+        : `на этой машине нет работника с ролью «${wantedRole}»`,
       reasonCode: 'role_unavailable',
     }
   }

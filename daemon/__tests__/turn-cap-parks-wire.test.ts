@@ -328,16 +328,21 @@ describe('прочие причины неудачи повторяются ка
    * здесь: «эта причина больше не повторяется» — решение про чужую подписку, и оно должно быть
    * принято человеком, а не просочиться правкой соседнего файла.
    */
-  it('человека ждёт РОВНО одна причина из всей таксономии — остальные сохраняют свой повтор', () => {
-    expect([...AWAITS_A_PERSON]).toEqual(['turns_exhausted'])
+  it('человека ждут РОВНО две причины из всей таксономии — остальные сохраняют свой повтор', () => {
+    // ВТОРОЕ СЛОВО, И РЕШЕНИЕ ЗА НИМ НАЗВАНО ЗДЕСЬ, как этот эталон и требует. Роли, которую
+    // просит работа, не держит никто (или держит один выключенный) — и перевыдача сколько
+    // угодно раз даст ровно тот же ответ: состав машины от ожидания не меняется. Чинит это
+    // человек, одним из двух: включить работника с такой ролью или переставить роль на задаче.
+    expect([...AWAITS_A_PERSON]).toEqual(['turns_exhausted', 'role_unavailable'])
     expect(failureAwaitsAPerson('turns_exhausted')).toBe(true)
+    expect(failureAwaitsAPerson('role_unavailable')).toBe(true)
 
     const stillRetried = FAIL_REASONS.filter((r: string) => !failureAwaitsAPerson(r))
     expect(stillRetried).toContain('provider_error')
     expect(stillRetried).toContain('liveness_killed')
     expect(stillRetried).toContain('runtime_offline')
     expect(stillRetried).toContain('tests_red')
-    expect(stillRetried).toHaveLength(FAIL_REASONS.length - 1)
+    expect(stillRetried).toHaveLength(FAIL_REASONS.length - 2)
 
     // Незнакомое слово повтор НЕ теряет: забыть причину в списке нельзя так, чтобы она молча
     // перестала повторяться.

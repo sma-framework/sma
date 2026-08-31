@@ -127,6 +127,23 @@ export function roleWanted(task) {
 }
 
 /**
+ * roleIsNamed(task) → сказал ли человек о роли ВСЛУХ.
+ *
+ * Отдельно от `roleWanted` потому, что это РАЗНЫЕ вопросы, и различие между ними стоит денег.
+ * «Кого просит эта работа» отвечается всегда — без слова о роли это исполнитель. «Назвал ли
+ * кто-то эту роль» отвечается только строкой на задаче, и от него зависит, чем машина отвечает
+ * на выключенного специалиста: работу, названную поимённо, тихо подменить нельзя (маршрут
+ * ответит `role_unavailable`), а безымянную — можно и нужно вести так, как она велась всегда.
+ *
+ * @param {unknown} task
+ * @returns {boolean}
+ */
+export function roleIsNamed(task) {
+  if (!task || typeof task !== 'object') return false
+  return normalizeRole(task.role) !== null
+}
+
+/**
  * holdsRole(profile, role) → держит ли этот работник ровно эту роль.
  *
  * @param {unknown} profile

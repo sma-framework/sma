@@ -307,7 +307,12 @@ describe('ПРОВОД ДО РАЗМЕТКИ: пара из состояния �
   })
 
   it('нажатие по работнику открывает историю — обработчик присоединён к карточке', () => {
-    expect(propOf(TEAM, 'WorkerCard', 'onOpenHistory')).toContain('setOpenedId(w.id)')
+    // ПРОВОД ТЕПЕРЬ ИДЁТ ЧЕРЕЗ СЕКЦИЮ, И ЭТО ПРОВЕРЯЕТСЯ ЦЕЛИКОМ. Экран рисует две сетки —
+    // работников и агентов — одной секцией, поэтому открывающий едет к карточке двумя шагами:
+    // экран отдаёт секции ИМЯ открывающего, секция подставляет ему работника своей строки.
+    // Проверять только второй шаг значило бы не заметить день, когда первый отвяжут.
+    expect(propOf(TEAM, 'RosterSection', 'onOpenHistory')).toContain('setOpenedId')
+    expect(propOf(TEAM, 'WorkerCard', 'onOpenHistory')).toContain('onOpenHistory(w.id)')
     expect(CARD).toContain('onClick={onOpenHistory}')
   })
 
