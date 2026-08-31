@@ -66,7 +66,10 @@ export function ReadyColumn({
   const toldPct = total > 0 ? Math.round((answered / total) * 100) : 0
 
   return (
-    <div className="flex w-[356px] flex-none flex-col gap-4">
+    // Своя ширина — только там, где рядом с разговором для неё есть место; порог тот же, на
+    // котором ряд в index.tsx разворачивается из столбца. Ниже колонка занимает всю ширину и
+    // едет под разговор: 356px, оставленные безусловными, вынесли бы страницу вбок на телефоне.
+    <div className="flex w-full flex-none flex-col gap-4 lg:w-[356px]">
       <section className="rounded-[14px] border border-bd bg-card px-5 pt-[18px] pb-1.5 shadow-panel">
         <div className="flex items-center justify-between gap-3 pb-3">
           <span className="text-[11.5px] font-semibold tracking-[0.09em] text-tx3 uppercase">
