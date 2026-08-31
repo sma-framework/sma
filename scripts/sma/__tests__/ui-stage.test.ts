@@ -27,6 +27,7 @@ import {
   STAGE_CHAT_TURNS,
   STAGE_DESIGN_ATTEMPT,
   STAGE_DESIGN_TASK,
+  STAGE_DONE_TASK,
   STAGE_HOST,
   STAGE_PROJECTS,
   URL_ENV,
@@ -36,6 +37,7 @@ import {
   stageCommandArgs,
   stageConfig,
   stageDiskConfig,
+  stageDoneAttempts,
   stageProjectFiles,
   stageProjects,
   stageQueue,
@@ -517,6 +519,47 @@ describe('the wire: one command raises the window, the run engine photographs it
           expect(store.path.startsWith(homedir() + '/.claude'), store.path).toBe(false)
           expect(store.path.startsWith(join(homedir(), '.claude')), store.path).toBe(false)
         }
+      })
+    },
+    60000
+  )
+
+  it(
+    'раскрытие готовой работы читает стенограмму подхода, а не блокирующее «не реализовано»',
+    async () => {
+      await onStage(async ({ url }) => {
+        // ИЗМЕРЕНО НА ПОДНЯТОЙ СЦЕНЕ, а не прочитано в исходнике. Раскрытая строка принятой
+        // работы предлагает стенограмму у КАЖДОГО подхода и зовёт за ней `GET /api/attempt/:id`
+        // — тем же идентификатором, каким его собирает клиент: «задача # подход». Сцена не
+        // подключала читателя журнала попыток, дверь отвечала 501, и любой живой прогон,
+        // дошедший до раскрытия готового, приносил блокирующую находку о чужой работе: вердикт
+        // переставал отвечать на вопрос, ради которого прогон и запускали.
+        for (const row of stageDoneAttempts()) {
+          const id = `${STAGE_DONE_TASK.id}#${row.attempt}`
+          const path = `/api/attempt/${encodeURIComponent(id)}?tail=200`
+          const got = await ask(url, path)
+          expect(got.status, `${path} → ${got.text}`).toBe(200)
+          expect(got.text).not.toContain('not implemented')
+
+          // …и «отвечает» здесь значит «под дверью есть запись». Пустой журнал — это ТОТ ЖЕ
+          // ответ, который сцена дала бы, будучи подключённой к чужому каталогу реестра, так
+          // что один только код 200 провода не доказывает.
+          const log = JSON.parse(got.text)
+          expect(log.lines.length, path).toBeGreaterThan(0)
+          // Записка о подходе читается тем же разбором, каким её читает живой прогон: значит
+          // под дверью лежат строки настоящей формы, а не похожие на неё.
+          expect(typeof log.note, path).toBe('string')
+          expect(log.digest.filesChanged.length, path).toBeGreaterThan(0)
+        }
+
+        // Возврат и приёмка ГОВОРЯТ РАЗНОЕ: одинаковые стенограммы у двух подходов показывали
+        // бы, что раскрытие умеет молчать о разнице между «вернули» и «приняли».
+        const [first, second] = await Promise.all(
+          stageDoneAttempts().map(async (row) =>
+            JSON.parse((await ask(url, `/api/attempt/${encodeURIComponent(`${STAGE_DONE_TASK.id}#${row.attempt}`)}`)).text),
+          ),
+        )
+        expect(first.note).not.toBe(second.note)
       })
     },
     60000

@@ -113,6 +113,9 @@ import {
   resolveWorkerContext,
 } from './front/harness.mjs'
 import { reportTaskEvent } from './report.mjs'
+// The window's entry link is assembled in ONE module shared with the CLI verb that opens it,
+// so the boot line and `sma open` can never disagree about the same door.
+import { entryLines, windowAddress } from '../../scripts/sma/lib/window.mjs'
 import {
   applyProjectMigration,
   previewProjectMigration,
@@ -1951,15 +1954,28 @@ if (isMain) {
     .then(() => {
       // succeed loud too: a silent boot reads as a hang from the operator's chair — but
       // «green» is a CLAIM, and it is only made when the pool can actually run a task.
-      const where = `http://${park.config.bind}:${park.config.port}`
+      // «Armed at <address>» was the whole of what a boot said about the window, and it was
+      // an address nobody could enter by: a bare visit answers 401 by design, and the one
+      // exchange that opens it was documented nowhere the boot could be read. It also
+      // printed the BIND verbatim, so a daemon listening on 0.0.0.0 announced a link no
+      // browser will dial. Both halves are fixed in one place (lib/window.mjs), which is
+      // also where the rule about what may be written into a LOG lives — the token goes to
+      // a person's own console and never into a log file.
+      const where = windowAddress(park.config)
+      const entry = entryLines({ ...park.config, isTty: process.stdout.isTTY === true })
+      const sayEntry = () => {
+        for (const line of entry) console.log(`[SmaDaemon] ${line}`)
+      }
       const pool = poolReadiness(park.config)
       if (pool.total > 0 && pool.blocked.length === 0) {
         console.log(
           `[SmaDaemon] All systems green: queue up, front armed at ${where}, loop ticking. Buckle up, soldier — the park is live.`
         )
+        sayEntry()
         return
       }
       console.log(`[SmaDaemon] Queue up, front armed at ${where}, loop ticking.`)
+      sayEntry()
       if (pool.total === 0) {
         console.log('[SmaDaemon] NOT green: no enabled worker in the config, so no task can be run.')
         return

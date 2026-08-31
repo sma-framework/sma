@@ -102,6 +102,7 @@ import { selectProject } from '../../daemon/src/config.mjs'
 import { appendTurn, readHistory } from '../../daemon/src/front/chat.mjs'
 import { createEventHub } from '../../daemon/src/front/events.mjs'
 import { readHarness } from '../../daemon/src/front/harness.mjs'
+import { attemptIdFor } from '../../daemon/src/front/journal.mjs'
 import { createFrontServer } from '../../daemon/src/front/server.mjs'
 import {
   deriveBacklog,
@@ -110,7 +111,7 @@ import {
   derivePhaseIndex,
   deriveState,
 } from '../../daemon/src/front/state.mjs'
-import { recordAttempt } from '../../daemon/src/queue/attempt-ledger.mjs'
+import { createAttemptLogWriter, readAttemptLog, recordAttempt } from '../../daemon/src/queue/attempt-ledger.mjs'
 import { readCoordinationLedger, readMergeJournal } from '../../daemon/src/main.mjs'
 import { MERGE_SLOT_NAME } from './lib/constants.mjs'
 import { scopeClaimSlug } from './lib/collision.mjs'
@@ -138,6 +139,7 @@ import {
   stageConfig,
   stageDiskConfig,
   stageDoneAttempts,
+  stageDoneLog,
   stageDoneMergeReceipt,
   stageGit,
   stageProjectFiles,
@@ -319,7 +321,15 @@ async function main() {
   recordAttempt(home, { ...STAGE_DESIGN_ATTEMPT })
   // …и подходы ПРИНЯТОЙ работы: два, потому что первый вернули, и второй со следом уборки —
   // именно с него раскрытие берёт минуту приёмки и сохранённую вершину снесённой ветки.
-  for (const attempt of stageDoneAttempts({ now: Date.now() })) recordAttempt(home, attempt)
+  // У каждого — СВОЯ СТЕНОГРАММА, положенная писателем журнала попыток: раскрытие готовой
+  // строки открывает её у каждого подхода, и пустая запись читается на экране как «стенограммы
+  // нет». Пишет её настоящий писатель, поэтому фикстура не может разойтись с форматом, который
+  // читает дверь.
+  for (const attempt of stageDoneAttempts({ now: Date.now() })) {
+    recordAttempt(home, attempt)
+    const log = createAttemptLogWriter({ dir: home, attemptId: attemptIdFor(attempt.taskId, attempt.attempt) })
+    for (const entry of stageDoneLog(attempt)) log.append(entry)
+  }
   // Очередь сцены, помнящая нажатия человека: без неё дверь приёмки отвечала «не реализовано»,
   // а на экране это читается как «этого в продукте нет».
   const queue = stageQueue({ now: () => Date.now() })
@@ -345,6 +355,15 @@ async function main() {
       },
       dataDir: home,
       ledgerDir: home,
+      // ═══ СТЕНОГРАММА ПОПЫТКИ — ЕДИНСТВЕННЫЙ ШОВ РЕЕСТРА БЕЗ ЗАПАСНОГО ПУТИ ═══════════
+      // Все прочие читатели реестра, не найдя объекта `ledger`, падают обратно на `ledgerDir`
+      // выше — поэтому на сцене они и отвечали. Дверь `GET /api/attempt/:id` такого пути не
+      // имеет: без `readAttemptLog` она отвечает 501. Раскрытие ПРИНЯТОЙ работы зовёт её у
+      // каждого подхода, и живой прогон сцены получал из-за этого блокирующую находку о чужой
+      // работе — вердикт переставал отвечать на вопрос «прошла ли проверяемая правка».
+      // Читатель здесь — реестра собственный, по каталогу сцены; 501 остаётся честным ответом
+      // там, где реестра действительно нет.
+      ledger: { readAttemptLog: (args) => readAttemptLog({ ...args, dir: home }) },
       launchDir: home,
       chatDir: home, // the transcript lives beside the scene's own data, exactly as the daemon's does
       // The tree being SERVED — where the project's own skill and agent stores are looked for,

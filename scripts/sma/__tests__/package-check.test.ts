@@ -162,6 +162,19 @@ describe('package-check — the badge law, and only the badge law (Test 4)', () 
     const stale = checkPackage({ pkgRoot: ROOT, io: io({ tests: 1880, files: 116 }) })
     expect(stale.violations.map((v: { code: string }) => v.code)).toEqual(['badge-stale'])
   })
+
+  it('REFUSES a receipt measured on a dirty worktree under --strict (the release question)', () => {
+    // A number measured over uncommitted files counts something nobody can name or
+    // reproduce, and a release is exactly where that stops being tolerable. The flag is
+    // in the receipt, so the gate reaches this verdict with no git anywhere near it —
+    // and the bare count above stays the number the scorer has always read.
+    const receipt = { tests: 1866, files: 116, commit: 'a'.repeat(40), dirty: true }
+    const gated = checkPackage({ pkgRoot: ROOT, io: io(receipt), strict: true })
+    expect(gated.violations.map((v: { code: string }) => v.code)).toEqual(['badge-receipt-dirty'])
+    expect(gated.violations[0].detail).toMatch(/commit first/)
+    // measured on a committed tree, the same receipt passes the same gate
+    expect(checkPackage({ pkgRoot: ROOT, io: io({ ...receipt, dirty: false }), strict: true }).violations).toEqual([])
+  })
 })
 
 describe('package-check — the vendored daemon ledger (Test 5)', () => {

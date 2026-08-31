@@ -138,7 +138,8 @@ import { scanEstate, enrollSelections } from './import-scanner.mjs'
 import { createOnboarding } from './onboarding.mjs'
 import { namedPaths, missingPaths } from './tree-probe.mjs'
 import { collectDiagnostics } from './diagnostics.mjs'
-import { projectEntry, codeTreeOf, planningHomeOf } from '../config.mjs'
+import { projectEntry, codeTreeOf, planningHomeOf, pipelineMaxTurns } from '../config.mjs'
+import { taskTurnCap, burnedTurnCapsOf, TURN_SIZE_LABELS } from '../policy/turn-budget.mjs'
 // NOTE: diagnostics.mjs is STATICALLY imported for the same reason as the two below: it is
 // pure over an injected os/process/fs, it writes nothing, it reaches no model and no spawn,
 // and its whole job is to REFUSE to carry anything — there is no capability here to gate.
@@ -1277,6 +1278,19 @@ async function handleTask({ res, params, config, deps }) {
       // the prompt builder does, so the person and the worker read the same sentences.
       description: row.description ?? null,
       acceptance: row.acceptance ?? null, // the DoR contract, «обещано»
+      // ═══ СКОЛЬКО ХОДОВ ЭТОЙ РАБОТЕ ДАДУТ — СКАЗАНО ДО ЗАПУСКА, А НЕ ПОСЛЕ ══════
+      //
+      // Число считалось и раньше, но человеку его не показывали НИГДЕ: оно ехало на командную
+      // строку работника и в строку реестра, и до карточки доезжало только задним числом,
+      // сгоревшим потолком красной строки. Из-за этого целый класс ошибки был невидим —
+      // обещание, написанное строкой вместо списка, читалось одним пунктом, работа выходила
+      // «мелкой» и получала базовый потолок. Заметить это было нечем, пока попытка не сгорала.
+      //
+      // Спрашивается ТА ЖЕ функция и с теми же тремя входами, что и у тика перед запуском
+      // (`turnBudgetFor` в loop.mjs): база человека, поля задачи, сгоревшие потолки из
+      // реестра. Второе вычисление того же числа — это ровно тот разрыв, из-за которого
+      // карточка обещала бы одно, а процесс уходил с другим.
+      turnPlan: turnPlanOf(config, row, rawAttempts),
       // ═══ ВО ЧТО ОБОШЛАСЬ ЭТА ЗАДАЧА ЦЕЛИКОМ ══════════════════════════════════
       //
       // Сумма четырёх чисел по ВСЕМ её попыткам — потому что цену человек платит за задачу, а
@@ -1393,6 +1407,26 @@ function mergeRollbackFields(raw) {
  * лежит в квитанциях, написанных до того, как их стали писать целиком, и эти записи —
  * журнал, а не витрина: их не переписывают, чтобы выглядели опрятнее.
  */
+/**
+ * turnPlanOf(config, row, attempts) → `{size, sizeLabel, cap, ceiling, escalatedFrom, signals}`.
+ *
+ * ОДНО ВЫЧИСЛЕНИЕ НА ДВЕ ПОВЕРХНОСТИ. Тик спрашивает `taskTurnCap` перед запуском, карточка
+ * спрашивает её же — с той же базой человека, теми же полями задачи и теми же сгоревшими
+ * потолками из реестра. Своя арифметика у двери была бы вторым мнением о числе, с которым
+ * работник уйдёт в процесс, и разошлась бы с первым в первый же день.
+ *
+ * СЛОВО РАЗМЕРА ЕДЕТ ГОТОВЫМ (`sizeLabel`), по образцу `reasonLabel`: замкнутый список слов
+ * живёт рядом с механизмом, который их порождает, и окно не заводит второй словарь.
+ */
+function turnPlanOf(config, row, attempts) {
+  const plan = taskTurnCap({
+    base: pipelineMaxTurns(config),
+    task: row,
+    burnedCaps: burnedTurnCapsOf(Array.isArray(attempts) ? attempts : []),
+  })
+  return { ...plan, sizeLabel: TURN_SIZE_LABELS[plan.size] ?? null }
+}
+
 function mergeReceiptWords(raw) {
   let receipt = raw
   if (typeof raw === 'string') {
@@ -2211,6 +2245,13 @@ async function handleReturn({ req, res, config, deps }) {
   // полосе «prod»: тик больше не знал, каким гейтом её судить, а полосу ей выдавали чужую.
   // Конвертом владеет дверь; вызывающие его не трогают и трогать не могут — ключа тела у него
   // нет, потому что это не мнение человека, а факт о задаче.
+  //
+  // СЛОВА ЗАДАЧИ ЕДУТ ПО ТОЙ ЖЕ ПРИЧИНЕ, И ЭТО ТОТ ЖЕ ДЕФЕКТ, ТОЛЬКО ДОРОЖЕ. Обещание,
+  // описание и оценка перезаписью стирались молча — и работа возвращалась в очередь БЕЗ
+  // условий приёмки: работник второй попытки не знал, чем она закрывается, а карточка
+  // показывала пустоту на месте того, что человек написал. Хуже того, ровно по этим полям
+  // считается потолок ходов, так что нажатие «поднять потолок» стирало признаки размера —
+  // единственный путь «повторить ТУ ЖЕ строку» повторял её огрызок.
   const requeue = await enqueueOrExplain(res, deps.adapter, {
     id: taskId,
     source: 'return',
@@ -2218,6 +2259,9 @@ async function handleReturn({ req, res, config, deps }) {
     title: (typeof v.title === 'string' && v.title.trim()) || nameFromRow || taskId,
     lane: v.lane || (prevRow && prevRow.lane) || 'prod',
     ...(prevData ? { data: prevData } : {}),
+    ...(prevRow && prevRow.acceptance != null ? { acceptance: prevRow.acceptance } : {}),
+    ...(prevRow && prevRow.description != null ? { description: prevRow.description } : {}),
+    ...(prevRow && Number.isFinite(prevRow.storyPoints) ? { storyPoints: prevRow.storyPoints } : {}),
     note,
     attempt: prevAttempt + 1,
   })
