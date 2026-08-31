@@ -75,6 +75,27 @@ import { ATTEMPT_LOG_LINE_CAP } from '../front/journal.mjs'
 
 /** The schema tag on `run.json` — a reader must never have to guess which shape it holds. */
 export const RUN_SCHEMA = 'sma-run/1'
+/**
+ * ОТКАЗ ВТОРОМУ ПИСАТЕЛЮ — одно слово, которым каталог попытки защищает уже записанную правду.
+ *
+ * ЗАЧЕМ ОНО ПОЯВИЛОСЬ, ПО ОТПЕЧАТКАМ, А НЕ ПО РАССУЖДЕНИЮ. У живой задачи в каталоге «попытка
+ * 2» лежал промпт, побайтно равный промпту попытки 1, тогда как промпт второй попытки видели
+ * живьём и он был другим: в каталог писала попытка, стартовавшая четырьмя секундами позже под
+ * тем же номером. Каталог назван номером подхода, номер повторился — и запись первого писателя
+ * молча ушла под запись второго.
+ *
+ * ЧТО ИМЕННО ЛОМАЕТСЯ ОТ ПЕРЕЗАПИСИ. Не «файлы устарели», а разбор попытки начинает ВРАТЬ:
+ * отпечаток промпта, свидетель снимка и квитанция отвечают на вопрос «что видел работник в
+ * ЭТОЙ попытке» данными чужого подхода, и отличить это от честного ответа нельзя ничем.
+ *
+ * ПОЧЕМУ ОТКАЗ, А НЕ ВТОРОЕ ИМЯ КАТАЛОГА. Имя попытки — это `<taskId>#<n>`, и его знает не
+ * только этот модуль: по нему названы стенограмма в реестре, строка журнала и путь на карточке.
+ * Переименовать каталог значило бы развести его с ними; отказать — значит оставить провод как
+ * есть и потерять ровно одну запись вместо ровно одной правды. Уникальность номера чинится
+ * там, где номер выдают (очередь), а это — последний пояс, который держит, даже если тот
+ * порвётся.
+ */
+export const RUN_DIR_TAKEN = 'run_dir_taken'
 /** The schema tag on `receipt.json`. */
 export const RECEIPT_SCHEMA = 'sma-receipt/1'
 /** How many attempt directories the project keeps before the oldest are swept. */
@@ -235,6 +256,39 @@ export function attemptRunDir({ runsDir, attemptId } = {}) {
 }
 
 /**
+ * runOwnerOf({dir, fsImpl}) → КТО УЖЕ ЗАПИСАЛ СЕБЯ В ЭТОТ КАТАЛОГ, или `null`, если никто.
+ *
+ * ЗАНЯТОСТЬ ЧИТАЕТСЯ ПО `run.json`, А НЕ ПО СУЩЕСТВОВАНИЮ КАТАЛОГА, и это не деталь: каталог
+ * создаёт СПАВН в самом начале попытки — до того, как хоть что-нибудь о ней известно, — чтобы
+ * страж внутри работника знал, куда класть свои квитки. Пустой каталог поэтому означает
+ * «попытка идёт», а занят он ровно тогда, когда в нём лежит чья-то запись начала.
+ *
+ * НЕЧИТАЕМЫЕ БАЙТЫ — ТОЖЕ ЗАНЯТО. Испорченный `run.json` не даёт назвать владельца по имени, но
+ * он доказывает, что сюда уже писали; прочитать его как «свободно» значило бы затереть чужую
+ * запись именно там, где с ней уже что-то не так.
+ *
+ * @returns {{attemptId:(string|null), startedAt:(string|null), sessionId:(string|null)}|null}
+ */
+export function runOwnerOf({ dir, fsImpl } = {}) {
+  if (typeof dir !== 'string' || dir.trim() === '') return null
+  const fs = io(fsImpl)
+  let raw
+  try {
+    raw = String(fs.readFileSync(join(dir, 'run.json'), 'utf8'))
+  } catch {
+    return null // никто здесь не писал — каталог свободен
+  }
+  let record = null
+  try {
+    record = JSON.parse(raw)
+  } catch {
+    /* байты есть, прочесть их нельзя — владелец безымянный, но каталог занят */
+  }
+  const said = (k) => (record && typeof record === 'object' && typeof record[k] === 'string' ? record[k] : null)
+  return { attemptId: said('attemptId'), startedAt: said('startedAt'), sessionId: said('sessionId') }
+}
+
+/**
  * The values of `env` whose NAMES say they are secret — the needles `sanitizeRun` looks for.
  * The caller passes the spawn's own environment: nothing else knows which of its names the
  * account happens to use for a token on this host.
@@ -344,7 +398,14 @@ export function ledgerRef({ ledgerPath, fsImpl } = {}) {
  * from an attempt still running, and the difference between «it has not ended yet» and «it
  * ended and nobody wrote down how» is the whole reason this directory exists.
  *
- * @returns {{dir:(string|null)}}
+ * ОДИН КАТАЛОГ — ОДНА ПОПЫТКА, И ВТОРОЙ ПИСАТЕЛЬ ПОЛУЧАЕТ ОТКАЗ (см. RUN_DIR_TAKEN). Запись,
+ * которая уже лежит, не переписывается ничем: она — точка возврата, и точка возврата, которую
+ * можно затереть следующим подходом, точкой возврата не является. Отказ возвращается ЧЕСТНЫМ
+ * отсутствием каталога (`dir: null`) и НАЗЫВАЕТСЯ в журнале оператора — попытка без каталога
+ * бывает и по другим причинам, и человек обязан уметь отличить «номер был занят» от «диск не
+ * дал писать».
+ *
+ * @returns {{dir:(string|null), refused?:string, owner?:object}}
  */
 export function writeRunStart({ runsDir, attemptId, run, guards, ledgerPath, secretValues, fsImpl, log } = {}) {
   if (typeof runsDir !== 'string' || runsDir.trim() === '' || !attemptId) {
@@ -356,6 +417,13 @@ export function writeRunStart({ runsDir, attemptId, run, guards, ledgerPath, sec
   // created this directory before the process existed, and if the two ever spelled the path
   // differently the record would land beside the tickets instead of among them.
   const dir = attemptRunDir({ runsDir, attemptId })
+  // ЗАНЯТО — ЗНАЧИТ ЧУЖОЕ. Спрошено ДО первой записи: отказ после того, как `run.json` уже
+  // переписан, был бы отказом, который сам сделал то, что запрещает.
+  const owner = runOwnerOf({ dir, fsImpl })
+  if (owner) {
+    say(log, { type: 'run_dir.taken', reason: RUN_DIR_TAKEN, attemptId: String(attemptId), dir, owner })
+    return { dir: null, refused: RUN_DIR_TAKEN, owner }
+  }
   try {
     fs.mkdirSync(dir, { recursive: true })
     const record = sanitizeRun({ schema: RUN_SCHEMA, attemptId: String(attemptId), ...(run || {}) }, { secretValues })

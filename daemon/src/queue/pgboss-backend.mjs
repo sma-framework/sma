@@ -500,8 +500,65 @@ export function createPgBossQueue({
     return true
   }
 
+  /**
+   * lastRowOf(taskId) → ПОСЛЕДНЕЕ СЛОВО ЭТОЙ ОЧЕРЕДИ О ЗАДАЧЕ: `{data, retry_count, state}` самой
+   * поздней её строки, в каком бы состоянии та ни была, или `null`.
+   *
+   * ОДНО ВЫРАЖЕНИЕ НА ДВУХ СПРАШИВАЮЩИХ. Повтор сорвавшейся работы спрашивает «есть ли что
+   * повторять», постановка — «какой подход эта строка уже прожила»; вопрос под ними один, и
+   * второе его написание разошлось бы с первым молча — ровно тем способом, каким разъезжаются
+   * два счётчика одного и того же.
+   *
+   * FAIL-OPEN, И В СТОРОНУ РАБОТЫ: нечитаемая строка стоит одного несделанного уточнения, а
+   * не отказанной постановки.
+   */
+  async function lastRowOf(taskId) {
+    if (typeof taskId !== 'string' || taskId === '') return null
+    try {
+      const res = await runSql(
+        `SELECT data, retry_count, state FROM pgboss.job WHERE data->>'id' = $1 ORDER BY created_on DESC LIMIT 1`,
+        [taskId],
+      )
+      const rows = res && Array.isArray(res.rows) ? res.rows : []
+      return rows[0] || null
+    } catch (err) {
+      log(`last row of ${taskId} not resolved: ${maskError(err)}`)
+      return null
+    }
+  }
+
+  /**
+   * livedAttemptOf(taskId) → НОМЕР ПОДХОДА, КОТОРЫЙ ЭТА СТРОКА УЖЕ ПРОЖИЛА, или NaN.
+   *
+   * Считается ТОЙ ЖЕ арифметикой, какой отвечает читающий путь (`attemptNumberOf`), и с тем же
+   * различением: у строки, которая ждёт выдачи, метка захвата принадлежит ПРОШЛОЙ попытке, у
+   * идущей — нынешней. Вторая арифметика здесь была бы вторым мнением о том, какой сейчас подход.
+   */
+  async function livedAttemptOf(taskId) {
+    const row = await lastRowOf(taskId)
+    const data = row && row.data && typeof row.data === 'object' ? row.data : null
+    if (!data) return NaN
+    return attemptNumberOf(data, row.retry_count, { unclaimed: WAITING_STATES.includes(String(row.state)) })
+  }
+
   async function enqueue(task) {
     const norm = validateTask(task) // DoR / forge / allowlist gate — same path as the memory backend
+    // ═════ НОМЕР ПОДХОДА МИНТИТ ОЧЕРЕДЬ, А НЕ ВЫЗЫВАЮЩИЙ ═════
+    //
+    // Строка, которую ставят заново, уже прожила какие-то подходы, и знает о них ОНА, а не
+    // дверь. Двери считали сами — возврат с замечанием, решение о куске сборки, повтор
+    // сорвавшейся работы, — каждая по своей строке и с fail-open, отдающим единицу; та из них,
+    // что прочитала устаревшую строку, честно называла номер, который задача уже прожила. Цена
+    // измерена: каталог попытки назван номером, номер повторился, и запись первого подхода ушла
+    // под запись второго молча (см. RUN_DIR_TAKEN в run-dir.mjs).
+    //
+    // НАЗВАННЫЙ ДВЕРЬЮ НОМЕР — ПРЕДЛОЖЕНИЕ. Больший принимается как есть: «не повторять
+    // прожитое» — это не «считать за дверь».
+    //
+    // СЛИПШУЮСЯ ПОСТАНОВКУ ЭТО НЕ ТРОГАЕТ: у неё `send` не пишет payload вовсе, так что
+    // поднятый номер никуда не едет — ждущая строка остаётся собой.
+    const lived = await livedAttemptOf(norm.id)
+    if (Number.isFinite(lived)) norm.attempt = Math.max(norm.attempt, lived + 1)
     // A PIECE OF A BATCH ARRIVES HELD, and is released when its turn comes (releaseBatchTurns).
     // The reason it cannot be filtered at the fetch instead is the same one that put the
     // request row in a queue of its own: the fetch IS the claim, so a piece recognised as «not
@@ -1264,19 +1321,9 @@ export function createPgBossQueue({
    */
   async function reissue(taskId) {
     if (typeof taskId !== 'string' || taskId === '') return false
-    let row = null
-    try {
-      const res = await runSql(
-        `SELECT data, retry_count, state FROM pgboss.job WHERE data->>'id' = $1 ORDER BY created_on DESC LIMIT 1`,
-        [taskId],
-      )
-      const rows = res && Array.isArray(res.rows) ? res.rows : []
-      row = rows[0] || null
-    } catch (err) {
-      // Нечитаемая строка стоит одного несделанного повтора; проход попробует снова через тик.
-      log(`reissue of ${taskId} not resolved: ${maskError(err)}`)
-      return false
-    }
+    // Нечитаемая строка стоит одного несделанного повтора; проход попробует снова через тик.
+    // Спрошено ТЕМ ЖЕ выражением, каким постановка спрашивает о прожитом подходе (lastRowOf).
+    const row = await lastRowOf(taskId)
     const data = row && row.data && typeof row.data === 'object' ? row.data : null
     if (!data) return false
     if (!FAILED_STATES.includes(String(row.state))) return false

@@ -31,7 +31,7 @@ import { tick, rulesInCopy } from '../src/loop.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { recordAttempt, readAttempts, createAttemptLogWriter } from '../src/queue/attempt-ledger.mjs'
-import { pruneRunDirs, ledgerRef, runsDirOf, sanitizeRun, secretValuesOf, RUN_SCHEMA, RECEIPT_SCHEMA, RUN_FILES } from '../src/queue/run-dir.mjs'
+import { pruneRunDirs, ledgerRef, runsDirOf, sanitizeRun, secretValuesOf, RUN_SCHEMA, RECEIPT_SCHEMA, RUN_FILES, RUN_DIR_TAKEN } from '../src/queue/run-dir.mjs'
 
 // ── the temporary world ────────────────────────────────────────────────────────────────────
 
@@ -596,5 +596,74 @@ describe('шестой файл каталога прогона — свидет
     expect(first).toContain('снимок первой попытки')
     expect(second).toContain('снимок ВТОРОЙ попытки')
     expect(second, 'вторая попытка судится по снимку, которого ей не давали').not.toContain('первой попытки')
+  })
+})
+
+/**
+ * ═══ ОДИН КАТАЛОГ — ОДНА ПОПЫТКА: ВТОРОЙ ПИСАТЕЛЬ ПОЛУЧАЕТ ОТКАЗ ════════════════
+ *
+ * ЭТО ДЕЛО НАПИСАНО ПО ОТПЕЧАТКАМ, А НЕ ПО РАССУЖДЕНИЮ. У живой задачи в каталоге «попытка 2»
+ * лежал промпт, побайтно равный промпту попытки 1, тогда как промпт второй попытки наблюдали
+ * живьём и он был другим. Значит в каталог попытки 2 писала ТРЕТЬЯ попытка, стартовавшая через
+ * четыре секунды после второй: номер подхода повторился, каталог назван номером — и запись
+ * первого писателя молча ушла под запись второго.
+ *
+ * ЧЕМ ЭТО ПЛОХО, ОДНОЙ ФРАЗОЙ: разбор «что работник видел в ЭТОЙ попытке» после такой
+ * перезаписи врёт — отпечаток промпта, снимок контекста и квитанция принадлежат чужому
+ * подходу, а закон о журнале попытки как точке возврата держится ровно на том, что они
+ * принадлежат своему.
+ *
+ * ЧТО ЗДЕСЬ ДОКАЗЫВАЕТСЯ — ПРОВОД, А НЕ ВЫЧИСЛЕНИЕ. Гоняются два НАСТОЯЩИХ тика над одним и
+ * тем же проектом под одним и тем же номером подхода, и после второго открываются файлы
+ * первого. Дело, звавшее писателя напрямую, прошло бы и с перерезанным проводом.
+ *
+ * И ОТКАЗ ОБЯЗАН БЫТЬ НАЗВАН ВСЛУХ. Молчаливый отказ — такая же потеря следа, как молчаливая
+ * перезапись: человек, у которого каталога нет, должен уметь узнать, что каталога нет ПОТОМУ
+ * ЧТО номер повторился, а не потому что попытка ничего не оставила.
+ */
+describe('каталог прогона принадлежит ОДНОЙ попытке', () => {
+  const promptOf = (text: string) => ({
+    buildArgs: () => ({ bin: 'claude', args: ['--print', '-', '--allowedTools', 'Read,Bash'], env: { ...SPAWN_ENV }, prompt: text }),
+  })
+
+  it('второй писатель в каталог того же номера получает отказ — правда первой попытки цела', async () => {
+    const projectDir = mkDir('sma-run-taken-')
+    const first = await runTick({
+      projectDir,
+      task: backlogTask({ attempt: 1, taskContext: 'снимок ПЕРВОЙ попытки' }),
+      deps: promptOf('промпт первой попытки'),
+    })
+    const before = readJson(join(first.runDir, 'run.json'))
+
+    // ТРЕТЬЯ попытка, пришедшая под номером второй: другой промпт, другой снимок, тот же номер.
+    const second = await runTick({
+      projectDir,
+      task: backlogTask({ attempt: 1, taskContext: 'снимок, которого первой попытке не давали' }),
+      deps: promptOf('промпт попытки, пришедшей под чужим номером'),
+    })
+
+    const after = readJson(join(first.runDir, 'run.json'))
+    expect(after.prompt.sha256, 'запись первой попытки переписана чужим подходом').toEqual(before.prompt.sha256)
+    expect(after.startedAt).toBe(before.startedAt)
+    const witness = readFileSync(join(first.runDir, 'task_context.md'), 'utf8')
+    expect(witness).toContain('снимок ПЕРВОЙ попытки')
+    expect(witness).not.toContain('которого первой попытке не давали')
+
+    const said = second.logged.filter((e: any) => e.type === 'run_dir.taken')
+    expect(said, 'отказ, о котором никто не сказал, неотличим от потерянной записи').toHaveLength(1)
+    expect(said[0].attemptId).toBe('BL-1#1')
+    expect(said[0].reason).toBe(RUN_DIR_TAKEN)
+  })
+
+  it('попытка, которой каталог не дали, не несёт чужой путь на строке реестра', async () => {
+    const projectDir = mkDir('sma-run-taken-row-')
+    await runTick({ projectDir, task: backlogTask({ attempt: 1 }), deps: promptOf('первая') })
+    const second = await runTick({ projectDir, task: backlogTask({ attempt: 1 }), deps: promptOf('вторая') })
+
+    // Строка попытки — это то, из чего строится карточка. Путь чужого каталога на ней означал бы,
+    // что человек откроет запись СОСЕДНЕЙ попытки, считая её своей.
+    const rows = readAttempts(second.ledgerDir, 'BL-1')
+    expect(rows.length).toBeGreaterThan(0)
+    for (const row of rows) expect(row.runDir ?? null).toBe(null)
   })
 })
