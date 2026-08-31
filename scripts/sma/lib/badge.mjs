@@ -19,11 +19,20 @@
  *                          badge and the receipt agree with each other and with
  *                          nothing that was ever run.
  *   --check [--strict]     compare both READMEs against the receipt; exit 1 on a
- *                          mismatch. This is what the release gate calls. Because
- *                          both sides can be wrong TOGETHER, --check also reads the
- *                          receipt's provenance (the commit it measured) and reports
- *                          drift from the live HEAD — a warning by default, a
- *                          failure under --strict.
+ *                          mismatch. This is what `npm test` calls. Because both sides
+ *                          can be wrong TOGETHER, --check also judges the receipt
+ *                          ITSELF: a receipt measured on a DIRTY worktree, or at a
+ *                          commit that code and tests have moved on from, fails the
+ *                          check outright — not a warning, and not only under --strict.
+ *                          A number measured over files nobody can name is not a number
+ *                          about this tree. Only the two UNVERIFIABLE cases (no git to
+ *                          ask, no provenance in the receipt) stay warnings until
+ *                          --strict: «cannot be checked» and «wrong» are different
+ *                          words. A commit that moved only the DERIVED places (the
+ *                          receipt, the two READMEs, the map) is the measurement
+ *                          landing, not code moving underneath it, and is passed over —
+ *                          recording a measurement always makes one more commit, so
+ *                          without that exemption the rule could never be satisfied.
  *   --verify-live [<file>] the conclusive one: re-measure and compare the receipt AND
  *                          the READMEs against a THIRD number from a fresh run.
  *                          Given a report file it uses that; given none it runs the
@@ -37,6 +46,10 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+// One definition of "what counts as drift", shared with the docs audit: the same
+// question asked twice must not be answered by two lists.
+import { receiptDriftFiles } from './doc-audit.mjs'
 
 /** Where the measured numbers live. Relative to the package root. */
 export const RECEIPT_FILE = 'test-receipt.json'
@@ -99,6 +112,26 @@ export function readHead({ cwd, exec } = {}) {
     const seconds = Number(String(run(['log', '-1', '--format=%ct'])).trim())
     const dirty = String(run(['status', '--porcelain'])).trim().length > 0
     return { sha, dirty, committedAt: Number.isFinite(seconds) ? seconds * 1000 : null }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * readChangedSince({cwd, exec, commit}) -> string[] | null.
+ * The paths git says moved between the commit the receipt NAMES and the live HEAD.
+ * `null` when git cannot answer — no repository, no git, or a commit this clone does
+ * not know — and an unanswerable question is never read as "nothing changed": the
+ * caller fails closed on `null`.
+ */
+export function readChangedSince({ cwd, exec, commit } = {}) {
+  if (!commit) return null
+  const run = exec ?? ((args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))
+  try {
+    return String(run(['diff', '--name-only', commit, 'HEAD']))
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
   } catch {
     return null
   }
@@ -181,41 +214,81 @@ export function buildReceipt({ tests, files, startedAt, head } = {}) {
 }
 
 /**
- * checkReceiptFreshness({receipt, head}) -> [{code, detail}].
+ * checkReceiptCleanliness({receipt}) -> [{code, detail, hard}].
+ * The verdict that needs no git at all, because it is written in the receipt: a run
+ * measured over a DIRTY worktree ran over files that are in no commit, so nothing —
+ * not this check, not a reviewer, not the person who stamped it — can name what was
+ * measured. Such a number may not be published: it is unfalsifiable by construction.
+ * Measure a committed tree, then stamp.
+ */
+export function checkReceiptCleanliness({ receipt } = {}) {
+  if (!receipt || !receipt.dirty) return []
+  const where = receipt.commit ? ` at ${String(receipt.commit).slice(0, 8)}` : ''
+  return [{
+    code: 'badge-receipt-dirty',
+    hard: true,
+    detail: `${RECEIPT_FILE} was measured on a dirty worktree${where} — the run covered uncommitted files, so nothing can say WHAT was measured; commit first, then re-stamp (badge.mjs --from-vitest <report>)`,
+  }]
+}
+
+/**
+ * checkReceiptFreshness({receipt, head, changedSince}) -> [{code, detail, hard}].
  * The cheap guard. Comparing README to receipt only proves they were written by the
  * same command; comparing the receipt's commit to the live HEAD asks whether the
  * number still describes THIS tree.
+ *
+ * `hard` separates the two kinds of answer. A receipt measured somewhere else is WRONG
+ * about this tip and fails the check on its own; a receipt that cannot be judged (no git,
+ * no provenance) is UNVERIFIED, which is a warning until --strict asks for certainty.
+ *
+ * `changedSince` is the file list from readChangedSince, and it decides what a differing
+ * commit means: code or tests moved (wrong), or only the derived places did — the
+ * measurement landing in its own commit, which every stamp makes and which must not be
+ * read as staleness. Absent or `null`, the difference alone is the verdict: an
+ * unanswerable question fails closed.
  */
-export function checkReceiptFreshness({ receipt, head } = {}) {
+export function checkReceiptFreshness({ receipt, head, changedSince } = {}) {
   if (!head) {
     return [{ code: 'badge-head-unknown', detail: 'cannot read git HEAD — the receipt\'s freshness is unverified (run --verify-live to re-measure)' }]
   }
   if (!receipt || !receipt.commit) {
     return [{ code: 'badge-receipt-no-provenance', detail: `${RECEIPT_FILE} records no commit, so nothing can say whether its number still fits this tree — re-stamp it (badge.mjs --from-vitest <report>)` }]
   }
-  if (receipt.commit !== head.sha) {
-    return [{ code: 'badge-receipt-drifted', detail: `${RECEIPT_FILE} was measured at ${receipt.commit.slice(0, 8)} but HEAD is ${head.sha.slice(0, 8)} — the suite may have moved since; re-stamp, or confirm with --verify-live` }]
+  if (receipt.commit === head.sha) return []
+  const at = `${RECEIPT_FILE} was measured at ${receipt.commit.slice(0, 8)} but HEAD is ${head.sha.slice(0, 8)}`
+  const drifted = (detail) => [{ code: 'badge-receipt-drifted', hard: true, detail }]
+  if (changedSince === undefined || changedSince === null) {
+    return drifted(`${at} — and nothing here can say what moved in between; re-stamp on the tip, or confirm with --verify-live`)
   }
-  if (receipt.dirty) {
-    return [{ code: 'badge-receipt-dirty', detail: `${RECEIPT_FILE} was measured on a dirty worktree at ${receipt.commit.slice(0, 8)}: HEAD matches but the files it ran over may not — confirm with --verify-live` }]
-  }
-  return []
+  const moved = receiptDriftFiles(changedSince)
+  if (moved.length === 0) return [] // only derived places moved: the measurement landing
+  const rest = moved.length > 1 ? ` and ${moved.length - 1} more` : ''
+  return drifted(`${at}, with ${moved.length} code/test change(s) in between (${moved[0]}${rest}) — the number describes a tree that is not this one; re-stamp on the tip, or confirm with --verify-live`)
 }
 
 /**
- * checkBadge({pkgRoot, io, head, strict}) -> {ok, violations, warnings}. Pure given
- * an io. The receipt is authoritative for the READMEs; a README that disagrees with
- * it is stale. Pass `head` (from readHead) to also judge the receipt itself: without
- * it no freshness verdict is produced at all, which is what package-check wants — its
- * violation count is a publishability contract and must not depend on git.
+ * checkBadge({pkgRoot, io, head, changedSince, strict}) -> {ok, violations, warnings}.
+ * Pure given an io. The receipt is authoritative for the READMEs; a README that
+ * disagrees with it is stale. Pass `head` (from readHead) to also judge the receipt
+ * itself: without it no FRESHNESS verdict is produced at all, which is what
+ * package-check wants — its violation count is a publishability contract and must not
+ * depend on git.
+ *
+ * The dirty verdict is the exception, and deliberately: it is read off the receipt, not
+ * off git, so the release gate can refuse an unfalsifiable measurement in a tree with no
+ * history. It is a violation wherever a verdict was asked for — `--check` (which passes a
+ * head) and `--strict` (the prepublishOnly gate) — and a warning in the bare
+ * publishability count, whose total must not grow behind the scorer's back.
  */
-export function checkBadge({ pkgRoot, io, head, strict } = {}) {
+export function checkBadge({ pkgRoot, io, head, changedSince, strict } = {}) {
   const read = io ?? { exists: existsSync, readFile: (p) => readFileSync(p, 'utf8') }
   const violations = []
   const warnings = []
-  const freshness = (receipt) => {
+  const judgeReceipt = (receipt) => {
+    const asked = head !== undefined || strict === true
+    for (const f of checkReceiptCleanliness({ receipt })) (asked ? violations : warnings).push(f)
     if (head === undefined) return // freshness not requested
-    for (const f of checkReceiptFreshness({ receipt, head })) (strict ? violations : warnings).push(f)
+    for (const f of checkReceiptFreshness({ receipt, head, changedSince })) (f.hard || strict ? violations : warnings).push(f)
   }
 
   // The law binds only a project that MAKES the claim. No badge anywhere -> there
@@ -239,7 +312,7 @@ export function checkBadge({ pkgRoot, io, head, strict } = {}) {
   } catch (err) {
     return { ok: false, warnings, violations: [{ code: 'badge-bad-receipt', detail: `${RECEIPT_FILE} unparseable: ${err && err.message}` }] }
   }
-  freshness(receipt)
+  judgeReceipt(receipt)
   for (const { name, badge } of badged) {
     if (badge.total !== receipt.tests || badge.shown !== receipt.tests) {
       violations.push({ code: 'badge-stale', detail: `${name} badge says ${badge.shown}/${badge.total} but the measured receipt says ${receipt.tests} — rewrite it from the receipt, never by hand` })
@@ -333,7 +406,17 @@ if (invokedDirectly) {
 
   if (argv.includes('--check')) {
     const head = readHead({ cwd: pkgRoot })
-    const { ok, violations, warnings } = checkBadge({ pkgRoot, head, strict })
+    // What moved since the receipt was measured is a git question, asked once here so
+    // checkBadge stays pure: a commit that carried only the measurement is not drift.
+    const receiptCommit = (() => {
+      try {
+        return JSON.parse(readFileSync(join(pkgRoot, RECEIPT_FILE), 'utf8')).commit
+      } catch {
+        return null
+      }
+    })()
+    const changedSince = readChangedSince({ cwd: pkgRoot, commit: receiptCommit })
+    const { ok, violations, warnings } = checkBadge({ pkgRoot, head, changedSince, strict })
     for (const w of warnings) process.stderr.write(`  [warn ${w.code}] ${w.detail}\n`)
     for (const v of violations) process.stderr.write(`  [${v.code}] ${v.detail}\n`)
     process.stdout.write(`${violations.length}\n`)
@@ -377,4 +460,11 @@ if (invokedDirectly) {
     process.stdout.write(`${name}: ${replaced} badge site(s) -> ${measured.tests}\n`)
   }
   process.stdout.write(`receipt: ${measured.tests} tests / ${measured.files} files${head ? ` @ ${head.sha.slice(0, 8)}${head.dirty ? ' (dirty)' : ''}` : ' (no git provenance)'}\n`)
+  if (head && head.dirty) {
+    // Said at the door rather than only at the gate: this receipt is already refused.
+    process.stderr.write(
+      '  [warn badge-receipt-dirty] measured on a dirty worktree, so nothing can name what was measured — ' +
+        `--check and the release gate both refuse this receipt. Commit the tree, re-run the suite, and stamp again.\n`,
+    )
+  }
 }
