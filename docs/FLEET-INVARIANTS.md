@@ -277,6 +277,45 @@ a disagreement has neither a right nor a way to choose — and it now marks the
 folded record `conflict: {outcomes, rows}`, naming both. A record already on disk
 is **never rewritten**; it is read as the anomaly it is.
 
+**And the number is now MINTED BY THE QUEUE, never taken on a caller's word.**
+The law's other side — *one number carries one attempt* — had no enforcement at
+all. `validateTask` accepted `attempt` as given and defaulted it to `1`, and
+three doors computed «the next number» by hand from three different readings of
+the rows: the return door reads the latest row but falls back to `1` on any read
+failure, the batch decision reads the **first** row carrying an id rather than
+the newest, and the re-issue reads the last row. A stale or fail-open reading
+therefore produced a number the task had already lived — and since the attempt's
+run directory is named by that number, the earlier attempt's six files were
+overwritten in silence. Measured on a live installation: the directory of
+«attempt 2» of one task held a prompt byte-for-byte equal to attempt one's, while
+the prompt attempt two actually ran with was a different one; the writer was a
+later attempt that had come round under a number already spent. Both backends now
+raise a re-enqueued number to `lived + 1` when a caller names one the row has
+already used, and leave a **larger** one untouched — «do not repeat what was
+lived» is not «count on the door's behalf». It is a **contract** case
+(`queueAdapterContractSuite` → *«постановка под уже прожитым номером подхода
+поднимается до следующего»*), because «the number is unique per row» is a
+statement about the STORE and this contract has two of them.
+
+**And the run directory refuses a second writer** — `RUN_DIR_TAKEN` in
+`run-dir.mjs`. Uniqueness is repaired where numbers are handed out; this is the
+belt that holds if that ever tears again. `writeRunStart` asks whether the
+directory already holds a record of a start, and one that does is not written
+into at all: the refusal comes back as an honestly absent directory and is
+**named** in the operator's log, because an attempt can end up without a
+directory for other reasons and «the number was taken» must be distinguishable
+from «the disk refused». Emptiness is not occupancy — the spawn creates the
+directory before the process exists, so a directory holding no `run.json` is an
+attempt under way rather than a claimed name.
+
+**What is still not promised here:** that one task has at most one attempt
+running at a time. `in-flight.mjs` counts SEATS, not identities, so two
+overlapping ticks may take two rows of the same task; they now get two numbers
+and two directories, which is honest, and it is still two workers on one piece of
+work. That is invariant three's territory (one active lease) at the level of the
+queue backend, and it is named here so the gap is not read out of these two
+paragraphs as closed.
+
 **Proven by** `invariants.test.ts` →
 `invariantEightOneAttemptOneNumberOneOutcome`, which checks two halves — that no
 row names an attempt the task never opened, and that the **durable rows read back
