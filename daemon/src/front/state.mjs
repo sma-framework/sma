@@ -90,7 +90,7 @@
 import { readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, statSync as fsStatSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { apiCapUsd, pipelineEnabled } from '../config.mjs'
+import { activeProjectEntry, apiCapUsd, codeTreeOf, pipelineEnabled, planningHomeOf } from '../config.mjs'
 import { isOpen } from '../policy/windows.mjs'
 import {
   accountNameOf,
@@ -1302,14 +1302,17 @@ function terminalBar(read) {
  * The connected project: the ACTIVE registry entry, and only when it names a folder on disk.
  * A registry entry with no `path` is a label for grouping tasks, not a connection — reading
  * it as one would be how the screen ends up showing a corpus that belongs to nobody.
+ *
+ * ДВА КАТАЛОГА, ПОТОМУ ЧТО У ПРОЕКТА ДВА АДРЕСА. `dir` — дерево кода: репозиторий, коммиты,
+ * каталоги прогонов, корпус памяти. `planningDir` — дом планирования: `.planning` этого же
+ * продукта, который в двухрепном доме лежит в другом каталоге. Второй адрес не задан — оба
+ * поля называют одну папку, и каждый читатель ниже ведёт себя ровно как раньше.
  */
 function connectedProject(config = {}) {
-  const list = Array.isArray(config.projects) ? config.projects : []
-  if (list.length === 0) return null
-  const activeId = config.activeProject ?? (list[0] && list[0].id)
-  const entry = list.find((p) => p && p.id === activeId) || null
-  if (!entry || typeof entry.path !== 'string' || entry.path.trim() === '') return null
-  return { id: entry.id, name: entry.name ?? entry.id, dir: entry.path }
+  const entry = activeProjectEntry(config)
+  const dir = codeTreeOf(entry)
+  if (!dir) return null
+  return { id: entry.id, name: entry.name ?? entry.id, dir, planningDir: planningHomeOf(entry) }
 }
 
 /** The watcher's own word on whether it is watching or merely polling. Fail-modest. */
@@ -1605,6 +1608,12 @@ export async function deriveCoordination({ config, readLedger, clock } = {}) {
 /**
  * deriveBacklog({config, fsImpl}) → {rows:[{id, title, ageLine}]}.
  *
+ * ЧИТАЕТСЯ ИЗ ДОМА ПЛАНИРОВАНИЯ, А НЕ ИЗ ДЕРЕВА КОДА. Беклог — планирование, и в доме, где
+ * код и планирование разведены по репозиториям, он лежит в другом каталоге. Пока адрес был
+ * один, этот читатель честно смотрел в дерево кода и честно отвечал «пусто» о файле, который
+ * существует; беклог показывался только если завести дом планирования вторым проектом. Второй
+ * адрес не задан — это тот же самый каталог, и ответ не меняется.
+ *
  * The project's own `.planning/BACKLOG.md`, read as rows. NO FILE IS AN EMPTY LIST, honestly:
  * a project that keeps no backlog is not a broken project, and a 404 here would make the panel
  * look like a fault instead of an absence.
@@ -1623,7 +1632,7 @@ export function deriveBacklog({ config, fsImpl } = {}) {
   const io = fsSeam(fsImpl)
   let text = ''
   try {
-    text = String(io.readFileSync(join(project.dir, '.planning', 'BACKLOG.md'), 'utf8'))
+    text = String(io.readFileSync(join(project.planningDir, '.planning', 'BACKLOG.md'), 'utf8'))
   } catch {
     return { rows: [] }
   }

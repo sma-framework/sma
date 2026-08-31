@@ -106,7 +106,7 @@ import { createHash } from 'node:crypto'
 import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, mkdirSync as fsMkdirSync, writeFileSync as fsWriteFileSync, rmSync as fsRmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import { pipelineEnabled, pipelineMaxTurns } from './config.mjs'
+import { pipelineEnabled, pipelineMaxTurns, projectEntry, codeTreeOf, planningHomeOf } from './config.mjs'
 import { taskTurnCap, burnedTurnCapsOf, turnKindOf, emptyTurnKinds } from './policy/turn-budget.mjs'
 import { resolveExpireMs, batchWorkerOf, waveAddressOf, isBatchParent, batchItemsOf, batchDecisionsOf, brokenItemOf, FAIL_REASONS, failureAwaitsAPerson, ATTEMPTS_EXHAUSTED, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
@@ -288,11 +288,41 @@ function taskTreeDir(deps, config, task) {
   const fallback = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
   const id = task && typeof task.project === 'string' ? task.project.trim() : ''
   if (!id) return fallback
-  const list = Array.isArray(config && config.projects) ? config.projects : []
-  const hit = list.find((p) => p && p.id === id && typeof p.path === 'string' && p.path.trim() !== '')
-  if (hit) return hit.path
+  const hit = codeTreeOf(projectEntry(config, id))
+  if (hit) return hit
   writeLog(deps, { type: 'task.project_unresolved', taskId: task && task.id, project: id })
   return fallback
+}
+
+/**
+ * taskPlanningDir(deps, config, task) → ДОМ ПЛАНИРОВАНИЯ проекта этой задачи: каталог, в
+ * котором лежит её `.planning`.
+ *
+ * ВТОРОЙ АДРЕС ТОГО ЖЕ ПРОЕКТА, а не второй проект. Пока запись реестра знала один адрес,
+ * дом планирования приходилось заводить отдельным проектом — и ступень фазы, поставленная у
+ * продукта, получала копию ПРОДУКТА, где каталогов фаз нет. Замерено 31.08: ступень plan
+ * фазы 21 ушла искать фазу по машине, нашла чужую фазу 21 соседнего проекта и честно
+ * отказалась — восемнадцать ходов и около доллара за отказ. Второй адрес не задан — ответ
+ * буква в букву тот же, что у taskTreeDir выше.
+ */
+function taskPlanningDir(deps, config, task) {
+  const id = task && typeof task.project === 'string' ? task.project.trim() : ''
+  const hit = id ? planningHomeOf(projectEntry(config, id)) : null
+  if (hit) return hit
+  return (typeof deps.planningDir === 'function' && deps.planningDir()) || taskTreeDir(deps, config, task)
+}
+
+/**
+ * attemptTreeDir(deps, config, task) → дерево, ИЗ КОТОРОГО ЭТОЙ ЗАДАЧЕ РЕЖУТ КОПИЮ.
+ *
+ * Кодовая работа — из дерева кода. Документарная ступень фазы — из дома планирования: она
+ * правит `.planning`, и копия дерева, в котором его нет, для неё пустая комната. Правило
+ * названо ОДИН раз и здесь, потому что его же читает приёмка, когда ищет ветку (front/
+ * server.mjs, taskBranchTree): разойдись эти двое — и приёмка не нашла бы ровно ту работу,
+ * которую сама заказала.
+ */
+function attemptTreeDir(deps, config, task) {
+  return stageDataOf(task).kind === DOCUMENT_KIND ? taskPlanningDir(deps, config, task) : taskTreeDir(deps, config, task)
 }
 
 function gateSpawnOptions(deps, config, task) {
@@ -3959,7 +3989,12 @@ export async function tick(deps = {}) {
       // machine answer, in the connected project's tree — see askAlreadyBuilt for why each of
       // those four words is load-bearing. Work carrying no phase never reaches the verb, and
       // the log says so.
-      const doorDir = taskTreeDir(deps, config, task)
+      //
+      // ЭТО ЖЕ ДЕРЕВО ОТВЕДЁТ КОПИЮ НИЖЕ, и оно называется ОДИН раз: для кодовой работы это
+      // дерево кода проекта, для документарной ступени — его дом планирования (attemptTreeDir).
+      // Дверь «уже построено» документарной ступени не задаётся вовсе, так что для неё это
+      // выражение — только адрес копии.
+      const doorDir = attemptTreeDir(deps, config, task)
       const alreadyBuilt = isDocument ? false : await askAlreadyBuilt(deps, verbRunner, task, doorDir)
       if (alreadyBuilt) {
         // The receipt this completion stands on. Its shape is CONSTANT — the verb reports no
@@ -4039,7 +4074,12 @@ export async function tick(deps = {}) {
       // product is served from beside the workshop the phases live in — and then a card
       // reading one root while the stage writes into the other shows work as never started
       // while it is being completed.
-      let workDir = taskTreeDir(deps, config, task)
+      //
+      // И ИМЕННО В ЕГО ДОМЕ ПЛАНИРОВАНИЯ — во ВТОРОМ адресе того же проекта, а не в дереве
+      // кода. Ступень правит `.planning`; копия дерева, в котором его нет, для неё пустая
+      // комната, и цену этого уже заплатили (31.08, фаза 21: восемнадцать ходов и около
+      // доллара за честный отказ). Второй адрес не задан — это тот же каталог.
+      let workDir = attemptTreeDir(deps, config, task)
       /** The commit the worktree was cut from — the point any of this can be undone to. */
       let worktreeBase = null
       /**
