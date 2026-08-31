@@ -50,6 +50,15 @@
  * Saying so is better than silence: the owner learns the bot is alive and that this particular
  * thing is not built yet.
  *
+ * ═══════════════ КРУГ, ИЗ КОТОРОГО ЕСТЬ ВЫХОД, И ЖУРНАЛ, КОТОРЫЙ ЧИТАЮТ ═════════════
+ * Два свойства этого цикла названы числами, а не подразумеваются, и оба взяты у одного вечера
+ * на живой машине. ПЕРВОЕ: у опроса есть СВОЙ жёсткий срок (`POLL_HARD_TIMEOUT_MS`), больший
+ * клиентского с запасом. Срок транспорта честен ровно до той минуты, когда транспорт перестаёт
+ * его соблюдать, — а обещание, не пришедшее ни ответом, ни отказом, оставляло цикл внутри
+ * одного круга навсегда, молча. ВТОРОЕ: выдержка после отказа РАСТЁТ (`pollBackoffMs`), потому
+ * что одна и та же выдержка на длящийся отказ — это строка в журнале каждые пять секунд, и
+ * настоящая беда стоит в этих же строках, неотличимая от них.
+ *
  * ═══════════════ THE TOKEN, AGAIN, AT THE LOG ═══════════════════════════════════════
  * Every word this loop logs passes `redactBotToken` a second time. The client already reduces
  * everything it produces; this belt is here because a log line is assembled from more than one
@@ -62,6 +71,7 @@ import {
   telegramBotToken,
   telegramChatId,
   telegramConfigured,
+  TELEGRAM_CALL_TIMEOUT_MS,
 } from './client.mjs'
 import { matchesPairingCode } from './pairing.mjs'
 
@@ -106,8 +116,57 @@ export const TYPING_INTERVAL_MS = 4000
 /** How long the Bot API holds one poll open, in seconds. */
 export const POLL_TIMEOUT_SECONDS = 25
 
-/** How long the loop waits after a refused round before asking again. */
+/** How long the loop waits after the FIRST refused round before asking again. */
 export const POLL_BACKOFF_MS = 5000
+
+/**
+ * ПОТОЛОК ВЫДЕРЖКИ — И ЭТО ЛЕКАРСТВО ОТ ШТОРМА В ЖУРНАЛЕ.
+ *
+ * Выдержка была одна на любой отказ, поэтому связь, отказывающая подряд, писала строку каждые
+ * пять секунд, пока журнал не переставали читать вовсе: вечером 29.08 «getUpdates aborted» шло
+ * строка за строкой сразу после «All systems green», и настоящая беда стояла В ЭТИХ ЖЕ строках,
+ * неотличимая от них. Отказ, который длится, не становится новостью от повторения: выдержка
+ * удваивается, упирается в минуту и обнуляется первым же удавшимся кругом.
+ */
+export const POLL_BACKOFF_MAX_MS = 60000
+
+/**
+ * ЖЁСТКИЙ СРОК ОДНОГО ОПРОСА — СВОЙ У ЦИКЛА, А НЕ ЗАНЯТЫЙ У ТРАНСПОРТА.
+ *
+ * Срок у запроса был ровно один: тот, что клиент ставит своему `fetch` сигналом отмены
+ * (`withDeadline` в client.mjs). Пока транспорт этот сигнал соблюдает, срок честный. Обещание,
+ * не пришедшее НИ ответом, ни отказом, соблюдать его некому — и цикл остаётся внутри одного
+ * круга навсегда: связь молчит, бот не отвечает, а в журнале об этом нет ни строки. Молчание
+ * без единого слова хуже шторма, потому что его нечем заметить.
+ *
+ * Поэтому срок дублируется ЗДЕСЬ, снаружи транспорта, и считается из его собственных чисел:
+ * сколько сервер держит долгий опрос, плюс запас, который клиент кладёт поверх, плюс своя
+ * четверть минуты. В обычной жизни он не срабатывает никогда — он больше клиентского с
+ * запасом, — а сработав, обрывает запрос сигналом и возвращает цикл в его собственные руки.
+ */
+export const POLL_HARD_TIMEOUT_MS = POLL_TIMEOUT_SECONDS * 1000 + TELEGRAM_CALL_TIMEOUT_MS + 15000
+
+/** Круг, который цикл бросил по своему сроку. Названная ошибка: её ловит и объясняет `run`. */
+export class TelegramPollFrozenError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'TelegramPollFrozenError'
+  }
+}
+
+/**
+ * pollBackoffMs(failures) — сколько ждать после `failures`-го отказа подряд.
+ *
+ * Чистая и отдельная, потому что это единственное место, где решается, превратится ли отказ в
+ * шторм: удвоение с первого отказа, потолок сверху, и ни одного числа, посчитанного по месту.
+ *
+ * @param {number} failures — какой это отказ подряд (первый — 1)
+ * @returns {number}
+ */
+export function pollBackoffMs(failures, base = POLL_BACKOFF_MS, cap = POLL_BACKOFF_MAX_MS) {
+  const n = Math.max(1, Math.floor(Number(failures) || 0))
+  return Math.min(cap, base * 2 ** (n - 1))
+}
 
 /** Which updates are asked for at all — step one reads messages and nothing else. */
 export const ALLOWED_UPDATES = Object.freeze(['message'])
@@ -117,6 +176,29 @@ const defaultSleep = (ms) =>
     const timer = setTimeout(resolve, ms)
     if (timer && typeof timer.unref === 'function') timer.unref()
   })
+
+/**
+ * defaultDeadline(ms) → {promise, cancel} — срок, который можно СНЯТЬ.
+ *
+ * Отдельный шов, а не `sleep`, по двум причинам. Круг, успевший ответить, обязан снимать свой
+ * срок: иначе за каждым опросом остаётся таймер, ждущий минуту неизвестно чего. И прогон
+ * обязан отличать «цикл отмерял срок» от «цикл отдыхал после отказа» — это разные события, и
+ * одна лента на двоих читалась бы неверно ровно в тех разборах, ради которых она заведена.
+ */
+const defaultDeadline = (ms) => {
+  let fire = () => {}
+  const promise = new Promise((resolve) => {
+    fire = resolve
+  })
+  const timer = setTimeout(() => fire(), ms)
+  if (timer && typeof timer.unref === 'function') timer.unref()
+  return {
+    promise,
+    cancel() {
+      clearTimeout(timer)
+    },
+  }
+}
 
 /**
  * splitForTelegram(text, limit) → the same words, in as few messages as the limit allows.
@@ -230,6 +312,12 @@ export function createTelegramBridge({
   // который держал бы о том же второе мнение, однажды разошёлся бы с ним.
   onPaired,
   now = Date.now,
+  // СРОК ОПРОСА — ЧИСЛОМ, ЧТОБЫ ЕГО МОЖНО БЫЛО ОТМЕРИТЬ ВНЕДРЁННЫМ СНОМ, А НЕ ЖДАТЬ.
+  // Ноль (и всё, что не положительное число) снимает срок вовсе: так его снимает прогон,
+  // которому он не предмет. В боевой сборке это значение не передаётся никем.
+  hardTimeoutMs = POLL_HARD_TIMEOUT_MS,
+  // Чем отмеряется этот срок. См. `defaultDeadline`: он СНИМАЕТСЯ, когда круг успел.
+  deadline = defaultDeadline,
 } = {}) {
   if (!telegramConfigured(config)) return null
 
@@ -403,12 +491,61 @@ export function createTelegramBridge({
   }
 
   /**
+   * askUpdates(query) — ОДИН вопрос к Bot API, под жёстким сроком самого цикла.
+   *
+   * ЧТО ЗДЕСЬ ВАЖНО СВЕРХ ГОНКИ: брошенное обещание ПОДБИРАЕТСЯ. Отказ, пришедший к запросу,
+   * которого никто уже не ждёт, в этом продукте не мелочь — незамеченный отказ убивает процесс
+   * целиком (`unhandledRejection` в main.mjs), и «связь помолчала минуту» стало бы «демон
+   * умер». Поэтому исход запроса всегда снимается обеими руками, и наружу он идёт разбором,
+   * а не броском.
+   */
+  async function askUpdates(query) {
+    const asked = api.getUpdates(query)
+    if (!(Number(hardTimeoutMs) > 0)) return asked
+    let settled = false
+    const outcome = asked.then(
+      (updates) => {
+        settled = true
+        return { updates }
+      },
+      (err) => {
+        settled = true
+        return { err }
+      },
+    )
+    const limit = deadline(hardTimeoutMs)
+    let first = null
+    try {
+      first = await Promise.race([outcome, Promise.resolve(limit.promise).then(() => (settled ? null : { frozen: true }))])
+    } finally {
+      // Срок снимается ВСЕГДА: круг, который успел, не оставляет за собой таймера.
+      try {
+        if (limit && typeof limit.cancel === 'function') limit.cancel()
+      } catch {
+        /* снятый срок — удобство; цикл из-за него не останавливается */
+      }
+    }
+    if (first && first.frozen) {
+      throw new TelegramPollFrozenError(
+        `опрос не ответил за ${Math.round(hardTimeoutMs / 1000)} с и оборван — транспорт не соблюдал собственный срок`,
+      )
+    }
+    if (first && first.err) throw first.err
+    return (first && first.updates) || []
+  }
+
+  /**
    * pollOnce() — one long poll and its answers. The offset is advanced for EVERY update that
    * carries an id, before the answer is attempted: an update that was read must not come back
    * because replying to it failed, or the loop would answer the same message forever.
+   *
+   * ЖЁСТКИЙ СРОК СТОИТ НА ОПРОСЕ И ТОЛЬКО НА НЁМ. Ход разговора ниже — работа другого рода:
+   * он спрашивает тот же движок, что и окно, а тот заводит ребёнка и законно думает минутами.
+   * Срок, накрывший бы и его, обрывал бы честный ответ человеку ровно тогда, когда ответ
+   * тяжелее обычного, — то есть в единственном случае, когда он и нужен.
    */
   async function pollOnce({ signal } = {}) {
-    const updates = await api.getUpdates({
+    const updates = await askUpdates({
       ...(offset > 0 ? { offset } : {}),
       timeout: POLL_TIMEOUT_SECONDS,
       allowedUpdates: [...ALLOWED_UPDATES],
@@ -424,15 +561,37 @@ export function createTelegramBridge({
   }
 
   async function run() {
+    // Сколько отказов идёт ПОДРЯД. Единственное состояние этого цикла сверх смещения, и живёт
+    // оно здесь, а не в модуле: удавшийся круг обнуляет его, и после перезапуска связи счёт
+    // начинается заново — прошлая беда не должна отсчитывать выдержку новой.
+    let failures = 0
     while (running) {
       aborter = typeof AbortController === 'function' ? new AbortController() : null
       try {
         await pollOnce(aborter ? { signal: aborter.signal } : {})
+        failures = 0
       } catch (err) {
         // A stop aborts the poll in flight: that refusal is the shutdown working, not a fault.
         if (!running) break
-        say(`telegram: опрос не прошёл — ${(err && err.message) || err}`)
-        await sleep(POLL_BACKOFF_MS)
+        // ОБОРВАННЫЙ ПО СВОЕМУ СРОКУ КРУГ УНОСИТ С СОБОЙ И ЗАПРОС. Иначе брошенный опрос
+        // доживает рядом со следующим, и два запроса тянут один и тот же offset: сообщение
+        // владельца достаётся тому из них, кого никто не ждёт.
+        if (err instanceof TelegramPollFrozenError && aborter) {
+          try {
+            aborter.abort()
+          } catch {
+            /* обрыв, который не удался, не отменяет ни строки в журнале, ни выдержки */
+          }
+        }
+        failures += 1
+        const wait = pollBackoffMs(failures)
+        // ОДНА СТРОКА НАЗЫВАЕТ И ПОВТОР, И СЛЕДУЮЩИЙ СРОК. Отказ, повторённый молча, читается
+        // как новый отказ, и журнал перестаёт отличать одну длящуюся беду от шторма разных.
+        say(
+          `telegram: опрос не прошёл — ${(err && err.message) || err}` +
+            (failures > 1 ? ` (подряд: ${failures}; следующая попытка через ${Math.round(wait / 1000)} с)` : ''),
+        )
+        await sleep(wait)
       } finally {
         aborter = null
       }
