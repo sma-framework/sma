@@ -2256,6 +2256,13 @@ function writeAttemptRunDir(deps, task, {
   const prompt = typeof (spec && spec.prompt) === 'string' ? spec.prompt : ''
   const rules = rulesInCopy(io, workDir, worktree)
   const skillsInCopy = skillsInCopyOf(io, workDir)
+  // ЧТО ПРОФИЛЬ РАБОТНИКА ОБЕЩАЛ ЭТОМУ СПАВНУ — записывается ОТДЕЛЬНО от того, что спавн
+  // получил. Обещание и исполнение это две записи; слив их в одну, квитанция профиля сверяла
+  // бы аргументы с копией самих себя и была бы зелёной всегда. Работник ищется тем же
+  // правилом, каким его нашёл сборщик аргументов, — по идентификатору маршрута.
+  const profileWorker = (Array.isArray(config.workers) ? config.workers : []).find(
+    (w) => w && w.id === ((route && route.workerId) || null),
+  ) || null
   const iso = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString() : null)
   let envelopeRecord = null
   if (envelope && typeof envelope === 'object') {
@@ -2292,6 +2299,9 @@ function writeAttemptRunDir(deps, task, {
       envNames: Object.keys(env).sort(),
       prompt: { sha256: createHash('sha256').update(prompt, 'utf8').digest('hex'), bytes: Buffer.byteLength(prompt, 'utf8') },
       task: { model: task.model ?? null, effort: task.effort ?? null },
+      // `null` в поле — «профиль не назначил, значит по умолчанию CLI»; `null` вместо всего
+      // объекта — «работника в конфиге нет», и это разные утверждения для читателя записи.
+      profile: profileWorker ? { model: profileWorker.model ?? null, effort: profileWorker.effort ?? null } : null,
       envelope: envelopeRecord,
       copy: worktree
         ? {
@@ -2518,7 +2528,7 @@ function writeAttemptOutcome(deps, worktree, receipt, task) {
   }
   // The verdict is already reached — the closing door asked for it before it wrote the ledger
   // row, which is the only order in which a row can carry one. Here it is written down WHOLE:
-  // the five receipts with their details beside the summary, so one directory can answer «did
+  // the six receipts with their details beside the summary, so one directory can answer «did
   // this session really run under my rules» without a second command and without a second
   // opinion. A verdict that could not be computed stays null: «nobody has checked», never
   // «checked and fine».

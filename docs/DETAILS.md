@@ -436,10 +436,10 @@ Every attempt writes `<project>/.sma/runs/<attemptId>/` into the connected proje
 
 | File | What it holds |
 | --- | --- |
-| `run.json` | what the attempt was GIVEN: the command line, the NAMES of the environment variables it was handed, the capability envelope with its digest, the copy it ran in, the personal layer, the mcp config, the state of the project's rules in the copy — and what the session's own opening frame said back |
+| `run.json` | what the attempt was GIVEN: the command line, the NAMES of the environment variables it was handed, the capability envelope with its digest, the model and effort the worker profile promised it, the copy it ran in, the personal layer, the mcp config, the state of the project's rules in the copy — and what the session's own opening frame said back |
 | `guards.jsonl` | one line per hook the CLI started and answered, and one per tool a guard refused. Always written, even empty: zero lines is the statement «no hook spoke and nothing was refused», which is a finding, where a missing file would only say «nobody wrote one» |
 | `transcript.jsonl` | a REFERENCE to the attempt's transcript in the ledger — its path, its digest, its line count and how many rows the ledger's line cap cut short. Never a second copy of the stream: a copy would double the disk for nothing and drift the moment either half were touched |
-| `receipt.json` | how the try ENDED: the outcome, the gate that decided it, the verdict, the lesson, the memory layer as the stream observed it — and the parity verdict itself, five receipts beside their summary |
+| `receipt.json` | how the try ENDED: the outcome, the gate that decided it, the verdict, the lesson, the memory layer as the stream observed it — and the parity verdict itself, six receipts beside their summary |
 
 Secrets are absent by construction rather than by filtering: `run.json` carries the NAMES of the
 environment variables and never their values, and the prompt is reduced to a digest and a size. The
@@ -462,16 +462,17 @@ node tools/terminal-parity-check.mjs [<attemptId>] [--attempt <id>] [--project <
   that was looked at, instead of being reported as a quiet zero;
 - `--project` names the project root (the current directory by default); `--dir` points straight at
   one run directory; the positional id and `--attempt` are the same thing, and giving both is an error;
-- `--config` lets the rights receipt name the worker the attempt was routed to; `--ledger` finds the
+- `--config` lets the rights receipt name the worker the attempt was routed to, and answers the profile
+  receipt for a record written before the promise was kept beside the command line; `--ledger` finds the
   transcript when the ledger has moved;
-- `--json` prints the same verdict as an object with exactly five receipts, and the bare number stays
+- `--json` prints the same verdict as an object with exactly six receipts, and the bare number stays
   the last line in either mode.
 
-Exit codes: **0** at five out of five, **1** for an incomplete set or a project with no runs at all,
-**2** for a misused command line. The last line of the output is always the bare count, 0–5, which is
+Exit codes: **0** at six out of six, **1** for an incomplete set or a project with no runs at all,
+**2** for a misused command line. The last line of the output is always the bare count, 0–6, which is
 what makes the command receipt-hashable and scorable.
 
-### The five, and the boundary of each
+### The six, and the boundary of each
 
 | Receipt | Fulfilled when | What it does NOT prove |
 | --- | --- | --- |
@@ -480,16 +481,17 @@ what makes the command receipt-hashable and scorable.
 | `rules` | the project's instruction file reached the working copy, materialized into it or tracked by it | that anyone opened it. `absent` is a failure and not a footnote: a worker that never saw the project's rules is not running under them |
 | `skills` | the copy carries skills or agents | anything about a project that has neither — that earns an honest **n/a** with the reason printed, never a pass. «Not applicable» is a fact about the project; «passed» would be a fact about the run that nobody established |
 | `rights` | **both** halves of the envelope reached the process: the granted tools equal the allow list on the command line, and the actions reserved for a human — push, merge, tag, deploy — equal the refusal list on the same line. An envelope that names human-only actions while the spawn carries no refusal list is a **failure** here, not a warning: that is exactly the state this receipt was pinned at `warn` for, back when only the grant travelled | that the boundary cannot be walked around from inside the session. The refusal list catches the obvious spellings of each action — it is one of three locks and never the only one, and the session's own MCP intake is a separate matter: a server declared in the root of the connected project loads anyway, so the attempt's record names the MCP tools that did not come from your registry |
+| `profile` | the model and the effort on the command line are the ones the worker profile assigned — or the ones the task overrode them with, read back with the same precedence the argument builder applies rather than a second reading of it | that the provider served that model. What travelled is a flag; what answered is on the other side of an API this check never calls. The refusal of a mismatched spawn is older than this line — `assertProfileParity` has failed such a spawn from the start — and what was missing was the sentence: an instrument silent about what it has already checked reads, to the person holding it, exactly like one that never checked |
 
 **Missing data is a failure that names what was missing** — never a default pass, and never a free
-n/a. That rule is the whole reason the check exists: the cheapest route to five out of five is to
+n/a. That rule is the whole reason the check exists: the cheapest route to six out of six is to
 check nothing, and a checker that reads an empty directory as an unproblematic one is
 indistinguishable from a checker that lies. `n/a` is available for exactly one situation — a project
 that demonstrably has no skills — and it carries its reason in the same line.
 
 ### The same verdict, without running anything
 
-The daemon computes the five from the **same module** the command imports, over the same four files
+The daemon computes the six from the **same module** the command imports, over the same four files
 read back from disk, and writes the result into `receipt.json` and onto the attempt row — so the task
 card shows the score, the names of the receipts that did not pass and the path to the directory,
 without anybody running a command first. This is not a second opinion: a second implementation of

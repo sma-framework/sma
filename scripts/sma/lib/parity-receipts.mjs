@@ -1,5 +1,5 @@
 /**
- * parity-receipts.mjs — THE FIVE RECEIPTS OF ONE RUN, computed in ONE place.
+ * parity-receipts.mjs — THE SIX RECEIPTS OF ONE RUN, computed in ONE place.
  *
  * ═════════════════════════ WHAT THIS MODULE IS FOR ═══════════════════════════════
  * «Terminal parity» — a headless worker session is the same session a person gets in their
@@ -16,7 +16,7 @@
  * them is allowed a private copy of the logic — a second opinion here is not resilience, it
  * is a second answer to a question that has one.
  *
- * ═════════════════ THE FIVE, WHAT EACH PROVES AND WHAT IT DOES NOT ═══════════════
+ * ═════════════════ THE SIX, WHAT EACH PROVES AND WHAT IT DOES NOT ════════════════
  *
  *  (a) hooks  — at least one hook ANSWERED inside this run's own time window. The window is
  *               what makes it a receipt of THIS attempt rather than of the machine's history.
@@ -64,9 +64,29 @@
  *               session. The refusal list catches the obvious spellings; it is one of three
  *               locks and never the only one.
  *
+ *  (f) profile — the model and the effort the spawn ACTUALLY ran under are the ones the worker
+ *               profile assigned it (or the ones the task overrode them with, which is the same
+ *               precedence the argument builder uses and not a second reading of it).
+ *
+ *               THIS ONE CERTIFIES A LOCK THAT ALREADY EXISTED. `assertProfileParity` has
+ *               refused a spawn whose model or effort disagreed with its profile since the day
+ *               the composer got it: a silent substitution cannot reach a process. What did not
+ *               exist was the SENTENCE — the run's report named hooks, memory, rules, skills and
+ *               rights, and said nothing at all about the one property of a session that does
+ *               not come from the checkout. An instrument silent about what it has already
+ *               checked is indistinguishable, to the person reading it, from one that never
+ *               checked; and a guard nobody can see the output of is a guard nobody maintains.
+ *               So this receipt does not re-implement the assertion, it PUBLISHES it: it reads
+ *               the command line back off the record with the same reader the builders own, and
+ *               compares it against the promise the record kept beside it.
+ *
+ *               PROVES: the session burned the model and effort a person assigned to it.
+ *               DOES NOT PROVE: that the provider served that model. What travelled is a flag;
+ *               what answered is on the other side of an API this module never called.
+ *
  * ══════════════════════════ THE LAW OF ABSENT DATA ═══════════════════════════════
  * Missing data is a FAILURE that names what was missing — never a default OK and never a free
- * n/a. This is the whole reason the module exists: the cheapest way to a five-out-of-five is
+ * n/a. This is the whole reason the module exists: the cheapest way to a six-out-of-six is
  * to check nothing, and a checker that treats an empty directory as an unproblematic one is
  * indistinguishable from a checker that lies. `n/a` is available for exactly one situation —
  * a project that demonstrably has no skills — and it carries its reason in the same string.
@@ -84,18 +104,25 @@ import { humanOnlyDenials } from '../../../daemon/src/queue/capability-envelope.
 // read back in the exact shape the argument builder pushed it in, by the module that owns that
 // shape — never by a private copy of the rule living here.
 import { toolListInArgs } from '../../../daemon/src/runner/tool-flags.mjs'
+// AND THE MODEL/EFFORT PAIR IS READ BY THE MODULE THAT WRITES IT, for the third time and for
+// the third identical reason. `modelEffortOf` is the reader the argument builders publish for
+// exactly this consumer, and `expectedModelEffort` is the precedence the composer itself
+// applies — a private «--model is at index i + 1» here would be a second answer to a question
+// whose owner sits one import away, and it would drift the day either lane changed its flag.
+import { modelEffortOf, expectedModelEffort } from '../../../daemon/src/runner/args.mjs'
 
-/** The five receipts, in the fixed order they are always evaluated and printed. */
+/** The six receipts, in the fixed order they are always evaluated and printed. */
 export const PARITY_RECEIPTS = Object.freeze([
   Object.freeze({ id: 'hooks', title: 'хуки: страж ответил в окне прогона' }),
   Object.freeze({ id: 'memory', title: 'память: корпус прочитан, а не только запрошен' }),
   Object.freeze({ id: 'rules', title: 'правила проекта доехали до рабочей копии' }),
   Object.freeze({ id: 'skills', title: 'навыки и агенты проекта видны в копии' }),
   Object.freeze({ id: 'rights', title: 'права: спавн получил и то, что конверт разрешил, и то, что запретил' }),
+  Object.freeze({ id: 'profile', title: 'профиль: модель и усилие спавна — те, что назначены работнику' }),
 ])
 
-/** A full set is 5 — the number a report's last line must reach for an exit code of 0. */
-export const PARITY_RECEIPT_COUNT = 5
+/** A full set is 6 — the number a report's last line must reach for an exit code of 0. */
+export const PARITY_RECEIPT_COUNT = 6
 
 /** The four filenames one run directory holds — the writer and every reader agree here. */
 export const ARTIFACTS = Object.freeze({
@@ -348,14 +375,65 @@ function checkRights({ run, worker }) {
   return ok(id, `${expected.length} инструментов конверта и ${denialWords} доехали до спавна (${who})`)
 }
 
+// ── (f) profile ───────────────────────────────────────────────────────────────
+
+/** How a value that no flag carried is printed: «none» is a real expectation, not a blank. */
+const shownValue = (v) => (v === null || v === undefined ? 'по умолчанию CLI (флага нет)' : `«${String(v)}»`)
+
+/** The Russian word each compared field is printed under. */
+const FIELD_WORD = Object.freeze({ model: 'модель', effort: 'усилие' })
+
+/**
+ * WHERE THE PROMISE IS READ FROM, and why the record comes first.
+ *
+ * `run.profile` is what the worker profile said AT THE MOMENT the arguments were built — the
+ * same kind of evidence `run.envelope` is, written down beside the command line it was used to
+ * build. The daemon's live config is the honest fallback for a record written before that field
+ * existed, and a weaker one: a profile edited since would be compared against a run it never
+ * governed. Whichever answered is NAMED in the detail — a comparison whose second half is
+ * anonymous is not a receipt, it is an assertion with numbers in it.
+ */
+function profilePromise({ run, worker }) {
+  const stated = run && typeof run.profile === 'object' && run.profile !== null
+  if (stated) return { promise: run.profile, source: 'run.profile' }
+  if (worker && typeof worker === 'object') return { promise: worker, source: 'конфиг демона' }
+  return null
+}
+
+function checkProfile({ run, worker }) {
+  const id = 'profile'
+  if (!run || !Array.isArray(run.args)) return noData(id, `аргументы спавна (run.args)`)
+  const found = profilePromise({ run, worker })
+  // NOT A DEFAULT PASS. An args array that names no model and a promise nobody recorded agree
+  // on `null` for a reason that has nothing to do with the run: neither was ever looked at.
+  if (!found) return noData(id, `обещание профиля (run.profile, работника в конфиге тоже нет)`)
+
+  const task = run.task && typeof run.task === 'object' ? run.task : null
+  const expected = expectedModelEffort({ worker: found.promise, task })
+  const observed = modelEffortOf(run.args)
+
+  // Какое поле назначила ЗАДАЧА, а не профиль. Читается той же выборкой, что и ожидание выше:
+  // переопределение — часть обещания, и молчать о нём значит показать человеку сверку с
+  // профилем там, где сверка шла с карточкой задачи.
+  const byTask = ['model', 'effort'].filter((f) => task && task[f] !== undefined && task[f] !== null)
+  const whence = `по ${found.source}${byTask.length ? `, задачей переопределено: ${byTask.map((f) => FIELD_WORD[f]).join(', ')}` : ''}`
+
+  const diverged = ['model', 'effort'].filter((f) => observed[f] !== expected[f])
+  if (diverged.length) {
+    const parts = diverged.map((f) => `${FIELD_WORD[f]}: в аргументах ${shownValue(observed[f])}, обещано ${shownValue(expected[f])}`)
+    return fail(id, `спавн шёл не под тем, что назначено — ${parts.join('; ')} (${whence})`)
+  }
+  return ok(id, `${FIELD_WORD.model} ${shownValue(expected.model)} и ${FIELD_WORD.effort} ${shownValue(expected.effort)} доехали до спавна как назначено (${whence})`)
+}
+
 // ── evaluation ────────────────────────────────────────────────────────────────
 
 /**
- * evaluateParity({run, guards, receipt, worker, now}) → the five results in PARITY_RECEIPTS
+ * evaluateParity({run, guards, receipt, worker, now}) → the six results in PARITY_RECEIPTS
  * order, each `{id, status, detail}` with status one of `ok | warn | n-a | fail`.
  *
  * Without BOTH `run.json` and `receipt.json` there is nothing to evaluate at all, and the
- * answer is five failures naming the files — not four failures and a lucky n/a.
+ * answer is six failures naming the files — not five failures and a lucky n/a.
  *
  * @param {{run?:object, guards?:object[], receipt?:object, worker?:object, now?:number}} [data]
  * @returns {Array<{id:string, status:string, detail:string}>}
@@ -374,6 +452,7 @@ export function evaluateParity(data = {}) {
     checkRules({ run, receipt }),
     checkSkills({ run, receipt }),
     checkRights({ run, worker: data.worker }),
+    checkProfile({ run, worker: data.worker }),
   ]
 }
 
