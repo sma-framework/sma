@@ -15,7 +15,7 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { livenessSweep, computeCooldownMs } from '../src/queue/liveness.mjs'
+import { livenessSweep, computeCooldownMs, MAX_ATTEMPT_LIFETIME_MS } from '../src/queue/liveness.mjs'
 import { casTransition } from '../src/queue/cas.mjs'
 import { FAIL_REASONS, REASON_LABELS } from '../src/queue/adapter.mjs'
 
@@ -362,7 +362,7 @@ describe('сторож смерти пишет строку на каждую о
 
     const res = await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000 })
 
-    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0, renewed: 0 })
+    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0, renewed: 0, probeBroken: 0, killUnconfirmed: 0 })
     const [row] = await adapter.list()
     expect(row.status).toBe('queued')
     expect(row.attempt).toBe(2)
@@ -385,7 +385,7 @@ describe('сторож смерти пишет строку на каждую о
       },
     })
 
-    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0, renewed: 0 })
+    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0, renewed: 0, probeBroken: 0, killUnconfirmed: 0 })
   })
 
   it('строка пишется ДО объявления провала — иначе бросок объявления снова оставит лог пустым', async () => {
@@ -532,7 +532,7 @@ describe('сторож живости останавливает ребёнка 
 
     const res = await livenessSweep({ adapter, ledger, clock: c.clock, expireMs: 120000, journal: (e: any) => journal.push(e) })
 
-    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0, renewed: 0 })
+    expect(res).toEqual({ audited: 1, requeued: 1, throttled: 0, renewed: 0, probeBroken: 0, killUnconfirmed: 0 })
     expect(journal.filter((e) => e.type === 'liveness.attempt_killed')).toHaveLength(0)
     expect(journal.filter((e) => e.type === 'liveness.attempt_orphaned')).toHaveLength(0)
     expect(journal.filter((e) => e.type === 'liveness.attempt_dead')).toHaveLength(1)
@@ -626,5 +626,239 @@ describe('приговор сторожа доезжает как liveness_kille
     // и подпись про среду осталась только у настоящей недоступности среды
     expect(REASON_LABELS.runtime_offline).toBe('среда исполнения недоступна')
     expect(REASON_LABELS.liveness_killed).not.toContain('среда')
+  })
+})
+
+/**
+ * ═══ ОТКАЗ ПРОБЫ — НЕ МОЛЧАНИЕ РАБОТНИКА ════════════════════════════════════════════════════
+ *
+ * ПОВОД (замерено 31.08.2026). Соседняя работа опустошила склад зависимостей, хелперы перестали
+ * запускаться — и проба живости начала БРОСАТЬ. Обход читал бросок как «нечего сказать», шёл
+ * судить по часам и трижды подряд похоронил одну и ту же живую попытку словом `liveness_killed`,
+ * пока её процесс работал. Разница между «спросить не у кого» и «спросил, и мне сломалось» стоила
+ * трёх сгоревших окон и четырёх процессов на одной подписке.
+ *
+ * ЧТО УТВЕРЖДАЕТСЯ ЗДЕСЬ. Не «есть ещё одно значение», а РЕШЕНИЕ: по несостоявшейся пробе
+ * приговор НЕ выносится вовсе — ни строки `attempt_dead`, ни вызова остановки, ни перевыдачи, —
+ * и при этом попытка не становится бессмертной: потолок жизни закрывает её своим именем.
+ */
+describe('сломанная проба живости не даёт приговора', () => {
+  /** Реестр, чей пробник БРОСАЕТ: ровно поведение хелпера, под которым исчез склад модулей. */
+  const brokenProbe = (tape: string[]) => ({
+    alive() {
+      throw new Error('пробник не запустился: нет модулей склада')
+    },
+    stop(taskId: string) {
+      tape.push(`turns.stop(${taskId})`)
+      return true
+    },
+  })
+
+  const staleAdapter = (clock: () => number, ledger: any, over: any = {}) => {
+    const adapter = makeFakeAdapter({ clock, ledger })
+    adapter._seed(claimed({ id: 'BL-1', attempt: 1, claimedAt: 1000, leaseRenewedAt: 1000, ...over }))
+    return adapter
+  }
+
+  it('проба бросила — попытка НЕ объявлена мёртвой, остановку даже не звали', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = staleAdapter(c.clock, ledger)
+    const tape: string[] = []
+    const journal: any[] = []
+    c.advance(500000) // молчит дольше срока аренды — ровно тот случай, что хоронил живых
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      journal: (e: any) => journal.push(e),
+      attemptTurns: brokenProbe(tape),
+    })
+
+    // НИ ОДНОГО приговора: ни перевыдачи, ни строки попытки, ни вызова остановки.
+    expect(res.requeued, 'по сломанной пробе снова судят по часам — это и есть починяемый дефект').toBe(0)
+    expect(res.probeBroken).toBe(1)
+    expect(tape, 'остановку звали, хотя про процесс не известно ничего').toEqual([])
+    expect(ledger.readAttempts('BL-1')).toHaveLength(0)
+    const [row] = await adapter.list()
+    expect(row.status).toBe('claimed')
+    expect(row.attempt).toBe(1)
+    // И СЛОВО СВОЁ: отказ пробы называет себя, а не притворяется молчанием работника.
+    expect(journal.filter((e) => e.type === 'liveness.attempt_dead')).toHaveLength(0)
+    const said = journal.filter((e) => e.type === 'liveness.probe_unavailable')
+    expect(said).toHaveLength(1)
+    expect(String(said[0].detail)).toContain('НЕ СОСТОЯЛАСЬ')
+  })
+
+  it('и попытка от этого не становится бессмертной — потолок жизни закрывает её своим именем', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = staleAdapter(c.clock, ledger)
+    const tape: string[] = []
+    c.advance(MAX_ATTEMPT_LIFETIME_MS + 60000) // перевалили ЗА потолок
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      attemptTurns: brokenProbe(tape),
+      sleep: async () => {}, // подтверждение гашения не тратит время сьюта
+    })
+
+    expect(res.probeBroken).toBe(0)
+    expect(res.requeued).toBe(1)
+    expect(tape).toEqual(['turns.stop(BL-1)']) // гашение ПЕРВЫМ, как и на всех дорогах приговора
+    const [attemptRow] = ledger.readAttempts('BL-1')
+    expect(attemptRow.failureReason).toBe('attempt_lifetime_exceeded')
+  })
+
+  /**
+   * И ОТКАЗ СУДИТЬ ОБЯЗАН ДЕРЖАТЬ АРЕНДУ — иначе он не держит НИЧЕГО.
+   *
+   * Перевыдать строку умеет не только сторож. Аренда в pg-boss — это `started_on +
+   * expire_seconds`, метода продления у библиотеки нет вовсе (pgboss-backend.touch, проверено на
+   * живом экземпляре), и строка, которую сторож оставил себе, но не продлил, уезжает второму
+   * работнику по сроку аренды — молча, мимо всякого вердикта. Тогда «не сужу по сломанной пробе»
+   * покупает ровно 15 минут отсрочки и тот же самый счёт: два процесса на одной работе.
+   */
+  it('отказ судить ДЕРЖИТ аренду — иначе строку по сроку отдаёт сама очередь, мимо сторожа', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = staleAdapter(c.clock, ledger)
+    const journal: any[] = []
+    c.advance(500000)
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      journal: (e: any) => journal.push(e),
+      attemptTurns: brokenProbe([]),
+    })
+
+    expect(res.probeBroken).toBe(1)
+    const [row] = await adapter.list()
+    expect(row.leaseRenewedAt, 'строка оставлена себе, но не продлена — очередь заберёт её по сроку').toBe(c.clock())
+    // …И ПОТОЛОК ОТ ЭТОГО НЕ СДВИГАЕТСЯ: продление трогает часы АРЕНДЫ, а жизнь попытки считается
+    // от захвата. Иначе «не сужу» стало бы «не судить никогда», и бессмертие вернулось бы дверью,
+    // которую закрывал MAX_ATTEMPT_LIFETIME_MS.
+    expect(row.claimedAt, 'продление сдвинуло момент захвата — потолок жизни попытки стал недостижим').toBe(1000)
+    expect(journal.find((e) => e.type === 'liveness.probe_unavailable').leaseHeld).toBe(true)
+  })
+})
+
+/**
+ * ═══ «УМЕРЛА ДЛЯ УЧЁТА, ЖИВА ДЛЯ ДЕНЕГ» — ЗАПРЕЩЕНО ═════════════════════════════════════════
+ *
+ * ПОВОД (то же 31.08). Остановку звали и верили ей на слово: `stop()` отвечает «ручка была и её
+ * дёрнули», а не «процесс кончился». Строки закрывались в промежутке между просьбой и смертью —
+ * и за каждой закрытой строкой оставалась живая сессия, которую пришлось снимать руками по PID.
+ * Доска при этом показывала «мест 4 из 4 занято» и НИ ОДНОЙ идущей задачи: учёт и машина
+ * разошлись ровно на этом.
+ *
+ * ЧТО УТВЕРЖДАЕТСЯ. Пока сторож ВИДИТ процесс живым после остановки, строка не закрывается
+ * вовсе — задача не перевыдаётся, строка попытки не пишется, и в журнале стоит своё слово.
+ */
+describe('строка не закрывается, пока процесс жив', () => {
+  it('процесс пережил остановку — задача НЕ перевыдана, и сторож говорит об этом', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ id: 'BL-1', attempt: 1, claimedAt: 1000, leaseRenewedAt: 1000 }))
+    const journal: any[] = []
+    c.advance(MAX_ATTEMPT_LIFETIME_MS + 60000) // за потолком: приговор законен, гашение — нет
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      journal: (e: any) => journal.push(e),
+      // Ручка есть, `stop()` отвечает true — а процесс живёт дальше. Ровно то, что видел
+      // человек: «дверь сказала killed:true», и четыре работника на машине.
+      attemptTurns: { alive: () => true, stop: () => true },
+      sleep: async () => {},
+    })
+
+    expect(res.killUnconfirmed).toBe(1)
+    expect(res.requeued, 'строка закрыта при живом процессе — это «умерла для учёта, жива для денег»').toBe(0)
+    expect(ledger.readAttempts('BL-1'), 'написана строка попытки о смерти, которой не было').toHaveLength(0)
+    const [row] = await adapter.list()
+    expect(row.status).toBe('claimed') // место занято тем, кто его правда занимает
+    // И НИ ОДНОГО УТВЕРЖДЕНИЯ О СМЕРТИ В ЖУРНАЛЕ: объявление пишется только там, где его
+    // действительно исполнят, иначе лог врёт ровно в том расследовании, ради которого он ведётся.
+    expect(journal.filter((e) => e.type === 'liveness.attempt_dead')).toHaveLength(0)
+    expect(journal.filter((e) => e.type === 'liveness.attempt_killed')).toHaveLength(0)
+    const unconfirmed = journal.filter((e) => e.type === 'liveness.kill_unconfirmed')
+    expect(unconfirmed).toHaveLength(1)
+    expect(unconfirmed[0]).toMatchObject({ taskId: 'BL-1', reason: 'attempt_lifetime_exceeded' })
+  })
+
+  it('процесс кончился после остановки — приговор идёт до конца, и строка закрывается', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ id: 'BL-1', attempt: 1, claimedAt: 1000, leaseRenewedAt: 1000 }))
+    const journal: any[] = []
+    let live = true
+    c.advance(MAX_ATTEMPT_LIFETIME_MS + 60000)
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      journal: (e: any) => journal.push(e),
+      attemptTurns: {
+        alive: () => live,
+        stop: () => {
+          live = false // ровно то, чего ждут от остановки: процесса больше нет
+          return true
+        },
+      },
+      sleep: async () => {},
+    })
+
+    expect(res.killUnconfirmed).toBe(0)
+    expect(res.requeued).toBe(1)
+    expect(ledger.readAttempts('BL-1')[0].failureReason).toBe('attempt_lifetime_exceeded')
+    expect(journal.filter((e) => e.type === 'liveness.attempt_killed')).toHaveLength(1)
+  })
+
+  /**
+   * ПЕРЕЖИВШИЙ ОСТАНОВКУ СОХРАНЯЕТ НЕ ТОЛЬКО СТРОКУ, НО И АРЕНДУ ПОД НЕЙ.
+   *
+   * «Строка остаётся своей» держится ровно до срока аренды: дальше очередь отдаёт её сама, и
+   * ребёнок, переживший остановку, получает соседа на ту же работу — тот самый счёт 31.08, только
+   * дверью очереди вместо двери сторожа. Здесь право на продление самое твёрдое из трёх: процесс
+   * ВИДЕН живым секунду назад.
+   */
+  it('переживший остановку держит и аренду — «не закрываем» иначе живёт только до срока', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ id: 'BL-1', attempt: 1, claimedAt: 1000, leaseRenewedAt: 1000 }))
+    const journal: any[] = []
+    c.advance(MAX_ATTEMPT_LIFETIME_MS + 60000)
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      journal: (e: any) => journal.push(e),
+      attemptTurns: { alive: () => true, stop: () => true },
+      sleep: async () => {},
+    })
+
+    expect(res.killUnconfirmed).toBe(1)
+    const [row] = await adapter.list()
+    expect(row.leaseRenewedAt, 'строка не закрыта, но и не продлена — очередь заберёт её по сроку').toBe(c.clock())
+    expect(row.claimedAt, 'продление сдвинуло момент захвата — потолок жизни попытки стал недостижим').toBe(1000)
+    expect(journal.find((e) => e.type === 'liveness.kill_unconfirmed').leaseHeld).toBe(true)
   })
 })
