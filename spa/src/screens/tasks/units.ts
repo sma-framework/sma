@@ -69,14 +69,20 @@ import { plural } from '../../shell/format'
 /**
  * How a unit stands, in the words this window uses everywhere.
  *
- * ПОЧЕМУ СЛОВ СЕМЬ, А НЕ ПЯТЬ. Пять первых — про то, где работа стоит сама. Два последних
- * появились вместе с батчем и принадлежат не работе, а ВЛАДЕЛЬЦУ: «пропущен» — это его слово о
+ * ПОЧЕМУ СЛОВ ВОСЕМЬ, А НЕ ПЯТЬ. Пять первых — про то, где работа стоит сама. Два появились
+ * вместе с батчем и принадлежат не работе, а ВЛАДЕЛЬЦУ: «пропущен» — это его слово о
  * сломавшемся куске, «отменён» — его слово обо всей сборке. Ни то, ни другое не переводится в
  * пятёрку без вранья: пропущенный кусок, показанный «не начат», обещает работу, которой не
  * будет, а отменённая сборка, показанная «не получилось», обвиняет работника в решении
  * человека. Словарь окна растёт ровно настолько, насколько вырос словарь движка.
+ *
+ * ВОСЬМОЕ — «НА ПАУЗЕ», И ОНО ОТДЕЛЯЕТ ДВИЖЕНИЕ ОТ НАЧАТОСТИ. Пока слов было семь, «Идёт»
+ * означало у фазы «начата и не закончена», и фаза с тремя пройденными стадиями и ни одной
+ * запущенной носила его — рядом с собственным предложением «Ни одна стадия сейчас не
+ * запущена». Строка спорила сама с собой в одном кадре, и никакой оттенок этого не лечит:
+ * два ответа на один вопрос лечатся вторым словом, а не вторым цветом.
  */
-export type UnitState = 'run' | 'dec' | 'ok' | 'wait' | 'fail' | 'skip' | 'off'
+export type UnitState = 'run' | 'pause' | 'dec' | 'ok' | 'wait' | 'fail' | 'skip' | 'off'
 
 /** What a unit IS — all three kinds of the accepted design, now that the engine has all three. */
 export type UnitKind = 'inline' | 'batch' | 'phase'
@@ -141,6 +147,9 @@ export interface WorkUnit {
 /** The words each state answers to, once, so no two rows disagree about what «ok» is called. */
 export const STATE_WORD: Record<UnitState, string> = {
   run: 'Идёт',
+  // «Начата и стоит»: работа позади есть, а сейчас не движется НИЧЕГО. Ровно то, о чём говорит
+  // непульсирующая точка рядом, — теперь об этом говорит и слово.
+  pause: 'На паузе',
   dec: 'Ждёт решения',
   ok: 'Готово',
   wait: 'Не начата',
@@ -161,7 +170,7 @@ export const KIND_WORD: Record<UnitKind, string> = {
  * bottom. A person opens this screen to find what is stuck on them, so what is stuck on them
  * cannot be below the fold.
  */
-const RANK: Record<UnitState, number> = { dec: 0, run: 1, wait: 2, fail: 3, ok: 4, skip: 5, off: 6 }
+const RANK: Record<UnitState, number> = { dec: 0, run: 1, pause: 2, wait: 3, fail: 4, ok: 5, skip: 6, off: 7 }
 
 /** The stages in the order a phase goes through them. */
 const STAGES: PhaseStage[] = ['discuss', 'plan', 'design', 'execute', 'verify']
@@ -283,6 +292,26 @@ function sinceClaim(claimedAt: number | null | undefined, now: number): number |
  *
  * A phase that parked a question for a person is `dec` NO MATTER what its stages are doing —
  * the whole point of the row is that the person is the thing it is waiting for.
+ *
+ * ═══════════ ТРИ ИСТОЧНИКА О ГОТОВНОСТИ, И НИ ОДИН НЕ ВЫИГРЫВАЕТ МОЛЧА ═══════════
+ *
+ * О том, закрыта ли фаза, говорят трое: ДИСК (артефакты стадий — замер), РОАДМАП (галочка
+ * человека — его слово о работе целиком) и ОЧЕРЕДЬ (запущено ли что-то прямо сейчас). Раньше
+ * строка знала двоих и мешала их в одно слово; отсюда обе жалобы этой карточки:
+ *
+ *   — «ИДЁТ» ОЗНАЧАЛО «НАЧАТА», а не «движется», и стояло над собственным предложением «Ни
+ *     одна стадия сейчас не запущена». Теперь движение — это `running`, и только оно; начатая,
+ *     но никуда не идущая фаза называется «На паузе», ровно как и выглядит её мёртвая точка.
+ *
+ *   — ГАЛОЧКА РОАДМАПА ДО КАРТОЧКИ НЕ ДОЕЗЖАЛА. Фаза, закрытая человеком до появления ступеней
+ *     или чужим инструментом, показывалась незавершённой НАВСЕГДА: документа, которого никто не
+ *     напишет, диск не дождётся. Теперь галочка закрывает фазу — и расхождение с диском
+ *     НАЗЫВАЕТСЯ СЛОВАМИ прямо на строке. Молча предпочесть один источник другому значит
+ *     спрятать спор, а не разрешить его: человек имеет право видеть, что слово о закрытии —
+ *     из роадмапа, а числа — с диска.
+ *
+ * ВОПРОС ГАЛОЧКОЙ НЕ ЗАКРЫВАЕТСЯ. Открытый вопрос задан ЧЕЛОВЕКУ и никем не отвечен; крестик в
+ * другом файле — это слово о работе, а не ответ на вопрос. Поэтому `dec` по-прежнему первый.
  */
 function phaseUnit(row: PhaseIndexRow): WorkUnit {
   const segs = STAGES.map((s) => STAGE_STATE[row.stages[s]])
@@ -297,23 +326,43 @@ function phaseUnit(row: PhaseIndexRow): WorkUnit {
   // это уже начало: живая проверка показала восемь фаз со словом «Не начата» и тремя закрытыми
   // стадиями в той же строке, и строка спорила сама с собой прямо на экране.
   const started = running || doneCount > 0
+  const closedOnDisk = settledCount === STAGES.length
+  // Молчание двери — это «галочки не стоит»: демон старее самого поля отвечает без него, и
+  // объявить закрытым то, о чём никто ничего не сказал, было бы выдумкой, а не чтением.
+  const closedInRoadmap = row.roadmapClosed === true
+  const disagreement = closedInRoadmap && !closedOnDisk
   const state: UnitState =
-    row.open > 0 ? 'dec' : settledCount === STAGES.length ? 'ok' : started ? 'run' : 'wait'
+    row.open > 0
+      ? 'dec'
+      : closedOnDisk || closedInRoadmap
+        ? 'ok'
+        : running
+          ? 'run'
+          : started
+            ? 'pause'
+            : 'wait'
 
   const answered = row.answered > 0 ? ` · отвечено вопросов: ${row.answered}` : ''
   // ЧИСЛО СТАДИЙ НИГДЕ НЕ НАПИСАНО ЦИФРОЙ — оно считается по списку. Слово «четыре» стояло тут
   // словом и разошлось с дорогой ровно в тот день, когда дорога стала длиннее.
-  const inner = `пройдено ${doneCount} из ${STAGES.length} стадий${answered}`
+  //
+  // При расхождении состав называет ОБА источника: «закрыта» без «на диске столько-то» было бы
+  // тем же спором, только спрятанным.
+  const inner = disagreement
+    ? `закрыта в роадмапе · на диске пройдено ${doneCount} из ${STAGES.length} стадий${answered}`
+    : `пройдено ${doneCount} из ${STAGES.length} стадий${answered}`
   const next =
     row.open > 0
       ? `Ждёт вас: ${row.open} ${row.open === 1 ? 'вопрос' : 'вопроса'} на стадиях фазы`
-      : state === 'ok'
-        ? 'Все стадии пройдены'
-        : running
-          ? 'Стадия идёт — вопросов к вам нет'
-          : started
-            ? 'Ни одна стадия сейчас не запущена — фаза ждёт следующей'
-            : 'Не начата'
+      : disagreement
+        ? `Закрыта в роадмапе, а диск этого не подтверждает: пройдено ${doneCount} из ${STAGES.length}. Слово о закрытии — из роадмапа, числа — с диска.`
+        : state === 'ok'
+          ? 'Все стадии пройдены'
+          : running
+            ? 'Стадия идёт — вопросов к вам нет'
+            : started
+              ? 'Ни одна стадия сейчас не запущена — фаза ждёт следующей'
+              : 'Не начата'
 
   return {
     id: row.id,
@@ -754,6 +803,10 @@ export function columnOf(unit: WorkUnit): BoardColumn {
   if (unit.state === 'dec') return 'you'
   if (unit.state === 'fail' && unit.wait) return 'you'
   if (unit.kind === 'phase' && unit.segs.length === STAGES.length) {
+    // ЗАКРЫТАЯ ФАЗА СТОИТ В «ГОТОВО», ЧЕМ БЫ ЕЁ НИ ЗАКРЫЛИ. Диск и роадмап могут расходиться о
+    // стадиях (об этом карточка говорит словами), но место и слово расходиться не имеют права:
+    // «Готово» в столбике «Проверка» — тот же спор, только переехавший из строки в раскладку.
+    if (unit.state === 'ok') return 'done'
     const running = unit.segs.indexOf('run')
     // ПЕРВАЯ, КОТОРАЯ ЕЩЁ ПОЙДЁТ. Пропущенная стадия — закрытая: её никто не ждёт и ждать
     // некому. Поиск, знающий одно слово «пройдена», ставил бы всякую фазу старше ступени
@@ -762,7 +815,10 @@ export function columnOf(unit: WorkUnit): BoardColumn {
     const at = running !== -1 ? running : unit.segs.findIndex((s) => s !== 'ok' && s !== 'skip')
     return at === -1 ? 'done' : STAGE_COLUMN[at]
   }
-  return unit.state === 'run' || unit.state === 'wait' ? 'execute' : 'done'
+  // Стоящая на паузе работа НЕ закрыта — в «Готово» ей нельзя: столбик обещает человеку
+  // сделанное. (У инлайна и сборки паузы не бывает вовсе — стадий у них нет; ветка эта
+  // достаётся фазе, чей ряд стадий пришёл короче дороги.)
+  return unit.state === 'run' || unit.state === 'pause' || unit.state === 'wait' ? 'execute' : 'done'
 }
 
 export interface BoardColumnView {

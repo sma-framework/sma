@@ -724,6 +724,68 @@ describe('a phase is named the way its author named it', () => {
   })
 })
 
+/**
+ * ГАЛОЧКА РОАДМАПА — ТРЕТИЙ ИСТОЧНИК О ГОТОВНОСТИ, И ДО ОКНА ОН НЕ ДОЕЗЖАЛ.
+ *
+ * Стадии фазы этот модуль читает С ДИСКА, и правильно делает: документ — это замер. Но человек
+ * закрывает фазу не документом, а галочкой в роадмапе, и командная строка эту галочку читает —
+ * фаза, отмеченная закрытой, считается закрытой даже без пар PLAN/SUMMARY (так закрыты все
+ * фазы, сделанные до появления ступеней или чужим инструментом). Окно об этом не знало вовсе и
+ * показывало такую фазу незавершённой — навсегда, потому что документа, которого никто не
+ * напишет, диск не дождётся.
+ *
+ * Здесь галочка становится ФАКТОМ СТРОКИ (`roadmapClosed`), и не более того: что с этим фактом
+ * сказать человеку, решает окно — оно же и называет расхождение словами. Читается галочка ТЕМ
+ * ЖЕ единственным чтением роадмапа, каким читаются названия: второе открытие того же файла было
+ * бы вторым источником одного факта.
+ */
+describe('роадмап закрыл фазу — строка указателя несёт это как факт', () => {
+  const ROADMAP = [
+    '# Roadmap',
+    '',
+    '- [x] **Phase 12: SMA — Рабочее место во фронте** — закрыта',
+    '- [ ] **Phase 13: Управление памятью** — идёт',
+    '',
+    '### Phase 12: SMA — Рабочее место во фронте',
+    '',
+    '### Phase 13: Управление памятью',
+    '',
+  ].join('\n')
+
+  const rowsOf = (io: unknown) =>
+    derivePhaseIndex({ projectDir: PROJECT, fsImpl: io as never }).phases as Array<{
+      id: string
+      roadmapClosed?: boolean
+    }>
+
+  const withRoadmap = (over = {}) => fixture({ [`${PROJECT}/.planning/ROADMAP.md`]: ROADMAP, ...over })
+
+  it('отмеченная фаза несёт закрытие, хотя на диске её проверка не записана', () => {
+    const twelve = rowsOf(withRoadmap()).find((p) => p.id === '12-front')
+    expect(twelve?.roadmapClosed).toBe(true)
+    // …и диск при этом честно продолжает говорить своё: галочка ступени не подделывает
+    expect(
+      (derivePhaseIndex({ projectDir: PROJECT, fsImpl: withRoadmap() as never }).phases as Array<{
+        id: string
+        stages: Record<string, string>
+      }>).find((p) => p.id === '12-front')?.stages.verify,
+    ).toBe('none')
+  })
+
+  it('неотмеченная фаза несёт «нет», а не молчание: «галочки не стоит» — это ответ', () => {
+    expect(rowsOf(withRoadmap()).find((p) => p.id === '13-next')?.roadmapClosed).toBe(false)
+  })
+
+  it('проект без роадмапа не объявляет закрытой ни одной фазы', () => {
+    for (const row of rowsOf(fixture())) expect(row.roadmapClosed).toBe(false)
+  })
+
+  it('галочка читается ПО НОМЕРУ ФАЗЫ, а не по имени папки — и чужая соседу не достаётся', () => {
+    const io = withRoadmap({ [`${PROJECT}/.planning/phases/47.3-legacy-thing/x.md`]: '# x' })
+    expect(rowsOf(io).find((p) => p.id === '47.3-legacy-thing')?.roadmapClosed).toBe(false)
+  })
+})
+
 // ══════════════════════════════ THE DECISION DOOR ═════════════════════════════
 
 /** A CAS seam that records every transition and can be told to lose the claim. */
