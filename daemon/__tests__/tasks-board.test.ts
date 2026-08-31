@@ -159,7 +159,7 @@ describe('инлайн и батч стадий не имеют — их кла�
     expect(whereSingle(units({ workers: [worker] }))).toBe('execute')
   })
 
-  it('закрытая задача — в «Готово», и сорванная тоже: столбик называет их закрытыми, а не удачными', () => {
+  it('удачно закрытая — в «Готово»; сорванная — в «ЖДУТ ВАС»; остановленная рукой — снова в «Готово»', () => {
     const done = (over: Partial<DoneRow>): DoneRow =>
       ({
         id: 'd1',
@@ -174,9 +174,56 @@ describe('инлайн и батч стадий не имеют — их кла�
       }) as DoneRow
 
     expect(whereSingle(units({ done: [done({})] }))).toBe('done')
-    const failed = units({ done: [done({ failed: { reasonLabel: 'Не получилось' } } as Partial<DoneRow>)] })
-    expect(whereSingle(failed)).toBe('done')
+
+    // ПОЛОМКА ЖДЁТ ЧЕЛОВЕКА. «Готово» обещает сделанное, и поломка под этим словом читается
+    // как удача — ровно так сборка из девяти работ, вставшая на первой, выглядела готовой.
+    const failed = units({
+      done: [done({ failed: { reason: 'provider_error', reasonLabel: 'Оборвал провайдер' } } as Partial<DoneRow>)],
+    })
+    expect(whereSingle(failed)).toBe('you')
     expect(failed[0].state).toBe('fail')
+    expect(failed[0].wait?.what).toContain('провайдер')
+    expect(failed[0].wait?.cta).toContain('Открыть')
+
+    // А ВОТ ЭТО ЖДЁТ НИКОГО: человек уже решил и остановил работу сам. Второй раз его не
+    // спрашивают, иначе столбик ожидания наполнится его же собственными решениями.
+    const stopped = units({
+      done: [done({ failed: { reason: 'manual', reasonLabel: 'Остановлено вручную' } } as Partial<DoneRow>)],
+    })
+    expect(whereSingle(stopped)).toBe('done')
+    expect(stopped[0].wait).toBeUndefined()
+  })
+
+  it('поломка, за которую уже взялись, больше никого не ждёт — она в «Готово»', () => {
+    const broke = (over: Partial<DoneRow> = {}): DoneRow =>
+      ({
+        id: 'R-старая',
+        title: 'Ловушка активного проекта',
+        project: 'sma',
+        machine: 'm1',
+        finishedAt: null,
+        finishedDuration: null,
+        workerId: null,
+        attempts: 2,
+        failed: { reason: 'turns_exhausted', reasonLabel: 'Не поместилась в ходы' },
+        ...over,
+      }) as DoneRow
+
+    // Одна и та же работа: старая закрытая строка и та же работа, поставленная заново под
+    // НОВЫМ номером. Столбик ожидания зовёт к ней ровно один раз, а не дважды.
+    const again = units({ done: [broke()], queue: [queueRow({ id: 'R-новая', title: 'Ловушка активного проекта' })] })
+    const closed = again.find((u) => u.id === 'R-старая')
+    expect(closed?.wait, 'старая поломка всё ещё зовёт, хотя работа уже в очереди').toBeUndefined()
+    expect(columnOf(closed as (typeof again)[number])).toBe('done')
+
+    // А пока за неё никто не взялся — зовёт.
+    const alone = units({ done: [broke()] })
+    expect(alone[0].wait).toBeDefined()
+    expect(columnOf(alone[0])).toBe('you')
+
+    // Возврат сохраняет номер — узнаётся и по нему, не только по названию.
+    const byId = units({ done: [broke()], queue: [queueRow({ id: 'R-старая', title: 'другое название' })] })
+    expect(byId.find((u) => u.kind === 'inline' && u.state === 'fail')?.wait).toBeUndefined()
   })
 
   it('сборка, вставшая на сломавшемся куске, — в «ЖДУТ ВАС»; идущая — в «Исполнении»', () => {
@@ -205,6 +252,24 @@ describe('инлайн и батч стадий не имеют — их кла�
     expect(whereSingle(stuck)).toBe('you')
     // Решение НЕ принимается в столбике: карточка называет, что предстоит, и открывается.
     expect(stuck[0].wait?.cta).toContain('Открыть')
+
+    // СБОРКА, СОРВАВШАЯСЯ БЕЗ ВОПРОСА, ЖДЁТ ТАК ЖЕ. Движок называет её `failed`, вопроса при
+    // ней нет — и она уходила в «Готово» вместе с восемью невыданными элементами. Замер 31.08:
+    // три такие сборки держали десять работ, и ни одна из них не была видна как ждущая.
+    const broken = units({
+      batches: [
+        batch({
+          state: 'failed',
+          holding: { id: 'i1', title: 'Первый кусок', status: 'failed', state: 'failed' },
+          items: [
+            { id: 'i1', title: 'Первый кусок', status: 'failed', state: 'failed' },
+            { id: 'i2', title: 'Второй кусок', status: 'queued', state: 'waiting' },
+          ],
+        } as Partial<BatchRow>),
+      ],
+    })
+    expect(whereSingle(broken)).toBe('you')
+    expect(broken[0].wait?.what).toContain('Первый кусок')
   })
 })
 

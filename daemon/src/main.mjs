@@ -403,6 +403,43 @@ export async function readCoordinationLedger({ projectDir, now = Date.now() }) {
 }
 
 /**
+ * Квитанция слияния ОДНОЙ ветки из журнала терминалов — то есть доказательство приёмки,
+ * когда принимал не человек.
+ *
+ * ПОЧЕМУ ЭТУ КНИГУ ВООБЩЕ ЧИТАЮТ. Приёмщиком стал терминал: он проводит ритуал слияния сам,
+ * по стоящему добро, и в колонке решения после него не остаётся ничего — колонку заполняет
+ * только нажатие двери окна. Пока эта книга не читалась, всякая терминальная приёмка
+ * выглядела на экране как приёмка без приёмщика, а «принято» держалось на честном слове.
+ *
+ * ЧИТАЮТ ЕЁ ЕЁ ЖЕ ЧИТАТЕЛЕМ — тем самым, каким её читает `status`, и по тому же пути, каким
+ * её пишет ритуал. Второй разборщик `.sma/` — ровно то, чего этому демону расти нельзя: в
+ * день, когда журнал переедет, второй разборщик продолжит показывать вчерашний.
+ *
+ * ПОСЛЕДНЕЕ СЛИЯНИЕ, А НЕ ПЕРВОЕ: ветку задачи можно слить дважды (возврат, второй круг,
+ * второе слияние), и действующая приёмка — последняя. Fail-open во всём: нечитаемый журнал,
+ * отсутствующий каталог, битая строка — это `null`, «записи нет», и карточка скажет об этом
+ * словами. Ни одно чтение здесь не имеет права уронить дверь.
+ */
+export async function readMergeJournal({ branch, projectDir } = {}) {
+  if (typeof branch !== 'string' || branch.trim() === '') return null
+  if (typeof projectDir !== 'string' || projectDir.trim() === '') return null
+  try {
+    const journal = await import('../../scripts/sma/lib/journal.mjs')
+    const { events } = journal.readJournal({ journalDir: join(projectDir, '.sma', 'journal') })
+    let hit = null
+    for (const e of events || []) {
+      if (!e || e.type !== 'merge') continue
+      const detail = e.detail && typeof e.detail === 'object' ? e.detail : null
+      if (!detail || detail.branch !== branch) continue
+      hit = { terminal: typeof e.terminal === 'string' ? e.terminal : null, at: e.ts ?? null, receipt: detail }
+    }
+    return hit
+  } catch {
+    return null
+  }
+}
+
+/**
  * The memory corpus, read for a search — through the SAME projection the loader uses.
  *
  * ONE READ PATH, and it is not this file's. `readNotes` + `projectNoteAxis` + `isVisibleNow`
@@ -1009,6 +1046,11 @@ export function createDaemon(o = {}) {
         unknownDispatchCodes: () => unknownDispatchCodes.codes(),
         ledger, // the attempt ledger AND the decision journal ride the same seam
         ledgerDir,
+        // ВТОРАЯ КНИГА ПРИЁМКИ. Человеческое нажатие оставляет квитанцию в колонке решения;
+        // терминал, принимающий сам, — в журнале терминалов. Дверь карточки спрашивает
+        // колонку первой и эту книгу второй, и потому умеет назвать обоих приёмщиков
+        // словом. Шов необязательный: демон без него отвечает про человека ровно так же.
+        mergeJournal: readMergeJournal,
         // …and the read model that counts a worker's concluded attempts over the last 30 days
         // out of that same ledger. It is built ONCE here (it holds a TTL cache) and injected,
         // so the derive keeps no static edge onto it and the numbers ride the existing read.

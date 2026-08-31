@@ -1,5 +1,6 @@
 import type { Kpis, SpendAccount, WindowFact } from '../../api/types'
 import { WINDOW_UNKNOWN_HINT, plural, windowWords } from '../../shell/format'
+import { elapsedLabel } from '../../shell/stats'
 
 /**
  * KpiStrip — the day in figures, and what each subscription window is doing.
@@ -43,18 +44,38 @@ function WindowLine({ label, fact }: { label: string; fact: WindowFact | undefin
   )
 }
 
-export function KpiStrip({ kpis, accounts }: { kpis: Kpis | undefined; accounts: SpendAccount[] }) {
+export function KpiStrip({
+  kpis,
+  accounts,
+  stalledSince,
+}: {
+  kpis: Kpis | undefined
+  accounts: SpendAccount[]
+  /**
+   * С КАКОГО МОМЕНТА СТОИТ ТА СБОРКА, ЧТО СТОИТ ДОЛЬШЕ ВСЕХ. `null` — не стоит ни одна (или
+   * очередь не поставила отметку, и тогда цифра честно молчит вместо бодрого нуля).
+   *
+   * Приходит ПРОПОМ, а не считается здесь: это та же отметка, по которой лента рисует свои
+   * карточки вставших сборок, и второе её вычисление рядом стало бы вторым ответом на вопрос
+   * «сколько стоит» — на одном экране, в двадцати сантиметрах друг от друга.
+   */
+  stalledSince: number | null
+}) {
   const busy = kpis?.workersBusy ?? 0
   const total = kpis?.workersTotal ?? 0
   const queued = kpis?.queued ?? 0
   const awaiting = kpis?.awaitingApproval ?? 0
+  // СБОРКА, ЖДУЩАЯ ВЫБОРА, — СВОЁ ЧИСЛО. Раньше её здесь не было вовсе: ждущее состояние
+  // сборки не попадало ни в один счётчик и было видно только на её собственной карточке.
+  const stalledBatches = kpis?.batchesAwaitingDecision ?? 0
+  const longestStall = elapsedLabel(stalledSince, Date.now())
   const windowsOpen = kpis?.windowsOpen ?? 0
 
   return (
     <section className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-[18px]">
       <div className="rounded-[14px] border border-bd bg-card px-5 py-[18px] shadow-panel">
         <div className="mb-4 text-[10px] font-semibold tracking-[0.09em] text-tx3 uppercase">День в цифрах</div>
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-5 gap-4">
           <Figure
             label="Работают"
             value={`${busy} / ${total}`}
@@ -62,6 +83,17 @@ export function KpiStrip({ kpis, accounts }: { kpis: Kpis | undefined; accounts:
           />
           <Figure label="В очереди" value={String(queued)} />
           <Figure label="Ждут решения" value={String(awaiting)} />
+          <Figure
+            label="Сборки встали"
+            value={String(stalledBatches)}
+            // ПРОСТОЙ ЧИСЛОМ И В СЧЁТЧИКАХ ТОЖЕ: «1» не отличает сборку, вставшую минуту назад,
+            // от сборки, простоявшей ночь, а решение человек принимает как раз по этой разнице.
+            note={
+              stalledBatches > 0
+                ? (longestStall ? `дольше всех — ${longestStall}` : 'ждут вашего выбора')
+                : undefined
+            }
+          />
           <Figure
             label="Открыты окна"
             value={String(windowsOpen)}

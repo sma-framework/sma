@@ -108,7 +108,7 @@ import { dirname, join } from 'node:path'
 
 import { pipelineEnabled, pipelineMaxTurns, projectEntry, codeTreeOf, planningHomeOf } from './config.mjs'
 import { taskTurnCap, burnedTurnCapsOf, turnKindOf, emptyTurnKinds } from './policy/turn-budget.mjs'
-import { resolveExpireMs, batchWorkerOf, waveAddressOf, FAIL_REASONS, failureAwaitsAPerson, ATTEMPTS_EXHAUSTED, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
+import { resolveExpireMs, batchWorkerOf, waveAddressOf, isBatchParent, batchItemsOf, batchDecisionsOf, brokenItemOf, FAIL_REASONS, failureAwaitsAPerson, ATTEMPTS_EXHAUSTED, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
@@ -147,7 +147,11 @@ import { WORKTREE_COPIES_DIR } from '../../scripts/sma/lib/constants.mjs'
 import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
-import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
+import { markWindowObserved, markWindowClosed, readingSaysExhausted, canonicalWindow } from './policy/windows.mjs'
+// РОЛИ ПУЛА — ЧИТАЮТСЯ ТЕМ ЖЕ ВЫРАЖЕНИЕМ, КАКИМ ИХ ЧИТАЕТ МАРШРУТИЗАТОР. Проба пригодности
+// полосы обязана спрашивать ровно то же, что спросят при захвате: разойдясь, они начнут
+// объявлять полосу пригодной для того, кого маршрут потом не выберет.
+import { EXECUTOR_ROLE, roleOf } from './policy/worker-role.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage, claudeTokensFromResult, codexTokensFromFinal } from './runner/usage.mjs'
 import {
   readPendingRedirects,
@@ -1660,8 +1664,30 @@ function recordWindowReading(deps, subscription, event) {
     // stream has never once carried, which arrives here as 0 — so the condition was false on
     // every real machine and the refusal this call exists to persist was never written down.
     // It now fires on what the stream really says: the reading's own status.
+    //
+    // BUT ONLY FOR A WINDOW THAT CAN BE NAMED ON A SCREEN. This fired on ANY name, while the
+    // read model draws only the two windows it knows — and on 31.08.2026 the two disagreed at
+    // the worst possible place. The provider refused `seven_day_overage_included`, the weekly
+    // window with the paid overage folded in, on an account whose paid channel is off and whose
+    // ceiling is zero. Nothing about that name could reach a screen, and it shut the whole
+    // account for five days: thirty tasks queued, no worker busy, while the window that really
+    // governs answered `allowed_warning` at 74 % half an hour later. `canonicalWindow` is now
+    // the single answer to «which windows exist», asked here and by the read model alike.
     if (readingSaysExhausted(event) && Number.isFinite(Number(event.resetsAt))) {
-      markWindowClosed({ dataDir, accountName, resetAt: event.resetsAt, clock, fsImpl: deps.fsImpl })
+      if (canonicalWindow(event.limitType)) {
+        markWindowClosed({ dataDir, accountName, resetAt: event.resetsAt, limitType: event.limitType, clock, fsImpl: deps.fsImpl })
+      } else {
+        // NOT SILENTLY. The reading is already filed above; what is withheld is the right to
+        // stop the account, and an operator has to be able to see a refusal we declined to obey
+        // — by name, so a window that turns out to matter can be added to the list on evidence.
+        writeLog(deps, {
+          type: 'window-refusal-unnamed',
+          account: accountName,
+          limitType: event.limitType ?? null,
+          resetsAt: event.resetsAt ?? null,
+          status: event.status ?? null,
+        })
+      }
     }
   } catch (err) {
     writeLog(deps, { type: 'window-reading-error', account: accountName, error: String((err && err.message) || err) })
@@ -3030,13 +3056,40 @@ function detectMarker(lines) {
  * live in routing.mjs, never re-encoded here). A lane is eligible when a lane-probe yields
  * a workerId or an explicit API fallback. Eligibility is derived BEFORE the claim on
  * purpose: the per-lane queues make a claimed task runnable by construction.
+ *
+ * ПРОБА ЗАДАЁТСЯ ПО КАЖДОЙ РОЛИ, КОТОРАЯ В ПУЛЕ ЕСТЬ, А НЕ ОДНА БЕЗРОЛЕВАЯ. Задача без слова о
+ * роли просит исполнителя, поэтому одна такая проба спрашивала бы ровно «свободен ли
+ * исполнитель» — и полоса, на которой ждёт работа, названная специалистом поимённо, оказалась
+ * бы непригодной в тот момент, когда исполнители заняты, а названный специалист свободен.
+ * Задача осталась бы в очереди, и сказать о ней было бы нечего: пригодность решается ДО
+ * захвата, то есть до того, как хоть кто-то посмотрел на строку. Проб столько, сколько в пуле
+ * РАЗНЫХ ролей (обычно одна-две), и полоса пригодна, если хоть одна из них нашла бегущего.
+ *
+ * ПУСТОЙ ПУЛ ПРОБУЕТСЯ ВСЁ РАВНО — ролью исполнителя: ответ на такой пробе даёт не работник, а
+ * денежное правило (платный канал), и потерять эту пробу значило бы потерять сам переход на
+ * платный канал на машине без работников.
  */
 function eligibleLanes(deps) {
   const { routing, config, windows, clock } = deps
+  const workers = Array.isArray(config.workers) ? config.workers : []
+  // РАЗНЫЕ РОЛИ СОБИРАЮТСЯ СПИСКОМ И `includes`, А НЕ МНОЖЕСТВОМ. Дисциплина этого файла —
+  // никаких ключевых коллекций в памяти процесса (журнал стережёт её grep-ом): состояние тика
+  // живёт в очереди и на диске, а не в структуре, которая переживает перезапуск только в
+  // головах. Ролей в пуле обычно одна-две, и цена линейного поиска здесь — ничто.
+  const roles = []
+  for (const w of workers) {
+    if (!w || w.enabled === false) continue
+    const role = roleOf(w)
+    if (!roles.includes(role)) roles.push(role)
+  }
+  if (roles.length === 0) roles.push(EXECUTOR_ROLE)
   const out = []
   for (const lane of LANES) {
-    const decision = routing.resolveRoute({ lane }, { workers: config.workers, windows, clock, config })
-    if (decision && (decision.workerId || decision.useApiFallback)) out.push(lane)
+    const runnable = roles.some((role) => {
+      const decision = routing.resolveRoute({ lane, role }, { workers, windows, clock, config })
+      return decision && (decision.workerId || decision.useApiFallback)
+    })
+    if (runnable) out.push(lane)
   }
   return out
 }
@@ -3481,6 +3534,93 @@ async function callWaiting(deps, now) {
   }
 }
 
+/**
+ * ЧЕРЕЗ СКОЛЬКО СТОЯЩАЯ СБОРКА КРИЧИТ НАРУЖУ — пять минут, и это МИНУТЫ, а не часы.
+ *
+ * Порог вообще есть по одной причине: кусок сборки срывается и в ту же секунду закрывается
+ * своей дверью, а следующий проход тика — через пять секунд. Звать человека мгновенно значило
+ * бы звать его о состоянии, которое иногда живёт один тик.
+ *
+ * И порог МАЛЕНЬКИЙ по причине посерьёзнее: за вставшей сборкой не стоит ни одной автоматической
+ * попытки — очередь не выдаёт больше ни одного её куска по устройству, — поэтому каждая минута
+ * молчания здесь равна минуте простоя всего, что у этой сборки осталось. Измеренная цена
+ * прежнего «порога в бесконечность» — 15 часов 12 минут на шести карточках.
+ */
+export const BATCH_STALL_MS = 5 * 60 * 1000
+
+/**
+ * callStalledBatches(deps, now) — ЗОВ ЧЕЛОВЕКА К СБОРКЕ, КОТОРАЯ ВСТАЛА И ЖДЁТ ЕГО ВЫБОРА.
+ *
+ * ЗАЧЕМ ОТДЕЛЬНЫЙ ПРОХОД, А НЕ СТРОКА В `callWaiting`. Тот проход спрашивает очередь об одном
+ * СТАТУСЕ (`awaiting_approval`), а вставшая сборка ни одним статусом не описана: её элемент
+ * лежит просто `failed`, как всякий срыв, и ждущей её делает то, что над этим элементом стоит
+ * ПОСТАНОВКА владельца, которой очередь подчиняется. Спросить об этом можно только всеми
+ * строками разом — что этот проход и делает.
+ *
+ * ЧЕЙ ЭЛЕМЕНТ ДЕРЖИТ СБОРКУ — считается ПРАВИЛОМ ОЧЕРЕДИ (`brokenItemOf`), тем же самым, каким
+ * очередь придерживает остальные куски и каким карточка рисует свой вопрос. Второе написание
+ * этого правила здесь означало бы зов о куске, о котором карточка не спрашивает.
+ *
+ * ОБЫЧНЫЙ СРЫВ ЗДЕСЬ НЕ ПОВОД — и это не противоречие с соседом. Одиночная сорвавшаяся задача
+ * либо повторится сама, либо позовёт из `failTask` своим поводом; кусок сборки не повторяется
+ * НИКОГДА (`BATCH_ITEM_RETRY_LIMIT` = 0), и за ним стоит не следующая попытка, а человек.
+ *
+ * Fail-open целиком, как и у соседа: нечитаемый список стоит одного несказанного слова.
+ */
+async function callStalledBatches(deps, now) {
+  const { adapter, summon, journal } = deps
+  if (!summon || typeof summon.raise !== 'function') return
+  let rows = []
+  try {
+    rows = await adapter.list({})
+  } catch {
+    return
+  }
+  const work = rows.filter((r) => !isBatchParent(r))
+  // ЖИВЫЕ ОЖИДАНИЯ И ТЕ, О КОТОРЫХ ПОРА ГОВОРИТЬ, СОБИРАЮТСЯ РАЗДЕЛЬНО. Память подрезается по
+  // ПЕРВОМУ списку: сборка, вставшая минуту назад, — ожидание уже живое, просто ещё не громкое,
+  // и вычеркнуть её из памяти значило бы забыть, что о ней уже говорили час назад.
+  const live = []
+  const loud = []
+  for (const req of rows.filter(isBatchParent)) {
+    if (!req || !req.id) continue
+    const { skipped, cancelled } = batchDecisionsOf(req)
+    if (cancelled) continue
+    const broken = brokenItemOf(batchItemsOf(work, req.batchId || req.id), skipped)
+    if (!broken) continue
+    live.push(`${req.id}:${broken.id}`)
+    // КОГДА СБОРКА ВСТАЛА — отметка закрытия сорвавшейся строки. Её нет (строка старше отметки)
+    // — зова нет: выдуманное «стоит с сейчас» позвало бы о простое, длины которого никто не
+    // знает, и первое же такое сообщение научило бы человека не верить сроку в остальных.
+    const since = toEpochMs(broken.completedAt)
+    if (!Number.isFinite(since) || now - since < BATCH_STALL_MS) continue
+    loud.push({ req, broken, since })
+  }
+  if (typeof summon.keepOnly === 'function') summon.keepOnly('batch', live)
+  let called = 0
+  for (const { req, broken, since } of loud) {
+    if (called >= SUMMONS_PER_TICK) break
+    try {
+      const out = await summon.raise({
+        kind: 'batch',
+        taskId: req.id,
+        title: req.title,
+        itemId: broken.id,
+        itemTitle: broken.title,
+        since,
+      })
+      if (out && out.sent) {
+        called += 1
+        if (typeof journal === 'function') journal({ type: 'summon', kind: 'batch', taskId: req.id, itemId: broken.id })
+      }
+    } catch (err) {
+      if (typeof journal === 'function') {
+        journal({ type: 'summon-error', taskId: req.id, error: String((err && err.message) || err) })
+      }
+    }
+  }
+}
+
 /** Intake per cadence — enqueue NEW ready backlog items; last-scan is threaded THROUGH the
  *  tick (deps.intake.lastScanAt in, result.intake.scannedAt out) so the tick stays stateless. */
 async function runIntake(deps, now, result) {
@@ -3619,6 +3759,12 @@ export async function tick(deps = {}) {
     // от того, взял ли этот проход хоть одну задачу. Разница между ними в адресате: старение
     // говорит очереди «эта строка залежалась», а зов говорит человеку «без вас не поедет».
     await callWaiting(deps, now())
+
+    // (2c-2) …И К СБОРКЕ, КОТОРАЯ ВСТАЛА НА СОРВАВШЕМСЯ ЭЛЕМЕНТЕ. Тем же правом и тем же
+    // проводом, что и приёмка выше: разница только в том, что ждущее состояние сборки не
+    // описано ни одним статусом очереди и до этого прохода было видно ровно одному наблюдателю
+    // — тому, кто открыл именно её карточку.
+    await callStalledBatches(deps, now())
 
     // (2d) WHICH ECHELONS THEIR OWNER STOPPED — read from the register, never remembered by
     // this process: a stop is a word somebody said, and a restart must find it exactly where he

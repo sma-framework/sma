@@ -193,7 +193,7 @@ const IDLE_WORDS: Record<string, string> = {
  * ОТСУТСТВИИ отметки. Поэтому отрицательная и нечисловая разница тоже дают прочерк, а не
  * подогнанный ноль.
  */
-function spanLabel(ms: number | null | undefined): string {
+export function spanLabel(ms: number | null | undefined): string {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '—'
   const totalMinutes = Math.floor(ms / 60000)
   const whole = Math.floor(totalMinutes / 60)
@@ -417,8 +417,14 @@ function batchUnit(row: BatchRow): WorkUnit {
     // Слово сборки принадлежит владельцу и произносится ВНУТРИ неё: столбик называет, что
     // именно встало, и зовёт открыть, а «пропустить · повторить · бросить» — это уже три
     // разных решения, и нажимаются они на карточке, где видно, о чём они.
+    //
+    // СОРВАВШАЯСЯ СБОРКА ЖДЁТ ТАК ЖЕ, КАК СПРОСИВШАЯ. Движок называет её `failed`, а вопроса
+    // при ней может не быть вовсе — и до этой строки такая сборка молча уходила в «Готово»
+    // вместе со всеми своими невыданными элементами. Живая мера 31.08: сборка из девяти работ
+    // стояла закрытой на первой упавшей, восемь остальных очередь не выдавала, и человек читал
+    // это как готовую работу. Ждёт она человека одинаково — стоит и одинаково.
     wait:
-      state === 'dec'
+      state === 'dec' || state === 'fail'
         ? {
             age: '',
             what: row.question
@@ -507,8 +513,13 @@ function runningUnit(worker: WorkerRow, now: number): WorkUnit {
 }
 
 /** A finished task: its attempts are the only steps this engine really kept. */
-function doneUnit(row: DoneRow, clock: (iso: string | null) => string): WorkUnit {
+function doneUnit(row: DoneRow, clock: (iso: string | null) => string, stillWaits = true): WorkUnit {
   const failed = !!row.failed
+  // ЧЕЛОВЕК УЖЕ СКАЗАЛ СВОЁ СЛОВО — и второй раз его не спрашивают. Работа, остановленная
+  // рукой, закрыта решением, а не поломкой: звать за ней обратно значило бы наполнить столбик
+  // ожидания тем, чего никто не ждёт — а на этой машине таких строк двадцать восемь из
+  // пятидесяти трёх. Всякая ДРУГАЯ поломка человека ждёт, и `columnOf` ставит её к нему.
+  const stoppedByHand = row.failed?.reason === 'manual'
   const attempts = Number.isFinite(row.attempts) && row.attempts > 0 ? row.attempts : 1
   // An attempt after the first exists BECAUSE the one before it did not finish the work.
   const segs: UnitState[] = Array.from({ length: attempts }, (_, i) =>
@@ -530,6 +541,18 @@ function doneUnit(row: DoneRow, clock: (iso: string | null) => string): WorkUnit
     dur: spanLabel(row.finishedDuration),
     segs,
     live: false,
+    // ЧТО ИМЕННО ОТ ЧЕЛОВЕКА НУЖНО — рядом с поломкой, а не в журнале попытки. Столбик
+    // ожидания рисует янтарную карточку только тому, кому есть что сказать, и это же условие
+    // решает, попадёт ли строка в него вообще: поломка без слов осталась бы немым красным
+    // прямоугольником, за которым человек всё равно идёт разбирать леджер руками.
+    wait:
+      failed && !stoppedByHand && stillWaits
+        ? {
+            age: '',
+            what: row.failed?.reasonLabel ?? 'Не получилось — причина не записана',
+            cta: 'Открыть: разобрать и поставить обратно в очередь →',
+          }
+        : undefined,
     target: { screen: 'task', id: row.id },
   }
 }
@@ -597,6 +620,29 @@ export function buildUnits(input: UnitsInput): WorkUnit[] {
     )
     .map((w) => runningUnit(w, input.now))
 
+  // ПОЛОМКА, ЗА КОТОРУЮ УЖЕ ВЗЯЛИСЬ, БОЛЬШЕ НИКОГО НЕ ЖДЁТ.
+  //
+  // Закрытая строка живёт вечно, а работа продолжается под своим или новым номером — и до этой
+  // строки столбик ожидания звал человека к каждой такой поломке ещё раз, хотя решение по ней
+  // уже принято. Живой замер 31.08: пятнадцать карточек в «ЖДУТ ВАС», из которых настоящей
+  // была ОДНА; остальные — вчерашние срывы, чью работу в тот же день переставили обратно в
+  // очередь. Столбик, зовущий туда, где идти некуда, перестают читать целиком.
+  //
+  // «Уже взялись» — это не догадка: та же работа стоит в очереди, идёт у работника, ждёт
+  // приёмки, или закрылась удачей позже. Сравнение по номеру И по названию нарочно: возврат
+  // сохраняет номер, а поставленная заново работа приходит с новым, неся прежнее название.
+  const takenUp = new Set<string>()
+  for (const r of [...input.queue, ...input.awaiting]) {
+    takenUp.add(r.id)
+    if (r.title) takenUp.add(r.title)
+  }
+  for (const w of input.workers) {
+    if (w.taskId) takenUp.add(w.taskId)
+    if (w.taskTitle) takenUp.add(w.taskTitle)
+  }
+  for (const d of input.done) if (!d.failed && d.title) takenUp.add(d.title)
+  const stillWaits = (r: DoneRow): boolean => !takenUp.has(r.id) && !(r.title ? takenUp.has(r.title) : false)
+
   const units: WorkUnit[] = [
     // Phases are not filtered by machine: a phase belongs to the project, not to a machine.
     ...input.phases.map(phaseUnit),
@@ -604,7 +650,7 @@ export function buildUnits(input: UnitsInput): WorkUnit[] {
     ...loose(mine(input.awaiting)).map((r) => queueUnit(r, true)),
     ...running,
     ...loose(mine(input.queue)).map((r) => queueUnit(r, false)),
-    ...loose(mine(input.done)).map((r) => doneUnit(r, input.clock)),
+    ...loose(mine(input.done)).map((r) => doneUnit(r, input.clock, stillWaits(r))),
   ]
 
   return units.sort((a, b) => RANK[a.state] - RANK[b.state])
@@ -673,13 +719,23 @@ const STAGE_COLUMN: BoardColumn[] = ['discuss', 'plan', 'design', 'execute', 've
  *   3. Инлайн и батч стадий не имеют вовсе: у них одна дорога — исполнение. Поэтому идущая и
  *      ждущая работника единица стоят в «Исполнении», а всё закрытое — в «Готово».
  *
- * ЗАКРЫТОЕ — ЭТО ok, fail, skip и off. Три последних слова не означают удачи, и столбик их
- * удачей не называет: он называет их ЗАКРЫТЫМИ — дальше сами они не пойдут. Своё слово каждая
- * карточка несёт при себе (`STATE_WORD`), а «не получилось» стоит в свёрнутом столбике ПЕРВЫМ,
- * потому что порядок единиц ставит неудачу впереди удачи (`RANK`).
+ * ЗАКРЫТОЕ — ЭТО ok, skip и off: пропущенное и брошенное закрыты ЧЕЛОВЕКОМ, и дальше сами они
+ * не пойдут. Своё слово каждая карточка несёт при себе (`STATE_WORD`).
+ *
+ * А «НЕ ПОЛУЧИЛОСЬ» — НЕ ЗАКРЫТО, И «ГОТОВО» ЕМУ НЕ МЕСТО. Раньше в «Готово» падало всё, что
+ * не идёт и не ждёт работника, — поломки вместе с удачами. Замер 31.08: из ста тридцати шести
+ * строк «Готово» пятьдесят три оказались упавшими, а сборка из девяти работ, вставшая на
+ * первой, лежала там же со словом «Готово» на карточке. Столбик обещает человеку сделанное, и
+ * обещание надо держать.
+ *
+ * ПРИЗНАК — НЕ СЛОВО «fail», А НАЛИЧИЕ СЛОВ ОЖИДАНИЯ. Так правило остаётся одним: в «ЖДУТ ВАС»
+ * стоит ровно то, чему есть что сказать человеку, и столбик не наполняется тем, чего никто не
+ * ждёт, — работа, остановленная его же рукой, слов ожидания не получает и остаётся закрытой
+ * (см. `stoppedByHand`).
  */
 export function columnOf(unit: WorkUnit): BoardColumn {
   if (unit.state === 'dec') return 'you'
+  if (unit.state === 'fail' && unit.wait) return 'you'
   if (unit.kind === 'phase' && unit.segs.length === STAGES.length) {
     const running = unit.segs.indexOf('run')
     // ПЕРВАЯ, КОТОРАЯ ЕЩЁ ПОЙДЁТ. Пропущенная стадия — закрытая: её никто не ждёт и ждать

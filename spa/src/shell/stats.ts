@@ -197,6 +197,10 @@ function plansLabel(n: number): string {
  * подход записан на строке очереди, и другого источника у этого числа нет. Момент просьбы и
  * длительность считаются от ОДНОЙ отметки: «идёт 49 м» и «запрос 14:02» обязаны говорить об
  * одном и том же событии, иначе они противоречат друг другу на глазах у человека.
+ *
+ * «Стоит» — ВТОРАЯ отметка и второе событие: не «сколько живёт сборка», а «сколько она ждёт
+ * человека». Числа рядом и разные намеренно — «идёт 15 ч» у сборки, которая все эти 15 часов
+ * простояла, и есть та самая вежливая ложь, ради которой второе число заведено.
  */
 export function batchStats(batch: BatchRow, now: number): Stat[] {
   const items = batch.items ?? []
@@ -204,6 +208,7 @@ export function batchStats(batch: BatchRow, now: number): Stat[] {
   const requestedAt = typeof batch.requestedAt === 'number' ? batch.requestedAt : null
   const clock = clockOfMs(requestedAt)
   const running = elapsedLabel(requestedAt, now)
+  const stalled = elapsedLabel(typeof batch.stalledSince === 'number' ? batch.stalledSince : null, now)
 
   return [
     stat('items', `${done}/${items.length}`, 'элементов готово'),
@@ -215,6 +220,12 @@ export function batchStats(batch: BatchRow, now: number): Stat[] {
     missing('paidApi', 'платный API', WHY_NO_MONEY),
     clock ? stat('requestedAt', clock, 'запрос') : missing('requestedAt', 'запрос', WHY_NO_REQUEST),
     running ? stat('running', running, 'идёт') : missing('running', 'идёт', WHY_NO_REQUEST),
+    // ПРОСТОЙ — ПОКАЗАТЕЛЬ, А НЕ ПОДПИСЬ ПОД ВОПРОСОМ, и он появляется ровно тогда, когда есть
+    // что мерить: сборка стоит и ждёт выбора. У идущей сборки этой клетки нет вовсе — прочерк
+    // «стоит —» рядом с работающей сборкой читался бы как поломка, а не как «не стоит».
+    // Считается от отметки движка (`stalledSince`), а не от «запроса»: это разные события, и
+    // между ними лежит вся работа, которую сборка успела сделать до срыва.
+    ...(stalled ? [stat('stalled', stalled, 'стоит')] : []),
   ]
 }
 

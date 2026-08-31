@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -348,18 +348,108 @@ describe('policy/windows — only what the provider actually said', () => {
   it('ground-truth close (a persisted refusal) shuts the account whatever the windows say', () => {
     const dataDir = mkTmp()
     markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'five_hour', status: 'allowed', resetsAt: fixedClock() + hour }, clock: fixedClock })
-    markWindowClosed({ dataDir, accountName: 'm', resetAt: fixedClock() + 2 * hour, clock: fixedClock })
+    markWindowClosed({ dataDir, accountName: 'm', resetAt: fixedClock() + 2 * hour, limitType: 'five_hour', clock: fixedClock })
     const state = windowState({ account: { name: 'm' }, clock: fixedClock, dataDir })
-    expect(state.fiveHour.status).toBe('open') // the reading survives the merge…
+    expect(state.fiveHour.resetsAt).toBe(fixedClock() + hour) // the reading survives the merge…
+    expect(state.fiveHour.status).toBe('exhausted') // …and the close it belongs to is said on ITS line
     expect(state.closedUntil).toBeDefined()
     expect(isOpen(state, fixedClock)).toBe(false) // …and a refusal still wins
   })
 
   it('a persisted close whose reset is in the PAST no longer closes the window', () => {
     const dataDir = mkTmp()
-    markWindowClosed({ dataDir, accountName: 'max-2', resetAt: fixedClock() - 60 * 1000, clock: fixedClock })
+    markWindowClosed({ dataDir, accountName: 'max-2', resetAt: fixedClock() - 60 * 1000, limitType: 'five_hour', clock: fixedClock })
     const state = windowState({ account: { name: 'max-2' }, clock: fixedClock, dataDir })
     expect(state.closedUntil).toBeUndefined() // expired close is dropped
+    expect(isOpen(state, fixedClock)).toBe(true)
+  })
+
+  /**
+   * ═════════ A WINDOW WE CANNOT NAME HAS NO RIGHT TO STOP US ═════════
+   *
+   * Measured on 31.08.2026. The provider refused `seven_day_overage_included` — the weekly
+   * window WITH the paid overage folded in, on an account where the paid channel is switched
+   * off and its ceiling is zero. That name is on neither of this module's lists, so nothing
+   * about it ever reached a screen; the close it wrote went in at the top of the record, where
+   * it outranks both windows, and shut the whole subscription for five days. Thirty tasks
+   * queued, no worker busy. Half an hour later the window that actually governs — `seven_day` —
+   * answered `allowed_warning` at 74 %, and a live call on the same account returned 0.
+   *
+   * Two places disagreed about which windows exist: the close fired on ANY name, the screen
+   * drew only the names it knew. The three cases below are that disagreement, closed.
+   */
+  it('a refusal on a window this daemon cannot NAME does not close the account', () => {
+    const dataDir = mkTmp()
+    const resetAt = fixedClock() + 5 * 24 * hour
+    // The reading is still filed — an unknown window is stored, merely not drawn and not obeyed.
+    markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'seven_day_overage_included', status: 'rejected', resetsAt: resetAt }, clock: fixedClock })
+    expect(markWindowClosed({ dataDir, accountName: 'm', resetAt, limitType: 'seven_day_overage_included', clock: fixedClock })).toBeNull()
+
+    const state = windowState({ account: { name: 'm' }, clock: fixedClock, dataDir })
+    expect(state.closedUntil).toBeUndefined()
+    expect(state.fiveHour.status).toBe('unknown') // neither window is slandered on its behalf
+    expect(state.week.status).toBe('unknown')
+    expect(isOpen(state, fixedClock)).toBe(true) // the conveyor keeps moving
+  })
+
+  it('a refusal on a window we CAN name closes the account — and that window says which and until when', () => {
+    const dataDir = mkTmp()
+    const resetAt = fixedClock() + 40 * hour
+    expect(markWindowClosed({ dataDir, accountName: 'm', resetAt, limitType: 'week', clock: fixedClock })).not.toBeNull()
+
+    const state = windowState({ account: { name: 'm' }, clock: fixedClock, dataDir })
+    expect(state.closedUntil).toBe(resetAt)
+    expect(state.week.status).toBe('exhausted') // «ждёт окно» can never sit beside two open rows
+    expect(state.week.resetsAt).toBe(resetAt) // and the row carries the hour it opens again
+    expect(state.fiveHour.status).toBe('unknown')
+    expect(isOpen(state, fixedClock)).toBe(false)
+  })
+
+  it('a FRESHER «allowed» on the same window lifts an earlier close', () => {
+    const dataDir = mkTmp()
+    const resetAt = fixedClock() + 40 * hour
+    markWindowClosed({ dataDir, accountName: 'm', resetAt, limitType: 'seven_day', clock: fixedClock })
+    const later = () => fixedClock() + 30 * 60 * 1000
+    markWindowObserved({
+      dataDir,
+      accountName: 'm',
+      observation: { limitType: 'seven_day', status: 'allowed_warning', resetsAt: resetAt, utilization: 0.74 },
+      clock: later,
+    })
+
+    const state = windowState({ account: { name: 'm' }, clock: later, dataDir })
+    expect(state.closedUntil).toBeUndefined() // the provider changed its mind, and we heard it
+    expect(state.week.status).toBe('open')
+    expect(isOpen(state, later)).toBe(true)
+  })
+
+  it('an OLDER «allowed» does NOT lift a close that came after it', () => {
+    const dataDir = mkTmp()
+    const resetAt = fixedClock() + 3 * hour
+    markWindowObserved({ dataDir, accountName: 'm', observation: { limitType: 'five_hour', status: 'allowed', resetsAt: resetAt }, clock: fixedClock })
+    const later = () => fixedClock() + 10 * 60 * 1000
+    markWindowClosed({ dataDir, accountName: 'm', resetAt, limitType: 'five_hour', clock: later })
+
+    const state = windowState({ account: { name: 'm' }, clock: later, dataDir })
+    expect(state.closedUntil).toBe(resetAt)
+    expect(state.fiveHour.status).toBe('exhausted')
+    expect(isOpen(state, later)).toBe(false)
+  })
+
+  /**
+   * A close laid down by the code that could not tell one window name from another carries no
+   * window at all — and an un-attributable close is exactly what cost a week of work. It is
+   * not honoured, because there is no way to show it came from a window we can name, and a
+   * refusal that cannot say which window it is about cannot be shown on any row either.
+   */
+  it('a close that names NO window is not honoured', () => {
+    const dataDir = mkTmp()
+    const path = join(dataDir, 'windows', 'm.json')
+    mkdirSync(join(dataDir, 'windows'), { recursive: true })
+    writeFileSync(path, JSON.stringify({ accountName: 'm', resetAt: fixedClock() + 4 * 24 * hour, closedAt: new Date(fixedClock()).toISOString() }))
+
+    const state = windowState({ account: { name: 'm' }, clock: fixedClock, dataDir })
+    expect(state.closedUntil).toBeUndefined()
     expect(isOpen(state, fixedClock)).toBe(true)
   })
 })

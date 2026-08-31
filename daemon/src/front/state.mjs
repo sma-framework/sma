@@ -98,11 +98,15 @@ import {
   monthToDateApiSpendUsd,
   spendAccountNames,
 } from '../policy/spend.mjs'
-import { orchestratorView } from '../policy/orchestrator.mjs'
+import { isOrchestrator, orchestratorView } from '../policy/orchestrator.mjs'
+// РОЛЬ РАБОТНИКА ЧИТАЕТСЯ ОДНИМ ВЫРАЖЕНИЕМ НА ВЕСЬ ПРОДУКТ — тем же, каким её читает
+// маршрутизатор. Иначе «кто здесь исполнитель» стало бы вопросом с двумя ответами.
+import { isExecutor, roleOf } from '../policy/worker-role.mjs'
 import {
   isBatchParent,
   batchItemsOf,
   batchDecisionsOf,
+  brokenItemOf,
   latestRowPerId,
   waveAddressOf,
   REASON_LABELS,
@@ -798,6 +802,11 @@ export function deriveRules(config = {}, { switchMode, configOnDisk = null } = {
       ...(w.model !== undefined ? { model: w.model } : {}),
       ...(w.effort !== undefined ? { effort: w.effort } : {}),
       enabled: w.enabled === undefined ? true : Boolean(w.enabled),
+      // РОЛЬ — И ТУТ ЖЕ ОТВЕТ, РАЗБИРАЕТ ЛИ ЭТА СТРОКА ОЧЕРЕДЬ. Таблица «Кто что делает»
+      // перечисляла сорок пять строк подряд, и включённый специалист выглядел в ней ровно как
+      // включённый исполнитель — при том, что задачу он не возьмёт ни при каком порядке.
+      role: roleOf(w),
+      inQueue: isExecutor(w) && w.enabled !== false && !isOrchestrator(w),
     }
   })
 
@@ -832,6 +841,59 @@ export function deriveRules(config = {}, { switchMode, configOnDisk = null } = {
       budgeted: capUsd > 0, // no cap → there is no API fallback to switch TO
     },
   }
+}
+
+/**
+ * deriveRoles(config) → КОГО ВООБЩЕ МОЖНО НАЗВАТЬ, СТАВЯ ЗАДАЧУ. Одна строка на РОЛЬ, а не на
+ * работника: форма постановки спрашивает «кто это сделает», и ответом на этот вопрос является
+ * роль, а не конкретный счёт.
+ *
+ * ЗАЧЕМ ЭТО ЕСТЬ. Разведение работников и агентов оставляло человеку половину: окно говорило
+ * «чтобы отдать инлайн-задачу специалисту, назовите его роль при постановке» — а назвать её
+ * было негде, поле `role` существовало только для того, кто пишет запросы руками. Обещание,
+ * которое окно даёт и само же не держит, хуже отсутствия обещания.
+ *
+ * ЧТО В СТРОКЕ:
+ *   • `role` — каноническое имя, ровно то, которое поедет на задаче и которое сравнит
+ *     маршрутизатор (одна нормализация на обе стороны, policy/worker-role.mjs);
+ *   • `title` — имя, под которым человек видит этого работника в окне (идентификатор первой
+ *     строки конфига с такой ролью): в списке агентов он читает `sma-ai-researcher`, и форма
+ *     обязана называть его так же;
+ *   • `executor` — ИСПОЛНИТЕЛЬ ли это, приезжает СЧИТАННЫМ. Экран, сравнивающий имя роли со
+ *     словом «executor» у себя, завёл бы второй словарь ролей в другом языке;
+ *   • `ready` — сколько таких работников включено ПРЯМО СЕЙЧАС. Ноль означает «есть, но
+ *     выключен»: маршрут на названную роль ответит `role_unavailable`, и форма не должна
+ *     предлагать выбор, который заведомо вернётся человеку;
+ *   • `total` — сколько их всего, включая выключенных, чтобы окно могло сказать, скольких
+ *     человек не видит в списке и почему.
+ *
+ * ВЕРХУШКА СЮДА НЕ ПОПАДАЕТ ВОВСЕ — она не берёт инлайн-задач ни при какой роли, и предложить
+ * её значило бы предложить выбор, который маршрутизатор отвергает первой же строкой фильтра.
+ *
+ * ПОРЯДОК: исполнитель первым (это выбор по умолчанию), остальные по алфавиту. Порядок строк
+ * конфига здесь не сохраняется намеренно: именно он и был той «случайностью», из-за которой
+ * задача заведена.
+ *
+ * @param {object} config
+ * @returns {{role:string, title:string, executor:boolean, ready:number, total:number}[]}
+ */
+export function deriveRoles(config = {}) {
+  const workersCfg = Array.isArray(config.workers) ? config.workers : []
+  const byRole = new Map()
+  for (const w of workersCfg) {
+    if (!w || isOrchestrator(w)) continue
+    const role = roleOf(w)
+    let entry = byRole.get(role)
+    if (!entry) {
+      entry = { role, title: w.id ?? role, executor: isExecutor(w), ready: 0, total: 0 }
+      byRole.set(role, entry)
+    }
+    entry.total += 1
+    if (w.enabled !== false) entry.ready += 1
+  }
+  return [...byRole.values()].sort((a, b) =>
+    a.executor === b.executor ? a.role.localeCompare(b.role) : a.executor ? -1 : 1,
+  )
 }
 
 /**
@@ -2480,10 +2542,10 @@ function totalTokens(parts) {
  *
  * @param {object[]} requests the batch request rows
  * @param {object[]} rows     every WORK row (the requests are not among them)
- * @param {{machineId?:string, taskTokens?:(row:object)=>object|null}} ctx
+ * @param {{machineId?:string, taskTokens?:(row:object)=>object|null, now?:number}} ctx
  * @returns {object[]}
  */
-function deriveBatches(requests, rows, { machineId, taskTokens } = {}) {
+function deriveBatches(requests, rows, { machineId, taskTokens, now = Date.now() } = {}) {
   if (!Array.isArray(requests) || requests.length === 0) return []
 
   return [...requests]
@@ -2516,7 +2578,18 @@ function deriveBatches(requests, rows, { machineId, taskTokens } = {}) {
       // AN ABANDONED ASSEMBLY READS AS ABANDONED, above every other word: its pieces were taken
       // out of the queue and what they say about themselves no longer describes the batch.
       const state = cancelled ? 'cancelled' : closed ? 'done' : (loudest ?? 'waiting')
-      const broken = cancelled ? null : (items.find((i) => i.state === 'failed') ?? null)
+      // КАКОЙ КУСОК ОСТАНОВИЛ СБОРКУ — правилом ОЧЕРЕДИ, а не вторым его написанием здесь.
+      // Тем же вызовом очередь придерживает остальные куски, а тик зовёт человека: вопрос на
+      // карточке и зов в телеграм обязаны говорить об ОДНОМ И ТОМ ЖЕ элементе.
+      const brokenRow = cancelled ? null : brokenItemOf(itemRows, skipped)
+      const broken = brokenRow ? (items.find((i) => i.id === brokenRow.id) ?? null) : null
+      // СКОЛЬКО СБОРКА УЖЕ СТОИТ — от момента, когда кусок сорвался и сборка стала должна
+      // владельцу решение. Отметку ставит сама очередь на закрытии строки; там, где её нет
+      // (строка старше отметки), оба поля ЧЕСТНО ОТСУТСТВУЮТ. Ноль на этом месте прочитался бы
+      // как «встала только что» — то самое утверждение, из-за которого простой в 15 часов
+      // выглядел как работа, идущая прямо сейчас.
+      const stalledSince = brokenRow ? toMs(brokenRow.completedAt) : null
+      const stalledKnown = Number.isFinite(stalledSince)
       return {
         id: req.id,
         title: req.title ?? null,
@@ -2558,6 +2631,12 @@ function deriveBatches(requests, rows, { machineId, taskTokens } = {}) {
                 text: `«${broken.title ?? broken.id}» не получилось. Что делаем?`,
                 options: BATCH_DECISIONS.map((o) => ({ ...o })),
               },
+              // С КАКОГО МОМЕНТА СБОРКА СТОИТ — рядом с вопросом, который этот простой и
+              // породил. ОТМЕТКА, А НЕ ДЛИТЕЛЬНОСТЬ, ровно как у останова эшелона (`heldSince`):
+              // «сколько уже» рисующий считает от неё своими часами, и число на экране растёт
+              // между опросами, вместо того чтобы прыгать раз в опрос. Второе поле с той же
+              // длительностью было бы вторым местом, где это число однажды разойдётся с первым.
+              ...(stalledKnown ? { stalledSince } : {}),
             }
           : {}),
       }
@@ -2735,7 +2814,7 @@ export async function deriveState(deps = {}) {
   const batches = deriveBatches(
     deps.project ? batchRequestRows.filter((r) => inProject(r, deps.project)) : batchRequestRows,
     rows,
-    { machineId, taskTokens },
+    { machineId, taskTokens, now },
   )
 
   // ── ЭШЕЛОНЫ: что за волны в работе и какие из них владелец остановил ──
@@ -2911,6 +2990,17 @@ export async function deriveState(deps = {}) {
     return {
       id: w.id,
       lane: w.lane,
+      // КТО ЭТО ПО РОЛИ И БЕРЁТ ЛИ ОН ЗАДАЧИ ИЗ ОЧЕРЕДИ. Экран «Команда» рисовал одну сетку из
+      // сорока пяти карточек и называл её работниками, хотя тридцать восемь из них — специалисты,
+      // которых поднимает фаза, а не очередь. Оба поля СЧИТАНЫ здесь и тем же выражением, каким
+      // их читает маршрутизатор: экран, выводящий «исполнитель ли это» сам, стал бы вторым
+      // мнением о том же — а два мнения об одном работнике и есть способ перестать верить обоим.
+      role: roleOf(w),
+      // «В ОЧЕРЕДИ» — ЭТО ТРИ УСЛОВИЯ СРАЗУ, и ни одного из них не видно на карточке по
+      // отдельности: он исполнитель, он включён, и он не верхушка. Именно это число человек
+      // читает как «работников», и именно оно расходилось с составом пула на порядок.
+      inQueue: isExecutor(w) && w.enabled !== false && !isOrchestrator(w),
+      enabled: w.enabled !== false,
       account: accountName,
       ...(active
         ? {
@@ -3010,11 +3100,39 @@ export async function deriveState(deps = {}) {
   const seatsTotal = concurrencyCap(config)
   const seatsBusy =
     deps.inFlight && typeof deps.inFlight.size === 'function' ? deps.inFlight.size() : null
+  // ── «РАБОТНИКОВ N» — ЭТО ПУЛ ОЧЕРЕДИ, А НЕ ДЛИНА СПИСКА В КОНФИГЕ ──
+  //
+  // Доска говорила «работников 44», когда задачи разбирали шестеро: `workersCfg.length` считал
+  // ВСЕХ — вместе с тридцатью восемью выключенными и вместе со специалистами, которых очередь
+  // не раздаёт вовсе. Человек читает это число как «столько народу разбирает мою очередь» и
+  // верит ему; ошибиться в нём в семь раз — значит соврать о пропускной способности машины.
+  //
+  // ПУЛ — ЭТО ТРИ УСЛОВИЯ, И ВСЕ ТРИ ОБЯЗАТЕЛЬНЫ: он исполнитель (специалиста берут поимённо,
+  // а не в порядке очереди), он включён, и он не верхушка. То же самое, что спрашивает фильтр
+  // маршрутизатора, — и спрошено тем же выражением, чтобы «сколько их» и «кого выберут» не
+  // могли разойтись.
+  //
+  // ЗАНЯТЫЕ СЧИТАЮТСЯ ПО ТОМУ ЖЕ НАБОРУ. Пара «занято X из N» обязана быть парой об одном и том
+  // же множестве: занятые по всем сорока пяти против общего по шести давали бы «занято 3 из 6»
+  // сегодня и «занято 8 из 6» в тот день, когда человек позовёт специалистов поимённо.
+  const queuePool = workers.filter((w) => w.inQueue)
   const kpis = {
-    workersBusy: workers.filter((w) => !!w.taskId).length,
-    workersTotal: workersCfg.length,
+    workersBusy: queuePool.filter((w) => !!w.taskId).length,
+    workersTotal: queuePool.length,
     queued: queuedRows.length,
     awaitingApproval: awaitingRows.length,
+    // ── СБОРКИ, КОТОРЫЕ ЖДУТ РЕШЕНИЯ ЧЕЛОВЕКА — СВОЁ ЧИСЛО, А НЕ СПРЯТАННОЕ СОСТОЯНИЕ ──
+    //
+    // ЭТО НЕ ТО ЖЕ, ЧТО `awaitingApproval`, и потому оно и стоит рядом отдельной цифрой.
+    // Сосед считает ГОТОВУЮ работу, которую надо принять или вернуть; здесь — сборка, которая
+    // ОСТАНОВИЛАСЬ на сорвавшемся куске и не двинется, пока владелец не скажет «пропустить,
+    // повторить или отменить». Строка ожидания жила ТОЛЬКО на карточке батча: в счётчиках она
+    // не считалась, в очередь не попадала, наружу не кричала — и батч простоял 15 часов, а
+    // доска показывала ноль ждущих. Ноль был правдой про приёмку и ложью про день.
+    //
+    // Считается по САМИМ сборкам этого чтения — по наличию вопроса, который карточка задаёт, —
+    // так что цифра и вопрос не могут разойтись: они выведены из одного места одним правилом.
+    batchesAwaitingDecision: batches.filter((b) => !!b.question).length,
     // СИНОНИМ `costs.apiFallback.todayUsd`, и взят ИЗ НЕГО, а не посчитан второй раз. Число
     // одно, экранов у него может быть много, но выражение должно остаться одно: два
     // `round2(todayUsd)` рядом — это две правки, из которых однажды сделают одну.
@@ -3095,6 +3213,10 @@ export async function deriveState(deps = {}) {
     waves,
     awaiting,
     workers,
+    // КОГО МОЖНО НАЗВАТЬ ПРИ ПОСТАНОВКЕ — рядом с ростером, потому что это тот же состав,
+    // свёрнутый по ролям. Ключ присутствует ВСЕГДА: пустой список на машине без работников —
+    // это факт, а отсутствующий ключ форма прочла бы как «выбирать тут нечего никогда».
+    roles: deriveRoles(config),
     orchestrator,
     done,
     spend,

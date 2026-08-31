@@ -15,9 +15,16 @@ auto-committed; promotion needs the 3-condition review gate).
 2. **The escape is itself tracked:** a plan with no predictions MUST carry
    `predictions: none (reason)` in frontmatter — an explicit, greppable record
    of why nothing was pre-registered. Silence is not allowed for risk-class plans.
-3. **Immutable after the plan's first commit.** The `PRED-POSTEDIT` lint
-   content-hashes the predictions block against the plan file's first commit —
-   any post-hoc edit (HARKing) is a critical finding. New claims go in a NEW plan.
+3. **Immutable from the plan's first execution attempt.** The `PRED-POSTEDIT`
+   lint content-hashes the predictions block against the plan as it stood at its
+   first execution attempt (the plan's own exec journal, `.sma/exec/<phase>-<plan>.jsonl`,
+   dates it) — any edit from that point on (HARKing) is a critical finding, and
+   new claims go in a NEW plan. BEFORE the first attempt a plan is a draft and
+   the block may be revised freely: the planning loop is «planner writes → checker
+   checks → planner revises», and pre-registration guards against fitting the
+   predictions TO a result, which only becomes possible once the plan is executed.
+   A CLOSED plan whose house kept no exec journal falls back to the first commit —
+   a summary proves the plan ran, and «cannot date the attempt» is not «never ran».
 4. **Every field is mandatory** (except `confidence`, `measure` and `cwd`):
    the `PRED-NOMETRIC` lint fails any entry missing `metric` /
    `check_command` / `comparator` / `threshold` — an unscorable prediction is

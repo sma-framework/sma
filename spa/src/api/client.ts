@@ -255,6 +255,13 @@ export interface EnqueueInput {
   provider?: string
   model?: string
   effort?: string
+  /**
+   * КОГО ПОПРОСИТЬ НА ЭТУ РАБОТУ. Отсутствие означает ИСПОЛНИТЕЛЯ — того, кто пишет код и
+   * исправляет баги, — а не «кого угодно». Имя специалиста (`ai-researcher`, `code-reviewer`)
+   * ставится сюда, и это ЯВНЫЙ выбор человека: раньше специалист забирал работу сам, по
+   * порядку строк в конфиге, и отменить это было нечем.
+   */
+  role?: string
   priority?: number
   /** Что это за работа, словами. Необязательно: задача одним заголовком остаётся законной. */
   description?: string
@@ -276,6 +283,7 @@ export function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
       provider: input.provider,
       model: input.model,
       effort: input.effort,
+      role: input.role,
       priority: input.priority,
       description: input.description,
       acceptance: input.acceptance,
