@@ -142,7 +142,56 @@ describe('дверь приёмки — конфликт называется ф
       message: 'что-то от git',
     })
     expect(refusal.reason).toContain('README.md')
-    expect(refusal.reason).toContain('механическое уже разведено')
+    // …И НАЗВАНО ТЕМ, ЧТО ОНО ЕСТЬ. Отказавший ритуал откатывает слияние ЦЕЛИКОМ, вместе с уже
+    // сделанным механическим разводом: «уже разведено» обещало человеку работу, которой в дереве
+    // нет, и звало разводить руками файл, который разводится сам.
+    expect(refusal.reason).toContain('разводится САМО')
+    expect(refusal.reason).not.toContain('уже разведено')
+  })
+
+  it('почему механическое НЕ развелось — оговорки ритуала доезжают до нажимающего кнопку', () => {
+    const refusal = mergeRefusal({
+      ok: false,
+      conflict: true,
+      conflictFiles: ['docs/master-graph.html'],
+      conflictCount: 1,
+      conflictNotes: ['docs/master-graph.html: стороны пересобираются в РАЗНОЕ — спор не только в числах'],
+      message: 'что-то от git',
+    })
+    expect(refusal.reason).toContain('почему не развелось')
+    expect(refusal.reason).toContain('пересобираются в РАЗНОЕ')
+  })
+
+  it('общее дерево осталось в незавершённом слиянии → сказано на ЛЮБОМ классе отказа', () => {
+    const conflict = mergeRefusal({
+      ok: false,
+      conflict: true,
+      conflictFiles: ['daemon/src/loop.mjs'],
+      conflictCount: 1,
+      message: 'что-то от git',
+      unfinishedMerge: true,
+      howToClear: 'git -C /repo merge --abort',
+    })
+    expect(conflict.reasonCode).toBe('conflict')
+    expect(conflict.reason).toContain('НЕЗАВЕРШЁННОМ СЛИЯНИИ')
+    expect(conflict.reason).toContain('git -C /repo merge --abort')
+
+    // Красный прогон и непригодная среда откатывают слияние ТЕМ ЖЕ вызовом — значит и провалиться
+    // он может там же, и дерево там остаётся ровно таким же полусведённым.
+    const red = mergeRefusal({
+      merged: false,
+      testsPassed: false,
+      refused: true,
+      unfinishedMerge: true,
+      howToClear: 'git -C /repo merge --abort',
+    })
+    expect(red.reasonCode).toBe('tests_red')
+    expect(red.reason).toContain('НЕЗАВЕРШЁННОМ СЛИЯНИИ')
+  })
+
+  it('дерево целое → о слиянии в нём ни слова: пугать нечем', () => {
+    const refusal = mergeRefusal({ merged: false, testsPassed: false, refused: true })
+    expect(refusal.reason).not.toContain('НЕЗАВЕРШЁННОМ')
   })
 
   it('старый ответ без списка по-прежнему узнаётся по прозе git', () => {

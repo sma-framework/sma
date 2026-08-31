@@ -36,10 +36,15 @@ export function syncLine(attempt: TaskAttempt): string[] {
   const sync = attempt.sync
   if (!sync || typeof sync !== 'object' || typeof sync.trunk !== 'string') return []
   const resolved = Array.isArray(sync.resolved) ? sync.resolved : []
-  const settled =
-    resolved.length > 0
-      ? ` · механически развелось: ${resolved.map((r) => `${r.file} (${r.how})`).join(', ')}`
-      : ''
+  const names = resolved.map((r) => `${r.file} (${r.how})`).join(', ')
+  const settled = names ? ` · механически развелось: ${names}` : ''
+  // ТА ЖЕ ФРАЗА ПОД НЕСВЕДЁННОЙ ВЕТКОЙ ОЗНАЧАЛА БЫ ДРУГОЕ, И НЕПРАВДУ. Сведение, у которого
+  // остался хоть один неразведённый файл, дверь сдачи откатывает ЦЕЛИКОМ — вместе с уже
+  // сделанным механическим разводом. «Механически развелось: README.md» рядом со словами «ветка
+  // НЕ сведена» читается как работа, которую приёмщик унаследует; он её не унаследует, и, увидев
+  // README.md в споре при следующей попытке, пойдёт разводить руками ровно тот файл, который
+  // разводится сам. Здесь говорится то, что верно при любом исходе отката.
+  const settledOnConflict = names ? ` · механическое разводится САМО и рук не требует: ${names}` : ''
 
   if (sync.synced) {
     const behind =
@@ -56,5 +61,5 @@ export function syncLine(attempt: TaskAttempt): string[] {
   // ветке означает «git не назвал», и выдать это за «спорить не о чем» было бы тем самым
   // ложным успокоением, которое хуже молчания.
   const named = files.length > 0 ? `: ${files.join(', ')}` : ' (файлы не названы)'
-  return [`Ветка НЕ сведена с ${sync.trunk} — конфликт в ${count} файл(ах)${named}${settled}`]
+  return [`Ветка НЕ сведена с ${sync.trunk} — конфликт в ${count} файл(ах)${named}${settledOnConflict}`]
 }
