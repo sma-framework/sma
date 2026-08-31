@@ -37,7 +37,7 @@ page; direct-CLI subcommands return meaningful exit codes.
 
 ## Every verb at a glance
 
-All 96, grouped by what they are for. The sections after this table go deeper
+All 97, grouped by what they are for. The sections after this table go deeper
 on the ones with real surface area; `sma explain <verb>` answers for any of
 them in plain language, in English or Russian.
 
@@ -92,6 +92,7 @@ them in plain language, in English or Russian.
 | `trim` | The demotion-only trimmer: shrink the always-loaded budget without deleting a fact |
 | `memory` | The corpus verbs proper: `stats`, the preview-only `migrate`, the twelve-step `write` pipeline, and `explain` — one verdict per note on why the pack looks like this |
 | `memory-preview` | An ASCII preview of how SMA would lay out THIS repository's memory, before anything is written |
+| `start-map` | The map `/sma-start` shows before its first question: what SMA will do in THIS repository, counted from it |
 | `excavate` | Mine the repository's own history for the lessons and reflex candidates already buried in it |
 | `catalog` | The deterministic file catalog: `refresh`, `find`, and a drift check — search this before reaching for grep |
 | `context` | Compile one budgeted, deterministic context pack for a task, with a manifest and a purity score |
@@ -197,6 +198,7 @@ The v3.6 surfaces:
 |---|---|---|
 | `deleteme` | One-click uninstall: reverses every installer artifact — engine, runtime, agents, skills, hooks, statusline, managed blocks, `.sma/` — and PRESERVES `.claude/memory/**`. Dry-run by default; never-clobber settings surgery; a torn anchor pair is refused, never repaired. Direct CLI, not hook-facing. | `--yes` \| `--global` \| `--selftest` \| `--json` |
 | `memory-preview` | Onboarding memory-graph preview: an ASCII graph of how SMA will lay out THIS repo's memory — CORE / periphery areas from `git ls-files` / reflex candidates from excavate's history mining. Read-only, zero network, byte-deterministic at one HEAD; an empty repo degrades to the fresh-project layout. Rendered during /sma-start TEACH. | `--project <path>` \| `--lang en\|ru` \| `--json` \| `--selftest` |
+| `start-map` | The value map `/sma-start` prints BEFORE its first question: five things SMA will do in THIS repo, each counted from it — the tree fold, the catches already in the git history, an existing corpus. Shares one `analyzeRepo` with `memory-preview`; read-only, zero network, byte-deterministic at one HEAD; a directory without git degrades to the fresh-project map. | `--project <path>` \| `--lang en\|ru` \| `--json` \| `--selftest` |
 
 The v5 consumer surface:
 

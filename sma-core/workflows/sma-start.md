@@ -6,13 +6,18 @@ produces: PROJECT.md, ROADMAP.md, TAGS.md, starter CORE notes, .sma/profile.json
 consumes:
 -->
 <purpose>
-First-run onboarding for SMA, rebuilt for V3.5 as a STAGED, TEACHING
-conversation. Not a scaffolding script and not one front-loaded
+First-run onboarding for SMA: a VALUE MAP first, a STAGED TEACHING
+conversation after. Not a scaffolding script and not one front-loaded
 lecture: the workflow TEACHES how SMA works and WHY the process matters — five
 deterministic modules delivered at the moment each becomes relevant — while it learns a
 FULL working profile (schema v2) and seeds the starter memory corpus. The founder's ask,
 verbatim: «Give people as much intro as possible» — adoption is decided in the
 first ten minutes.
+
+The ORDER is the first thing this workflow owes a newcomer: Stage MAP prints
+`sma start-map` — five things SMA will do in THEIR repository, counted from THEIR tree and
+THEIR git history — before a single question is asked. Nobody should answer «what must
+never break here» for a system they have not yet seen do anything.
 
 The teaching CONTENT is versioned in `references/onboarding-teaching.md` (five modules,
 each with one before/after example and a one-line recap); THIS workflow only STAGES it —
@@ -37,6 +42,11 @@ Also read:
 </required_reading>
 
 <hard_rules>
+- THE MAP COMES BEFORE THE FIRST QUESTION. Stage MAP renders first, always; no
+  question of any stage (including the quick-path choice) is asked before the user has
+  seen what this system will do in THEIR repository. A newcomer answering «what must
+  never break here» for a system they have not yet seen do anything is the failure this
+  ordering exists to prevent.
 - Plain language throughout. The audience includes novices — every technical term gets a
   one-line gloss the first time it appears. Never assume the user knows git remotes,
   CI, migrations, or hooks.
@@ -58,6 +68,28 @@ Also read:
 </hard_rules>
 
 <process>
+
+## Stage MAP — what this system will do in THEIR project (BEFORE any question)
+
+The first thing on screen is not a question and not a lecture: it is a map of what SMA
+will do in the repository this command is standing in, with every number in it read from
+that repository. Render it verbatim, before anything else:
+
+```bash
+node scripts/sma/cli.mjs start-map            # this project (--lang ru for Russian)
+```
+
+Five promises — memory, reflexes mined from their own git history, coordination without a
+server, checkable «done», and the ask-before-danger rule — each carrying counts from their
+own tree and history. Read-only, zero network, nothing written: a person can read it and
+walk away with their project untouched.
+
+Then say one sentence in your own words: nothing there needed an answer from them, it was
+read from their repository, and the questions that follow are what make that map theirs.
+
+A preview failure NEVER stalls the onboarding: if the command errors, say so in one line
+and continue to the routing below. To map a DIFFERENT repository first:
+`node scripts/sma/cli.mjs start-map --project <path>`.
 
 ## Quick path for existing installs
 
@@ -339,6 +371,8 @@ Next step:
 </process>
 
 <success_criteria>
+- [ ] The value map (`sma start-map`) was rendered FIRST — before the routing choice,
+      before the first teaching module and before every question
 - [ ] The five modules were delivered STAGED (accountable-loop first, receipts-vs-prose
       last), each at its marker before the stage it makes meaningful — never one lecture
 - [ ] PROJECT.md + ROADMAP skeleton written from the user's answers and committed
