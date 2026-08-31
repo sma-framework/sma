@@ -61,7 +61,7 @@ export function Shell() {
     ровно один раз.
 
     Само решение — в `screenWaits`, чистой функцией: «ждать или показывать» зависит от четырёх
-    входов, и написанное прямо в разметке оно врало бы молча (см. waiting.ts).
+    входов, и написанное прямо в разметке оно врало бы молча (см. waiting-language.ts).
   */
   const switchingId = useProjectSwitchId()
   const askedFor = selectedProject()
