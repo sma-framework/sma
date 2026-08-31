@@ -117,7 +117,14 @@ const reCheckoutPaths = new RegExp('\\b' + GIT + '\\s+' + CHECKOUT_VERB + '\\s+-
 const reRestore = new RegExp('\\b' + GIT + '\\s+' + RESTORE_VERB + '\\b([^&|;]*)')
 const reBranchDelete = new RegExp('\\b' + GIT + '\\s+' + BRANCH_VERB + '\\s+(?:-D|--delete\\s+--force|--delete|-D\\s+-f|-f\\s+-D)\\b')
 const reRebase = new RegExp('\\b' + GIT + '\\s+' + REBASE_VERB + '\\b([^&|;]*)')
-const reMerge = new RegExp('\\b' + GIT + '\\s+' + MERGE_VERB + '\\b([^&|;]*)')
+// ГЛАГОЛ РОВНО `merge`, А НЕ НАЧАЛО ДРУГОГО. Со словарной границей `\b` сюда попадали и
+// `merge-base`, и `merge-tree` — оба НИЧЕГО не двигают: первый печатает имя общего предка,
+// второй считает слияние в памяти и не трогает ни одной ссылки. Замерено 31.08.2026: оба
+// вопроса, заданные ради того, чтобы УЗНАТЬ состав будущего конфликта, вставали на парковку и
+// умирали по сроку ожидания — то есть охрана мешала ровно той разведке, ради которой она стоит.
+// САМО СЛИЯНИЕ ЭТИМ НЕ РАЗРЕШЕНО и разрешено не будет: оно остаётся решением человека, а
+// работник сводит ветку с вершиной не рукой, а глаголом (`cli.mjs sync-branch`).
+const reMerge = new RegExp('\\b' + GIT + '\\s+' + MERGE_VERB + '(?![-\\w])([^&|;]*)')
 const reTag = new RegExp('\\b' + GIT + '\\s+' + TAG_VERB + '\\b([^&|;]*)')
 const reRemote = new RegExp('\\b' + GIT + '\\s+' + REMOTE_VERB + '\\b([^&|;]*)')
 const reConfig = new RegExp('\\b' + GIT + '\\s+' + CONFIG_VERB + '\\b([^&|;]*)')

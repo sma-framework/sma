@@ -32,7 +32,9 @@ import { tick } from '../src/loop.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { recordAttempt, readAttempts, createAttemptLogWriter } from '../src/queue/attempt-ledger.mjs'
-import { buildClaudeArgs } from '../src/runner/args.mjs'
+import { buildClaudeArgs, buildTaskPrompt } from '../src/runner/args.mjs'
+import { classifyForWorker } from '../../scripts/sma/lib/worker-danger.mjs'
+import { HUMAN_ONLY_DENIALS } from '../src/queue/capability-envelope.mjs'
 
 const tmpDirs: string[] = []
 const mkDir = (prefix: string) => {
@@ -246,5 +248,50 @@ describe('сведение ветки с вершиной у двери сдач
     const said = logged.filter((e) => e.type === 'task.branch_unmerged')
     expect(said.length).toBe(1)
     expect(said[0].detail).toContain('engine.txt')
+  })
+})
+
+/**
+ * ПОЛОВИНА ДОГОВОРА, КОТОРУЮ ИСПОЛНЯЕТ РАБОТНИК, А НЕ ДЕМОН — И ДВЕРЬ, КОТОРУЮ ОН МОЖЕТ ОТКРЫТЬ.
+ *
+ * Промпт требует сдать ветку СВЕДЁННОЙ и называет команду. До этого случая он называл
+ * `git merge --no-ff --no-commit main` — команду, которой у работника НЕТ: конверт возможностей
+ * отдаёт спавну отказ `Bash(git merge:*)` (слияние — решение человека, инвариант флота), а
+ * мягкая охрана ставит тот же вызов на парковку, где он умирает по сроку ожидания. Обязанность,
+ * которую нечем исполнить, — не обязанность, а текст, и выглядит она на экране точно так же.
+ *
+ * Здесь команды берутся ИЗ САМОГО ПРОМПТА (не переписаны сюда руками) и проверяются обеими
+ * стенами, которые встанут у работника: списком отказов конверта и классификатором опасного.
+ * Три файла, между которыми это может разъехаться, — `runner/args.mjs`,
+ * `queue/capability-envelope.mjs` и `lib/worker-danger.mjs`; связывает их только этот случай.
+ */
+describe('договор сдачи — дверь, которую работник может ОТКРЫТЬ', () => {
+  const promptLines = () =>
+    buildTaskPrompt({ task: backlogTask() })
+      .split('\n')
+      .map((l) => l.trim())
+
+  it('команды сведения из промпта не отказаны конвертом и не паркуются охраной', () => {
+    const commands = promptLines().filter((l) => l.startsWith('node scripts/sma/cli.mjs sync-branch'))
+    expect(commands.length).toBeGreaterThan(0)
+
+    // `Bash(git push:*)` → префикс `git push`: команда, начинающаяся с него, отказана спавну.
+    const prefixes = Object.values(HUMAN_ONLY_DENIALS)
+      .flat()
+      .map((p) => String(p).replace(/^Bash\(/, '').replace(/:\*\)$/, ''))
+    for (const cmd of commands) {
+      for (const prefix of prefixes) expect(cmd.startsWith(prefix)).toBe(false)
+      expect(classifyForWorker('Bash', { command: cmd }).dangerous).toBe(false)
+    }
+  })
+
+  it('промпт не диктует голый глагол слияния — он работнику закрыт', () => {
+    expect(promptLines().some((l) => l.startsWith('git ' + 'merge'))).toBe(false)
+  })
+
+  it('верб, названный промптом, отвечает в таблице отправки CLI', () => {
+    const cli = readFileSync(join(import.meta.dirname, '..', '..', 'scripts', 'sma', 'cli.mjs'), 'utf8')
+    // Промпт, называющий несуществующий верб, — та же невыполнимая обязанность другой формы.
+    expect(cli).toContain("'sync-branch': cmdSyncBranch")
   })
 })

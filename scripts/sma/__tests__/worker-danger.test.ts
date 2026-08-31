@@ -53,6 +53,24 @@ describe('classifyForWorker — классы, которых у подушки �
     expect(cls('git tag -a v9.9.9 -m release')).toBe('tag')
   })
 
+  it('слияние остаётся решением человека, КУДА БЫ ни вело', () => {
+    expect(cls('git merge main')).toBe('merge')
+    expect(cls('git merge --no-ff --no-commit main')).toBe('merge')
+    expect(cls('git merge wt/BL-1')).toBe('merge')
+    // Выход из начатого слияния безопасен, как и был: он ничего не приносит.
+    expect(cls('git merge --abort')).toBe(null)
+  })
+
+  it('ВОПРОСЫ о слиянии ничего не двигают и не паркуются', () => {
+    // `merge-base` печатает имя общего предка, `merge-tree` считает слияние в памяти — ни один
+    // не трогает ни ссылки, ни рабочего дерева. Оба ловились словарной границей `\b`, и обоих
+    // это стоило полного срока ожидания человека (замерено 31.08.2026) — то есть охрана мешала
+    // ровно той разведке, ради которой она и стоит.
+    expect(cls('git merge-base HEAD main')).toBe(null)
+    expect(cls('git merge-tree --write-tree HEAD main')).toBe(null)
+    expect(cls('git merge-base --is-ancestor main wt/BL-1')).toBe(null)
+  })
+
   it('публикация пакета и выпуск релиза опасны', () => {
     expect(cls('npm publish --access public')).toBe('publish')
     expect(cls('gh release create v1.2.3')).toBe('publish')
