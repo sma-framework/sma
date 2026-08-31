@@ -70,6 +70,9 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { REASON_LABELS, acceptanceItems, CAP_ACCEPTANCE_ITEMS } from '../queue/adapter.mjs'
+// Слово «проба не состоялась» объявлено у того, кто его читает (сторож живости), и произносится
+// здесь: одно написание на обоих концах провода — иначе разойдутся именно они.
+import { PROBE_BROKEN } from '../queue/liveness.mjs'
 import { HARD_CALLS, ORCHESTRATOR_NAME, ORCHESTRATOR_TITLE, voiceAccount } from '../policy/orchestrator.mjs'
 import { buildClaudeArgs, buildAccountEnv } from '../runner/args.mjs'
 import { fencedBlock } from '../runner/prompt-fence.mjs'
@@ -1274,9 +1277,15 @@ async function spendRows(deps) {
  * `alive` IS THE SECOND QUESTION THE HANDLE CAN ANSWER, and the one that keeps honest silence
  * alive. A registered handle knows whether its child is still running; the liveness watchdog,
  * which knows only clocks, has no other way to tell a worker thinking quietly from a process
- * that died. Three answers, not two: `true` / `false` / `null` — and `null` is «этому демону
- * нечего сказать», never «мёртв». A turn registered without a probe (the chat lane registers
- * only a kill) answers `null`, exactly as a handle that belongs to another daemon does.
+ * that died. FOUR answers, not two: `true` / `false` / `null` / `PROBE_BROKEN` — and `null` is
+ * «этому демону нечего сказать», never «мёртв». A turn registered without a probe (the chat lane
+ * registers only a kill) answers `null`, exactly as a handle that belongs to another daemon does.
+ *
+ * И ЧЕТВЁРТЫЙ ОТВЕТ — ПРО САМУ ПРОБУ, А НЕ ПРО ПРОЦЕСС. Брошенный пробник отвечал здесь `null`,
+ * то есть «нечего сказать», и сторож честно шёл судить по часам — как будто пробника у него не
+ * было вовсе. 31.08 под хелперами исчез склад зависимостей, пробы перестали состояться, и по
+ * часам были похоронены три живые попытки подряд, чьи процессы продолжали жечь подписку. Теперь
+ * поломка пробы называет себя (`PROBE_BROKEN`), и вердикт по ней не выносится вовсе.
  */
 export function createTurnRegistry() {
   const live = new Map() // turnId -> { kill, alive, stopped } — live handles ONLY, never truth
@@ -1285,8 +1294,12 @@ export function createTurnRegistry() {
       if (turnId) live.set(String(turnId), { kill, alive: typeof alive === 'function' ? alive : null, stopped: false })
     },
     /**
-     * alive(turnId) → true (процесс жив) | false (процесс завершился) | null (не знаем).
-     * Сломанный или отсутствующий пробник — это `null`: выдуманное «мёртв» стоит чужой работы.
+     * alive(turnId) → true (процесс жив) | false (процесс завершился) | null (спросить не у
+     * кого) | PROBE_BROKEN (проба не состоялась).
+     *
+     * Отсутствующий пробник — это `null`, а СЛОМАВШИЙСЯ — PROBE_BROKEN, и разница между ними не
+     * косметическая: по первому сторож судит по часам, по второму не судит вовсе. Выдуманное
+     * «мёртв» стоит чужой работы.
      */
     alive(turnId) {
       const t = live.get(String(turnId))
@@ -1294,7 +1307,7 @@ export function createTurnRegistry() {
       try {
         return t.alive() === true
       } catch {
-        return null
+        return PROBE_BROKEN
       }
     },
     /** stop(turnId) → true if a live turn was told to die; false is «nothing to stop». */
