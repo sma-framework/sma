@@ -271,20 +271,9 @@ describe('сведение ветки с вершиной у двери сдач
    */
   it('спор смешанный → развод README откатан вместе со сведением, и журнал не выдаёт его за сделанное', async () => {
     const copy = makeCopy(
-      { 'README.md': '# README
-
-абзац соседней работы
-', 'engine.txt': 'строка вершины
-' },
-      { 'README.md': '# README
-
-абзац моей работы
-', 'engine.txt': 'строка работника
-' },
-      { 'CLAUDE.md': '# правила
-', 'README.md': '# README
-', 'engine.txt': 'исходная строка
-' },
+      { 'README.md': '# README\n\nабзац соседней работы\n', 'engine.txt': 'строка вершины\n' },
+      { 'README.md': '# README\n\nабзац моей работы\n', 'engine.txt': 'строка работника\n' },
+      { 'CLAUDE.md': '# правила\n', 'README.md': '# README\n', 'engine.txt': 'исходная строка\n' },
     )
     const { res, row, logged, workDir } = await runTick(copy)
     expect(res.completed).toBe('BL-1')
