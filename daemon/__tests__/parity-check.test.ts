@@ -2,7 +2,7 @@
  * Tests for tools/terminal-parity-check.mjs — ONE command over ONE run directory.
  *
  * THE SHAPE OF THIS SUITE IS THE POINT. A checker that only ever sees a complete run proves
- * nothing, because a checker hard-wired to print «five out of five» would pass that test too.
+ * nothing, because a checker hard-wired to print «six out of six» would pass that test too.
  * So every receipt gets a fixture in which exactly one fact is wrong or missing, and the suite
  * asserts that THAT line — and only that line — stops being green, and that the command's exit
  * code stops being 0. Fixtures live in an injected in-memory filesystem: no disk is touched,
@@ -96,12 +96,20 @@ const RUN = {
     'Bash',
     '--disallowedTools',
     ...humanOnlyDenials({ humanOnlyActions: ['push', 'merge', 'tag', 'deploy'] }).patterns,
+    // модель и усилие — те же флаги, что кладёт сборщик запуска
+    '--model',
+    'sonnet',
+    '--effort',
+    'high',
   ],
   envelope: {
     allowedTools: ['Read', 'Write', 'Bash'],
     humanOnlyActions: ['push', 'merge', 'tag', 'deploy'],
     hash: 'e3b0c442',
   },
+  // то, что профиль обещал этой попытке, — записано рядом с командной строкой, как конверт
+  profile: { model: 'sonnet', effort: 'high' },
+  task: { model: null, effort: null },
   rules: { claudeMd: 'materialized' },
   skillsInCopy: { skills: 3, agents: 2 },
 }
@@ -177,7 +185,7 @@ function run(files: Record<string, string>, argv: string[] = DEFAULT_ARGV, mtime
 }
 
 describe('terminal-parity-check — a complete run', () => {
-  it('prints five receipts and the bare number: five green when both halves of the envelope travelled', () => {
+  it('prints six receipts and the bare number: six green when both halves of the envelope travelled', () => {
     const r = run(fullFiles())
     expect(r.out).toHaveLength(PARITY_RECEIPT_COUNT + 1)
     expect(r.line('hooks')).toMatch(/^OK — /)
@@ -185,7 +193,8 @@ describe('terminal-parity-check — a complete run', () => {
     expect(r.line('rules')).toMatch(/^OK — /)
     expect(r.line('skills')).toMatch(/^OK — /)
     expect(r.line('rights')).toMatch(/^OK — /)
-    expect(r.last).toBe('5')
+    expect(r.line('profile')).toMatch(/^OK — /)
+    expect(r.last).toBe('6')
     expect(Number.isFinite(Number(r.last))).toBe(true) // receipt-hash / scorer contract
     expect(r.code).toBe(0)
   })
@@ -209,7 +218,7 @@ describe('terminal-parity-check — the verdict is computed in the shared module
     expect(source).toMatch(/from '\.\.\/scripts\/sma\/lib\/parity-receipts\.mjs'/)
     expect(source).toMatch(/evaluateParity\(/)
     // a private re-implementation would show up as the checks themselves living in the tool
-    expect(source).not.toMatch(/function check(Hooks|Memory|Rules|Skills|Rights)\b/)
+    expect(source).not.toMatch(/function check(Hooks|Memory|Rules|Skills|Rights|Profile)\b/)
   })
 
   it('prints exactly what the module returned for the same artifacts — one logic, two callers', () => {
@@ -232,7 +241,7 @@ describe('terminal-parity-check — every receipt has its own way of going red',
     const r = run(fullFiles({ [`${DIR}/guards.jsonl`]: jsonl([GUARDS[0]]) }))
     expect(r.line('hooks')).toMatch(/^FAIL — /)
     expect(r.line('hooks')).toMatch(/ответа нет/)
-    expect(r.last).toBe('4')
+    expect(r.last).toBe('5')
     expect(r.code).not.toBe(0)
   })
 
@@ -261,7 +270,7 @@ describe('terminal-parity-check — every receipt has its own way of going red',
     const r = run(fullFiles({ [`${DIR}/receipt.json`]: receipt, [`${DIR}/run.json`]: runJson }))
     expect(r.line('skills')).toMatch(/^n\/a — /)
     expect(r.line('skills')).toContain('.claude/skills')
-    expect(r.last).toBe('5')
+    expect(r.last).toBe('6')
     expect(r.code).toBe(0)
   })
 
@@ -272,10 +281,32 @@ describe('terminal-parity-check — every receipt has its own way of going red',
     expect(r.line('rights')).toContain('Bash')
     expect(r.code).not.toBe(0)
   })
+
+  // СВЕРКА, КОТОРАЯ РАНЬШЕ МОЛЧАЛА. Спавн под чужой моделью замок не пропустит — но пока
+  // квитанции о нём не было, отчёт о таком прогоне выглядел бы полным.
+  it('a spawn under a model the profile never assigned → the profile receipt fails and names both', () => {
+    const runJson = { ...RUN, args: [...RUN.args.slice(0, -4), '--model', 'opus', '--effort', 'high'] }
+    const r = run(fullFiles({ [`${DIR}/run.json`]: runJson }))
+    expect(r.line('profile')).toMatch(/^FAIL — /)
+    expect(r.line('profile')).toContain('opus')
+    expect(r.line('profile')).toContain('sonnet')
+    expect(r.last).toBe('5')
+    expect(r.code).not.toBe(0)
+  })
+
+  // Записи, сделанные до того, как обещание стали писать рядом с командной строкой, читаются
+  // по работнику из `--config` — слабее, но честно, и источник печатается.
+  it('a record written before run.profile existed falls back to the config worker, and says so', () => {
+    const { profile, ...older } = RUN as Record<string, any>
+    const r = run(fullFiles({ [`${DIR}/run.json`]: older }))
+    expect(r.line('profile')).toMatch(/^OK — /)
+    expect(r.line('profile')).toContain('конфиг демона')
+    expect(r.code).toBe(0)
+  })
 })
 
 describe('terminal-parity-check — missing data is never a pass', () => {
-  it('an empty run directory → five failures, all naming the file they wanted', () => {
+  it('an empty run directory → six failures, all naming the file they wanted', () => {
     const r = run({ [CONFIG]: JSON.stringify(CONFIG_JSON), [`${DIR}/guards.jsonl`]: '' })
     for (const { id } of PARITY_RECEIPTS) expect(r.line(id)).toMatch(/^FAIL — /)
     expect(r.out.join('\n')).toContain('данных нет')
@@ -290,6 +321,9 @@ describe('terminal-parity-check — missing data is never a pass', () => {
     expect(r.line('memory')).toMatch(/^FAIL — .*данных нет/)
     expect(r.line('rules')).toMatch(/^FAIL — .*данных нет/)
     expect(r.line('rights')).toMatch(/^FAIL — .*данных нет/)
+    // запись без обещания профиля и без имени работника: сверять не с чем, и это сказано
+    expect(r.line('profile')).toMatch(/^FAIL — .*данных нет/)
+    expect(r.line('profile')).toContain('run.profile')
     expect(r.line('hooks')).toMatch(/^OK — /) // the window and the guard log are still there
     expect(r.code).not.toBe(0)
   })
@@ -306,7 +340,7 @@ describe('terminal-parity-check — missing data is never a pass', () => {
 describe('terminal-parity-check — choosing the attempt', () => {
   it('--attempt names the same directory the positional argument would', () => {
     const r = run(fullFiles(), ['--attempt', 'demo-task#1', '--project', PROJECT, '--config', CONFIG])
-    expect(r.last).toBe('5')
+    expect(r.last).toBe('6')
     expect(r.code).toBe(0)
   })
 
@@ -325,10 +359,10 @@ describe('terminal-parity-check — choosing the attempt', () => {
       startedAt: '2026-07-01T10:00:00.000Z',
       endedAt: '2026-07-01T10:05:00.000Z',
     })
-    files[`${older}/guards.jsonl`] = '' // the older attempt has no hooks: it would score 4
+    files[`${older}/guards.jsonl`] = '' // the older attempt has no hooks: it would score 5
     files[`${older}/receipt.json`] = JSON.stringify(RECEIPT)
     const r = run(files, ['--project', PROJECT, '--config', CONFIG])
-    expect(r.last).toBe('5')
+    expect(r.last).toBe('6')
     expect(r.code).toBe(0)
   })
 
@@ -354,7 +388,7 @@ describe('terminal-parity-check — the ledger reference', () => {
   it('a digest that no longer matches says the ledger changed — and does NOT sink the receipts', () => {
     const r = run(fullFiles({ [`${DIR}/transcript.jsonl`]: ledgerRefLine(STALE_SHA) }))
     expect(r.errOut.join('\n')).toContain('леджер изменился после записи')
-    expect(r.last).toBe('5') // the five read run.json, guards.jsonl and receipt.json — not this
+    expect(r.last).toBe('6') // the six read run.json, guards.jsonl and receipt.json — not this
     expect(r.code).toBe(0)
   })
 
@@ -368,7 +402,7 @@ describe('terminal-parity-check — the ledger reference', () => {
 describe('terminal-parity-check — the command contract', () => {
   it('--json prints the object a scorer reads, and still ends on the bare number', () => {
     const r = run(fullFiles(), [...DEFAULT_ARGV, '--json'])
-    expect(r.last).toBe('5')
+    expect(r.last).toBe('6')
     const parsed = JSON.parse(r.out.slice(0, -1).join('\n'))
     expect(Object.keys(parsed).sort()).toEqual(['attemptId', 'dir', 'exitCode', 'fulfilled', 'receipts'])
     expect(parsed.attemptId).toBe('demo-task#1')
@@ -376,7 +410,7 @@ describe('terminal-parity-check — the command contract', () => {
     expect(parsed.receipts).toHaveLength(PARITY_RECEIPT_COUNT)
     expect(parsed.receipts.map((x: any) => x.id)).toEqual(PARITY_RECEIPTS.map((x) => x.id))
     expect(parsed.receipts.every((x: any) => typeof x.detail === 'string' && x.detail.length > 0)).toBe(true)
-    expect(parsed.fulfilled).toBe(5)
+    expect(parsed.fulfilled).toBe(6)
     expect(parsed.exitCode).toBe(0)
     expect(r.code).toBe(0)
   })
@@ -402,7 +436,7 @@ describe('terminal-parity-check — the command contract', () => {
     expect(parseArgv([]).error).toBeUndefined() // no attempt named is a request, not a mistake
   })
 
-  it('the report always prints five receipts plus the number, in a fixed order', () => {
+  it('the report always prints six receipts plus the number, in a fixed order', () => {
     const report = formatReport(evaluateParity({}))
     expect(report.lines).toHaveLength(PARITY_RECEIPT_COUNT + 1)
     expect(report.lines.slice(0, PARITY_RECEIPT_COUNT).every((l: string) => /^(OK|WARN|n\/a|FAIL) — /.test(l))).toBe(true)
@@ -410,9 +444,9 @@ describe('terminal-parity-check — the command contract', () => {
     expect(report.exitCode).not.toBe(0)
   })
 
-  it('the usage text names the five receipts, the flags and the numeric contract', () => {
+  it('the usage text names the six receipts, the flags and the numeric contract', () => {
     for (const { id } of PARITY_RECEIPTS) expect(USAGE).toContain(id)
-    expect(USAGE).toContain('0..5')
+    expect(USAGE).toContain('0..6')
     expect(USAGE).toContain('--attempt')
     expect(USAGE).toContain('--project')
     expect(USAGE).toContain('--json')

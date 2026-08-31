@@ -13,12 +13,12 @@
  *
  * THE THREE CLAIMS, EACH ASSERTED AS A WIRE RATHER THAN AS A CALCULATION:
  *
- *   (1) the tool reads what the daemon wrote — five receipts over a live attempt, with the
+ *   (1) the tool reads what the daemon wrote — six receipts over a live attempt, with the
  *       rights receipt green because BOTH halves of the envelope travelled, and the skills
  *       receipt at its honest `n/a`;
  *   (2) the daemon's OWN verdict, computed before the row was written so a card can show it
  *       without running anything, is the SAME verdict the tool reaches — not «similar»,
- *       not «also five»: the same statuses and the same summary, compared object to object.
+ *       not «also six»: the same statuses and the same summary, compared object to object.
  *       A second implementation of «did the hooks fire» would agree on the day it was written
  *       and drift every day after, and this comparison is what makes that drift a red suite;
  *   (3) the verdict arrives in the ATTEMPT ROW — the durable record the card is built from.
@@ -28,7 +28,7 @@
  *
  * A RED FIXTURE IS PART OF THE PROOF. A checker that cannot go red is not a checker: the same
  * tick is driven with the stream of a session whose read of the memory index FAILED, and the
- * suite demands a failed memory receipt, a four-out-of-five, an exit code of 1 — and the same
+ * suite demands a failed memory receipt, a five-out-of-six, an exit code of 1 — and the same
  * agreement between the daemon's own verdict and the tool's.
  *
  * THE STREAM IS NOT INVENTED. Both fixtures are frames lifted off real runs of this daemon;
@@ -45,7 +45,7 @@ import { resolveRoute } from '../src/policy/routing.mjs'
 import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { recordAttempt, readAttempts, createAttemptLogWriter } from '../src/queue/attempt-ledger.mjs'
 import { summarize, PARITY_RECEIPTS } from '../../scripts/sma/lib/parity-receipts.mjs'
-import { buildClaudeArgs } from '../src/runner/args.mjs'
+import { buildClaudeArgs, expectedModelEffort } from '../src/runner/args.mjs'
 import { runCheck } from '../../tools/terminal-parity-check.mjs'
 
 // ── the temporary world ────────────────────────────────────────────────────────────────────
@@ -158,7 +158,11 @@ async function runTick(over: any = {}) {
   await adapter.enqueue(backlogTask())
   const logged: any[] = []
 
-  const workers = [{ id: WORKER_ID, lane: 'prod', provider: 'claude', account: { configDir: '/x' }, enabled: true }]
+  // МОДЕЛЬ И УСИЛИЕ У ПРОФИЛЯ ЕСТЬ, и это часть провода: квитанция профиля, сверяющая два
+  // «ничего», зелена по совпадению пустот и не доказывает ничего о том, под чем шёл спавн.
+  const workers = [
+    { id: WORKER_ID, lane: 'prod', provider: 'claude', model: 'sonnet', effort: 'high', account: { configDir: '/x' }, enabled: true },
+  ]
   // The config as a FILE, so the checking command can be pointed at the same worker list the
   // daemon routed with: both sides then name the worker in the rights receipt, and the two
   // verdicts can be compared string for string rather than only status for status.
@@ -183,17 +187,25 @@ async function runTick(over: any = {}) {
     routing: { resolveRoute },
     windows: () => true,
     projectDir: () => projectDir,
-    buildArgs: (_task: any, _route: any, opts: any = {}) => ({
-      bin: 'claude',
-      args: buildClaudeArgs({
-        ...(Array.isArray(opts.allowedTools) && opts.allowedTools.length > 0 ? { allowedTools: opts.allowedTools } : {}),
-        ...(Array.isArray(opts.disallowedTools) && opts.disallowedTools.length > 0
-          ? { disallowedTools: opts.disallowedTools }
-          : {}),
-      }),
-      env: { ...SPAWN_ENV },
-      prompt: PROMPT,
-    }),
+    buildArgs: (task: any, _route: any, opts: any = {}) => {
+      // Предпочтение модели и усилия берётся ТОЙ ЖЕ функцией, какой его берёт боевой
+      // композитор, — иначе подделка знала бы о запуске меньше библиотеки, которую подменяет,
+      // и квитанция профиля мерила бы форму, которой ни один спавн не имеет.
+      const { model, effort } = expectedModelEffort({ worker: workers[0], task })
+      return {
+        bin: 'claude',
+        args: buildClaudeArgs({
+          ...(model !== null ? { model } : {}),
+          ...(effort !== null ? { effort } : {}),
+          ...(Array.isArray(opts.allowedTools) && opts.allowedTools.length > 0 ? { allowedTools: opts.allowedTools } : {}),
+          ...(Array.isArray(opts.disallowedTools) && opts.disallowedTools.length > 0
+            ? { disallowedTools: opts.disallowedTools }
+            : {}),
+        }),
+        env: { ...SPAWN_ENV },
+        prompt: PROMPT,
+      }
+    },
     verbRunner: makeVerbRunner({
       preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
       worktree: {
@@ -246,14 +258,14 @@ function checkJson(argv: string[]) {
 
 // ═══════════ THE WIRE: A LIVE TICK, THEN THE REAL COMMAND OVER WHAT IT LEFT ═════════════════
 
-describe('поток → каталог прогона → настоящая команда: пять квитанций живой попытки', () => {
-  it('зелёная фикстура: 5/5 — хуки, память, правила, навыки n/a, права ok — и код 0', async () => {
+describe('поток → каталог прогона → настоящая команда: шесть квитанций живой попытки', () => {
+  it('зелёная фикстура: 6/6 — хуки, память, правила, навыки n/a, права и профиль ok — и код 0', async () => {
     const { res, projectDir, configPath } = await runTick()
     expect(res.completed).toBe('BL-1')
 
     const { code, out } = check(['--project', projectDir, '--config', configPath])
 
-    expect(out).toHaveLength(6) // пять квитанций и число последней строкой
+    expect(out).toHaveLength(7) // шесть квитанций и число последней строкой
     expect(out[0]).toMatch(/^OK — хуки/)
     expect(out[1]).toMatch(/^OK — память/)
     expect(out[2]).toMatch(/^OK — правила/)
@@ -263,7 +275,12 @@ describe('поток → каталог прогона → настоящая к
     // что он разрешил, и то, что он запретил. Пока ехала одна, здесь стояло WARN.
     expect(out[4]).toMatch(/^OK — права/)
     expect(out[4]).toContain('запретов')
-    expect(out[5]).toBe('5')
+    // и шестая: модель с усилием, назначенные профилю, доехали до аргументов спавна — сверка,
+    // которая работала с самого начала, наконец ВИДНА в отчёте, а не только в отказе спавна
+    expect(out[5]).toMatch(/^OK — профиль/)
+    expect(out[5]).toContain('sonnet')
+    expect(out[5]).toContain('high')
+    expect(out[6]).toBe('6')
     expect(code).toBe(0)
   })
 
@@ -291,7 +308,7 @@ describe('поток → каталог прогона → настоящая к
 
 // ═══════════ ПРЕДРАСЧЁТ ДЕМОНА == ВЕРДИКТ ИНСТРУМЕНТА ══════════════════════════════════════
 
-describe('демон считает ту же пятёрку тем же модулем — карточке не нужно запускать команду', () => {
+describe('демон считает ту же шестёрку тем же модулем — карточке не нужно запускать команду', () => {
   it('receipt.json.parity равен вердикту инструмента: статусы, детали и сводка', async () => {
     const { projectDir, runDir, configPath } = await runTick()
 
@@ -302,11 +319,11 @@ describe('демон считает ту же пятёрку тем же мод�
     expect(receipt.parity).not.toBe(null)
     expect(receipt.parity.results.map((r: any) => r.id)).toEqual(PARITY_RECEIPTS.map((r) => r.id))
 
-    // Побайтовое равенство пяти квитанций — не «тоже пять», а ТЕ ЖЕ
+    // Побайтовое равенство шести квитанций — не «тоже шесть», а ТЕ ЖЕ
     expect(receipt.parity.results).toEqual(body.receipts)
     // И сводка равна сводке инструмента, посчитанной из его же вывода
     expect(receipt.parity.summary).toEqual(summarize(body.receipts))
-    expect(receipt.parity.summary).toEqual({ fulfilled: 5, total: 5, warn: 0, ok: 4, failed: [] })
+    expect(receipt.parity.summary).toEqual({ fulfilled: 6, total: 6, warn: 0, ok: 5, failed: [] })
     expect(code).toBe(0)
   })
 
@@ -319,7 +336,7 @@ describe('демон считает ту же пятёрку тем же мод�
 
     expect(row.runDir).toBe(runDir)
     expect(row.parity).toEqual(summarize(body.receipts))
-    expect(row.parity.fulfilled).toBe(5)
+    expect(row.parity.fulfilled).toBe(6)
     expect(row.parity.failed).toEqual([])
   })
 })
@@ -327,7 +344,7 @@ describe('демон считает ту же пятёрку тем же мод�
 // ═══════════ КРАСНАЯ ФИКСТУРА: ПРОВЕРКА, КОТОРАЯ УМЕЕТ КРАСНЕТЬ ════════════════════════════
 
 describe('красная фикстура: чтение индекса памяти провалилось — и это видно с обеих сторон', () => {
-  it('память FAIL, 4/5, код 1 — и предрасчёт демона говорит ровно то же', async () => {
+  it('память FAIL, 5/6, код 1 — и предрасчёт демона говорит ровно то же', async () => {
     const workDir = mkDir('sma-wire-copy-red-')
     const { projectDir, runDir, ledgerDir, configPath } = await runTick({
       workDir,
@@ -336,12 +353,12 @@ describe('красная фикстура: чтение индекса памя�
 
     const { code, out } = check(['--project', projectDir, '--config', configPath])
     expect(out[1]).toMatch(/^FAIL — память/)
-    expect(out[5]).toBe('4')
+    expect(out[6]).toBe('5')
     expect(code).toBe(1)
 
     const receipt = readJson(join(runDir, 'receipt.json'))
     expect(receipt.parity.summary.failed).toEqual(['memory'])
-    expect(receipt.parity.summary.fulfilled).toBe(4)
+    expect(receipt.parity.summary.fulfilled).toBe(5)
 
     const { body } = checkJson(['--project', projectDir, '--config', configPath])
     expect(receipt.parity.results).toEqual(body.receipts)

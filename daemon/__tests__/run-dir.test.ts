@@ -299,12 +299,14 @@ describe('каждая попытка оставляет каталог прог
     expect(receipt.lesson).toEqual({ none: 'задача была чистым чтением' })
     // ВЕРДИКТ ПАРИТЕТА ЛЕЖИТ РЯДОМ С ИСХОДОМ, а не ждёт, пока кто-то запустит команду.
     // Копия этого случая — голая: правил проекта в ней нет, а список инструментов спавна
-    // собран здешней заглушкой и конверту не равен. Пятёрка обязана сказать об этом ИМЕНАМИ
+    // собран здешней заглушкой и конверту не равен. Шестёрка обязана сказать об этом ИМЕНАМИ
     // и остаться неполной: проверка, которая на голой копии показывает зелёное, не проверка.
-    expect(receipt.parity.results.map((r: any) => r.id)).toEqual(['hooks', 'memory', 'rules', 'skills', 'rights'])
+    // Профиль здесь зелёный по делу: работнику этого конфига ни модель, ни усилие не
+    // назначены, спавн не несёт ни одного такого флага — назначенного не подменяли.
+    expect(receipt.parity.results.map((r: any) => r.id)).toEqual(['hooks', 'memory', 'rules', 'skills', 'rights', 'profile'])
     expect(receipt.parity.summary.failed).toEqual(['rules', 'rights'])
-    expect(receipt.parity.summary.fulfilled).toBe(3)
-    expect(receipt.parity.summary.total).toBe(5)
+    expect(receipt.parity.summary.fulfilled).toBe(4)
+    expect(receipt.parity.summary.total).toBe(6)
   })
 })
 
@@ -364,7 +366,7 @@ describe('каталог есть у КАЖДОГО исхода, а не тол
     // только до файла в каталоге, для человека не существует. И это ТА ЖЕ сводка, что в
     // квитанции, а не вторая, посчитанная по дороге.
     expect(row.parity).toEqual(readJson(join(runDir, 'receipt.json')).parity.summary)
-    expect(row.parity.fulfilled).toBe(3)
+    expect(row.parity.fulfilled).toBe(4)
   })
 })
 

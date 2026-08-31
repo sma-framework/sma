@@ -1,8 +1,8 @@
 /**
- * Tests for scripts/sma/lib/parity-receipts.mjs — the five receipts of one run.
+ * Tests for scripts/sma/lib/parity-receipts.mjs — the six receipts of one run.
  *
  * THE SHAPE OF THIS SUITE IS THE POINT. A checker that only ever sees a complete run proves
- * nothing, because a checker hard-wired to print «five out of five» would pass that test too.
+ * nothing, because a checker hard-wired to print «six out of six» would pass that test too.
  * So every receipt gets its own matrix: the state that earns it, the state that sinks it, and
  * the state in which the DATA ITSELF is missing — because the failure this module exists to
  * refuse is not a red run, it is a green verdict pronounced over an empty directory.
@@ -51,12 +51,22 @@ const RUN = {
     'Bash',
     '--disallowedTools',
     ...DENIALS,
+    // Модель и усилие стоят в аргументах ровно так, как их кладёт сборщик запуска: флаг и
+    // значение. Фикстура без них сверяла бы два «ничего» и молчала бы о подмене.
+    '--model',
+    'sonnet',
+    '--effort',
+    'high',
   ],
   envelope: {
     allowedTools: ['Read', 'Write', 'Bash'],
     humanOnlyActions: ['push', 'merge', 'tag', 'deploy'],
     hash: 'e3b0c442',
   },
+  // ЧТО ОБЕЩАЛ ПРОФИЛЬ и что назначила задача — две записи рядом с командной строкой, как
+  // конверт лежит рядом со списком инструментов.
+  profile: { model: 'sonnet', effort: 'high' },
+  task: { model: null, effort: null },
   rules: { claudeMd: 'materialized' },
   skillsInCopy: { skills: 3, agents: 2 },
 }
@@ -96,14 +106,26 @@ const runWith = (over: Record<string, any>) => ({ ...RUN, ...over })
 const receiptWith = (over: Record<string, any>) => ({ ...RECEIPT, ...over })
 
 describe('parity-receipts — the roster', () => {
-  it('names five receipts in one fixed order, and the order is the printed order', () => {
-    expect(PARITY_RECEIPTS.map((r) => r.id)).toEqual(['hooks', 'memory', 'rules', 'skills', 'rights'])
-    expect(PARITY_RECEIPT_COUNT).toBe(5)
+  // СВЕРКА МОДЕЛИ И УСИЛИЯ БЫЛА, А КВИТАНЦИИ О НЕЙ НЕ БЫЛО. `assertProfileParity` валит спавн,
+  // у которого модель разошлась с профилем, с самого начала — но из пяти квитанций про это не
+  // говорила ни одна, и человек, читающий отчёт, видел прибор, молчащий о том, что уже
+  // проверено. Шестая квитанция показывает результат уже работающей сверки; этот тест — тот,
+  // который краснеет, если её убрать.
+  it('шестой квитанцией назван профиль — иначе о сверке модели и усилия отчёт молчит', () => {
+    expect(PARITY_RECEIPTS.map((r) => r.id)).toContain('profile')
+    expect(PARITY_RECEIPTS[5]).toMatchObject({ id: 'profile' })
+    expect(String(PARITY_RECEIPTS[5].title)).toMatch(/модел/i)
+    expect(String(PARITY_RECEIPTS[5].title)).toMatch(/усили/i)
+  })
+
+  it('names six receipts in one fixed order, and the order is the printed order', () => {
+    expect(PARITY_RECEIPTS.map((r) => r.id)).toEqual(['hooks', 'memory', 'rules', 'skills', 'rights', 'profile'])
+    expect(PARITY_RECEIPT_COUNT).toBe(6)
     expect(Object.isFrozen(PARITY_RECEIPTS)).toBe(true)
     for (const r of PARITY_RECEIPTS) expect(String(r.title).length).toBeGreaterThan(10)
   })
 
-  it('evaluateParity always answers with the five, in that order, whatever it was handed', () => {
+  it('evaluateParity always answers with the six, in that order, whatever it was handed', () => {
     for (const data of [{}, { run: RUN }, { receipt: RECEIPT }]) {
       const results = evaluateParity(data as any)
       expect(results.map((r: any) => r.id)).toEqual(PARITY_RECEIPTS.map((r) => r.id))
@@ -113,14 +135,15 @@ describe('parity-receipts — the roster', () => {
 })
 
 describe('parity-receipts — a complete run', () => {
-  it('earns five OK — and the fifth is green only because BOTH halves of the envelope travelled', () => {
+  it('earns six OK — and the fifth is green only because BOTH halves of the envelope travelled', () => {
     const { of, sum } = evalWith()
     expect(of('hooks').status).toBe('ok')
     expect(of('memory').status).toBe('ok')
     expect(of('rules').status).toBe('ok')
     expect(of('skills').status).toBe('ok')
     expect(of('rights').status).toBe('ok')
-    expect(sum).toMatchObject({ fulfilled: 5, total: 5, warn: 0, ok: 5, failed: [] })
+    expect(of('profile').status).toBe('ok')
+    expect(sum).toMatchObject({ fulfilled: 6, total: 6, warn: 0, ok: 6, failed: [] })
   })
 
   it('the rights receipt names BOTH numbers it compared, so a green light is readable', () => {
@@ -131,17 +154,17 @@ describe('parity-receipts — a complete run', () => {
 })
 
 describe('parity-receipts — an empty directory earns nothing', () => {
-  it('no run.json and no receipt.json → five FAIL, each naming the data it did not get', () => {
+  it('no run.json and no receipt.json → six FAIL, each naming the data it did not get', () => {
     const results = evaluateParity({} as any)
     for (const r of results) {
       expect(r.status).toBe('fail')
       expect(r.detail).toContain('данных нет')
     }
     expect(summarize(results)).toMatchObject({ fulfilled: 0, warn: 0, ok: 0 })
-    expect(summarize(results).failed).toEqual(['hooks', 'memory', 'rules', 'skills', 'rights'])
+    expect(summarize(results).failed).toEqual(['hooks', 'memory', 'rules', 'skills', 'rights', 'profile'])
   })
 
-  it('half the data is still no data: a run without a receipt sinks all five', () => {
+  it('half the data is still no data: a run without a receipt sinks all six', () => {
     const { results } = evalWith({ receipt: null })
     expect(results.every((r: any) => r.status === 'fail')).toBe(true)
     expect(results[0].detail).toContain('receipt.json')
@@ -367,6 +390,87 @@ describe('parity-receipts — (e) rights: both halves of the envelope, measured 
   })
 })
 
+describe('parity-receipts — (f) profile: the model and effort a person assigned', () => {
+  it('аргументы совпали с обещанием профиля — зелено, и обе величины НАЗВАНЫ', () => {
+    const r = evalWith().of('profile')
+    expect(r.status).toBe('ok')
+    expect(r.detail).toContain('sonnet')
+    expect(r.detail).toContain('high')
+    expect(r.detail).toContain('run.profile') // читателю видно, с ЧЕМ сверяли
+  })
+
+  it('спавн под другой моделью — провал, который называет обе стороны расхождения', () => {
+    const run = runWith({ args: [...RUN.args.slice(0, -4), '--model', 'opus', '--effort', 'high'] })
+    const r = evalWith({ run }).of('profile')
+    expect(r.status).toBe('fail')
+    expect(r.detail).toContain('модель')
+    expect(r.detail).toContain('opus') // что уехало
+    expect(r.detail).toContain('sonnet') // что было обещано
+  })
+
+  it('усилие тоже сверяется — подменить можно любое из двух', () => {
+    const run = runWith({ args: [...RUN.args.slice(0, -4), '--model', 'sonnet', '--effort', 'low'] })
+    const r = evalWith({ run }).of('profile')
+    expect(r.status).toBe('fail')
+    expect(r.detail).toContain('усилие')
+    expect(r.detail).toContain('low')
+  })
+
+  it('лана Codex несёт усилие парой `-c`, и читатель у обеих лан один', () => {
+    const run = runWith({
+      profile: { model: 'gpt-5-codex', effort: 'medium' },
+      args: ['exec', '--model', 'gpt-5-codex', '-c', 'model_reasoning_effort=medium'],
+      envelope: { allowedTools: ['Read'] },
+    })
+    expect(evalWith({ run }).of('profile').status).toBe('ok')
+  })
+
+  it('переопределение задачей — это тоже обещание, и оно названо в квитанции', () => {
+    const run = runWith({
+      task: { model: 'opus', effort: null },
+      args: [...RUN.args.slice(0, -4), '--model', 'opus', '--effort', 'high'],
+    })
+    const r = evalWith({ run }).of('profile')
+    expect(r.status).toBe('ok')
+    expect(r.detail).toContain('задачей переопределено')
+    expect(r.detail).toContain('модель')
+  })
+
+  it('профиль не назначил ничего — «по умолчанию CLI» это ожидание, и лишний флаг его нарушает', () => {
+    const bare = runWith({ profile: { model: null, effort: null }, args: ['--allowedTools', 'Read'] })
+    expect(evalWith({ run: bare }).of('profile').status).toBe('ok')
+
+    const sneaked = runWith({ profile: { model: null, effort: null }, args: ['--allowedTools', 'Read', '--model', 'haiku'] })
+    const r = evalWith({ run: sneaked }).of('profile')
+    expect(r.status).toBe('fail')
+    expect(r.detail).toContain('haiku')
+    expect(r.detail).toContain('по умолчанию CLI')
+  })
+
+  it('записи без профиля отвечает работник из конфига — и источник назван вслух', () => {
+    const run = runWith({ profile: null, args: ['--allowedTools', 'Read', '--model', 'sonnet'] })
+    const worker = { id: 'max-1', model: 'sonnet' }
+    const r = evalWith({ run, worker }).of('profile')
+    expect(r.status).toBe('ok')
+    expect(r.detail).toContain('конфиг демона')
+  })
+
+  it('ни записи, ни работника — данных нет, а не «совпало на двух пустотах»', () => {
+    const run = runWith({ profile: null, args: ['--allowedTools', 'Read'] })
+    const r = evalWith({ run, worker: null }).of('profile')
+    expect(r.status).toBe('fail')
+    expect(r.detail).toContain('данных нет')
+    expect(r.detail).toContain('run.profile')
+  })
+
+  it('run.json без массива аргументов — сверять не с чем, и это тоже данных нет', () => {
+    const r = evalWith({ run: runWith({ args: null }) }).of('profile')
+    expect(r.status).toBe('fail')
+    expect(r.detail).toContain('данных нет')
+    expect(r.detail).toContain('run.args')
+  })
+})
+
 describe('parity-receipts — the arithmetic of a verdict', () => {
   it('fulfilled counts ok, warn and n/a — and never a failure', () => {
     expect(isFulfilled({ id: 'x', status: 'ok', detail: '' })).toBe(true)
@@ -379,15 +483,15 @@ describe('parity-receipts — the arithmetic of a verdict', () => {
   it('summarize names the failed receipts by id, so a report can be read without counting', () => {
     const { sum } = evalWith({ guards: null, receipt: receiptWith({ rules: { claudeMd: 'absent' } }) })
     expect(sum.failed).toEqual(['hooks', 'rules'])
-    expect(sum.fulfilled).toBe(3)
-    expect(sum.total).toBe(5)
+    expect(sum.fulfilled).toBe(4)
+    expect(sum.total).toBe(6)
   })
 
   it('a receipt this module never produced still counts as unfulfilled rather than crashing', () => {
     const sum = summarize([{ id: 'hooks', status: 'ok', detail: '' }] as any)
-    expect(sum.total).toBe(5)
+    expect(sum.total).toBe(6)
     expect(sum.fulfilled).toBe(1)
-    expect(sum.failed).toEqual(['memory', 'rules', 'skills', 'rights'])
+    expect(sum.failed).toEqual(['memory', 'rules', 'skills', 'rights', 'profile'])
   })
 })
 

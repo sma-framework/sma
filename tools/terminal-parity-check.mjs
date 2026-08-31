@@ -5,9 +5,10 @@
  * ═══════════════════════════ WHAT THIS COMMAND IS ════════════════════════════════
  * A headless worker session is supposed to be the same session a person gets in their own
  * terminal: the same hooks watching it, the same memory under it, the same project rules
- * around it, the same skills beside it, the same permissions over it. That sentence is
+ * around it, the same skills beside it, the same permissions over it, and the same model and
+ * effort assigned to it rather than a cheaper pair nobody chose. That sentence is
  * worthless as a claim and load-bearing as a receipt, so this command never argues it — it
- * READS what one real attempt left on disk and prints five lines that can each be checked
+ * READS what one real attempt left on disk and prints six lines that can each be checked
  * by hand afterwards.
  *
  *     node tools/terminal-parity-check.mjs                 # the latest attempt of this project
@@ -33,12 +34,12 @@
  * person's own terminal gives them was present around that session — no more, and it says
  * so on the one line that is allowed to be a warning rather than a pass.
  *
- * OUTPUT CONTRACT. Five lines `«OK|WARN|n/a|FAIL — <receipt>: <detail>»`, then a LAST LINE
- * that is a bare number 0..5 (receipt-hash and scorer friendly). Exit 0 only on a full set;
+ * OUTPUT CONTRACT. Six lines `«OK|WARN|n/a|FAIL — <receipt>: <detail>»`, then a LAST LINE
+ * that is a bare number 0..6 (receipt-hash and scorer friendly). Exit 0 only on a full set;
  * 1 on an incomplete one; 2 on a misused command line. `--json` prints the same verdict as
  * an object first and the same bare number last. Notes that are not receipts — the state of
- * the ledger reference, an empty `.sma/runs` — go to stderr, so the stdout contract never
- * grows a sixth line.
+ * the ledger reference, an empty `.sma/runs` — go to stderr, so the stdout contract stays one
+ * line per receipt and the number after them.
  *
  * Zero deps, zero network, zero spawn: every check is a file read, `fsImpl` is injectable,
  * and the suite drives this entry point over an in-memory filesystem.
@@ -157,7 +158,7 @@ export function latestRunDir(fs, runsDir) {
  * with the digest of that file at the moment of writing. Comparing the digest tells a reader
  * whether the transcript they are about to open is still the one this run produced.
  *
- * IT IS DELIBERATELY NOT ONE OF THE FIVE. The receipts are about what the SESSION had around
+ * IT IS DELIBERATELY NOT ONE OF THE SIX. The receipts are about what the SESSION had around
  * it; a ledger that was rotated, moved or rewritten afterwards is a fact about the STORE, and
  * letting it sink the verdict would mean a perfectly parity-complete run going red because a
  * log was tidied up a week later.
@@ -190,7 +191,7 @@ export function ledgerNote(fs, transcript, override) {
 // ── the report ────────────────────────────────────────────────────────────────
 
 /**
- * formatReport(results) → `{lines, fulfilled, exitCode}`. `lines` is the five receipt lines
+ * formatReport(results) → `{lines, fulfilled, exitCode}`. `lines` is the six receipt lines
  * PLUS the bare number as its last element — the numeric last line is the whole contract that
  * makes this command receipt-hashable and scorable.
  */
@@ -210,9 +211,9 @@ export const USAGE = [
   'usage: node tools/terminal-parity-check.mjs [<attemptId>] [--attempt <id>] [--project <dir>]',
   '                                            [--dir <runDir>] [--config <path>] [--ledger <path>] [--json]',
   '',
-  `  Пять квитанций терминального паритета ОДНОГО прогона: ${PARITY_RECEIPTS.map((r) => r.id).join(', ')}.`,
+  `  Шесть квитанций терминального паритета ОДНОГО прогона: ${PARITY_RECEIPTS.map((r) => r.id).join(', ')}.`,
   '  Паритет доказывается артефактами прогона, а не утверждением: данных нет — квитанция',
-  '  не выполнена. Последняя строка вывода — число выполненных (0..5); код 0 только при 5/5.',
+  '  не выполнена. Последняя строка вывода — число выполненных (0..6); код 0 только при 6/6.',
   '',
   '  Без идентификатора берётся ПОСЛЕДНЯЯ попытка проекта по startedAt.',
   `  <runDir> по умолчанию <project>/.sma/runs/<attemptId> и содержит: ${Object.values(ARTIFACTS).join(', ')}.`,
@@ -256,7 +257,7 @@ export function parseArgv(argv) {
 }
 
 /**
- * runCheck(argv, {fsImpl, log, err, cwd, now}) → the process exit code (0 = 5/5, 1 = an
+ * runCheck(argv, {fsImpl, log, err, cwd, now}) → the process exit code (0 = 6/6, 1 = an
  * incomplete set or nothing to read, 2 = a misused command line). The whole CLI body with
  * every seam injected, so the suite exercises the real entry point rather than a rehearsal
  * of it — including the case where the project has no runs at all.
@@ -275,7 +276,7 @@ export function runCheck(argv, { fsImpl, log = console.log, err = console.error,
   if (!dir) dir = parsed.attemptId ? join(runsDir, safeStem(parsed.attemptId)) : latestRunDir(fs, runsDir)
   if (!dir) {
     // NOT a silent zero: a person who ran this in the wrong directory must be told which
-    // directory was looked at, or they will read the five failures as a verdict on the run.
+    // directory was looked at, or they will read the six failures as a verdict on the run.
     err(`terminal-parity-check: данных нет: .sma/runs пуст или отсутствует (${runsDir})`)
   }
 
