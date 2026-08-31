@@ -268,7 +268,16 @@ const FAIL_HTTP_STATUS = 'http_status'
 const FAIL_BAD_PAYLOAD = 'bad_payload'
 
 /** The kpi counters that are additive across a federation (everything else stays local). */
-const SUMMABLE_KPIS = Object.freeze(['workersBusy', 'workersTotal', 'queued', 'awaitingApproval', 'windowsOpen'])
+const SUMMABLE_KPIS = Object.freeze([
+  'workersBusy',
+  'workersTotal',
+  'queued',
+  'awaitingApproval',
+  // Сборка, вставшая на чужой машине, ждёт ТОГО ЖЕ человека: у федерации одно окно и один
+  // владелец, и число стоящих сборок складывается ровно так же, как число работ на приёмке.
+  'batchesAwaitingDecision',
+  'windowsOpen',
+])
 
 /**
  * isLocalOrLinkLocal(hostname) — TRUE for the host families a peer registry must never

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useCancelTask, useReturnTask, useStateQuery } from '../../api/queries'
 import { openScreen } from '../../shell/navigation'
-import type { DoneRow, QueueRow, WorkerRow } from '../../api/types'
+import type { BatchRow, DoneRow, QueueRow, WorkerRow } from '../../api/types'
 import { DayFeed } from './DayFeed'
 import type { OfferAct } from './offer'
 import { KpiStrip } from './KpiStrip'
@@ -107,6 +107,22 @@ export function Screen() {
   const queue: QueueRow[] = useMemo(() => mine(data?.queue ?? []), [data, activeProject])
   const awaiting: QueueRow[] = useMemo(() => mine(data?.awaiting ?? []), [data, activeProject])
   const done: DoneRow[] = useMemo(() => mine(data?.done ?? []), [data, activeProject])
+  // ВСТАВШАЯ СБОРКА — ТРЕТИЙ ВИД ТОГО, ЧТО ЖДЁТ ЧЕЛОВЕКА, и он приезжает тем же одним чтением.
+  // Признак ожидания — вопрос, который движок ставит на сборку: он есть ровно пока сборка стоит
+  // на сорвавшемся элементе и владелец не ответил. Второго признака здесь не изобретается.
+  const stalledBatches: BatchRow[] = useMemo(
+    () => mine(data?.batches ?? []).filter((b) => !!b.question),
+    [data, activeProject],
+  )
+  // САМАЯ ДАВНО СТОЯЩАЯ — самая РАННЯЯ отметка среди них; отметки нет ни у одной, значит и
+  // сказать нечего (`null`). Считается из того же списка, что рисует ленту: одно число — один
+  // источник, и счётчик наверху не может разойтись с карточкой под ним.
+  const longestStall = useMemo(() => {
+    const marks = stalledBatches
+      .map((b) => b.stalledSince)
+      .filter((ms): ms is number => typeof ms === 'number' && Number.isFinite(ms))
+    return marks.length > 0 ? Math.min(...marks) : null
+  }, [stalledBatches])
 
   // What needs a person comes from the list that actually carries it; what is waiting for
   // a worker comes from the queue. Two lists, two questions — neither is sifted out of the
@@ -125,6 +141,13 @@ export function Screen() {
       `${decisions.length} ${plural(decisions.length, 'ждёт', 'ждут', 'ждут')} вашего решения`,
     )
   }
+  // Сборка называется в этой фразе ОТДЕЛЬНО от работ на приёмке: сложить их в одно число
+  // значило бы сказать «ждут трое» о двух работах и одной сборке, а это разные ходы человека.
+  if (stalledBatches.length > 0) {
+    parts.push(
+      `${stalledBatches.length} ${plural(stalledBatches.length, 'сборка стоит', 'сборки стоят', 'сборок стоят')} без вашего выбора`,
+    )
+  }
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">
@@ -140,10 +163,11 @@ export function Screen() {
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto px-7 py-6">
-          <KpiStrip kpis={data?.kpis} accounts={data?.spend.accounts ?? []} />
+          <KpiStrip kpis={data?.kpis} accounts={data?.spend.accounts ?? []} stalledSince={longestStall} />
           {actProblem ? <p className="m-0 px-0.5 text-[12px] text-err-tx">{actProblem}</p> : null}
           <DayFeed
             decisions={decisions}
+            stalled={stalledBatches}
             failed={failed}
             finished={finished}
             waiting={waiting}

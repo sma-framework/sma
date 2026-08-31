@@ -4,7 +4,7 @@ import type { BatchItem, BatchItemState } from '../../api/types'
 import { EntitySummary } from '../../shell/EntitySummary'
 import { LiveTimer } from '../../shell/LiveTimer'
 import { TaskPanel } from '../../shell/TaskPanel'
-import { batchStats, clockOfMs } from '../../shell/stats'
+import { batchStats, clockOfMs, elapsedLabel } from '../../shell/stats'
 import { plural } from '../../shell/format'
 import { doorWords } from './phase-shared'
 import { BATCH_ITEM_TONE, STATE_WORD } from './units'
@@ -165,6 +165,7 @@ export function BatchView({
    * (25.08): два места для одного числа — это одно место, где оно однажды разойдётся.
    */
   const requestedClock = clockOfMs(batch?.requestedAt ?? null)
+  const stalledWords = elapsedLabel(typeof batch?.stalledSince === 'number' ? batch.stalledSince : null, Date.now())
   const describe =
     n === 0
       ? 'Элементов у этой постановки нет — держать сборку нечему.'
@@ -281,6 +282,10 @@ export function BatchView({
                 <p className="m-0 mt-1 text-[11.5px] leading-[1.5] text-tx2">
                   Сборка стоит и ничего не повторяет сама: пока вы не ответите, ни один её элемент
                   работнику не выдаётся.
+                  {/* СКОЛЬКО УЖЕ СТОИТ — здесь же, у вопроса, который этот простой и породил.
+                      Число приходит от движка отметкой, а не считается от «запроса»: ждать
+                      человека сборка начала не тогда, когда её попросили. */}
+                  {stalledWords ? ` Стоит ${stalledWords} — столько флот по ней и простаивает.` : ''}
                 </p>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   {batch.question.options.map((o) =>
