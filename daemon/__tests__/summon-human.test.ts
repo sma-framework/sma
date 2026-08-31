@@ -236,7 +236,7 @@ describe('память ожиданий описывает очередь как
     const out = await summon.raise({ kind: 'что-то-новое', taskId: 'BL-1' } as any)
     expect(out.sent).toBe(false)
     expect(tg.calls).toHaveLength(0)
-    expect([...SUMMON_KINDS]).toEqual(['approval', 'parked', 'stopped'])
+    expect([...SUMMON_KINDS]).toEqual(['approval', 'parked', 'stopped', 'batch'])
   })
 })
 

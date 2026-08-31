@@ -106,6 +106,7 @@ import {
   isBatchParent,
   batchItemsOf,
   batchDecisionsOf,
+  brokenItemOf,
   latestRowPerId,
   waveAddressOf,
   REASON_LABELS,
@@ -2532,10 +2533,10 @@ function totalTokens(parts) {
  *
  * @param {object[]} requests the batch request rows
  * @param {object[]} rows     every WORK row (the requests are not among them)
- * @param {{machineId?:string, taskTokens?:(row:object)=>object|null}} ctx
+ * @param {{machineId?:string, taskTokens?:(row:object)=>object|null, now?:number}} ctx
  * @returns {object[]}
  */
-function deriveBatches(requests, rows, { machineId, taskTokens } = {}) {
+function deriveBatches(requests, rows, { machineId, taskTokens, now = Date.now() } = {}) {
   if (!Array.isArray(requests) || requests.length === 0) return []
 
   return [...requests]
@@ -2568,7 +2569,18 @@ function deriveBatches(requests, rows, { machineId, taskTokens } = {}) {
       // AN ABANDONED ASSEMBLY READS AS ABANDONED, above every other word: its pieces were taken
       // out of the queue and what they say about themselves no longer describes the batch.
       const state = cancelled ? 'cancelled' : closed ? 'done' : (loudest ?? 'waiting')
-      const broken = cancelled ? null : (items.find((i) => i.state === 'failed') ?? null)
+      // КАКОЙ КУСОК ОСТАНОВИЛ СБОРКУ — правилом ОЧЕРЕДИ, а не вторым его написанием здесь.
+      // Тем же вызовом очередь придерживает остальные куски, а тик зовёт человека: вопрос на
+      // карточке и зов в телеграм обязаны говорить об ОДНОМ И ТОМ ЖЕ элементе.
+      const brokenRow = cancelled ? null : brokenItemOf(itemRows, skipped)
+      const broken = brokenRow ? (items.find((i) => i.id === brokenRow.id) ?? null) : null
+      // СКОЛЬКО СБОРКА УЖЕ СТОИТ — от момента, когда кусок сорвался и сборка стала должна
+      // владельцу решение. Отметку ставит сама очередь на закрытии строки; там, где её нет
+      // (строка старше отметки), оба поля ЧЕСТНО ОТСУТСТВУЮТ. Ноль на этом месте прочитался бы
+      // как «встала только что» — то самое утверждение, из-за которого простой в 15 часов
+      // выглядел как работа, идущая прямо сейчас.
+      const stalledSince = brokenRow ? toMs(brokenRow.completedAt) : null
+      const stalledKnown = Number.isFinite(stalledSince)
       return {
         id: req.id,
         title: req.title ?? null,
@@ -2610,6 +2622,12 @@ function deriveBatches(requests, rows, { machineId, taskTokens } = {}) {
                 text: `«${broken.title ?? broken.id}» не получилось. Что делаем?`,
                 options: BATCH_DECISIONS.map((o) => ({ ...o })),
               },
+              // С КАКОГО МОМЕНТА СБОРКА СТОИТ — рядом с вопросом, который этот простой и
+              // породил. ОТМЕТКА, А НЕ ДЛИТЕЛЬНОСТЬ, ровно как у останова эшелона (`heldSince`):
+              // «сколько уже» рисующий считает от неё своими часами, и число на экране растёт
+              // между опросами, вместо того чтобы прыгать раз в опрос. Второе поле с той же
+              // длительностью было бы вторым местом, где это число однажды разойдётся с первым.
+              ...(stalledKnown ? { stalledSince } : {}),
             }
           : {}),
       }
@@ -2787,7 +2805,7 @@ export async function deriveState(deps = {}) {
   const batches = deriveBatches(
     deps.project ? batchRequestRows.filter((r) => inProject(r, deps.project)) : batchRequestRows,
     rows,
-    { machineId, taskTokens },
+    { machineId, taskTokens, now },
   )
 
   // ── ЭШЕЛОНЫ: что за волны в работе и какие из них владелец остановил ──
@@ -3094,6 +3112,18 @@ export async function deriveState(deps = {}) {
     workersTotal: queuePool.length,
     queued: queuedRows.length,
     awaitingApproval: awaitingRows.length,
+    // ── СБОРКИ, КОТОРЫЕ ЖДУТ РЕШЕНИЯ ЧЕЛОВЕКА — СВОЁ ЧИСЛО, А НЕ СПРЯТАННОЕ СОСТОЯНИЕ ──
+    //
+    // ЭТО НЕ ТО ЖЕ, ЧТО `awaitingApproval`, и потому оно и стоит рядом отдельной цифрой.
+    // Сосед считает ГОТОВУЮ работу, которую надо принять или вернуть; здесь — сборка, которая
+    // ОСТАНОВИЛАСЬ на сорвавшемся куске и не двинется, пока владелец не скажет «пропустить,
+    // повторить или отменить». Строка ожидания жила ТОЛЬКО на карточке батча: в счётчиках она
+    // не считалась, в очередь не попадала, наружу не кричала — и батч простоял 15 часов, а
+    // доска показывала ноль ждущих. Ноль был правдой про приёмку и ложью про день.
+    //
+    // Считается по САМИМ сборкам этого чтения — по наличию вопроса, который карточка задаёт, —
+    // так что цифра и вопрос не могут разойтись: они выведены из одного места одним правилом.
+    batchesAwaitingDecision: batches.filter((b) => !!b.question).length,
     // СИНОНИМ `costs.apiFallback.todayUsd`, и взят ИЗ НЕГО, а не посчитан второй раз. Число
     // одно, экранов у него может быть много, но выражение должно остаться одно: два
     // `round2(todayUsd)` рядом — это две правки, из которых однажды сделают одну.

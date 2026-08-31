@@ -185,7 +185,9 @@
  * TIMESTAMPS: enqueue stamps enqueuedAt, claimNext stamps claimedAt,
  * complete stamps completedAt — the raw material for post-pilot flow metrics (cycle
  * time, aging WIP). No dashboard in V5; recording them now is three fields, migrating
- * pilot data later would be a chore.
+ * pilot data later would be a chore. EVERY ENDING stamps completedAt, not just the happy
+ * one: a failure, a park and a stop close the row too, and «когда работа остановилась» is
+ * the mark every «сколько это уже стоит» is counted from.
  *
  * A FOURTH ONE, BECAUSE «TAKEN» AND «STILL ALIVE» ARE TWO FACTS. `touch` renews the lease, and
  * a durable backend renews it by restamping the very clock it recorded the claim on — so for as
@@ -972,6 +974,31 @@ export function batchItemsOf(rows, batchId) {
 }
 
 /**
+ * brokenItemOf(itemRows, skipped) → the piece that has STOPPED this assembly and is waiting for
+ * the owner's word, or null when nothing is waiting for him.
+ *
+ * ONE SENTENCE, THREE READERS, and that is the whole reason it is a function. The queue withholds
+ * the rest of the pieces behind it (`batchHeldOf`), the read model draws the question the card
+ * asks, and the tick calls the person about it. Written out three times, the day any of them
+ * learned a new word about «сорвался» would be the day two of them silently disagreed — and the
+ * disagreement would show up as the batch asking a question nobody is being called about, which
+ * is precisely the silence this rule exists to end.
+ *
+ * The FIRST broken piece in the queue's own order: the assembly is worked one piece at a time,
+ * so a second one can only be older news. A piece the owner has already SKIPPED is not broken
+ * any more — that is what skipping it meant.
+ *
+ * @param {object[]} itemRows the pieces of ONE batch, in queue order (see batchItemsOf)
+ * @param {string[]} [skipped] the ids the owner has let go
+ * @returns {object|null}
+ */
+export function brokenItemOf(itemRows, skipped = []) {
+  const letGo = Array.isArray(skipped) ? skipped : []
+  const all = Array.isArray(itemRows) ? itemRows : []
+  return all.find((r) => r && r.status === 'failed' && !letGo.includes(r.id)) ?? null
+}
+
+/**
  * batchHeldOf(rows) → the ids of the waiting pieces that MAY NOT be handed out right now,
  * because it is not their turn. At most one piece of a batch is ever left out of this list.
  *
@@ -1003,7 +1030,7 @@ export function batchHeldOf(rows) {
     // A BROKEN PIECE STOPS IT and asks its owner: nothing is repeated by itself, so the rest
     // stays withheld until he says skip, repeat or cancel.
     const stopped =
-      cancelled || items.some((r) => r.status === 'claimed') || items.some((r) => r.status === 'failed')
+      cancelled || items.some((r) => r.status === 'claimed') || brokenItemOf(items) !== null
     for (let i = 0; i < waiting.length; i += 1) {
       if (stopped || i > 0) held.push(waiting[i].id)
     }
@@ -1554,6 +1581,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
           // THE QUEUE'S OWN WORD, not a worker's: nothing is wrong with the work, and a row
           // closed with no reason at all reaches a card as «причина не записана».
           rec.failure_reason = ATTEMPTS_EXHAUSTED
+          rec.completedAt = t // см. «КАЖДЫЙ КОНЕЦ СТАВИТ ОТМЕТКУ» у fail()
           rec.workerId = null
           rec.claimedAt = null
           rec.lastTouch = null
@@ -1757,6 +1785,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
         if (r.status !== 'queued' && r.status !== 'claimed') continue
         r.status = 'failed'
         r.failure_reason = 'manual'
+        r.completedAt = now() // см. «КАЖДЫЙ КОНЕЦ СТАВИТ ОТМЕТКУ» у fail()
         // Nothing else is cleared, and nothing needs to be: the liveness sweep asks for
         // `claimed` rows only, so a closed piece is out of its reach — while the clock of the
         // attempt that was under way stays on the row, where a person can still read it.
@@ -1822,6 +1851,18 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     refuseStaleAttempt('fail', taskId, rec.attemptToken, attemptToken)
     rec.status = 'failed'
     rec.failure_reason = reason
+    // ═════ КАЖДЫЙ КОНЕЦ СТАВИТ ОТМЕТКУ, А НЕ ТОЛЬКО СЧАСТЛИВЫЙ ═════
+    //
+    // Долговременная очередь ставит `completed_on` на ЛЮБОМ закрытии строки — и продукт на это
+    // уже опирается (единый журнал срывов читает `completedAt` со сорвавшихся строк). Этот
+    // backend — исполнимая спецификация контракта, и он молчал ровно на том конце, где работа
+    // кончается плохо: у сорвавшейся строки не было ни одной отметки «когда именно».
+    //
+    // Цена молчания измерена: сборка встала на сорвавшемся элементе и простояла 15 часов, а
+    // сказать «сколько стоит» было нечем — вопрос владельцу существовал, часов у него не было.
+    // Отметка ставится здесь, у самого перехода, а не выводится позже из журнала: «когда
+    // работа остановилась» — факт очереди, и второе его вычисление было бы вторым ответом.
+    rec.completedAt = now()
     return true
   }
 
@@ -1856,6 +1897,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     if (rec.status !== 'queued' && rec.status !== 'claimed') return false
     rec.status = 'failed'
     rec.failure_reason = reason
+    rec.completedAt = now() // см. «КАЖДЫЙ КОНЕЦ СТАВИТ ОТМЕТКУ» у fail()
     // THE TRY COUNT IS NOT TOUCHED, exactly as it is not touched by a stop: a failure raises it
     // because a next try stands behind it. Behind this ending stands a person, not a try.
     return true
@@ -1888,6 +1930,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     if (rec.status !== 'queued' && rec.status !== 'claimed') return false
     rec.status = 'failed'
     rec.failure_reason = 'manual'
+    rec.completedAt = now() // см. «КАЖДЫЙ КОНЕЦ СТАВИТ ОТМЕТКУ» у fail()
     // THE TRY COUNT IS NOT TOUCHED, and its stillness is an assertion: a failure raises it
     // because a next try stands behind it. Behind a stop stands nothing.
     return true

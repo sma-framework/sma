@@ -33,6 +33,8 @@ import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 
 const PROJECT = '/repo'
+/** Копия попытки — сосед дерева проекта, как её кладёт верб провизии на настоящем диске. */
+const COPY = '/copies/wt-S-1788110314981'
 const PHASE = '20'
 const SESSION = 'a1b2c3d4-0000-4000-8000-000000000001'
 
@@ -89,6 +91,13 @@ function makeDeps(over: any = {}) {
     buildArgs: () => ({ bin: 'claude', args: ['--print', '-'], env: {}, prompt: '/sma-plan-phase 20 --text --skip-research' }),
     verbRunner: async (_bin: string, argsArray: string[], o: { cwd?: string } = {}) => {
       calls.push({ verb: argsArray[1], args: argsArray.slice(2), cwd: o.cwd })
+      // Копию получает КАЖДАЯ попытка, документарная ступень в том числе (31.08.2026 — без
+      // копии она коммитила прямо в дерево планирования). Верб провизии обязан назвать путь:
+      // без пути тик честно отказывается запускать работника в каталог, которого никто не делал,
+      // и до окна координации дело бы не дошло вовсе.
+      if (argsArray[1] === 'worktree') {
+        return { code: 0, stdout: JSON.stringify({ ok: true, path: COPY, branch: 'wt/S-1788110314981', expectedBase: 'base1234' }) }
+      }
       return { code: 0, stdout: '{}' }
     },
     spawnWorker: over.spawnWorker ?? spawnWorker(),
@@ -166,8 +175,15 @@ describe('мёртвая попытка не оставляет окна', () =>
       adapter,
       clockObj: c,
       deps: {
-        verbRunner: async () => {
-          throw new Error('cli недоступен')
+        // Падает ЗАКРЫТИЕ, а не всё подряд: провизия копии ходит к тому же вербу, и раннер,
+        // отказывающий и ей, убивал бы попытку ДО работника — то есть отвечал бы на другой
+        // вопрос, чем задаёт этот кейс.
+        verbRunner: async (_bin: string, argsArray: string[]) => {
+          if (argsArray[1] === 'session-end') throw new Error('cli недоступен')
+          if (argsArray[1] === 'worktree') {
+            return { code: 0, stdout: JSON.stringify({ ok: true, path: COPY, branch: 'wt/S-1788110314981', expectedBase: 'base1234' }) }
+          }
+          return { code: 0, stdout: '{}' }
         },
       },
     })
@@ -184,9 +200,11 @@ describe('удавшаяся попытка закрывает окно тем �
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
     await adapter.enqueue(stageTask())
-    const PHASE_DIR = `${PROJECT}/.planning/phases/20-nazvanie`
+    // Документ ступени лежит В КОПИИ: там стоит работник, и там его ищет гейт документа.
+    // В дереве проекта он появится приёмкой — слиянием ветки, а не работой ступени.
+    const PHASE_DIR = `${COPY}/.planning/phases/20-nazvanie`
     const tree: Record<string, string[]> = {
-      [`${PROJECT}/.planning/phases`]: ['20-nazvanie'],
+      [`${COPY}/.planning/phases`]: ['20-nazvanie'],
       [PHASE_DIR]: ['20-01-PLAN.md'],
     }
     const norm = (p: string) => String(p).replace(/\\/g, '/').replace(/\/{2,}/g, '/')

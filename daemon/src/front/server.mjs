@@ -1210,11 +1210,46 @@ async function handleTask({ res, params, config, deps }) {
     } catch {
       commits = []
     }
+    // ═══ ЧТО БЫЛО СДЕЛАНО, КОГДА ВЕТКИ БОЛЬШЕ НЕТ ══════════════════════════════════
+    //
+    // Диапазон выше существует ровно до приёмки. Приёмка сливает ветку и СНОСИТ её вместе с
+    // копией — и с этой секунды `HEAD..wt/<id>` не разрешается вовсе, а список коммитов у
+    // ПРИНЯТОЙ работы приходил пустым. То есть пустым он был именно у той работы, историю
+    // которой человек и хочет читать: у непринятой ветка на месте и вопрос отвечался сам.
+    //
+    // Оба конца сохранённого диапазона записаны строкой попытки заранее и переживают уборку:
+    // `base` — коммит, с которого копию отрезали, `cleanup.branchTip` — вершина, которую
+    // уборка записала перед удалением ветки. Тот же диапазон, теми же двумя именами, каким
+    // дверь диффа показывает изменения убранной копии: два вычисления одного диапазона — это
+    // ровно тот разрыв, из-за которого две поверхности рассказывают о работе разное.
+    if (commits.length === 0) {
+      const kept = keptCommitRange(rawAttempts)
+      if (kept) {
+        try {
+          const out = deps.execGit(['log', '--oneline', `-${COMMIT_CAP}`, `${kept.base}..${kept.tip}`], {
+            cwd: phaseCycleDir(deps) ?? config.repoDir,
+          })
+          commits = String(out || '')
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .slice(0, COMMIT_CAP)
+        } catch {
+          commits = []
+        }
+      }
+    }
   }
 
   const returnedNotes = rawAttempts
     .filter((a) => a.outcome === 'returned' && typeof a.note === 'string')
     .map((a) => String(a.note).slice(0, 2000))
+
+  // КТО ПРИНЯЛ ЭТУ РАБОТУ И КОГДА — спрошено у обеих книг приёмки, потому что приёмщиков два.
+  // Читается ОДИН раз на дверь: обе книги отвечают с диска, и второе чтение ниже по телу
+  // выглядело бы как ещё одно поле, а стоило бы как ещё один заход.
+  const accepted = await acceptanceOf({ row, branch, attempts: rawAttempts, config, deps })
+  const returns = returnRoundsOf(rawAttempts, row)
 
   sendJson(res, 200, {
     task: {
@@ -1262,6 +1297,17 @@ async function handleTask({ res, params, config, deps }) {
     branch,
     commits,
     returnedNotes,
+    // ═══ ЧЕМ «ПРИНЯТО» ПЕРЕСТАЁТ БЫТЬ СЛОВОМ ═══════════════════════════════════════
+    //
+    // Приёмщик здесь — не всегда человек: терминал проводит ритуал слияния сам, по стоящему
+    // добро. Пока раскрытия не было, основателю нечем было проверить приёмщика: «принято»
+    // держалось на честном слове экрана. Эти два ключа — единственное, что превращает его
+    // в доказательство: КТО принял, КОГДА, и что сказала квитанция слияния.
+    //
+    // `null` — «записи об этом нет», и окно обязано сказать это словами. Приёмщик по
+    // умолчанию был бы худшим из возможных ответов: он выглядит как знание.
+    accepted,
+    returns,
     journal: { dispatcher: journal.dispatcher, memoryTrace: journal.memoryTrace, redirects: journal.redirects },
   })
 }
@@ -1312,6 +1358,156 @@ function mergeRollbackFields(raw) {
     mergeSha: sha && OBJECT_NAME_RE.test(sha) ? sha : null,
     mergeRepo: repo && !repo.startsWith('-') ? repo : null,
   }
+}
+
+/**
+ * mergeReceiptWords(raw) → `{branch, sha, testsPassed, testsNote}`, или `null`.
+ *
+ * ТА ЖЕ КВИТАНЦИЯ, ДРУГОЙ ВОПРОС. `mergeRollbackFields` выше — граница КОМАНДЫ: из неё
+ * выходит только то, что человек скопирует и запустит, и потому оттуда не выходит ничего,
+ * кроме имени коммита и каталога. Здесь вопрос читательский: «что вообще сказала приёмка» —
+ * ветка, итоговый коммит, гонялись ли тесты и с каким исходом. Разводить их по двум функциям
+ * важнее, чем сэкономить разбор: стоит один раз пустить в командную выдачу поле, добавленное
+ * ради глаз, и граница перестанет быть границей.
+ *
+ * ТЕСТЫ — ТРИ СОСТОЯНИЯ, А НЕ ДВА. `true` — прогон был и зелёный, `false` — был и красный,
+ * `null` — прогонщика не нашлось вовсе, и тогда квитанция несёт словесную приписку почему.
+ * «Не гонялись» и «не прошли» — разные предложения, и слить их в одно `false` значило бы
+ * подписать зелёным то, чего никто не проверял.
+ *
+ * Отпечаток проверен той же формой, что и в командной границе: короткий, из семи знаков,
+ * лежит в квитанциях, написанных до того, как их стали писать целиком, и эти записи —
+ * журнал, а не витрина: их не переписывают, чтобы выглядели опрятнее.
+ */
+function mergeReceiptWords(raw) {
+  let receipt = raw
+  if (typeof raw === 'string') {
+    try {
+      receipt = JSON.parse(raw)
+    } catch {
+      return null
+    }
+  }
+  if (!receipt || typeof receipt !== 'object') return null
+  const sha = typeof receipt.resultSha === 'string' ? receipt.resultSha.trim() : ''
+  const branchName = typeof receipt.branch === 'string' ? receipt.branch.trim() : ''
+  const note = typeof receipt.testsNote === 'string' ? receipt.testsNote.trim() : ''
+  const out = {
+    branch: branchName || null,
+    sha: sha && OBJECT_NAME_RE.test(sha) ? sha : null,
+    testsPassed: typeof receipt.testsPassed === 'boolean' ? receipt.testsPassed : null,
+    testsNote: note || null,
+  }
+  // Квитанция, не сказавшая НИЧЕГО из четырёх, — это не квитанция, а разобравшийся объект.
+  return out.branch || out.sha || out.testsPassed !== null || out.testsNote ? out : null
+}
+
+/**
+ * acceptanceOf({row, branch, attempts, config, deps}) → `{by, at, terminal, merge}`, или `null`.
+ *
+ * ДВЕ КНИГИ, ПОТОМУ ЧТО ПРИЁМЩИКОВ ДВА.
+ *
+ * Человек нажимает дверь окна — она человеческая по построению, единственная, и своей
+ * квитанцией она заполняет колонку решения рядом со строкой задачи. Терминал проводит тот же
+ * ритуал сам и кладёт квитанцию в СВОЙ журнал — тот, что скреплён хеш-цепочкой, — и в колонке
+ * очереди после него не остаётся ничего.
+ *
+ * ПОРЯДОК ЗДЕСЬ — СОДЕРЖАНИЕ ОТВЕТА, А НЕ ВКУС. Дверь окна, проводя слияние, вызывает тот же
+ * ритуал, поэтому её приёмка ТОЖЕ отмечается в журнале терминала. Спроси мы журнал первым —
+ * всякое человеческое нажатие вернулось бы как «принял терминал», и поле, заведённое ради
+ * проверки приёмщика, врало бы именно про того, кого проверяют. Колонка решения есть только
+ * у нажатия — значит, она и отвечает первой.
+ *
+ * КОГДА. У человеческой приёмки минуту называет след уборки: копия сносится этой же дверью
+ * сразу после слияния, `by:'approve'` отличает её от суточного обхода (`by:'sweep'`), который
+ * приёмкой не является. Молчит след — берётся отметка журнала; молчат оба — `null`, и окно
+ * скажет «когда — не записано» вместо правдоподобной даты.
+ *
+ * ЖУРНАЛ ТЕРМИНАЛА — НЕОБЯЗАТЕЛЬНЫЙ ШОВ и читается FAIL-OPEN, как всё в этой двери: демон,
+ * поднятый без него, отвечает про человеческую приёмку ровно так же, а про терминальную —
+ * молчанием. Отказ этого чтения не имеет права уронить карточку.
+ */
+async function acceptanceOf({ row, branch, attempts, config, deps }) {
+  const door = mergeReceiptWords(row && row.mergeReceipt)
+  if (door) {
+    return { by: 'human', at: approvalCleanupAt(attempts), terminal: null, merge: door }
+  }
+  if (typeof deps.mergeJournal !== 'function') return null
+  let hit = null
+  try {
+    hit = await deps.mergeJournal({ branch, projectDir: phaseCycleDir(deps) ?? config.repoDir })
+  } catch {
+    hit = null
+  }
+  if (!hit || typeof hit !== 'object') return null
+  const merge = mergeReceiptWords(hit.receipt)
+  if (!merge) return null
+  return {
+    by: 'terminal',
+    at: typeof hit.at === 'string' && hit.at.trim() !== '' ? hit.at.trim() : approvalCleanupAt(attempts),
+    terminal: typeof hit.terminal === 'string' && hit.terminal.trim() !== '' ? hit.terminal.trim() : null,
+    merge,
+  }
+}
+
+/**
+ * Минута приёмки со следа уборки — и ТОЛЬКО со следа, который оставила приёмка. Суточный
+ * обход закрытых копий пишет строку той же формы (`by:'sweep'`), и принять её за приёмку
+ * значило бы датировать решение человека днём, когда до копии дошёл дворник.
+ */
+function approvalCleanupAt(attempts) {
+  return lastValue(
+    attempts,
+    (a) => a && a.cleanup && typeof a.cleanup === 'object' && a.cleanup.by === 'approve' && a.cleanup.at,
+  )
+}
+
+/**
+ * returnRoundsOf(attempts, row) → `{rounds, notes}` — сколько раз работу отправляли обратно и
+ * какими словами.
+ *
+ * КРУГ ВОЗВРАТА НИКТО НЕ ЗАПИСЫВАЕТ ОТДЕЛЬНОЙ СТРОКОЙ, и заводить её здесь поздно: у леджера
+ * терминальных исхода два — «готово» и «не вышло», и «возвращено» среди них нет. Но след
+ * решения человека есть, и он однозначен: попытка, закончившаяся ГОТОВО, после которой была
+ * ещё одна попытка, — это работа, которую сдали и которую вернули. Своего решения очередь так
+ * принять не может: сама она переставляет только упавшие. Это то же правило, по которому
+ * `sma approvals suggest` отличает возврат от повтора, — второго правила для одного вопроса
+ * здесь не заводится.
+ *
+ * СЛОВА. Колонка решения помнит ровно последнюю записку возврата: она перезаписывается на
+ * каждом круге. Отдавать её как «все слова возвратов» было бы ложью о числе, поэтому число
+ * приходит из леджера, а слова — те, что уцелели, и их может быть меньше, чем кругов.
+ */
+function returnRoundsOf(attempts, row) {
+  const rows = Array.isArray(attempts) ? attempts : []
+  let rounds = 0
+  for (let i = 0; i < rows.length - 1; i += 1) {
+    if (rows[i] && rows[i].outcome === 'completed') rounds += 1
+  }
+  const note = row && typeof row.returnedNote === 'string' ? row.returnedNote.trim() : ''
+  return { rounds, notes: note ? [note.slice(0, 2000)] : [] }
+}
+
+/**
+ * keptCommitRange(attempts) → `{base, tip, at}` — что осталось от убранной копии, или `null`.
+ *
+ * ОДИН ДИАПАЗОН НА ВСЕХ, КТО СПРАШИВАЕТ ПРО УБРАННУЮ КОПИЮ. Оба конца записаны заранее и
+ * переживают уборку: `base` — коммит, с которого копию отрезали, `cleanup.branchTip` —
+ * вершина, записанная перед удалением ветки. Пока это выражение стояло в двух местах, дверь
+ * диффа и дверь карточки могли начать отвечать про разные диапазоны одной и той же работы,
+ * и заметить это было бы некому.
+ *
+ * ОБА ИМЕНИ ПРОВЕРЕНЫ ПО ФОРМЕ ЗДЕСЬ, до того как уедут в argv: строка леджера — данные,
+ * написанные другим процессом, а данные, становящиеся командой, проверяются в тот момент,
+ * когда перестают быть данными.
+ */
+function keptCommitRange(attempts) {
+  const rows = Array.isArray(attempts) ? attempts : []
+  const base = lastValue(rows, (a) => a && a.base)
+  const tip = lastValue(rows, (a) => a && a.cleanup && typeof a.cleanup === 'object' && a.cleanup.branchTip)
+  const at = lastValue(rows, (a) => a && a.cleanup && typeof a.cleanup === 'object' && a.cleanup.at)
+  if (!base || !tip || !OBJECT_NAME_RE.test(base) || !OBJECT_NAME_RE.test(tip)) return null
+  return { base, tip, at: at ?? null }
 }
 
 /**
@@ -1385,10 +1581,12 @@ function diffOfKeptCommits(id, cwd, deps) {
     rows = []
   }
   const attempts = foldAttemptRows(Array.isArray(rows) ? rows : [])
-  const base = lastValue(attempts, (a) => a && a.base)
-  const tip = lastValue(attempts, (a) => a && a.cleanup && typeof a.cleanup === 'object' && a.cleanup.branchTip)
-  const at = lastValue(attempts, (a) => a && a.cleanup && typeof a.cleanup === 'object' && a.cleanup.at)
-  if (!base || !tip || !OBJECT_NAME_RE.test(base) || !OBJECT_NAME_RE.test(tip)) return gone
+  // ОДНО ВЫРАЖЕНИЕ ДИАПАЗОНА НА ОБЕ ДВЕРИ — см. `keptCommitRange`. Дверь карточки берёт по
+  // нему список коммитов принятой работы, эта — их диф; посчитай они его каждая по-своему,
+  // и человек увидел бы коммиты одного диапазона рядом с изменениями другого.
+  const kept = keptCommitRange(attempts)
+  if (!kept) return gone
+  const { base, tip, at } = kept
   let body = ''
   try {
     body = String(deps.execGit(['diff', '--stat', '-p', `${base}..${tip}`], { cwd }) || '')
@@ -1706,11 +1904,16 @@ async function handleApprove({ req, res, config, deps }) {
   if (!claim.won) return send409(res, 'approve race lost (already handled)')
 
   const branch = `wt/${taskId}`
-  // ЕСТЬ ЛИ ВООБЩЕ ЧТО СЛИВАТЬ. Документарная стадия работает БЕЗ копии и без ветки — она
-  // пишет в дерево проекта, — поэтому слияние `wt/<id>` для неё не «не удалось», а
-  // бессмысленно: git отвечает «did not match any», карточка возвращается в «ждут решения», и
-  // нажатие не может сработать НИ ПРИ КАКИХ условиях. Это не редкий случай, а весь класс
-  // документарных стадий целиком.
+  // ЕСТЬ ЛИ ВООБЩЕ ЧТО СЛИВАТЬ. Строка, ни одна попытка которой не назвала ветки, работала
+  // без копии — слияние `wt/<id>` для неё не «не удалось», а бессмысленно: git отвечает «did
+  // not match any», карточка возвращается в «ждут решения», и нажатие не может сработать НИ
+  // ПРИ КАКИХ условиях.
+  //
+  // ЧЕЙ ЭТО ТЕПЕРЬ СЛУЧАЙ. Раньше — весь класс документарных стадий: они писали прямо в дерево
+  // проекта, и приёмке нечего было сливать. С 31.08.2026 документарная ступень получает копию и
+  // ветку наравне с кодовой, поэтому её артефакты входят в дерево ИМЕННО этим слиянием. Проверка
+  // остаётся — под ней строки, поставленные ДО починки, и любая попытка, отказанная раньше
+  // провизии: их принятие не должно упираться в ветку, которой никто не заводил.
   //
   // Признак берётся ПОЛОЖИТЕЛЬНЫЙ: должна быть хотя бы одна строка попытки, и ни одна из них
   // не назвала ветки. Пустой журнал ничего не доказывает — на нём поведение остаётся прежним,

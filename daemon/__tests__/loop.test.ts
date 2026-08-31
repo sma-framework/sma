@@ -618,10 +618,26 @@ const stageTask = (data: any, over: any = {}) => ({
   ...over,
 })
 
+/**
+ * Провизия копии, отвечающая КОРНЕМ ФИКСТУРЫ, — потому что кейсы ниже про ГЕЙТ.
+ *
+ * Ступень любого рода теперь идёт в своей копии (31.08.2026: документарная ступень писала
+ * коммитами прямо в main дерева планирования). Кейсам этого раздела адрес копии безразличен —
+ * им важно, ЧТО гейт признаёт документом, — поэтому подделка отвечает тем же корнем, в котором
+ * лежат фикстуры, и ни один из полутора десятка их не переписывается ради одного адреса. Сам
+ * АДРЕС — «работник стоит в копии, а не в дереве человека» — утверждается там, где он и есть
+ * предмет спора: `stage-copy-wire.test.ts`, настоящей дверью над настоящей очередью.
+ */
+const STAGE_WORKTREE = {
+  code: 0,
+  stdout: JSON.stringify({ ok: true, path: '/repo', branch: 'wt/ST-1', expectedBase: 'base1234' }),
+}
+
 /** Every stage case routes the same way; the cases are about the GATE, nothing else. */
 const stageDeps = (over: any = {}) =>
   makeDeps({
     ...over,
+    responses: { worktree: STAGE_WORKTREE, ...over.responses },
     deps: { routing: { resolveRoute: () => ({ workerId: 'max-2', provider: 'claude' }) }, ...over.deps },
   })
 
@@ -644,10 +660,11 @@ describe('a document stage completes on a committed artifact — and on nothing 
     expect(call.result.receiptRef).toBe('artifact:.planning/phases/12-front/12-02-PLAN.md@abc1234')
     expect(call.result.receiptRef.startsWith('artifact:')).toBe(true)
     expect(call.result.receiptRef).toContain('@')
-    // a documentary stage stands in the project checkout: no worktree, and no preflight —
-    // «is this backlog item already built» is not a question a phase stage can be asked
-    expect(order).toEqual(['spawn'])
-    expect(call.result.branch).toBe(null)
+    // a documentary stage gets a copy exactly like code work (31.08.2026 — without one it
+    // committed straight into the founder's own main), and no preflight: «is this backlog item
+    // already built» is not a question a phase stage can be asked
+    expect(order).toEqual(['worktree', 'spawn'])
+    expect(call.result.branch).toBe('wt/ST-1')
   })
 
   it('no artifact → fail("no_artifact"), whatever the worker printed about itself', async () => {
@@ -840,7 +857,7 @@ describe('a discussion round parks for a human instead of going red', () => {
     const [row] = await adapter.list({})
     // the contract turns a receipted complete() into «ждёт человека» — the card the screen shows
     expect(row.status).toBe('awaiting_approval')
-    expect(order).toEqual(['spawn'])
+    expect(order).toEqual(['worktree', 'spawn'])
   })
 
   it('a parked question that was never committed is not a question yet', async () => {
@@ -2977,7 +2994,7 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
     const c = mkClock(now)
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
     await adapter.enqueue(backlogTask())
-    const { deps } = makeDeps({
+    const { deps, journalled } = makeDeps({
       adapter,
       clockObj: c,
       config: {
@@ -2998,7 +3015,7 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
       },
     })
     await tick(deps)
-    return { clock: c.clock }
+    return { clock: c.clock, journalled }
   }
 
   it('the window a worker was told about is the window «Расходы» shows, reset time and all', async () => {
@@ -3039,6 +3056,72 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
     expect(state.fiveHour.status).toBe('exhausted')
     expect(state.closedUntil).toBeDefined() // the refusal was PERSISTED, not merely noticed
     expect(isOpen(state, () => now)).toBe(false)
+  })
+
+  /**
+   * ═══════ THE REFUSAL THAT SHUT A SUBSCRIPTION FOR FIVE DAYS, ON THE REAL PATH ═══════
+   *
+   * 31.08.2026: the provider refused `seven_day_overage_included` — the weekly window with the
+   * paid overage folded in, on an account whose paid channel is off and whose ceiling is zero.
+   * The tick closed the WHOLE account until 05.09 on the strength of a name it has never been
+   * able to draw on any screen, and the conveyor stopped with thirty tasks queued. This runs
+   * that exact frame through the real tick and ends where the router looks.
+   */
+  it('a refusal on a window name we cannot draw is filed and LOGGED, and the account keeps working', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-unknown-'))
+    dirs.push(dataDir)
+    const now = RESETS_AT_SEC * 1000 - 60 * 60 * 1000
+    const refused = JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: RESETS_AT_SEC, rateLimitType: 'seven_day_overage_included', isUsingOverage: false },
+    })
+
+    const { journalled } = await tickWith(refused, dataDir, now)
+
+    const state = windowState({ account: { name: 'max-2' }, clock: () => now, dataDir })
+    expect(state.closedUntil).toBeUndefined()
+    expect(state.fiveHour.status).toBe('unknown')
+    expect(state.week.status).toBe('unknown')
+    expect(isOpen(state, () => now)).toBe(true) // thirty queued tasks keep moving
+
+    // Ignoring it silently would be the same bug wearing a quieter coat: the operator has to be
+    // able to see that a window nobody can name was refused, and to name it.
+    const noted = journalled.find((e: any) => e && e.type === 'window-refusal-unnamed')
+    expect(noted).toBeDefined()
+    expect(noted.limitType).toBe('seven_day_overage_included')
+    expect(noted.account).toBe('max-2')
+  })
+
+  /**
+   * «Ждёт окно» has to say WHICH window and until when. It used to say neither: the close sat at
+   * the top of the record with no window on it, the card pinned the words to the five-hour line
+   * whatever had really been refused, and a worker could read «ждёт окно» with both rows saying
+   * the subscription was taking work.
+   */
+  it('a refusal names the window it shut — «ждёт окно» never stands beside two open rows', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-named-'))
+    dirs.push(dataDir)
+    const now = RESETS_AT_SEC * 1000 - 60 * 60 * 1000
+    const refused = JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: RESETS_AT_SEC, rateLimitType: 'seven_day', isUsingOverage: false },
+    })
+
+    await tickWith(refused, dataDir, now)
+
+    const payload = await deriveState({
+      adapter: { async list() { return [] } },
+      windows: (account: any) => windowState({ account, clock: () => now, dataDir }),
+      config: { workers: [{ id: 'max-2', lane: 'prod', account: { name: 'max-2' } }], machineId: 'self' },
+      clock: () => now,
+    })
+
+    const worker = payload.workers[0]
+    expect(worker.presence).toBe('ждёт окно')
+    expect(worker.window.week.status).toBe('exhausted') // the shut window is named on its own row…
+    expect(worker.window.week.resetsAt).toBe(new Date(RESETS_AT_SEC * 1000).toISOString()) // …with the hour
+    expect(worker.window.fiveHour.status).toBe('unknown') // and the innocent window is not accused
+    expect(worker.window.closedUntil).toBeDefined()
   })
 
   it('a machine that has heard nothing says so — no reading is ever invented as a zero', async () => {
@@ -4095,7 +4178,10 @@ describe('строка попытки несёт копию: базу, ветк�
     expect(journalled.some((e: any) => e.type === 'task.worktree_materialized_missing')).toBe(true)
   })
 
-  it('документарная стадия шла без копии — ни пути, ни списка в строке', async () => {
+  it('документарная стадия идёт В КОПИИ — путь, база и ветка стоят в строке попытки', async () => {
+    // ДО 31.08.2026 ЗДЕСЬ УТВЕРЖДАЛОСЬ ОБРАТНОЕ: «шла без копии — ни пути, ни списка». Ровно это
+    // и означало, что ступень пишет в дерево планирования, а строка попытки не может назвать НИ
+    // ОДНОЙ точки отката: откатывать приходилось руками по хэшам, найденным задним числом.
     const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'plan', phase: 12 }))
     const { deps, attempts } = stageDeps({
       adapter,
@@ -4109,9 +4195,9 @@ describe('строка попытки несёт копию: базу, ветк�
 
     expect(res.completed).toBe('ST-1')
     const row = attempts.find((a) => a.outcome === 'completed')
-    expect(row.worktreePath).toBeUndefined()
-    expect(row.materialized).toBeUndefined()
-    expect(row.base).toBeUndefined()
+    expect(row.worktreePath).toBe('/repo')
+    expect(row.branch).toBe('wt/ST-1')
+    expect(row.base).toBe('base1234')
   })
 })
 
@@ -5912,7 +5998,9 @@ describe('дверь «работа уже сделана» спрашивает
     const seen: { verb: string; args: string[]; cwd: string }[] = []
     const { deps, journalled } = stageDeps({
       adapter,
-      verbRunner: recordingRunner(seen, {}),
+      // копия провизится и документарной ступени — верб обязан ответить путём, иначе тик честно
+      // откажется запускать работника в каталог, которого никто не делал
+      verbRunner: recordingRunner(seen, { worktree: STAGE_WORKTREE }),
       deps: {
         fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan' }),
         execGit: makeGit({ '.planning/phases/12-front/12-01-PLAN.md': 'abc1234' }),
