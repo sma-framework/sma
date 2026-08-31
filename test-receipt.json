@@ -1,9 +1,9 @@
 {
-  "tests": 5881,
-  "files": 267,
-  "measuredAt": "2026-08-31T17:58:18.343Z",
+  "tests": 5916,
+  "files": 268,
+  "measuredAt": "2026-08-31T19:56:13.262Z",
   "source": "vitest",
-  "commit": "c6b0e7ee18d2ced2c1fa16ff922cd8e01718aaad",
+  "commit": "5e5d2725bb56ed9743a3799ffbd05594a41c8602",
   "dirty": false,
-  "runStartedAt": "2026-08-31T17:55:00.898Z"
+  "runStartedAt": "2026-08-31T19:51:13.265Z"
 }
