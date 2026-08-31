@@ -411,6 +411,19 @@ function makeFakeBackend({
       if (j) j.output = { ...(j.output || {}), reason }
       return { rows: [] }
     }
+    if (sql.startsWith('SELECT data, retry_count, state')) {
+      // reissue(): ПОСЛЕДНЯЯ строка этой задачи, в каком бы состоянии она ни была — по ней дверь
+      // и решает, есть ли что повторять. Смоделирована как написана: по TASK id, самая поздняя
+      // одна. Разрыв ничьей по номеру джоба — не вольность фикстуры, а модель настоящей базы:
+      // там `created_on` ставится своим now() на каждую вставку и у двух строк не совпадает, а
+      // здесь часы стоят, пока их не двинет дело, и без разрыва «последней» оказалась бы первая.
+      const taskId = params[0]
+      const seqOf = (j: any) => Number(String(j.id).replace('job-', '')) || 0
+      const match = [...jobs.values()]
+        .filter((j) => j.data && j.data.id === taskId)
+        .sort((a, b) => (b.created_on ?? 0) - (a.created_on ?? 0) || seqOf(b) - seqOf(a))[0]
+      return { rows: match ? [{ data: match.data, retry_count: match.retry_count, state: match.state }] : [] }
+    }
     if (sql.includes("state IN ('created','retry')") && sql.startsWith('SELECT id, name')) {
       // resolveStoppableJob(): the job WAITING to be handed out, in EITHER state this queue
       // waits in. Modelled as the statement is written, and the retry state is modelled with

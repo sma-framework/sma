@@ -520,6 +520,10 @@ function doneUnit(row: DoneRow, clock: (iso: string | null) => string): WorkUnit
   // ожидания тем, чего никто не ждёт — а на этой машине таких строк двадцать восемь из
   // пятидесяти трёх. Всякая ДРУГАЯ поломка человека ждёт, и `columnOf` ставит её к нему.
   const stoppedByHand = row.failed?.reason === 'manual'
+  // …И ТО ЖЕ САМОЕ С ДРУГОЙ СТОРОНЫ: за этой поломкой стоит не человек, а очередь — она сама
+  // поставит работу заново, и номер повтора едет прямо на строке. Пока он есть, звать человека
+  // не за чем: он открыл бы карточку, чтобы нажать то, что и так произойдёт через минуту.
+  const repeatsItself = !!row.failed?.repeats
   const attempts = Number.isFinite(row.attempts) && row.attempts > 0 ? row.attempts : 1
   // An attempt after the first exists BECAUSE the one before it did not finish the work.
   const segs: UnitState[] = Array.from({ length: attempts }, (_, i) =>
@@ -533,7 +537,12 @@ function doneUnit(row: DoneRow, clock: (iso: string | null) => string): WorkUnit
     state: failed ? 'fail' : 'ok',
     inner: `${attempts} ${attempts === 1 ? 'подход' : 'подхода'} · ${commits === 0 ? 'без коммитов' : `коммитов: ${commits}`}`,
     next: failed
-      ? (row.failed?.reasonLabel ?? 'Не получилось — причина не записана')
+      ? repeatsItself
+        ? // ЧТО БУДЕТ ДАЛЬШЕ, А НЕ ТОЛЬКО ЧТО СЛУЧИЛОСЬ. Строка, которая поедет снова сама,
+          // обязана сказать это вслух: иначе красная карточка выглядит как та, что стоит
+          // насмерть, и человек идёт делать руками уже сделанное.
+          `${row.failed?.reasonLabel ?? 'Не получилось'} · повторится сама: попытка ${row.failed?.repeats?.attempt} из ${row.failed?.repeats?.of}`
+        : (row.failed?.reasonLabel ?? 'Не получилось — причина не записана')
       : `Закрыта в ${clock(row.finishedAt)}`,
     // Длительность закрытой задачи меряется по подходу, который её ЗАКРЫЛ: между попытками
     // задача лежит в очереди, и называть это время работой было бы неправдой. Одной отметки
@@ -546,7 +555,7 @@ function doneUnit(row: DoneRow, clock: (iso: string | null) => string): WorkUnit
     // решает, попадёт ли строка в него вообще: поломка без слов осталась бы немым красным
     // прямоугольником, за которым человек всё равно идёт разбирать леджер руками.
     wait:
-      failed && !stoppedByHand
+      failed && !stoppedByHand && !repeatsItself
         ? {
             age: '',
             what: row.failed?.reasonLabel ?? 'Не получилось — причина не записана',
