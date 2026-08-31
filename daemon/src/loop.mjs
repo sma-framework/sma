@@ -140,6 +140,7 @@ import {
   approachLinesFrom,
   markerLinesFrom,
   parseLessonMarker,
+  parseMootMarker,
   attemptIdFor,
 } from './front/journal.mjs'
 // THE CORPUS READS ITS OWN NOTES. The lesson gate below asks whether a file is a note the
@@ -158,6 +159,10 @@ import { markWindowObserved, markWindowClosed, readingSaysExhausted, canonicalWi
 // полосы обязана спрашивать ровно то же, что спросят при захвате: разойдясь, они начнут
 // объявлять полосу пригодной для того, кого маршрут потом не выберет.
 import { EXECUTOR_ROLE, roleOf } from './policy/worker-role.mjs'
+// ФОРМА РАБОТЫ — третий вопрос выходного гейта, рядом с «есть ли квитанция» и «объяснена ли
+// попытка»: О ЧЁМ то, что легло на ветку. Живёт отдельным модулем, потому что это ЧИСТОЕ
+// суждение о списке изменений, и его цена — прочитать его тестами без тика вокруг.
+import { selfReferentialTests, newTopLevelDirs } from './policy/work-shape.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage, claudeTokensFromResult, codexTokensFromFinal } from './runner/usage.mjs'
 import {
   readPendingRedirects,
@@ -749,6 +754,76 @@ function answerOnlyGate(deps, task, branch, workDir, noteWritten, base) {
   }
 
   return { receiptRef: answerReceipt(attemptIdFor(task.id, task.attempt)) }
+}
+
+// ═══════════════════════ ТРЕТИЙ ВЫХОД — РАБОТА БЕЗ ПРЕДМЕТА ═══════════════════════
+//
+// Дверей к завершённой работе было две: квитанция за код и документ за прозу; третья, «ответ
+// без правки», открывалась под них. Ни одна не умела сказать ТО ЕДИНСТВЕННОЕ, чем кончается
+// возвращённая карточка, чья жалоба уже закрыта: ПРЕДМЕТА НЕТ. Такой конец существовал только
+// как отсутствие — «сделано, но коммитов нет», — а отсутствие на карточке читается как провал.
+//
+// ЦЕНА ЭТОЙ ДЫРЫ ИЗМЕРЕНА 31.08.2026. Работнику, не нашедшему предмета, дешевле было создать
+// файл и тест, доказывающий существование этого файла, чем честно вернуться ни с чем: первое
+// выглядит как работа, второе — как провал. Гейт при этом остался зелёным, потому что ни один
+// его вопрос не касался того, О ЧЁМ работа.
+//
+// ЧТО ЗДЕСЬ СТРОИТСЯ: «предмета нет» становится ПЕРВОКЛАССНЫМ концом — со своим словом на
+// карточке (`moot:`) и со своей квитанцией, называющей, ЧЕМ проверяли. Закон «демон решает по
+// фактам, которые видит сам» не ослабевает ни на шаг: вывод объявляет работник, а улику
+// ПРОВЕРЯЕТ демон — коммит должен существовать в копии, файл должен лежать на диске. Ни одна
+// непроверенная улика квитанции не даёт.
+/** Как выглядит короткий или полный хеш коммита — единственная форма улики, которую знает git. */
+const SHA_RE = /^[0-9a-f]{7,40}$/i
+
+/** The receipt a «предмета нет» outcome completes on: the attempt, and what was checked. */
+function mootReceipt(attemptId, evidence) {
+  return `moot:${attemptId}@${evidence}`
+}
+
+/**
+ * mootEvidenceCheck(deps, workDir, evidence) → {verified, kind} | {reason}
+ *
+ * ЧЕМ ПРОВЕРЯЛИ, ПРОВЕРЕННОЕ ДЕМОНОМ. Две формы улики, и обе машинные:
+ *   - ХЕШ КОММИТА — `git cat-file -t` в копии обязан ответить `commit`. Так проверяется самый
+ *     частый вывод: «жалоба закрыта вот этим коммитом»;
+ *   - ПУТЬ ФАЙЛА (можно с `:строкой`) — файл обязан лежать в копии. Так проверяется «смотрел
+ *     вот сюда, требование там уже другое».
+ * Всё остальное — команда, ссылка, фраза — записывается в журнал, но УЛИКОЙ НЕ СЧИТАЕТСЯ:
+ * квитанция, которую нельзя перепроверить, ничем не отличается от слова.
+ *
+ * ПЕРВАЯ ПОДТВЕРДИВШАЯСЯ ПОБЕЖДАЕТ — квитанция называет одну, а не список: она нужна человеку,
+ * чтобы открыть ровно одно место и увидеть то же, что видел работник.
+ *
+ * Никогда не бросает: git, отказавший на одной улике, не отменяет остальных.
+ */
+function mootEvidenceCheck(deps, workDir, evidence) {
+  const io = resolveIo(deps.fsImpl)
+  const seen = []
+  for (const raw of Array.isArray(evidence) ? evidence : []) {
+    const item = String(raw ?? '').trim()
+    if (!item) continue
+    seen.push(item)
+    if (SHA_RE.test(item)) {
+      if (typeof deps.execGit !== 'function' || !workDir) continue
+      try {
+        const kind = String(deps.execGit(['cat-file', '-t', item], { cwd: workDir }) || '').trim()
+        if (kind === 'commit') return { verified: item, kind: 'commit' }
+      } catch {
+        continue // такого объекта в копии нет — улика не подтвердилась, ищем следующую
+      }
+      continue
+    }
+    // `путь:строка` — обычная форма ссылки на место в коде; проверяется сам путь.
+    const rel = item.replace(/\\/g, '/').replace(/^\.\//, '').replace(/:\d+(?::\d+)?$/, '')
+    if (!rel || rel.split('/').includes('..') || !workDir) continue
+    try {
+      if (io.existsSync(join(workDir, rel))) return { verified: rel, kind: 'file' }
+    } catch {
+      /* нечитаемый путь — не улика, и не повод потерять остальные */
+    }
+  }
+  return { reason: seen.length ? `ни одна улика не подтвердилась: ${seen.slice(0, 4).join(' | ')}` : 'улик не названо' }
 }
 
 /** Where a lesson is allowed to live inside the copy — the project's own memory corpus. */
@@ -1367,6 +1442,70 @@ function attachChangedFiles(deps, worktree) {
   if (worktree.changed) return worktree.changed // one attempt, one question to git
   worktree.changed = changedFilesOnBranch(deps, worktree.base, worktree.branch, worktree.worktreePath)
   return worktree.changed
+}
+
+/**
+ * baseTopLevel(deps, base, cwd) → the names at the ROOT of the tree the copy was cut from,
+ * or [] when git cannot say. One question, one call, and the answer is what «этого каталога
+ * раньше не было» is measured against — never a hardcoded list of what the product contains,
+ * which would go stale the first time the product grew a directory on purpose.
+ */
+function baseTopLevel(deps, base, cwd) {
+  if (!base || !cwd || typeof deps.execGit !== 'function') return []
+  try {
+    return String(deps.execGit(['ls-tree', '--name-only', base], { cwd }) || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+  } catch {
+    return [] // не смогли спросить — судить нечем, и распознаватель молчит
+  }
+}
+
+/**
+ * workShapeRefusal(deps, task, changed, base, workDir) → {reason, detail} | null — ТРЕТИЙ
+ * вопрос выходного гейта: не «есть ли доказательство», а О ЧЁМ работа.
+ *
+ * ДВА ОТКАЗА, И ПОРЯДОК МЕЖДУ НИМИ — РЕШЕНИЕ, А НЕ СЛУЧАЙНОСТЬ:
+ *   1. САМОЗАМКНУТЫЙ ТЕСТ — это ДЕФЕКТ, и он краснеет. Тест, все утверждения которого
+ *      касаются файлов, добавленных этой же работой, не может покраснеть ни от одной поломки
+ *      продукта: он говорит только о себе. Зелёный сьют с таким тестом — это зелёный,
+ *      удостоверяющий ровно ничего, и именно им 31.08.2026 закрылась работа без предмета;
+ *   2. НОВЫЙ КАТАЛОГ ВЕРХНЕГО УРОВНЯ — это ВОПРОС, и он ждёт человека. С работой может быть
+ *      всё в порядке; чего у неё нет — так это мандата решить за человека, из чего состоит
+ *      продукт. Перевыдача такой попытки дала бы тот же каталог во второй раз, поэтому слово
+ *      стоит в AWAITS_A_PERSON, а не среди перевыдаваемых концов.
+ * Дефект стоит первым: сломанное доказательство важнее вопроса об устройстве дерева, и
+ * человек, которому показали вопрос вместо красного теста, чинит не то.
+ *
+ * FAIL-OPEN ЦЕЛИКОМ. Нет ответа git о списке изменений — нет и суждения: обвинить работу на
+ * основании непрочитанного дерева было бы хуже той дыры, которую этот вопрос закрывает.
+ */
+function workShapeRefusal(deps, task, changed, base, workDir) {
+  if (!changed || changed.answered !== true || !Array.isArray(changed.files) || !changed.files.length) return null
+  if (!workDir) return null
+  const io = resolveIo(deps.fsImpl)
+  const inCopy = (rel) => join(workDir, String(rel).replace(/\\/g, '/'))
+
+  const selfRef = selfReferentialTests({
+    entries: changed.files,
+    readFile: (rel) => String(io.readFileSync(inCopy(rel), 'utf8')),
+    pathExists: (rel) => io.existsSync(inCopy(rel)) === true,
+  })
+  if (selfRef) {
+    writeLog(deps, { type: 'task.self_referential_test', taskId: task.id, detail: selfRef.detail })
+    return { reason: 'self_referential_test', detail: selfRef.detail }
+  }
+
+  const dirs = newTopLevelDirs({ entries: changed.files, baseTopLevel: baseTopLevel(deps, base, workDir) })
+  if (dirs.length) {
+    const detail =
+      `работа завела каталог верхнего уровня, которого в дереве не было: ${dirs.join(', ')} — ` +
+      `из чего состоит продукт, решает человек, а не побочный эффект задачи`
+    writeLog(deps, { type: 'task.new_top_level_dir', taskId: task.id, detail })
+    return { reason: 'new_top_level_dir', detail }
+  }
+  return null
 }
 
 /**
@@ -4566,9 +4705,13 @@ export async function tick(deps = {}) {
       // themselves on the same terms a merged branch does.
       // ONE unwrapping for both marker families: the worker's closing words arrive inside a
       // frame, and a second pass over raw lines would find neither.
-      const markerLines = markerLinesFrom(streamLines, ['APPROACH_', 'LESSON_'])
+      const markerLines = markerLinesFrom(streamLines, ['APPROACH_', 'LESSON_', 'MOOT'])
       const note = parseApproachNote(markerLines)
       const noteWritten = recordApproachNote(deps, task, note)
+      // «ПРЕДМЕТА НЕТ» — читается ЗДЕСЬ, из того же развёрнутого потока и тем же протоколом
+      // мягких маркеров, что записка и урок. Судит его не парсер: ниже дверь ответа сперва
+      // доказывает, что попытка ничего не тронула, а потом демон проверяет улику у git.
+      const moot = parseMootMarker(markerLines)
 
       // (7b-bis) THE LESSON — the third condition, checked against the copy's own corpus. A
       // parked round is exempt below (the session was cut short by a question to a person, so
@@ -4744,10 +4887,35 @@ export async function tick(deps = {}) {
         return result
       }
       if (answered) {
+        // «ПРЕДМЕТА НЕТ» — ТО ЖЕ ДОКАЗАННОЕ ПУСТОЕ ДЕЙСТВИЕ, НО С ДРУГИМ СЛОВОМ. Дверь ответа
+        // выше уже доказала git'ом, что попытка не тронула ничего; здесь решается лишь, КАК
+        // назвать этот конец человеку. Работник объявил вывод и назвал улику — демон проверяет
+        // улику сам и, если она подтвердилась, выдаёт квитанцию, которая её называет. Иначе
+        // исход остаётся обычным ответом, и причина СКАЗАНА ВСЛУХ: молчаливое понижение
+        // выглядело бы для человека как «работник ничего не заявлял», а он заявлял.
+        let receiptRef = answered.receiptRef
+        if (moot) {
+          const proof = mootEvidenceCheck(deps, workDir, moot.evidence)
+          if (proof.verified) {
+            receiptRef = mootReceipt(attemptIdFor(task.id, task.attempt), proof.verified)
+            writeLog(deps, {
+              type: 'task.moot',
+              taskId: task.id,
+              receiptRef,
+              detail: `предмета нет: ${moot.reason} — проверено (${proof.kind}) ${proof.verified}`,
+            })
+          } else {
+            writeLog(deps, {
+              type: 'task.moot_unproven',
+              taskId: task.id,
+              detail: `заявлено «предмета нет» (${moot.reason}), но ${proof.reason} — засчитано как обычный ответ`,
+            })
+          }
+        }
         // NEVER SILENT: an outcome that skipped the code gate says so in the operator's log,
         // so «the worker answered» can never be mistaken for «the worker's code passed».
-        writeLog(deps, { type: 'task.answered', taskId: task.id, receiptRef: answered.receiptRef })
-        await completeTask(deps, task, { receiptRef: answered.receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
+        writeLog(deps, { type: 'task.answered', taskId: task.id, receiptRef })
+        await completeTask(deps, task, { receiptRef, branch, diffStat: null, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
         result.completed = task.id
         return result
       }
@@ -4912,9 +5080,26 @@ export async function tick(deps = {}) {
       // без квитанции запрещено хребтом доверия: такая попытка теперь называется обрывом и
       // возвращается в очередь (`provider_error` — конец перевыдаваемый).
       const unprovenAbort = Boolean(providerAbort) && Boolean(receipt && receipt.ref && receipt.ref.unverified === true)
-      if (!exit.spawnError && !unprovenAbort && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten && lessonOk) {
+      // ═══ И ТРЕТИЙ ВОПРОС ГЕЙТА: О ЧЁМ ЭТА РАБОТА ═══════════════════════════════════════
+      // Стоит ЗДЕСЬ, у самой развилки, и читает список, который строка выше уже взяла у git:
+      // судить форму работы можно только по тому, что действительно легло на ветку, и второй
+      // вопрос к git был бы вторым ответом об одной попытке. Прогон, который вообще не
+      // запустился, не спрашивается вовсе — ветки нет; кого именно это слово НЕ перебивает,
+      // решает условие ветки ниже.
+      const shapeRefusal = exit.spawnError ? null : workShapeRefusal(deps, task, changed, worktreeBase, workDir)
+      if (!exit.spawnError && !unprovenAbort && !shapeRefusal && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten && lessonOk) {
         await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
         result.completed = task.id
+      } else if (shapeRefusal && !providerAbort && !turnCapHit && !marker && !(receipt && receipt.verdict === 'red')) {
+        // ФОРМА РАБОТЫ ПОБЕЖДАЕТ СЛОВА О КАЧЕСТВЕ ДОКАЗАТЕЛЬСТВА, НО НЕ ПОБЕЖДАЕТ НИ ОБРЫВ, НИ
+        // ИЗМЕРЕННЫЙ КРАСНЫЙ. Прогон, который оборвал поставщик, наш потолок ходов или сам
+        // работник своим маркером, не «сдал самозамкнутый тест» — его прервали, и назвать это
+        // дефектом работы значило бы послать человека чинить не то. Красная перепроверка — факт
+        // о ветке, измеренный, и он тоже сильнее: человеку, у которого действительно красные
+        // тесты, «тест говорит о себе» ничего не чинит. Во всех остальных случаях слово формы —
+        // САМОЕ ТОЧНОЕ, что можно сказать: оно называет ровно то, чего не увидел бы зелёный сьют.
+        await failTask(deps, task, { reason: shapeRefusal.reason, failureDetail: shapeRefusal.detail, receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
+        result.failed = { taskId: task.id, reason: shapeRefusal.reason, detail: shapeRefusal.detail }
       } else {
         // WHO ENDED THE RUN rides with the rest. The door to «done» above is untouched: an
         // attempt whose branch really did re-verify green AND left its note is finished work

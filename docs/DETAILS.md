@@ -1126,6 +1126,55 @@ observation), `autoMemoryReads` kept apart from the project's corpus, the `lesso
 the mark saying whether an approach note exists. Identifiers and marks only — no note body ever
 leaves the machine it was written on.
 
+#### The shape of the work: «there is no subject», and the two refusals that read the diff
+
+Both gates above ask whether **proof exists**. Neither asked what the work is **about** — and on
+31.08.2026 that cost a green certifying nothing. A worker given a returned card whose complaint
+had already been closed found no subject, and had no cheap way to hand back emptiness: «done, but
+no commits» reads as a failure, while a file with a test reads as work. It created a note and a
+test of three cases — the file exists, it contains the promised word, git tracks it. That test
+cannot go red from any breakage of the product: it speaks only of itself. The suite passed, the
+receipt was honest, and only a pair of eyes could tell that work from real work.
+
+Three things now stand where nothing stood.
+
+**«There is no subject» is a first-class ending**, beside «done» rather than under it. A task
+whose complaint is already closed, whose bug will not reproduce, whose requirement went stale
+ends with two markers:
+
+```
+MOOT: <what is not there, or what went stale — one line>
+MOOT_EVIDENCE: <a commit hash, or a file path — one line each>
+```
+
+The conclusion is the worker's; **the evidence is the daemon's**. A hash must resolve to a commit
+in the copy (`git cat-file`), a path must be on disk. A command or a retelling cannot be
+re-checked, so it does not count — and an unproven claim never becomes a receipt: the attempt
+stays an ordinary answer, and the downgrade is said out loud in the operator's log rather than
+happening silently. What a confirmed finding earns is a receipt of its own,
+`moot:<attempt>@<evidence>`, which the card renders as **«Предмета нет — проверено: …»** — its own
+word, never dressed up as «Ответ без правки кода», because the two send you to different places.
+
+**A test must speak about the product, not about itself.** A test file **added by this same
+attempt** is refused as `self_referential_test` when all three hold: it imports no module of the
+tree (only packages and builtins), it names at least one path, and **every** path it names was
+added by this same work. The first condition is what protects ordinary work — a new module with
+its own test imports what it tests, and testing behaviour is a conversation about the product
+whatever the diff calls the file. The word is kept apart from `tests_red` on purpose: those tests
+are green, and what needs fixing is what they are **about**.
+
+**A new top-level directory is a question, not a side effect.** What the product is made of
+travels into the README, the packaging and the habits of every worker after this one, and no task
+carries a mandate to decide it in passing. An attempt that creates one is parked as
+`new_top_level_dir` and waits for you — one of the three endings in the whole taxonomy that is
+not retried, because a re-issue would honestly create the same directory a second time. The
+measurement is against git's own answer for the base commit (`ls-tree`), never a hardcoded list of
+what the product contains.
+
+Every one of these is fail-open. An unreadable file, a git that could not answer, a diff that
+never arrived — and the recogniser says nothing at all: accusing work on the strength of a tree
+nobody could read would be worse than the hole it closes.
+
 ## V3 — The Trust Spine
 
 V1 taught the system to **remember**. V2 taught it to **predict, fire reflexes, and coordinate**. **V3 makes it stop trusting its own word.**

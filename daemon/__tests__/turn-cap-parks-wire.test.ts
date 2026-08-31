@@ -328,21 +328,28 @@ describe('прочие причины неудачи повторяются ка
    * здесь: «эта причина больше не повторяется» — решение про чужую подписку, и оно должно быть
    * принято человеком, а не просочиться правкой соседнего файла.
    */
-  it('человека ждут РОВНО две причины из всей таксономии — остальные сохраняют свой повтор', () => {
+  it('человека ждут РОВНО три причины из всей таксономии — остальные сохраняют свой повтор', () => {
     // ВТОРОЕ СЛОВО, И РЕШЕНИЕ ЗА НИМ НАЗВАНО ЗДЕСЬ, как этот эталон и требует. Роли, которую
     // просит работа, не держит никто (или держит один выключенный) — и перевыдача сколько
     // угодно раз даст ровно тот же ответ: состав машины от ожидания не меняется. Чинит это
     // человек, одним из двух: включить работника с такой ролью или переставить роль на задаче.
-    expect([...AWAITS_A_PERSON]).toEqual(['turns_exhausted', 'role_unavailable'])
+    // ТРЕТЬЕ СЛОВО — единственное в списке, которое не про поломку. Работа завела каталог
+    // верхнего уровня; из чего состоит продукт — не её решение, а перевыдача по построению
+    // заведёт тот же каталог второй раз. Нужен ОДИН ответ человека, и строка стоит и ждёт его.
+    expect([...AWAITS_A_PERSON]).toEqual(['turns_exhausted', 'role_unavailable', 'new_top_level_dir'])
     expect(failureAwaitsAPerson('turns_exhausted')).toBe(true)
     expect(failureAwaitsAPerson('role_unavailable')).toBe(true)
+    expect(failureAwaitsAPerson('new_top_level_dir')).toBe(true)
 
     const stillRetried = FAIL_REASONS.filter((r: string) => !failureAwaitsAPerson(r))
     expect(stillRetried).toContain('provider_error')
     expect(stillRetried).toContain('liveness_killed')
     expect(stillRetried).toContain('runtime_offline')
     expect(stillRetried).toContain('tests_red')
-    expect(stillRetried).toHaveLength(FAIL_REASONS.length - 2)
+    // Самозамкнутый тест повтор СОХРАНЯЕТ: это дефект работы, и следующая попытка,
+    // прочитавшая причину на карточке, вполне может написать тест о продукте.
+    expect(stillRetried).toContain('self_referential_test')
+    expect(stillRetried).toHaveLength(FAIL_REASONS.length - 3)
 
     // Незнакомое слово повтор НЕ теряет: забыть причину в списке нельзя так, чтобы она молча
     // перестала повторяться.

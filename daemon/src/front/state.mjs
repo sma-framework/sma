@@ -299,6 +299,12 @@ export function parseReceiptSummary(receiptRef, { readReceipt } = {}) {
  *   reverify:<sha>          the code gate opened — the work was re-verified on the branch
  *   artifact:<path>@<sha>   a documentary stage really produced its document, and committed it
  *   answer:<attemptId>      the attempt correctly changed no code and answered instead
+ *   moot:<attemptId>@<ref>  the SUBJECT of the task no longer exists, and `<ref>` is what the
+ *                           daemon itself confirmed the finding on — a commit that closed the
+ *                           complaint, or a file that was read. Kept apart from `answer:`
+ *                           deliberately: «разобрался и ответил» and «предмета нет» send a
+ *                           person to two different places, and only the second one carries
+ *                           evidence a machine already re-checked
  *   preflight:<taskId>      the work was already on the branch before anybody was spawned
  *   forge:<...>             an agent draft passed its lint and was committed
  *
@@ -309,6 +315,7 @@ const RECEIPT_KINDS = Object.freeze([
   { kind: 'reverify', re: /^reverify:(.*)$/ },
   { kind: 'artifact', re: /^artifact:(.*)$/ },
   { kind: 'answer', re: /^answer:(.*)$/ },
+  { kind: 'moot', re: /^moot:(.*)$/ },
   { kind: 'preflight', re: /^preflight:(.*)$/ },
   { kind: 'forge', re: /^forge:(.*)$/ },
 ])
@@ -335,7 +342,7 @@ const RECEIPT_KINDS = Object.freeze([
  * summary is a different reader's job and is never dressed up as a verdict).
  *
  * @param {*} receiptRef
- * @returns {{kind:string, ref:string, path?:string, sha?:string, unverified?:boolean, reason?:string, branch?:string, base?:string, commits?:number, preexistingRed?:number, newRed?:number}|null}
+ * @returns {{kind:string, ref:string, path?:string, sha?:string, evidence?:string, unverified?:boolean, reason?:string, branch?:string, base?:string, commits?:number, preexistingRed?:number, newRed?:number}|null}
  */
 export function parseReceiptProof(receiptRef) {
   // ── THE OBJECT FORM: what the gate concluded when there was no receipt to point at ──
@@ -374,6 +381,13 @@ export function parseReceiptProof(receiptRef) {
       const path = at > 0 ? rest.slice(0, at) : rest
       const sha = at > 0 ? rest.slice(at + 1) : ''
       return { kind, ref, ...(path ? { path } : {}), ...(sha ? { sha } : {}) }
+    }
+    if (kind === 'moot') {
+      // `<attemptId>@<evidence>` — split on the LAST @ for the same reason artifact does:
+      // the evidence may be a path, and a path may legally carry one.
+      const at = rest.lastIndexOf('@')
+      const evidence = at > 0 ? rest.slice(at + 1) : ''
+      return { kind, ref, ...(evidence ? { evidence } : {}) }
     }
     if (kind === 'reverify') return { kind, ref, ...(rest ? { sha: rest } : {}) }
     return { kind, ref }
