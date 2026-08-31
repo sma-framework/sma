@@ -37,6 +37,12 @@ import { STATS_PERIOD, statsWords } from './history'
  * read near zero on a subscription a person had nearly spent in his own terminal, and a zero
  * bar is read as «free». A window nothing has been heard about now says «нет данных».
  *
+ * И ОТКАЗ СТОИТ НА СТРОКЕ СВОЕГО ОКНА. Раньше карточка прибивала слова о закрытии к строке
+ * «Окно (5 ч)» — какое бы окно на самом деле ни отказало, — потому что сам отказ имени окна не
+ * нёс. Работник мог читать «ждёт окно», а обе строки под ним — «принимает работу». Теперь окно
+ * называет себя само: демон записывает отказ на то окно, которое отказало, и строка этого окна
+ * говорит «исчерпано · откроется в HH:MM» тем же словарём, что и все остальные экраны.
+ *
  * И ПО РАБОТНИКУ МОЖНО НАЖАТЬ. До сих пор нажималась ровно одна вещь — название задачи в
  * руках, — то есть карточка отвечала на «чем он занят сейчас» и молчала на «а что он делал».
  * Имя работника открывает его историю; сами две цифры под именем — тоже кнопка, потому что
@@ -58,13 +64,6 @@ function pulseLabel(sec: number | undefined): string {
   return `${Math.round(sec / 3600)} ч`
 }
 
-/** The clock face of a moment, in the reader's own time. */
-function clockOf(iso: string): string {
-  const at = new Date(iso)
-  if (Number.isNaN(at.getTime())) return '—'
-  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
-}
-
 /**
  * One window: its name, and what the provider last said about it.
  *
@@ -75,20 +74,23 @@ function clockOf(iso: string): string {
  * hint, rather than on the line — the fact is the same fact either way, and a permanent word
  * beside every window would be noise on a card that has four lines to spend.
  */
-function WindowLine({ label, fact, override }: { label: string; fact: WindowFact | undefined; override?: string }) {
+function WindowLine({ label, fact }: { label: string; fact: WindowFact | undefined }) {
   const words = windowWords(fact)
-  const text = override ?? words.text
-  const unknown = !override && fact?.status !== 'open' && fact?.status !== 'exhausted'
-  const hint = override ? undefined : unknown ? WINDOW_UNKNOWN_HINT : fact?.source === 'terminal' ? WINDOW_TERMINAL_HINT : undefined
+  const unknown = fact?.status !== 'open' && fact?.status !== 'exhausted'
+  const hint = unknown ? WINDOW_UNKNOWN_HINT : fact?.source === 'terminal' ? WINDOW_TERMINAL_HINT : undefined
   return (
     <div className="min-w-0 flex-1" title={hint}>
       <div className="mb-1 text-[10.5px] whitespace-nowrap text-tx3">{label}</div>
-      <div className="flex items-center gap-[5px]">
-        <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${override ? 'bg-warn' : words.dot}`} />
-        <span className={`truncate text-[10.5px] ${!override && words.muted ? 'text-tx3' : 'text-tx2'}`}>{text}</span>
+      <div className="flex items-start gap-[5px]">
+        <span aria-hidden className={`mt-[5px] h-1.5 w-1.5 flex-none rounded-full ${words.dot}`} />
+        {/* WRAPS, NOT TRUNCATES. Half of what this line has to say is the HOUR — «исчерпано ·
+            откроется в 03:47» — and in a column this narrow the clipping fell exactly on it, so
+            a card could say «ждёт окно» over a row that stopped at «откро…». Two short lines are
+            cheaper than an answer the reader has to guess the end of. */}
+        <span className={`min-w-0 text-[10.5px] leading-[1.35] ${words.muted ? 'text-tx3' : 'text-tx2'}`}>{words.text}</span>
         {/* The percentage, in the same place and the same words «Расходы» puts it — and only
             when the provider sent one, which is why it was never drawn here before. */}
-        {!override && typeof fact?.pct === 'number' ? (
+        {typeof fact?.pct === 'number' ? (
           <span className="flex-none text-[10.5px] text-tx3 tabular-nums">{Math.round(fact.pct)}%</span>
         ) : null}
       </div>
@@ -120,7 +122,6 @@ export function WorkerCard({
   onOpenHistory: () => void
 }) {
   const win = worker.window
-  const closed = !!win.closedUntil
   const pulse = pulseLabel(worker.pulseAgeSec)
   const said = statsWords(stats)
 
@@ -164,11 +165,7 @@ export function WorkerCard({
       </div>
 
       <div className="flex items-start gap-4">
-        <WindowLine
-          label="Окно (5 ч)"
-          fact={win.fiveHour}
-          override={closed ? `откроется к ${clockOf(win.closedUntil as string)}` : undefined}
-        />
+        <WindowLine label="Окно (5 ч)" fact={win.fiveHour} />
         <WindowLine label="Неделя" fact={win.week} />
       </div>
 

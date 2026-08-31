@@ -147,7 +147,7 @@ import { WORKTREE_COPIES_DIR } from '../../scripts/sma/lib/constants.mjs'
 import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
-import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
+import { markWindowObserved, markWindowClosed, readingSaysExhausted, canonicalWindow } from './policy/windows.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage, claudeTokensFromResult, codexTokensFromFinal } from './runner/usage.mjs'
 import {
   readPendingRedirects,
@@ -1630,8 +1630,30 @@ function recordWindowReading(deps, subscription, event) {
     // stream has never once carried, which arrives here as 0 — so the condition was false on
     // every real machine and the refusal this call exists to persist was never written down.
     // It now fires on what the stream really says: the reading's own status.
+    //
+    // BUT ONLY FOR A WINDOW THAT CAN BE NAMED ON A SCREEN. This fired on ANY name, while the
+    // read model draws only the two windows it knows — and on 31.08.2026 the two disagreed at
+    // the worst possible place. The provider refused `seven_day_overage_included`, the weekly
+    // window with the paid overage folded in, on an account whose paid channel is off and whose
+    // ceiling is zero. Nothing about that name could reach a screen, and it shut the whole
+    // account for five days: thirty tasks queued, no worker busy, while the window that really
+    // governs answered `allowed_warning` at 74 % half an hour later. `canonicalWindow` is now
+    // the single answer to «which windows exist», asked here and by the read model alike.
     if (readingSaysExhausted(event) && Number.isFinite(Number(event.resetsAt))) {
-      markWindowClosed({ dataDir, accountName, resetAt: event.resetsAt, clock, fsImpl: deps.fsImpl })
+      if (canonicalWindow(event.limitType)) {
+        markWindowClosed({ dataDir, accountName, resetAt: event.resetsAt, limitType: event.limitType, clock, fsImpl: deps.fsImpl })
+      } else {
+        // NOT SILENTLY. The reading is already filed above; what is withheld is the right to
+        // stop the account, and an operator has to be able to see a refusal we declined to obey
+        // — by name, so a window that turns out to matter can be added to the list on evidence.
+        writeLog(deps, {
+          type: 'window-refusal-unnamed',
+          account: accountName,
+          limitType: event.limitType ?? null,
+          resetsAt: event.resetsAt ?? null,
+          status: event.status ?? null,
+        })
+      }
     }
   } catch (err) {
     writeLog(deps, { type: 'window-reading-error', account: accountName, error: String((err && err.message) || err) })

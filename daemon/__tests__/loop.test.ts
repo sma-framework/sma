@@ -2994,7 +2994,7 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
     const c = mkClock(now)
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
     await adapter.enqueue(backlogTask())
-    const { deps } = makeDeps({
+    const { deps, journalled } = makeDeps({
       adapter,
       clockObj: c,
       config: {
@@ -3015,7 +3015,7 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
       },
     })
     await tick(deps)
-    return { clock: c.clock }
+    return { clock: c.clock, journalled }
   }
 
   it('the window a worker was told about is the window «Расходы» shows, reset time and all', async () => {
@@ -3056,6 +3056,72 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
     expect(state.fiveHour.status).toBe('exhausted')
     expect(state.closedUntil).toBeDefined() // the refusal was PERSISTED, not merely noticed
     expect(isOpen(state, () => now)).toBe(false)
+  })
+
+  /**
+   * ═══════ THE REFUSAL THAT SHUT A SUBSCRIPTION FOR FIVE DAYS, ON THE REAL PATH ═══════
+   *
+   * 31.08.2026: the provider refused `seven_day_overage_included` — the weekly window with the
+   * paid overage folded in, on an account whose paid channel is off and whose ceiling is zero.
+   * The tick closed the WHOLE account until 05.09 on the strength of a name it has never been
+   * able to draw on any screen, and the conveyor stopped with thirty tasks queued. This runs
+   * that exact frame through the real tick and ends where the router looks.
+   */
+  it('a refusal on a window name we cannot draw is filed and LOGGED, and the account keeps working', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-unknown-'))
+    dirs.push(dataDir)
+    const now = RESETS_AT_SEC * 1000 - 60 * 60 * 1000
+    const refused = JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: RESETS_AT_SEC, rateLimitType: 'seven_day_overage_included', isUsingOverage: false },
+    })
+
+    const { journalled } = await tickWith(refused, dataDir, now)
+
+    const state = windowState({ account: { name: 'max-2' }, clock: () => now, dataDir })
+    expect(state.closedUntil).toBeUndefined()
+    expect(state.fiveHour.status).toBe('unknown')
+    expect(state.week.status).toBe('unknown')
+    expect(isOpen(state, () => now)).toBe(true) // thirty queued tasks keep moving
+
+    // Ignoring it silently would be the same bug wearing a quieter coat: the operator has to be
+    // able to see that a window nobody can name was refused, and to name it.
+    const noted = journalled.find((e: any) => e && e.type === 'window-refusal-unnamed')
+    expect(noted).toBeDefined()
+    expect(noted.limitType).toBe('seven_day_overage_included')
+    expect(noted.account).toBe('max-2')
+  })
+
+  /**
+   * «Ждёт окно» has to say WHICH window and until when. It used to say neither: the close sat at
+   * the top of the record with no window on it, the card pinned the words to the five-hour line
+   * whatever had really been refused, and a worker could read «ждёт окно» with both rows saying
+   * the subscription was taking work.
+   */
+  it('a refusal names the window it shut — «ждёт окно» never stands beside two open rows', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-named-'))
+    dirs.push(dataDir)
+    const now = RESETS_AT_SEC * 1000 - 60 * 60 * 1000
+    const refused = JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: RESETS_AT_SEC, rateLimitType: 'seven_day', isUsingOverage: false },
+    })
+
+    await tickWith(refused, dataDir, now)
+
+    const payload = await deriveState({
+      adapter: { async list() { return [] } },
+      windows: (account: any) => windowState({ account, clock: () => now, dataDir }),
+      config: { workers: [{ id: 'max-2', lane: 'prod', account: { name: 'max-2' } }], machineId: 'self' },
+      clock: () => now,
+    })
+
+    const worker = payload.workers[0]
+    expect(worker.presence).toBe('ждёт окно')
+    expect(worker.window.week.status).toBe('exhausted') // the shut window is named on its own row…
+    expect(worker.window.week.resetsAt).toBe(new Date(RESETS_AT_SEC * 1000).toISOString()) // …with the hour
+    expect(worker.window.fiveHour.status).toBe('unknown') // and the innocent window is not accused
+    expect(worker.window.closedUntil).toBeDefined()
   })
 
   it('a machine that has heard nothing says so — no reading is ever invented as a zero', async () => {
