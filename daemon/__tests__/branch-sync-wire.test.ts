@@ -303,6 +303,32 @@ describe('договор сдачи — дверь, которую работн�
     // Промпт, называющий несуществующий верб, — та же невыполнимая обязанность другой формы.
     expect(cli).toContain("'sync-branch': cmdSyncBranch")
   })
+
+  /**
+   * ТА ЖЕ БОЛЕЗНЬ СЛОЕМ НИЖЕ. Промпт велит развести оставшийся спор САМОМУ — и до этого случая
+   * не называл, ЧЕМ: отказ по умолчанию откатывает слияние целиком и уносит с собой разметку
+   * конфликта, единственное, чем спор разводится, а голый глагол слияния работнику отказан
+   * конвертом. Дверь для этого построена (`--keep` оставляет спор размеченным в дереве,
+   * `--abort` из него выводит), но дверь, о которой молчит единственный читаемый работником
+   * текст, для него не существует — ровно как поле, которого не называет дверь карточки.
+   * Поэтому оба флага проверяются и в промпте, и в самом вербе: заявление о читателе стоит
+   * одного грепа по тому, кто его исполняет.
+   */
+  it('промпт называет ДВЕРЬ развода — --keep и --abort, — и обе отвечают в вербе', () => {
+    const lines = promptLines()
+    expect(lines.some((l) => l.startsWith('node scripts/sma/cli.mjs sync-branch --keep'))).toBe(true)
+    expect(lines.some((l) => l.startsWith('node scripts/sma/cli.mjs sync-branch --abort'))).toBe(true)
+
+    const cli = readFileSync(join(import.meta.dirname, '..', '..', 'scripts', 'sma', 'cli.mjs'), 'utf8')
+    expect(cli).toContain('keepConflict: flags.keep === true')
+    expect(cli).toContain('flags.abort === true')
+
+    // …и то, чем промпт велит ДОВОДИТЬ оставленный спор, работнику разрешено: совет, который
+    // нечем исполнить, — та же невыполнимая обязанность, только записанная прозой.
+    for (const cmd of ['git add -- README.md', 'git commit --no-edit']) {
+      expect(classifyForWorker('Bash', { command: cmd }).dangerous).toBe(false)
+    }
+  })
 })
 
 /**
