@@ -50,6 +50,21 @@
  * Saying so is better than silence: the owner learns the bot is alive and that this particular
  * thing is not built yet.
  *
+ * ═══════════════ ЦИКЛ, КОТОРЫЙ НЕ ИМЕЕТ ПРАВА ВСТАТЬ ════════════════════════════════
+ * Окно раздаёт тот же процесс, и тик конвейера идёт в том же процессе. Значит цикл опроса —
+ * сосед двери и тика, и его беда становится их бедой. 29.08 это и случилось: журнал шёл стеной
+ * «getUpdates: This operation was aborted», дверь висела при живом процессе, и оба штатных
+ * стопа того дня сказали «дверь молчит, а процесс жив».
+ *
+ * Отсюда три обещания, и все три проверяются подделками, а не живой связью:
+ *   1. У КРУГА ЕСТЬ ПОТОЛОК, свой собственный (`roundTimeoutMs`), а не только у клиента: клиент
+ *      здесь внедряемый, и обещание не имеет права держаться на том, кем его подменили.
+ *      Просроченный круг ОБРЫВАЮТ и бросают — «подождать ещё немного» и значит встать.
+ *   2. ПАУЗА ПОСЛЕ ОТКАЗА РАСТЁТ до потолка, а не остаётся постоянной: отказ, который не
+ *      проходит сам, иначе повторяется с той же частотой до утра.
+ *   3. ОДИНАКОВЫЕ ОТКАЗЫ СХЛОПЫВАЮТСЯ в несколько строк со счётом. Шестьдесят одинаковых строк
+ *      сообщают ровно столько же, сколько одна, и стоят журнала, в котором больше ничего не видно.
+ *
  * ═══════════════ THE TOKEN, AGAIN, AT THE LOG ═══════════════════════════════════════
  * Every word this loop logs passes `redactBotToken` a second time. The client already reduces
  * everything it produces; this belt is here because a log line is assembled from more than one
@@ -59,6 +74,7 @@
 import {
   createTelegramClient,
   redactBotToken,
+  TELEGRAM_CALL_TIMEOUT_MS,
   telegramBotToken,
   telegramChatId,
   telegramConfigured,
@@ -106,8 +122,31 @@ export const TYPING_INTERVAL_MS = 4000
 /** How long the Bot API holds one poll open, in seconds. */
 export const POLL_TIMEOUT_SECONDS = 25
 
-/** How long the loop waits after a refused round before asking again. */
+/** How long the loop waits after the FIRST refused round before asking again. */
 export const POLL_BACKOFF_MS = 5000
+
+/**
+ * И ДО КАКОЙ ПАУЗЫ ОНА ДОРАСТАЕТ, пока отказы идут подряд.
+ *
+ * ЗАМЕР 29.08: журнал демона шёл стеной «telegram getUpdates: This operation was aborted» —
+ * строка за строкой, начиная сразу после «All systems green». Пауза была ПОСТОЯННОЙ, поэтому
+ * отказ, который не проходит сам собой (сеть легла, токен отозвали, круг не укладывается в
+ * срок), повторялся ровно с той же частотой хоть до утра: журнал становился стеной, в которой
+ * не видно ничего другого, а цикл всё это время оставался занятым бесполезной работой.
+ * Удвоение до потолка — тот же ответ, что у сторожа на неудавшийся подъём: повтор, который не
+ * помог, не станет помогать чаще, если повторять его настойчивее.
+ */
+export const POLL_BACKOFF_MAX_MS = 60000
+
+/**
+ * ЖЁСТКИЙ ПОТОЛОК ОДНОГО КРУГА ОПРОСА — последний рубеж, за которым круг бросают.
+ *
+ * У клиента есть свой срок на вызов, и он честный. Но клиент здесь ВНЕДРЯЕМЫЙ, а обещание
+ * «цикл не заклинит» не имеет права зависеть от того, кем его подменили: круг, который не
+ * ответил вовсе, обязан кончиться и здесь. Потолок нарочно ВЫШЕ клиентского срока — иначе он
+ * обрывал бы обычные долгие опросы вместо того, чтобы ловить заклинившие.
+ */
+export const POLL_ROUND_TIMEOUT_MS = POLL_TIMEOUT_SECONDS * 1000 + 2 * TELEGRAM_CALL_TIMEOUT_MS
 
 /** Which updates are asked for at all — step one reads messages and nothing else. */
 export const ALLOWED_UPDATES = Object.freeze(['message'])
@@ -230,6 +269,8 @@ export function createTelegramBridge({
   // который держал бы о том же второе мнение, однажды разошёлся бы с ним.
   onPaired,
   now = Date.now,
+  // Потолок одного круга — внедряем, потому что проверять его настоящими минутами нельзя.
+  roundTimeoutMs = POLL_ROUND_TIMEOUT_MS,
 } = {}) {
   if (!telegramConfigured(config)) return null
 
@@ -423,16 +464,78 @@ export function createTelegramBridge({
     return actions
   }
 
+  /**
+   * ОДИН КРУГ ПОД ЖЁСТКИМ ПОТОЛКОМ. Проигравший гонку круг БРОСАЕТСЯ, а не дожидается: цикл,
+   * который «ещё немного подождёт» зависший опрос, и есть цикл, который встал. Перед тем как
+   * бросить, опрос обрывают явно — сокет, о котором забыли, живёт своей жизнью.
+   */
+  async function guardedRound() {
+    let timer = null
+    const round = pollOnce(aborter ? { signal: aborter.signal } : {})
+    try {
+      return await Promise.race([
+        round,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            if (aborter) {
+              try {
+                aborter.abort()
+              } catch {
+                /* an abort that refuses never stops the loop */
+              }
+            }
+            reject(new Error(`круг опроса не уложился в ${Math.round(roundTimeoutMs / 1000)} с`))
+          }, roundTimeoutMs)
+          if (timer && typeof timer.unref === 'function') timer.unref()
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
   async function run() {
+    // ШТОРМ ОДИНАКОВЫХ ОТКАЗОВ СХЛОПЫВАЕТСЯ. Один и тот же отказ, повторённый шестьдесят раз,
+    // сообщает ровно столько же, сколько один, — а стоит журнала, в котором больше ничего не
+    // видно. Поэтому новый отказ говорится сразу, а повтор — только когда счёт УДВАИВАЕТСЯ:
+    // 1, 2, 4, 8… Так шестьдесят четыре строки становятся семью, и ни один отказ не пропадает.
+    let backoffMs = POLL_BACKOFF_MS
+    let sameRefusal = ''
+    let sameCount = 0
+    let saidAt = 0
+
+    const sayRefusal = (text) => {
+      if (text !== sameRefusal) {
+        sameRefusal = text
+        sameCount = 1
+        saidAt = 1
+        say(`telegram: опрос не прошёл — ${text}`)
+        return
+      }
+      sameCount += 1
+      if (sameCount >= saidAt * 2) {
+        saidAt = sameCount
+        say(`telegram: тот же отказ опроса подряд ${sameCount} раз — ${text}`)
+      }
+    }
+
     while (running) {
       aborter = typeof AbortController === 'function' ? new AbortController() : null
       try {
-        await pollOnce(aborter ? { signal: aborter.signal } : {})
+        await guardedRound()
+        // Круг прошёл — счёт отказов закрывается вслух, иначе последняя строка журнала о
+        // телеграме навсегда осталась бы жалобой на связь, которая давно вернулась.
+        if (sameCount > 0) say(`telegram: опрос снова проходит (отказов подряд было ${sameCount}).`)
+        sameRefusal = ''
+        sameCount = 0
+        saidAt = 0
+        backoffMs = POLL_BACKOFF_MS
       } catch (err) {
         // A stop aborts the poll in flight: that refusal is the shutdown working, not a fault.
         if (!running) break
-        say(`telegram: опрос не прошёл — ${(err && err.message) || err}`)
-        await sleep(POLL_BACKOFF_MS)
+        sayRefusal(String((err && err.message) || err))
+        await sleep(backoffMs)
+        backoffMs = Math.min(backoffMs * 2, POLL_BACKOFF_MAX_MS)
       } finally {
         aborter = null
       }

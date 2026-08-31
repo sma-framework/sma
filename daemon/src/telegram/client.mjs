@@ -36,7 +36,13 @@ export const TELEGRAM_API_BASE = 'https://api.telegram.org'
 /** What a credential looks like after this module is done with it. */
 export const REDACTED_BOT_PATH = 'bot[REDACTED]'
 
-/** How long one ordinary call may take before it is abandoned (a long poll names its own). */
+/**
+ * How long one ordinary call may take before it is abandoned (a long poll names its own).
+ *
+ * ЭТО ЖЁСТКИЙ СРОК, А НЕ ПОЖЕЛАНИЕ: он накрывает и запрос, и ЧТЕНИЕ ТЕЛА ответа (см.
+ * `withDeadline`). Величина внедряется на клиента (`callTimeoutMs`), потому что проверять её
+ * настоящими двадцатью секундами — значит не проверять её вовсе.
+ */
 export const TELEGRAM_CALL_TIMEOUT_MS = 20000
 
 /** Named error for a call made with no token in the config — a refusal, never a call. */
@@ -130,10 +136,27 @@ export function telegramApiBase(config) {
  * A deadline for one request: this module's own timer, plus the caller's signal when it has
  * one. Both abort the SAME controller, so the transport sees a single signal and the caller
  * (the polling loop, stopping) does not have to know about the timer.
+ *
+ * ═══════════════ AND IT COVERS THE BODY, NOT JUST THE HEADERS ═══════════════════════
+ * ЗАМЕР 29.08: в журнале демона шёл шторм «getUpdates: This operation was aborted», дверь
+ * висела при живом процессе, и опрос стоял. Срок здесь снимался в `finally` САМОГО fetch, а
+ * тело ответа читалось уже без него — то есть ответ, у которого пришли заголовки и не пришло
+ * тело, висел БЕЗ ПОТОЛКА и держал цикл опроса столько, сколько сокет соглашался жить.
+ * Abort такому чтению не обязан помочь: не всякий транспорт отдаёт отказ на полпути.
+ *
+ * Поэтому у срока теперь ДВА конца: сигнал (транспорту — прекрати) и `guard` — гонка любого
+ * ожидания с тем же сроком, которая ОТКАЗЫВАЕТ, даже если внизу никто не отказал. Первый —
+ * вежливая просьба, второй — жёсткий таймаут, и обещание «вызов кончится» держит именно он.
  */
 function withDeadline({ signal, timeoutMs }) {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  let expired = false
+  let onExpiry = null
+  const timer = setTimeout(() => {
+    expired = true
+    controller.abort()
+    if (onExpiry) onExpiry()
+  }, timeoutMs)
   if (timer && typeof timer.unref === 'function') timer.unref()
   const onAbort = () => controller.abort()
   if (signal) {
@@ -142,8 +165,24 @@ function withDeadline({ signal, timeoutMs }) {
   }
   return {
     signal: controller.signal,
+    /** Истёк ли срок — читается ПОСЛЕ отказа, чтобы назвать причину его именем. */
+    expired: () => expired,
+    /**
+     * Ожидание под тем же сроком. Проигравшая гонку работа брошена, а не дождана: «дождаться»
+     * её и значило бы не иметь потолка вовсе.
+     */
+    guard(work) {
+      if (expired) return Promise.reject(new TelegramApiError('telegram: срок вызова истёк'))
+      return Promise.race([
+        work,
+        new Promise((_, reject) => {
+          onExpiry = () => reject(new TelegramApiError('telegram: срок вызова истёк'))
+        }),
+      ])
+    },
     done() {
       clearTimeout(timer)
+      onExpiry = null
       if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', onAbort)
     },
   }
@@ -156,12 +195,12 @@ function withDeadline({ signal, timeoutMs }) {
  *
  * @param {{config:object, fetchImpl?:Function, apiBase?:string}} o
  */
-export function createTelegramClient({ config, fetchImpl, apiBase = TELEGRAM_API_BASE } = {}) {
+export function createTelegramClient({ config, fetchImpl, apiBase = TELEGRAM_API_BASE, callTimeoutMs = TELEGRAM_CALL_TIMEOUT_MS } = {}) {
   /**
    * One Bot API method. Everything that could carry the credential is reduced before it is
    * put into an error, and no error from below is re-thrown as it arrived.
    */
-  async function call(method, payload, { signal, timeoutMs = TELEGRAM_CALL_TIMEOUT_MS } = {}) {
+  async function call(method, payload, { signal, timeoutMs = callTimeoutMs } = {}) {
     const token = telegramBotToken(config)
     if (!token) {
       // The message names the FIELD, never a value: this is the one branch where the config
@@ -174,37 +213,48 @@ export function createTelegramClient({ config, fetchImpl, apiBase = TELEGRAM_API
     const url = `${apiBase}/bot${token}/${method}`
     const deadline = withDeadline({ signal, timeoutMs })
 
-    let res
+    // ОДИН `finally` НА ВЕСЬ ВЫЗОВ — и это не стиль, а сам потолок: срок, снятый после
+    // заголовков, оставляет чтение тела без ограничения (см. `withDeadline`).
     try {
-      res = await doFetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload ?? {}),
-        signal: deadline.signal,
-      })
-    } catch (err) {
-      // The transport quotes the url it failed on — this is the line that would otherwise
-      // write the owner's credential into the daemon log.
-      throw new TelegramApiError(`telegram ${method}: ${safe((err && err.message) || err)}`)
+      let res
+      try {
+        res = await deadline.guard(
+          doFetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload ?? {}),
+            signal: deadline.signal,
+          }),
+        )
+      } catch (err) {
+        // The transport quotes the url it failed on — this is the line that would otherwise
+        // write the owner's credential into the daemon log.
+        if (deadline.expired()) throw new TelegramApiError(`telegram ${method}: ответа не дождался за ${timeoutMs} мс`)
+        throw new TelegramApiError(`telegram ${method}: ${safe((err && err.message) || err)}`)
+      }
+
+      let body = null
+      try {
+        body = await deadline.guard(res.json())
+      } catch (err) {
+        // Истёкший срок — ОТКАЗ, а не «ответ, который не разобрался»: молча приняв его за
+        // второе, вызов вернул бы «HTTP 200 без результата» над висящим сокетом.
+        if (deadline.expired()) throw new TelegramApiError(`telegram ${method}: тела ответа не дождался за ${timeoutMs} мс`)
+        void err
+        body = null // a non-JSON answer is still an answer; the status below is what names it
+      }
+      if (!res || res.ok !== true) {
+        const detail = body && body.description ? `: ${safe(body.description)}` : ''
+        throw new TelegramApiError(`telegram ${method} answered HTTP ${(res && res.status) ?? '?'}${detail}`)
+      }
+      if (!body || body.ok !== true) {
+        const detail = body && body.description ? safe(body.description) : 'the answer carried no result'
+        throw new TelegramApiError(`telegram ${method} refused: ${detail}`)
+      }
+      return body.result
     } finally {
       deadline.done()
     }
-
-    let body = null
-    try {
-      body = await res.json()
-    } catch {
-      body = null // a non-JSON answer is still an answer; the status below is what names it
-    }
-    if (!res || res.ok !== true) {
-      const detail = body && body.description ? `: ${safe(body.description)}` : ''
-      throw new TelegramApiError(`telegram ${method} answered HTTP ${(res && res.status) ?? '?'}${detail}`)
-    }
-    if (!body || body.ok !== true) {
-      const detail = body && body.description ? safe(body.description) : 'the answer carried no result'
-      throw new TelegramApiError(`telegram ${method} refused: ${detail}`)
-    }
-    return body.result
   }
 
   return {
@@ -238,7 +288,7 @@ export function createTelegramClient({ config, fetchImpl, apiBase = TELEGRAM_API
           timeout,
           ...(Array.isArray(allowedUpdates) ? { allowed_updates: allowedUpdates } : {}),
         },
-        { signal, timeoutMs: Math.max(TELEGRAM_CALL_TIMEOUT_MS, (Number(timeout) || 0) * 1000 + TELEGRAM_CALL_TIMEOUT_MS) },
+        { signal, timeoutMs: Math.max(callTimeoutMs, (Number(timeout) || 0) * 1000 + callTimeoutMs) },
       )
       return Array.isArray(result) ? result : []
     },

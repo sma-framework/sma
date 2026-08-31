@@ -47,6 +47,20 @@ host-agnostic by design; the OS binding is a thin supervisor layer only).
   looping. The output of every lift lands in `daemon-lift-<day>.log` beside the daemon's log, on
   every platform: `lift-log.mjs` owns that one spawn for both the watchdog and `daemon-control.mjs`,
   because where the output goes is a property of the lift and not of each caller.
+- **And a daemon that is ALIVE can still be dead to everyone outside it.** Measured: the process
+  was up (56 MB, CPU running) while `GET /` hung to the timeout three probes in a row, and the jam
+  held for ten minutes with the watchdog running. The watchdog was not broken — it declared the
+  fall and started three lifts. There was simply nowhere to lift *to*: the port was held by the very
+  process that had stopped answering, so every lift lost the race for one address. So «alive, and the
+  door has been silent for a series of knocks» is now called a death and treated as one: **stop
+  first, lift second**, and never by hunting the process table — the process is named by its own
+  record, exactly as `daemon-control.mjs` names it. Two measurements bound the patience. The door's
+  own latency under load is recorded in the code (`MEASURED_DOOR_LATENCY_MS`) and one knock waits a
+  multiple of it, because a watchdog that kills healthy daemons is worse than no watchdog; and the
+  first minutes after a lift are the daemon's start-up sweep of old working copies (~45 s measured,
+  up to ~2 minutes observed), which is «loading», not «jammed» — the difference is read from the
+  recorded start time of the process, not guessed. The boot now opens the door BEFORE that sweep
+  rather than after it, so the silence the watchdog had to forgive is largely gone at the source.
 - **And the watchdog gets a unit of its own,** because a watchdog started from a terminal lives
   exactly as long as that terminal: `sma-daemon-watch-windows.task.xml` (at logon, two minutes
   after the daemon's own task, with `RestartOnFailure` under it) and its macOS twin

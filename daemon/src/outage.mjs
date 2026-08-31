@@ -102,6 +102,10 @@ export function readOutage({ config = {}, io = {}, fsImpl = {} } = {}) {
       fallNotifiedAt: typeof raw.fallNotifiedAt === 'string' ? raw.fallNotifiedAt : null,
       fallNotice: typeof raw.fallNotice === 'string' ? raw.fallNotice : '',
       lifts: Array.isArray(raw.lifts) ? raw.lifts.filter((l) => l && typeof l.at === 'string') : [],
+      // КОГО СТОРОЖ ПОГАСИЛ — читается той же записью, что и подъёмы, и по той же причине:
+      // сторож, перезапущенный посреди провала, обязан продолжить чужую историю целиком, а
+      // не ту её половину, которую умеет прочитать.
+      kills: Array.isArray(raw.kills) ? raw.kills.filter((k) => k && typeof k.at === 'string') : [],
       // О НЕУДАВШЕМСЯ ПОДЪЁМЕ ГОВОРЯТ ОДИН РАЗ, И ПОМНИТ ОБ ЭТОМ ЗАПИСЬ, А НЕ ПРОЦЕСС. Сторож,
       // перезапущенный посреди провала, обязан продолжить чужую историю: не повторять уже
       // сказанное и не начинать заново цикл подъёмов, от которого уже отказались.
@@ -226,6 +230,11 @@ export function closeOutage({
     door: marker.door || doorUrl(config),
     fallNotifiedAt: marker.fallNotifiedAt ?? null,
     fallNotice: marker.fallNotice ?? '',
+    // ПОГАШЕННЫЙ ЗАВИСШИЙ — САМОЕ СИЛЬНОЕ ДЕЙСТВИЕ, НА КОТОРОЕ СТОРОЖ СПОСОБЕН, и квитанция
+    // обязана его назвать. «Дверь молчала, потом ответила» и «дверь молчала, я убил процесс,
+    // который её держал, и поднял новый» — разные истории одного провала, и по вторым потом
+    // объясняют потерянную попытку. Список, а не флаг: попыток лечения бывает несколько.
+    kills: Array.isArray(marker.kills) ? marker.kills : [],
     lifts: settleLifts(marker.lifts, stamp(doorBackAt), falseAlarm),
     liftFailNotifiedAt: marker.liftFailNotifiedAt ?? null,
     liftFailNotice: marker.liftFailNotice ?? '',

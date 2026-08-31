@@ -11,7 +11,8 @@
  *   node supervisor/daemon-watch.mjs --once     один круг и выход — для проверки и для крона
  *
  *   --poll <сек>      как часто стучаться в дверь (по умолчанию 15)
- *   --misses <N>      сколько молчаний подряд считать падением (по умолчанию 3)
+ *   --misses <N>      сколько ОТКАЗОВ в соединении подряд считать падением (по умолчанию 3;
+ *                     у истёкших ожиданий свой, заметно больший счёт — см. watch.mjs)
  *   --cooldown <сек>  выдержка перед вторым подъёмом, дальше удваивается (по умолчанию 120)
  *   --lift-wait <сек> сколько запущенный подъём ждёт живой двери (по умолчанию 90)
  *   --tries <N>       сколько подъёмов подряд, прежде чем звать человека (по умолчанию 3)
@@ -19,7 +20,8 @@
  * Из корня проекта то же самое: `npm run daemon:watch`.
  *
  * ЧТО ОН ДЕЛАЕТ, КОГДА ДВЕРЬ ЗАМОЛЧАЛА. Говорит человеку в телеграм — сам, потому что тот,
- * кто мог бы сказать, и есть покойник, — и запускает ТОТ ЖЕ подъём, что и супервизор. Слова
+ * кто мог бы сказать, и есть покойник, — ГАСИТ зависший процесс, если тот ещё жив (подъём над
+ * живым зависшим лишь проигрывает гонку за его же порт), и запускает ТОТ ЖЕ подъём. Слова
  * «поднялся» он не говорит: оно принадлежит поднявшемуся демону, который скажет его после
  * того, как его собственная дверь ответит (daemon/src/outage.mjs). Зато слово «поднять не
  * смог» — его и больше ничьё: запущенный подъём он доводит до ИСХОДА (ждёт живой двери,
@@ -40,7 +42,17 @@ import { dirname, join } from 'node:path'
 
 import { loadConfig, resolveConfigPath } from '../daemon/src/config.mjs'
 import { doorUrl, liftCommand } from '../daemon/src/control.mjs'
-import { createWatch, LIFT_ATTEMPTS_MAX, LIFT_COOLDOWN_MS, LIFT_DOOR_WAIT_MS, MISSES_TO_DECLARE, POLL_MS } from '../daemon/src/watch.mjs'
+import {
+  createWatch,
+  KNOCK_TIMEOUT_MS,
+  LIFT_ATTEMPTS_MAX,
+  LIFT_COOLDOWN_MS,
+  LIFT_DOOR_WAIT_MS,
+  MISSES_TO_DECLARE,
+  POLL_MS,
+  STARTUP_GRACE_MS,
+  TIMEOUT_MISSES_TO_DECLARE,
+} from '../daemon/src/watch.mjs'
 import { spawnLiftLogged, tailLiftLog } from './lift-log.mjs'
 
 /** say — один голос на всю команду, чтобы скрипт мог грепать префикс. */
@@ -77,7 +89,7 @@ async function main(argv) {
         '  node supervisor/daemon-watch.mjs --once     один круг и выход',
         '',
         '  --poll <сек>      как часто стучаться (по умолчанию 15)',
-        '  --misses <N>      молчаний подряд до объявления падения (по умолчанию 3)',
+        '  --misses <N>      отказов в соединении подряд до объявления падения (по умолчанию 3)',
         '  --cooldown <сек>  выдержка перед вторым подъёмом, дальше удваивается (по умолчанию 120)',
         '  --lift-wait <сек> сколько запущенный подъём ждёт живой двери (по умолчанию 90)',
         '  --tries <N>       подъёмов подряд, прежде чем звать человека (по умолчанию 3)',
@@ -124,8 +136,10 @@ async function main(argv) {
   }
 
   say(
-    `сторожу ${doorUrl(config)}: стук раз в ${Math.round(pollMs / 1000)} с, падение — ${misses} молчания подряд, ` +
-      `подъём ждёт живой двери ${Math.round(liftDoorWaitMs / 1000)} с, попыток ${tries} с выдержкой от ${Math.round(liftCooldownMs / 1000)} с.`,
+    `сторожу ${doorUrl(config)}: стук раз в ${Math.round(pollMs / 1000)} с с терпением ${Math.round(KNOCK_TIMEOUT_MS / 1000)} с, ` +
+      `падение — ${misses} отказа в соединении подряд либо ${TIMEOUT_MISSES_TO_DECLARE} истёкших ожиданий; ` +
+      `живой, но молчащий процесс гашу перед подъёмом, а молчание первых ${Math.round(STARTUP_GRACE_MS / 1000)} с после старта считаю уборкой. ` +
+      `Подъём ждёт живой двери ${Math.round(liftDoorWaitMs / 1000)} с, попыток ${tries} с выдержкой от ${Math.round(liftCooldownMs / 1000)} с.`,
   )
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, () => {
