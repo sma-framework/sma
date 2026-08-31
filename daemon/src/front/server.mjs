@@ -1716,6 +1716,11 @@ async function handleEnqueue({ req, res, config, deps }) {
         'provider',
         'model',
         'effort',
+        // КОГО ЧЕЛОВЕК ПРОСИТ НА ЭТУ РАБОТУ. Поле необязательное, и его отсутствие означает
+        // «исполнителя», а не «кого угодно»: редкий случай, когда владельцу нужен на инлайн-
+        // задаче исследователь, становится тут ЯВНЫМ выбором. Стоит рядом с провайдером,
+        // моделью и усилием, потому что это переопределение маршрута того же рода.
+        'role',
         'priority',
         'description',
         'acceptance',
@@ -1738,6 +1743,7 @@ async function handleEnqueue({ req, res, config, deps }) {
     ...(b.provider !== undefined ? { provider: b.provider } : {}),
     ...(b.model !== undefined ? { model: b.model } : {}),
     ...(b.effort !== undefined ? { effort: b.effort } : {}),
+    ...(b.role !== undefined ? { role: b.role } : {}),
     ...(b.priority !== undefined ? { priority: b.priority } : {}),
     ...(b.description !== undefined ? { description: b.description } : {}),
     ...(b.acceptance !== undefined ? { acceptance: b.acceptance } : {}),

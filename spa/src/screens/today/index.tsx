@@ -156,7 +156,10 @@ export function Screen() {
           <h1 className="m-0 text-[15px] font-semibold tracking-[-0.01em] text-tx">Сегодня</h1>
           <p className="m-0 mt-0.5 truncate text-[12px] text-tx2">{parts.join(' · ')}</p>
         </div>
-        <TeamStrip workers={data?.workers ?? []} />
+        {/* ЛЕНТА — ПРО ТЕХ, КТО РАЗБИРАЕТ ОЧЕРЕДЬ. Первые шесть кружков по порядку строк конфига
+            рисовали специалистов, которых очередь не раздаёт вовсе: утренний экран показывал
+            «кто сегодня работает» списком тех, кто сегодня не работает. */}
+        <TeamStrip workers={(data?.workers ?? []).filter((w) => w.inQueue)} />
       </header>
 
       {state.isError ? <OfflineLine /> : null}

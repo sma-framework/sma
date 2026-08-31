@@ -148,6 +148,10 @@ import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted, canonicalWindow } from './policy/windows.mjs'
+// РОЛИ ПУЛА — ЧИТАЮТСЯ ТЕМ ЖЕ ВЫРАЖЕНИЕМ, КАКИМ ИХ ЧИТАЕТ МАРШРУТИЗАТОР. Проба пригодности
+// полосы обязана спрашивать ровно то же, что спросят при захвате: разойдясь, они начнут
+// объявлять полосу пригодной для того, кого маршрут потом не выберет.
+import { EXECUTOR_ROLE, roleOf } from './policy/worker-role.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage, claudeTokensFromResult, codexTokensFromFinal } from './runner/usage.mjs'
 import {
   readPendingRedirects,
@@ -3022,13 +3026,40 @@ function detectMarker(lines) {
  * live in routing.mjs, never re-encoded here). A lane is eligible when a lane-probe yields
  * a workerId or an explicit API fallback. Eligibility is derived BEFORE the claim on
  * purpose: the per-lane queues make a claimed task runnable by construction.
+ *
+ * ПРОБА ЗАДАЁТСЯ ПО КАЖДОЙ РОЛИ, КОТОРАЯ В ПУЛЕ ЕСТЬ, А НЕ ОДНА БЕЗРОЛЕВАЯ. Задача без слова о
+ * роли просит исполнителя, поэтому одна такая проба спрашивала бы ровно «свободен ли
+ * исполнитель» — и полоса, на которой ждёт работа, названная специалистом поимённо, оказалась
+ * бы непригодной в тот момент, когда исполнители заняты, а названный специалист свободен.
+ * Задача осталась бы в очереди, и сказать о ней было бы нечего: пригодность решается ДО
+ * захвата, то есть до того, как хоть кто-то посмотрел на строку. Проб столько, сколько в пуле
+ * РАЗНЫХ ролей (обычно одна-две), и полоса пригодна, если хоть одна из них нашла бегущего.
+ *
+ * ПУСТОЙ ПУЛ ПРОБУЕТСЯ ВСЁ РАВНО — ролью исполнителя: ответ на такой пробе даёт не работник, а
+ * денежное правило (платный канал), и потерять эту пробу значило бы потерять сам переход на
+ * платный канал на машине без работников.
  */
 function eligibleLanes(deps) {
   const { routing, config, windows, clock } = deps
+  const workers = Array.isArray(config.workers) ? config.workers : []
+  // РАЗНЫЕ РОЛИ СОБИРАЮТСЯ СПИСКОМ И `includes`, А НЕ МНОЖЕСТВОМ. Дисциплина этого файла —
+  // никаких ключевых коллекций в памяти процесса (журнал стережёт её grep-ом): состояние тика
+  // живёт в очереди и на диске, а не в структуре, которая переживает перезапуск только в
+  // головах. Ролей в пуле обычно одна-две, и цена линейного поиска здесь — ничто.
+  const roles = []
+  for (const w of workers) {
+    if (!w || w.enabled === false) continue
+    const role = roleOf(w)
+    if (!roles.includes(role)) roles.push(role)
+  }
+  if (roles.length === 0) roles.push(EXECUTOR_ROLE)
   const out = []
   for (const lane of LANES) {
-    const decision = routing.resolveRoute({ lane }, { workers: config.workers, windows, clock, config })
-    if (decision && (decision.workerId || decision.useApiFallback)) out.push(lane)
+    const runnable = roles.some((role) => {
+      const decision = routing.resolveRoute({ lane, role }, { workers, windows, clock, config })
+      return decision && (decision.workerId || decision.useApiFallback)
+    })
+    if (runnable) out.push(lane)
   }
   return out
 }

@@ -35,6 +35,29 @@ function Cell({ text, dim = false }: { text: string | undefined; dim?: boolean }
   )
 }
 
+/**
+ * Три состояния строки, и разница между двумя первыми — та самая, ради которой эта таблица и
+ * читается: кто возьмёт задачу сам, а кого надо позвать.
+ */
+function State({ worker }: { worker: RulesWorker | undefined }) {
+  const enabled = worker?.enabled === true
+  const inQueue = worker?.inQueue === true
+  const dot = inQueue ? 'bg-green' : enabled ? 'bg-teal' : 'bg-tx3'
+  const text = inQueue ? 'в очереди' : enabled ? 'по вызову' : 'выключен'
+  const hint = inQueue
+    ? 'Разбирает очередь: инлайн-задачи и куски сборок'
+    : enabled
+      ? `Включён, но из очереди сам не берёт: роль «${worker?.role ?? '—'}» зовут поимённо при постановке или поднимает фаза`
+      : 'Выключен: не берёт ничего и по имени тоже'
+
+  return (
+    <span className="flex items-center gap-[7px]" title={hint}>
+      <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${dot}`} />
+      <span className={`text-[11.5px] ${inQueue ? 'text-tx2' : 'text-tx3'}`}>{text}</span>
+    </span>
+  )
+}
+
 export function LaneTable({ lanes, workers }: { lanes: RulesLane[]; workers: RulesWorker[] }) {
   if (workers.length === 0) {
     return (
@@ -82,15 +105,13 @@ export function LaneTable({ lanes, workers }: { lanes: RulesLane[]; workers: Rul
               <Cell text={w?.model} />
               <Cell text={w?.effort} />
               <Cell text={w?.account} />
-              <span className="flex items-center gap-[7px]">
-                <span
-                  aria-hidden
-                  className={`h-1.5 w-1.5 flex-none rounded-full ${w?.enabled ? 'bg-green' : 'bg-tx3'}`}
-                />
-                <span className={`text-[11.5px] ${w?.enabled ? 'text-tx2' : 'text-tx3'}`}>
-                  {w?.enabled ? 'включён' : 'выключен'}
-                </span>
-              </span>
+              {/*
+                СОСТОЯНИЙ ТРИ, А НЕ ДВА. «Включён» отвечало на вопрос «стоит ли галочка», а
+                человек читает эту колонку как ответ на другой — «возьмёт ли он мою задачу».
+                Для включённого специалиста эти два ответа расходятся: галочка стоит, а из
+                очереди он не берёт ничего, его зовут поимённо или поднимает фаза.
+              */}
+              <State worker={w} />
             </div>
           )
         }),

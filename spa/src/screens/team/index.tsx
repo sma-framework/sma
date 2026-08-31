@@ -34,6 +34,18 @@ import { WorkerHistory } from './WorkerHistory'
  * the period now rides in the payload and the screen only prints it, with «за 30 дней» said in
  * words beside the figures.
  *
+ * РАБОТНИКИ И АГЕНТЫ — ЭТО РАЗНОЕ, И ЭКРАН НАКОНЕЦ ЭТО ГОВОРИТ. Раньше здесь была одна сетка на
+ * сорок пять карточек, и над ней было написано «Команда»: включённый исследователь выглядел
+ * ровно как включённый исполнитель, хотя работу они берут по-разному. Теперь их две, и разница
+ * названа словами:
+ *   • РАБОТНИКИ — исполнители. Они разбирают очередь: инлайн-задачи и куски сборок. Счётчики в
+ *     шапке считают ТОЛЬКО их, потому что «работают / ждут окно / свободны» — это слова про тех,
+ *     кто берёт задачи.
+ *   • АГЕНТЫ — специалисты. Их поднимает фаза внутри своей работы, и на инлайн-задачу их зовут
+ *     ПОИМЁННО. Сами по себе они из очереди не берут ничего — ни при каком порядке строк.
+ * Признак приезжает СЧИТАННЫМ (`workers[].inQueue`, `workers[].role`): экран, решающий это сам,
+ * стал бы вторым мнением о том, кого выберет маршрутизатор.
+ *
  * И РАБОТНИК ТЕПЕРЬ ОТКРЫВАЕТСЯ. По имени (и по самим цифрам) открывается его история —
  * `workers[].history`, работы, которые он вёл, с исходом каждой и с переходом в карточку
  * любой из них. Она приезжает тем же одним чтением и из того же прохода по леджеру, что и
@@ -183,10 +195,67 @@ function PathStrip({ workers }: { workers: WorkerRow[] }) {
   )
 }
 
+/**
+ * Одна сетка карточек под своим заголовком и своим объяснением.
+ *
+ * Заголовок и строка под ним — это и есть разведение понятий: две одинаковые сетки без слов
+ * между ними были бы тем же одним списком, только с промежутком.
+ */
+function RosterSection({
+  title,
+  explain,
+  workers,
+  laneLabel,
+  titleOf,
+  onOpenTask,
+  onOpenHistory,
+}: {
+  title: string
+  explain: string
+  workers: WorkerRow[]
+  laneLabel: (lane: string | null) => string | null
+  titleOf: Map<string, string>
+  onOpenTask: (taskId: string) => void
+  onOpenHistory: (id: string) => void
+}) {
+  if (workers.length === 0) return null
+
+  return (
+    <div>
+      <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2.5">
+        <h2 className="m-0 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">{title}</h2>
+        <span className="text-[11px] text-tx3">{workers.length}</span>
+      </div>
+      <div className="mb-3.5 text-[11.5px] leading-[1.6] text-tx3">{explain}</div>
+      <div className="grid min-w-[1160px] grid-cols-4 gap-[18px]">
+        {workers.map((w) => (
+          <WorkerCard
+            key={w.id}
+            worker={w}
+            laneLabel={laneLabel(w.lane)}
+            taskTitle={w.taskId ? (w.taskTitle ?? titleOf.get(w.taskId) ?? null) : null}
+            stats={w.stats30d ?? null}
+            onOpenTask={onOpenTask}
+            onOpenHistory={() => onOpenHistory(w.id)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function Screen() {
   const state = useStateQuery()
   const data = state.data
   const workers = data?.workers ?? []
+  /**
+   * ДВА СПИСКА ИЗ ОДНОГО ЧТЕНИЯ. Делит их признак, приехавший считанным, а не догадка экрана:
+   * `inQueue` — «исполнитель, включён, не верхушка», ровно то, что спрашивает маршрутизатор.
+   * Выключенный исполнитель попадает к агентам не по недосмотру: очередь его не раздаёт, и
+   * стоять он должен там, где стоят все, кого сейчас не выберут.
+   */
+  const queueWorkers = useMemo(() => workers.filter((w) => w.inQueue), [workers])
+  const swarmAgents = useMemo(() => workers.filter((w) => !w.inQueue), [workers])
   /**
    * Открытая история — ПО ИМЕНИ работника, а не копией строки: чтение обновляется каждые
    * несколько секунд, и окно, держащее снимок, показывало бы вчерашнее, пока его не закроют.
@@ -222,10 +291,15 @@ export function Screen() {
     <section className="flex min-w-0 flex-1 flex-col">
       <header className="sticky top-0 z-30 flex h-[58px] flex-none items-center gap-2.5 border-b border-bd bg-head px-7 backdrop-blur-[10px]">
         <h1 className="m-0 mr-2 flex-none text-[15px] font-semibold tracking-[-0.01em] text-tx">Команда</h1>
+        {/*
+          СЧЁТ ИДЁТ ПО ТЕМ, КТО БЕРЁТ ЗАДАЧИ. «Работают / ждут окно / свободны» — слова про пул
+          очереди; посчитанные по всем сорока пяти строкам, они говорили «свободны 38» о тех,
+          кому очередь всё равно ничего не даст.
+        */}
         {PRESENCE_COUNTS.map((p) => (
           <KpiPill
             key={p.presence}
-            value={workers.filter((w) => w.presence === p.presence).length}
+            value={queueWorkers.filter((w) => w.presence === p.presence).length}
             label={p.label}
             tone={p.tone}
           />
@@ -246,7 +320,10 @@ export function Screen() {
 
       {data?.orchestrator ? <OrchestratorBand orchestrator={data.orchestrator} /> : null}
 
-      <PathStrip workers={workers} />
+      {/* Путь задачи — по тем полосам, на которых сидит КТО-ТО ИЗ ПУЛА: полоса, укомплектованная
+          одними выключенными специалистами, задачу не проведёт, и рисовать её как ступень пути
+          значило бы обещать шаг, которого не будет. */}
+      <PathStrip workers={queueWorkers} />
 
       {workers.length === 0 ? (
         <div className="flex flex-1 items-center justify-center px-7">
@@ -256,20 +333,25 @@ export function Screen() {
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto px-7 pt-6 pb-7">
-          <div className="grid min-w-[1160px] grid-cols-4 gap-[18px]">
-            {workers.map((w) => {
-              return (
-                <WorkerCard
-                  key={w.id}
-                  worker={w}
-                  laneLabel={w.lane ? (LANE_LABEL[w.lane] ?? w.lane) : null}
-                  taskTitle={w.taskId ? (w.taskTitle ?? titleOf.get(w.taskId) ?? null) : null}
-                  stats={w.stats30d ?? null}
-                  onOpenTask={openTask}
-                  onOpenHistory={() => setOpenedId(w.id)}
-                />
-              )
-            })}
+          <div className="flex flex-col gap-[30px]">
+            <RosterSection
+              title="Работники"
+              explain="Исполнители: они разбирают очередь — инлайн-задачи и куски сборок, пишут код и исправляют баги. Задача, о роли которой Вы ничего не сказали, едет одному из них."
+              workers={queueWorkers}
+              laneLabel={(lane) => (lane ? (LANE_LABEL[lane] ?? lane) : null)}
+              titleOf={titleOf}
+              onOpenTask={openTask}
+              onOpenHistory={setOpenedId}
+            />
+            <RosterSection
+              title="Агенты"
+              explain="Специалисты роя: их поднимает фаза внутри своей работы. Из очереди сами они не берут ничего — чтобы отдать инлайн-задачу такому, назовите его роль при постановке."
+              workers={swarmAgents}
+              laneLabel={(lane) => (lane ? (LANE_LABEL[lane] ?? lane) : null)}
+              titleOf={titleOf}
+              onOpenTask={openTask}
+              onOpenHistory={setOpenedId}
+            />
           </div>
         </div>
       )}

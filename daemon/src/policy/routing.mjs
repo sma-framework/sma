@@ -16,6 +16,20 @@
  *
  * («я хочу переставлять модели и поставщиков, а также их effort» — the founder's mandate.)
  *
+ * РОЛЬ РЕШАЕТ РАНЬШЕ ПОРЯДКА СТРОК. Задача едет тому, кто для неё заведён, а не первому
+ * свободному в порядке конфига. По умолчанию это ИСПОЛНИТЕЛЬ (policy/worker-role.mjs) — тот,
+ * кто пишет код и исправляет баги; специалист (исследователь, ревьюер, аналитик) берёт
+ * инлайн-задачу только тогда, когда его назвали ПОИМЁННО, полем `role` на самой задаче.
+ * Пока этого фильтра не было, `candidates[0]` означало «первый по алфавиту»: 28.08 владелец
+ * увидел на доске `sma-code-fixer` над задачей, к починке кода отношения не имевшей, и это был
+ * не сбой, а ровно то, что здесь написано. Роль спрашивается ВТОРОЙ строкой фильтра, сразу за
+ * отказом верхушке и ДО `enabled`, провайдера и окна — по той же причине, по какой там стоит
+ * отказ верхушке: иначе участие зависело бы от порядка строк и от того, чьё окно открыто.
+ *
+ * И ЕСЛИ РОЛИ НЕТ НИ У КОГО — ЭТО СВОЁ СЛОВО, А НЕ «НЕТ ОКНА». `role_unavailable` говорит
+ * человеку то единственное, что тут можно сделать: завести или включить работника с этой ролью.
+ * «Окно исчерпано» послало бы его ждать окна, которое ничего не изменит.
+ *
  * THE ORCHESTRATOR IS NEVER A CANDIDATE. The machine's top figure (policy/orchestrator.mjs)
  * lives in its own config block precisely so it cannot compete for a seat with the people who
  * write code; the filter below refuses it by name anyway, first line, because a config edited
@@ -54,6 +68,7 @@
 
 import { DISPATCH_REASONS } from '../front/journal.mjs'
 import { isOrchestrator } from './orchestrator.mjs'
+import { holdsRole, roleIsNamed, roleOf, roleWanted } from './worker-role.mjs'
 
 /** Default lane → provider routing. Config may override via config.laneRouting. */
 export const DEFAULT_LANE_ROUTING = Object.freeze({
@@ -190,6 +205,11 @@ export function resolveRoute(task = {}, deps = {}) {
   const lane = task.lane
   const laneDefault = laneRouting[lane] ?? {}
 
+  // КОГО ЭТА ЗАДАЧА ПРОСИТ. Названа роль — названную; не названа — исполнителя. Считается
+  // ЗДЕСЬ, один раз, и дальше только сравнивается: два вычисления одного имени на двух концах
+  // сравнения — это способ, каким совпадение однажды перестаёт быть совпадением.
+  const wantedRole = roleWanted(task)
+
   // Provider selection: per-task override wins, else the lane default provider.
   const targetProvider = firstDefined(task.provider, laneDefault.provider) ?? null
 
@@ -229,6 +249,52 @@ export function resolveRoute(task = {}, deps = {}) {
     }
   }
 
+  // НИ У КОГО НЕТ ТАКОЙ РОЛИ — И ЭТО ФАКТ КОНФИГА, А НЕ МИНУТЫ. Спрашивается ДО всего
+  // остального и по всему пулу, не глядя ни на окна, ни на занятость: «нет работника с такой
+  // ролью» не пройдёт само собой, сколько ни жди, и повторять попытку бессмысленно. Поэтому
+  // у него своё слово (см. AWAITS_A_PERSON в очереди) — человеку нужно завести или включить
+  // такого работника, а не ждать окна. Верхушка из проверки исключена: она не исполнитель ни
+  // при какой роли, и роль, случайно совпавшая с её собственной, не делает её кандидатом.
+  //
+  // ПУСТОЙ ПУЛ — НЕ ОТСУТСТВИЕ РОЛИ. Машина, у которой работников нет вовсе, отвечает тем же,
+  // чем отвечала всегда (ниже по течению — «нет открытого окна» или платный канал): сказать
+  // ей «нет работника с ролью исполнителя» значило бы назвать частный случай общей пустоты
+  // именем, которое посылает человека не туда.
+  //
+  // И ВЫКЛЮЧЕННЫЙ СПЕЦИАЛИСТ — ЭТО ТОТ ЖЕ ФАКТ СОСТАВА, КОГДА ЕГО НАЗВАЛИ ПОИМЁННО. Роль,
+  // которую держат только выключенные строки, проходила эту проверку и умирала ниже: кандидатов
+  // нет → «нет окна» → платный канал. А платный канал роли не несёт вовсе — определение агента
+  // выдаётся сессии ТОЛЬКО через выбранного работника (loop.mjs, resolveWorkerContext), — и
+  // человек, назвавший исследователя, получил бы обычную сессию, не узнав об этом ниоткуда.
+  // Это ровно та подмена, из-за которой задача и заведена, только с другого конца.
+  //
+  // СПРАШИВАЕТСЯ ЭТО ТОЛЬКО У НАЗВАННОЙ РОЛИ, и асимметрия здесь намеренная. Безымянная работа
+  // никого не называла: машина, у которой выключены все работники, отвечает ей тем же, чем
+  // отвечала всегда (закрытые окна, платный канал по правилу денег), и менять это значило бы
+  // чинить не ту болезнь. Названная роль — это выбор человека, и выбор либо исполняется, либо
+  // о нём говорят вслух.
+  const roleHolders = workers.filter((w) => !isOrchestrator(w) && holdsRole(w, wantedRole))
+  const roleHeldBySomebody =
+    workers.length === 0 ||
+    (roleIsNamed(task) ? roleHolders.some((w) => w && w.enabled !== false) : roleHolders.length > 0)
+  if (!roleHeldBySomebody) {
+    journalDecision(sink, task, 'role_unavailable', { lane, role: wantedRole }, unknownSink)
+    return {
+      workerId: null,
+      provider: targetProvider,
+      model: null,
+      effort: null,
+      useApiFallback: false,
+      // ДВА СЛУЧАЯ, И ОНИ РАЗЛИЧЕНЫ СЛОВАМИ: такого работника нет вовсе — или он есть, но
+      // выключен. Действие человека в этих случаях разное (завести против включить), а фраза
+      // «нет работника с такой ролью» о выключенном звучала бы как ложь: он его видит в окне.
+      reason: roleHolders.length
+        ? `работник с ролью «${wantedRole}» на этой машине выключен`
+        : `на этой машине нет работника с ролью «${wantedRole}»`,
+      reasonCode: 'role_unavailable',
+    }
+  }
+
   const founderActive = withinActiveHours(clock(), activeHours)
 
   // Candidate workers: enabled, provider matches the target, window open, and NOT the
@@ -255,6 +321,12 @@ export function resolveRoute(task = {}, deps = {}) {
     // иначе его участие зависело бы от порядка строк и от того, чьё окно открыто, то есть от
     // случая. Он не кандидат ни при каком порядке и ни при каких окнах.
     if (isOrchestrator(w)) return false
+    // РОЛЬ — ВТОРОЙ СТРОКОЙ, ДО `enabled`, ПРОВАЙДЕРА И ОКНА. Задача едет тому, кто для неё
+    // заведён: без слова о роли — исполнителю, со словом — названному поимённо. Проверка стоит
+    // здесь, а не ниже, ровно по причине из шапки: поставленная после окон, она сделала бы
+    // участие специалиста вопросом того, чьё окно сейчас открыто, то есть вопросом случая —
+    // а случай и есть та болезнь, которую эта строка лечит.
+    if (!holdsRole(w, wantedRole)) return false
     if (!w || w.enabled === false) return false
     if (targetProvider && w.provider !== targetProvider) return false
     const protectedNow = founderActive && (w.dayPriorityOwner === true || w.account?.dayPriorityOwner === true)
@@ -355,7 +427,15 @@ export function resolveRoute(task = {}, deps = {}) {
     reasonCode = 'lane_default'
   }
 
-  journalDecision(sink, task, reasonCode, { lane, workerId: chosen.id, provider: provider ?? undefined }, unknownSink)
+  // РОЛЬ ЕДЕТ В ЖУРНАЛ ВМЕСТЕ С ИМЕНЕМ ВЫБРАННОГО. Вопрос «почему эту работу вёл вот этот» без
+  // неё отвечается только порядком строк конфига — то есть не отвечается вовсе.
+  journalDecision(
+    sink,
+    task,
+    reasonCode,
+    { lane, workerId: chosen.id, role: roleOf(chosen), provider: provider ?? undefined },
+    unknownSink,
+  )
 
   return { workerId: chosen.id, provider, model, effort, useApiFallback: false, reason, reasonCode }
 }
