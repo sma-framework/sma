@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react'
-import { useCancelTask, useReturnTask, useStateQuery } from '../../api/queries'
+import { useApprove, useCancelTask, useReturnTask, useStateQuery } from '../../api/queries'
 import { openScreen } from '../../shell/navigation'
 import type { BatchRow, DoneRow, QueueRow, WorkerRow } from '../../api/types'
 import { DayFeed } from './DayFeed'
 import type { OfferAct } from './offer'
 import { KpiStrip } from './KpiStrip'
 import { TaskPanel } from '../../shell/TaskPanel'
-import { accentFor, initialOf, plural } from '../../shell/format'
+import { accentFor, approvalRefusal, initialOf, plural, refusalWords } from '../../shell/format'
 
 /**
  * «Сегодня» — the screen a person opens in the morning to find out what happened while
@@ -65,6 +65,13 @@ export function Screen() {
   const putBack = useReturnTask()
   const cancel = useCancelTask(null)
   const [actProblem, setActProblem] = useState<string | null>(null)
+  // ПРИЁМКА ПРЯМО ИЗ СТРОКИ — ТА ЖЕ ДВЕРЬ, ЧТО У БОКОВОЙ ПАНЕЛИ, И НИ ОДНОГО НОВОГО МАРШРУТА.
+  // Экран держит две вещи, которых строка о себе знать не может: чью приёмку он сейчас ведёт
+  // (у соседних строк кнопки обязаны остаться живыми) и чем дверь отказала — по имени работы,
+  // потому что строк в ленте несколько, а отказ приехал на одну.
+  const approve = useApprove()
+  const [approvingId, setApprovingId] = useState<string | null>(null)
+  const [approveProblem, setApproveProblem] = useState<{ taskId: string; text: string } | null>(null)
 
   /**
    * ЧТО ДЕЛАЕТ НАЖАТИЕ НА КРАСНОЙ КАРТОЧКЕ. Три дела, и все три существовали до неё — не было
@@ -91,6 +98,36 @@ export function Screen() {
       return
     }
     cancel.mutate({ taskId }, { onError: failed })
+  }
+
+  /**
+   * ЧТО ДЕЛАЕТ НАЖАТИЕ «ОДОБРИТЬ» В СТРОКЕ. Ровно то же, что и в боковой панели: та же дверь,
+   * то же тело запроса, та же одна перечитка картины после ответа.
+   *
+   * УСПЕХ НИЧЕГО НЕ ГОВОРИТ, И ЭТО НЕ МОЛЧАНИЕ: принятая работа уходит из «Ждут вашего
+   * решения» на первом же перечитывании — это и есть ответ экрана. А вот ОТКАЗ обязан быть
+   * сказан словами, потому что дверь отвечает 200 и на нём: строка, промолчавшая об отказе,
+   * показывает человеку самый убедительный вид успеха — ровно та ловушка, на которой один раз
+   * уже стояла кнопка панели.
+   */
+  const approveRow = (taskId: string) => {
+    setApproveProblem(null)
+    setApprovingId(taskId)
+    const done = () => setApprovingId((id) => (id === taskId ? null : id))
+    approve.mutate(
+      { taskId },
+      {
+        onSuccess: (out) => {
+          done()
+          const refused = approvalRefusal(out)
+          if (refused) setApproveProblem({ taskId, text: refused })
+        },
+        onError: (err) => {
+          done()
+          setApproveProblem({ taskId, text: refusalWords(err) })
+        },
+      },
+    )
   }
 
   const data = state.data
@@ -132,9 +169,21 @@ export function Screen() {
   const failed = done.filter((r) => r.failed)
   const finished = done.filter((r) => !r.failed)
 
-  const parts: string[] = [
-    `Пока вас не было, команда закрыла ${finished.length} ${plural(finished.length, 'задачу', 'задачи', 'задач')}`,
-  ]
+  /**
+   * ОТВЕТИЛО ЛИ ЧТЕНИЕ ХОТЬ РАЗ — и до этого мгновения экран не подводит итогов ночи.
+   *
+   * `data === undefined` — это ровно «дверь ещё не ответила». Пока её нет, все списки выше
+   * пусты по построению, и фраза под заголовком складывалась из этих пустот: «команда закрыла
+   * 0 задач», ни одного ждущего, ни одной поломки. Дверь при этом отвечала 33 секунды на
+   * холодную (замер 31.08.2026), и основатель полминуты читал отчёт о ночи, которого никто не
+   * составлял, — при четырёх работающих работниках и тридцати пяти работах в очереди. Ноль в
+   * этой фразе не «ещё не знаю», а «ничего не было»; сказать первое можно только словами.
+   */
+  const answered = data !== undefined
+
+  const parts: string[] = answered
+    ? [`Пока вас не было, команда закрыла ${finished.length} ${plural(finished.length, 'задачу', 'задачи', 'задач')}`]
+    : ['Читаю, что было ночью — пока ничего не сосчитано']
   if (failed.length > 0) parts.push(`${failed.length} не получилось`)
   if (decisions.length > 0) {
     parts.push(
@@ -156,7 +205,10 @@ export function Screen() {
           <h1 className="m-0 text-[15px] font-semibold tracking-[-0.01em] text-tx">Сегодня</h1>
           <p className="m-0 mt-0.5 truncate text-[12px] text-tx2">{parts.join(' · ')}</p>
         </div>
-        <TeamStrip workers={data?.workers ?? []} />
+        {/* ЛЕНТА — ПРО ТЕХ, КТО РАЗБИРАЕТ ОЧЕРЕДЬ. Первые шесть кружков по порядку строк конфига
+            рисовали специалистов, которых очередь не раздаёт вовсе: утренний экран показывал
+            «кто сегодня работает» списком тех, кто сегодня не работает. */}
+        <TeamStrip workers={(data?.workers ?? []).filter((w) => w.inQueue)} />
       </header>
 
       {state.isError ? <OfflineLine /> : null}
@@ -166,6 +218,7 @@ export function Screen() {
           <KpiStrip kpis={data?.kpis} accounts={data?.spend.accounts ?? []} stalledSince={longestStall} />
           {actProblem ? <p className="m-0 px-0.5 text-[12px] text-err-tx">{actProblem}</p> : null}
           <DayFeed
+            answered={answered}
             decisions={decisions}
             stalled={stalledBatches}
             failed={failed}
@@ -174,6 +227,9 @@ export function Screen() {
             selectedId={selectedId}
             onOpen={setSelectedId}
             onAct={act}
+            onApprove={approveRow}
+            approvingId={approvingId}
+            approveProblem={approveProblem}
           />
         </div>
 

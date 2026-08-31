@@ -455,7 +455,7 @@ describe("taskContext — the human's snapshot of what this task is about, livin
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 24-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 25-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -518,6 +518,12 @@ describe('constants — taxonomy', () => {
       'budget_stop',
       'api_cap_unset',
       'day_priority_protected',
+      // ПЯТОЕ РЕШЕНИЕ ДИСПЕТЧЕРА, И ОНО ПРО СОСТАВ, А НЕ ПРО МИНУТУ. Роли, которую просит
+      // работа, не держит никто — или держит один выключенный. Названо отдельно от четырёх
+      // выше потому, что те четыре проходят сами (окно откроется, часы кончатся, месяц
+      // сменится), а это не пройдёт: пока человек не включит или не заведёт такого работника,
+      // повтор даст тот же ответ, потратив на него оплаченную попытку
+      'role_unavailable',
       // the re-issues ran out: the row was handed back as many times as it was allowed to be,
       // and the queue closed it rather than spending another paid attempt on the same work.
       // Named apart from timeout — a lease timing out is what STARTS a re-issue and is

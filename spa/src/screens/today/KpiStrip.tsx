@@ -61,6 +61,21 @@ export function KpiStrip({
    */
   stalledSince: number | null
 }) {
+  /**
+   * ОТВЕТИЛА ЛИ ДВЕРЬ ХОТЬ РАЗ — и до этого мгновения здесь не стоит ни одной цифры.
+   *
+   * `kpis === undefined` — это ровно «чтение ещё не вернулось». Пока его нет, каждое из пяти
+   * чисел печаталось нулём: «Работают 0 / 0», «В очереди 0», «Ждут решения 0». Основатель
+   * читал это при ЧЕТЫРЁХ работающих работниках и ТРИДЦАТИ ПЯТИ работах в очереди — дверь в
+   * тот день отвечала 33 секунды, и все 33 секунды экран уверенно сообщал ему нули. Ноль —
+   * это измерение; «не спрашивали» — молчание, и разница между ними здесь стоит человеку
+   * доверия к экрану целиком.
+   *
+   * Прочерк, а не пустое место: пять клеток стоят на своих местах и не двигают соседей, когда
+   * первый ответ наконец придёт.
+   */
+  const answered = kpis !== undefined
+  const UNKNOWN = '—'
   const busy = kpis?.workersBusy ?? 0
   const total = kpis?.workersTotal ?? 0
   const queued = kpis?.queued ?? 0
@@ -70,6 +85,7 @@ export function KpiStrip({
   const stalledBatches = kpis?.batchesAwaitingDecision ?? 0
   const longestStall = elapsedLabel(stalledSince, Date.now())
   const windowsOpen = kpis?.windowsOpen ?? 0
+  const reading = answered ? undefined : 'читаю…'
 
   return (
     <section className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-[18px]">
@@ -78,33 +94,42 @@ export function KpiStrip({
         <div className="grid grid-cols-5 gap-4">
           <Figure
             label="Работают"
-            value={`${busy} / ${total}`}
-            note={total > 0 ? `свободны ${Math.max(0, total - busy)}` : undefined}
+            value={answered ? `${busy} / ${total}` : UNKNOWN}
+            note={answered ? (total > 0 ? `свободны ${Math.max(0, total - busy)}` : undefined) : reading}
           />
-          <Figure label="В очереди" value={String(queued)} />
-          <Figure label="Ждут решения" value={String(awaiting)} />
+          <Figure label="В очереди" value={answered ? String(queued) : UNKNOWN} note={reading} />
+          <Figure label="Ждут решения" value={answered ? String(awaiting) : UNKNOWN} note={reading} />
           <Figure
             label="Сборки встали"
-            value={String(stalledBatches)}
+            value={answered ? String(stalledBatches) : UNKNOWN}
             // ПРОСТОЙ ЧИСЛОМ И В СЧЁТЧИКАХ ТОЖЕ: «1» не отличает сборку, вставшую минуту назад,
             // от сборки, простоявшей ночь, а решение человек принимает как раз по этой разнице.
             note={
-              stalledBatches > 0
-                ? (longestStall ? `дольше всех — ${longestStall}` : 'ждут вашего выбора')
-                : undefined
+              answered
+                ? stalledBatches > 0
+                  ? (longestStall ? `дольше всех — ${longestStall}` : 'ждут вашего выбора')
+                  : undefined
+                : reading
             }
           />
           <Figure
             label="Открыты окна"
-            value={String(windowsOpen)}
-            note={`${windowsOpen} ${plural(windowsOpen, 'окно принимает работу', 'окна принимают работу', 'окон принимают работу')}`}
+            value={answered ? String(windowsOpen) : UNKNOWN}
+            note={
+              answered
+                ? `${windowsOpen} ${plural(windowsOpen, 'окно принимает работу', 'окна принимают работу', 'окон принимают работу')}`
+                : reading
+            }
           />
         </div>
       </div>
 
       <div className="flex flex-col gap-3.5 rounded-[14px] border border-bd bg-card px-5 py-[18px] shadow-panel">
         <div className="text-[10px] font-semibold tracking-[0.09em] text-tx3 uppercase">Окна подписок</div>
-        {accounts.length === 0 ? (
+        {!answered ? (
+          // «Ни одно окно не заведено» — приговор, и до первого ответа его выносить не из чего.
+          <p className="m-0 text-[12.5px] text-tx3">Читаю окна подписок…</p>
+        ) : accounts.length === 0 ? (
           <p className="m-0 text-[12.5px] text-tx3">Ни одно окно пока не заведено.</p>
         ) : (
           accounts.map((a) => (

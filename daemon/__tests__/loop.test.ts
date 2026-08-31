@@ -67,7 +67,7 @@ import {
 } from '../src/loop.mjs'
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { createAgingMemory } from '../src/policy/aging-memory.mjs'
-import { createMemoryQueue, REASON_LABELS, AUTO_RETRY_LIMIT, AUTO_RETRY_BASE_MS } from '../src/queue/adapter.mjs'
+import { createMemoryQueue, REASON_LABELS, failureAwaitsAPerson, AUTO_RETRY_LIMIT, AUTO_RETRY_BASE_MS } from '../src/queue/adapter.mjs'
 // Единый журнал срывов — читается и пишется здесь через те же две функции, что демон
 // подаёт тику швом `ledger`: тест о том, что срыв доезжает до журнала САМ, не имеет права
 // подсовывать проходу свой журнал в памяти.
@@ -1783,6 +1783,146 @@ describe('обрыв на стороне провайдера назван об�
   })
 })
 
+/**
+ * ═══════ ОБРЫВ ПОСТАВЩИКА НЕ БЫВАЕТ «СДЕЛАНО» — И НЕ ПРОПАДАЕТ ИЗ ВИДУ ═══════
+ *
+ * ЗАМЕР 30.08.2026, живой самотёк, две задачи подряд: в 19:02 и 19:03 UTC поставщик оборвал
+ * два прогона одной причиной (`api_error 429: You've hit your session limit`). Демон честно
+ * назвал обрыв в своём журнале — и обе строки ушли в `done`. Работы не было сделано никакой:
+ * квитанция у обеих оказалась ВЫВЕДЕННОЙ (`unverified`), то есть посчитанной из числа
+ * коммитов на ветке, а не заработанной перепроверкой. С доски они исчезли совсем — «сделано»
+ * не ждёт приёмки так, как ждёт её красная строка, — и человек о потере не узнал.
+ *
+ * ДВЕ ПОЛОВИНЫ ЗАКОНА, И ОБЕ ЗДЕСЬ:
+ *   · выведенная квитанция у оборванного прогона не считается ничем: ничего не заверено, а
+ *     число коммитов у прогона, который не начинался, — это чужие коммиты вершины;
+ *   · перепроверка, ДЕЙСТВИТЕЛЬНО прогнавшая ветку зелёной, остаётся зачтённой, кто бы ни
+ *     закрыл сессию: отказать ей значило бы выбросить подтверждённую работу и оплатить её
+ *     заново. Этот случай стоит ниже рядом с первыми — иначе починка «на всякий случай»
+ *     съела бы соседний закон, и никто бы этого не заметил.
+ *
+ * И ТРЕТЬЕ: журнал срывов узнаёт об обрыве В МОМЕНТ события. Метла (шаг 1c) видит только то,
+ * что очередь САМА называет сорвавшимся, а срыв поставщика — конец ПЕРЕВЫДАВАЕМЫЙ: строка
+ * возвращается в очередь как ожидающая, и метле она не видна вовсе, пока не кончатся
+ * перевыдачи. Замерено 30.08: строки о двух обрывах не было в журнале и через 40 минут.
+ */
+describe('обрыв поставщика: не «сделано», и журнал срывов узнаёт сразу', () => {
+  // Кадр из живого прогона 30.08: лимит сессии, CLI закончил прогон своей ошибкой.
+  const PROVIDER_429 = JSON.stringify({
+    type: 'result',
+    subtype: 'error_during_execution',
+    is_error: true,
+    terminal_reason: 'api_error',
+    api_error_status: 429,
+    result: "API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"You've hit your session limit\"}}",
+    session_id: 's-429',
+  })
+  const NOTE = 'APPROACH_NOTE: прямой путь'
+
+  /**
+   * Попытка, у которой ЕСТЬ и записка, и слово об уроке, — то есть все условия двери «сделано»,
+   * кроме заработанной квитанции, — оборванная поставщиком на завершающем кадре.
+   */
+  const runAborted = async (reverify: any) => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const bugs: any[] = []
+    const attempts: any[] = []
+    const { deps } = makeDeps({
+      adapter,
+      responses: DIFF_RESPONSES(reverify),
+      spawnWorker: makeSpawnWorker(undefined, { lines: ['stream line', NOTE, PROVIDER_429], code: 1 }),
+      deps: {
+        execGit: makeGateGit(),
+        ledger: {
+          recordAttempt: (a: any) => {
+            attempts.push(a)
+            return a
+          },
+          readAttempts: (id: string) => attempts.filter((x) => x.taskId === id),
+          appendBug: (b: any) => {
+            bugs.push(b)
+            return b
+          },
+          readBugs: () => bugs,
+        },
+      },
+    })
+    const res = await tick(deps)
+    return { res, adapter, bugs, attempts }
+  }
+
+  /** Снимок с историческим расхождением: до попытки и после неё он один и тот же. */
+  const stale = answer([rec('R-A', 'divergent')])
+
+  it('дерево без рецептов: квитанция ВЫВЕДЕНА из коммитов → не done, а provider_error', async () => {
+    const { res, adapter } = await runAborted(inTurn([answer([]), answer([])]))
+
+    expect(res.completed).toBeUndefined()
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'provider_error' })
+    expect(adapter.calls.map((c: any) => c.op)).toEqual(['fail'])
+  })
+
+  it('снимки совпали: та же выведенная квитанция у оборванного прогона → provider_error', async () => {
+    const { res, adapter } = await runAborted(inTurn([stale, stale]))
+
+    expect(res.completed).toBeUndefined()
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'provider_error' })
+    expect(adapter.calls[0]).toMatchObject({ op: 'fail', reason: 'provider_error' })
+  })
+
+  it('строка не пропадает тихо: конец перевыдаваемый, и подпись называет поставщика словами', async () => {
+    const { res } = await runAborted(inTurn([stale, stale]))
+
+    expect(res.failed?.reason).toBe('provider_error')
+    // Перевыдаваемый конец = строка возвращается в очередь, а не закрывается «ждёт человека».
+    expect(failureAwaitsAPerson('provider_error')).toBe(false)
+    expect(REASON_LABELS.provider_error).toMatch(/провайдер/i)
+  })
+
+  it('журнал срывов получает строку В МОМЕНТ обрыва — метла тут ни при чём', async () => {
+    const { bugs } = await runAborted(inTurn([stale, stale]))
+
+    expect(bugs).toHaveLength(1)
+    expect(bugs[0]).toMatchObject({
+      taskId: 'BL-1',
+      attempt: 1,
+      reason: 'provider_error',
+      cause: 'provider_error',
+      // Кто дописал строку — сказано полем, а не выведено из формы: у метлы своё слово.
+      source: 'live',
+    })
+    // Очередь этой попытки метле не показывала вовсе (`list` пуст) — строка пришла от двери.
+    expect(bugs[0].endedAt).toEqual(expect.any(String))
+  })
+
+  it('журнал, которого нет, не стоит задаче ничего: реестр без двери срывов — не отказ', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps } = makeDeps({
+      adapter,
+      responses: DIFF_RESPONSES(inTurn([stale, stale])),
+      spawnWorker: makeSpawnWorker(undefined, { lines: ['stream line', NOTE, PROVIDER_429], code: 1 }),
+      deps: { execGit: makeGateGit() }, // реестр по умолчанию — без appendBug
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'provider_error' })
+  })
+
+  /**
+   * СОСЕДНИЙ ЗАКОН НЕ СЪЕДЕН. Ветка, которую перепроверка прогнала зелёной и выдала на неё
+   * СВОЮ квитанцию, — законченная работа, кто бы ни закрыл сессию следом. Починка выше режет
+   * ровно выведенную квитанцию, и этот случай — граница между ними.
+   */
+  it('перепроверка выдала СВОЮ квитанцию → работа остаётся сделанной, кто бы ни закрыл сессию', async () => {
+    const { res, adapter, bugs } = await runAborted(GREEN_REVERIFY)
+
+    expect(res.completed).toBe('BL-1')
+    expect(adapter.calls[0]).toMatchObject({ op: 'complete' })
+    expect(bugs).toEqual([]) // сорвавшейся эта попытка не была — и в журнале срывов ей не место
+  })
+})
+
 // ═══════════ THE LIVE ATTEMPT LOG — the tick writes it WHILE the worker speaks ═══════════
 
 describe('the tick keeps a live log of the attempt, and never dies of it', () => {
@@ -2994,7 +3134,7 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
     const c = mkClock(now)
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
     await adapter.enqueue(backlogTask())
-    const { deps } = makeDeps({
+    const { deps, journalled } = makeDeps({
       adapter,
       clockObj: c,
       config: {
@@ -3015,7 +3155,7 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
       },
     })
     await tick(deps)
-    return { clock: c.clock }
+    return { clock: c.clock, journalled }
   }
 
   it('the window a worker was told about is the window «Расходы» shows, reset time and all', async () => {
@@ -3056,6 +3196,72 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
     expect(state.fiveHour.status).toBe('exhausted')
     expect(state.closedUntil).toBeDefined() // the refusal was PERSISTED, not merely noticed
     expect(isOpen(state, () => now)).toBe(false)
+  })
+
+  /**
+   * ═══════ THE REFUSAL THAT SHUT A SUBSCRIPTION FOR FIVE DAYS, ON THE REAL PATH ═══════
+   *
+   * 31.08.2026: the provider refused `seven_day_overage_included` — the weekly window with the
+   * paid overage folded in, on an account whose paid channel is off and whose ceiling is zero.
+   * The tick closed the WHOLE account until 05.09 on the strength of a name it has never been
+   * able to draw on any screen, and the conveyor stopped with thirty tasks queued. This runs
+   * that exact frame through the real tick and ends where the router looks.
+   */
+  it('a refusal on a window name we cannot draw is filed and LOGGED, and the account keeps working', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-unknown-'))
+    dirs.push(dataDir)
+    const now = RESETS_AT_SEC * 1000 - 60 * 60 * 1000
+    const refused = JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: RESETS_AT_SEC, rateLimitType: 'seven_day_overage_included', isUsingOverage: false },
+    })
+
+    const { journalled } = await tickWith(refused, dataDir, now)
+
+    const state = windowState({ account: { name: 'max-2' }, clock: () => now, dataDir })
+    expect(state.closedUntil).toBeUndefined()
+    expect(state.fiveHour.status).toBe('unknown')
+    expect(state.week.status).toBe('unknown')
+    expect(isOpen(state, () => now)).toBe(true) // thirty queued tasks keep moving
+
+    // Ignoring it silently would be the same bug wearing a quieter coat: the operator has to be
+    // able to see that a window nobody can name was refused, and to name it.
+    const noted = journalled.find((e: any) => e && e.type === 'window-refusal-unnamed')
+    expect(noted).toBeDefined()
+    expect(noted.limitType).toBe('seven_day_overage_included')
+    expect(noted.account).toBe('max-2')
+  })
+
+  /**
+   * «Ждёт окно» has to say WHICH window and until when. It used to say neither: the close sat at
+   * the top of the record with no window on it, the card pinned the words to the five-hour line
+   * whatever had really been refused, and a worker could read «ждёт окно» with both rows saying
+   * the subscription was taking work.
+   */
+  it('a refusal names the window it shut — «ждёт окно» never stands beside two open rows', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-named-'))
+    dirs.push(dataDir)
+    const now = RESETS_AT_SEC * 1000 - 60 * 60 * 1000
+    const refused = JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: RESETS_AT_SEC, rateLimitType: 'seven_day', isUsingOverage: false },
+    })
+
+    await tickWith(refused, dataDir, now)
+
+    const payload = await deriveState({
+      adapter: { async list() { return [] } },
+      windows: (account: any) => windowState({ account, clock: () => now, dataDir }),
+      config: { workers: [{ id: 'max-2', lane: 'prod', account: { name: 'max-2' } }], machineId: 'self' },
+      clock: () => now,
+    })
+
+    const worker = payload.workers[0]
+    expect(worker.presence).toBe('ждёт окно')
+    expect(worker.window.week.status).toBe('exhausted') // the shut window is named on its own row…
+    expect(worker.window.week.resetsAt).toBe(new Date(RESETS_AT_SEC * 1000).toISOString()) // …with the hour
+    expect(worker.window.fiveHour.status).toBe('unknown') // and the innocent window is not accused
+    expect(worker.window.closedUntil).toBeDefined()
   })
 
   it('a machine that has heard nothing says so — no reading is ever invented as a zero', async () => {
@@ -5696,6 +5902,11 @@ describe('слой памяти пишется на каждую попытку 
             provider: 'claude',
             account: { configDir: '/x' },
             enabled: true,
+            // ЭТО ИСПОЛНИТЕЛЬ, И СКАЗАНО ЭТО РУКОЙ. Обычная задача просит исполнителя, а роль
+            // выводится из имени файла описания — «builder» исполнителем не читается. Поле
+            // `role` главнее выведенного (policy/worker-role.mjs), и здесь оно ровно за тем,
+            // за чем существует: описание называется по делу, а работу человек ведёт им же.
+            role: 'executor',
             roleFile: '.claude/agents/builder.md',
             skills: ['sma-debug'],
           },

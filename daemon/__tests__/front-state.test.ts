@@ -59,6 +59,7 @@ import { Readable } from 'node:stream'
 
 import {
   deriveState,
+  warmDoneGit,
   derivePresence,
   parseReceiptSummary,
   parseReceiptProof,
@@ -296,6 +297,9 @@ describe('deriveState — the one-poll payload', () => {
       'projectMemory',
       'projects',
       'queue',
+      // КОГО МОЖНО НАЗВАТЬ ПРИ ПОСТАНОВКЕ — состав машины, свёрнутый по ролям (форма задачи
+      // спрашивает «кто возьмёт»). Ключ присутствует всегда, пустой список там, где работников нет.
+      'roles',
       'rules',
       'spend',
       'style',
@@ -973,6 +977,12 @@ describe('deriveState — the one-poll payload', () => {
    * showed no commits and no diff. The second half of the same defect was the branch name
    * `main`, written out in full: a project whose trunk is called anything else threw on the
    * range itself, forever.
+   *
+   * КАКОЕ ДЕРЕВО — РЕШАЕТ ДЕРАЙВ; КОГДА СПРОСИТЬ — РЕШАЕТ ДОСЫЛКА. С 31.08.2026 дверь не
+   * запускает git за закрытые работы на пути ответа (холодный ответ стоил 272 подпроцесса и
+   * 25 секунд), а записывает, ЧТО и ГДЕ надо спросить; спрашивает `warmDoneGit` после того,
+   * как ответ уехал. Каталог по-прежнему называется здесь и только здесь — потому он и
+   * проверяется на аргументах, которые досылка передала git.
    */
   it('the done card reads git in the CONNECTED project, and names no trunk branch', async () => {
     const calls: any[] = []
@@ -980,9 +990,8 @@ describe('deriveState — the one-poll payload', () => {
       calls.push({ args, opts })
       return args[0] === 'log' ? 'abc1234 сделал дело' : ' 2 files changed, 9 insertions(+)'
     }
-    const rows = [{ id: 'BL-done', status: 'completed', lane: 'prod', title: 'ночная', completedAt: NOW }]
-    const payload = await deriveState({
-      adapter: mkAdapter(rows),
+    const ask = {
+      adapter: mkAdapter([{ id: 'BL-done', status: 'completed', lane: 'prod', title: 'ночная', completedAt: NOW }]),
       windows: makeWindows({}),
       execGit,
       // the daemon SERVES one tree and the founder has connected another — the shape that
@@ -994,7 +1003,15 @@ describe('deriveState — the one-poll payload', () => {
         activeProject: 'sma',
       },
       clock: () => NOW,
-    })
+    }
+    const cold = await deriveState(ask)
+    // НИ ОДНОГО чтения КАРТОЧКИ на пути ответа, и карточка честно говорит «ещё не спрошено».
+    expect(calls.filter((c) => c.args[0] === 'log' || c.args[0] === 'diff')).toHaveLength(0)
+    expect(cold.done[0].commits).toBeNull()
+    expect(cold.done[0].gitPending).toBe(true)
+
+    await warmDoneGit({ execGit, tasks: ['BL-done'] })
+    const payload = await deriveState(ask)
 
     // РОВНО ДВА чтения КАРТОЧКИ — коммиты и счёт изменений. Состояние проекта против ствола
     // спрашивает у того же шва свой `git status` в том же каталоге; это соседний вопрос, и
@@ -1006,6 +1023,7 @@ describe('deriveState — the one-poll payload', () => {
     expect(JSON.stringify(cardReads.map((c) => c.args))).not.toContain('main')
     expect(payload.done[0].commits).toEqual(['abc1234 сделал дело'])
     expect(payload.done[0].diffStat).toBe('2 files changed, 9 insertions(+)')
+    expect(payload.done[0].gitPending).toBeUndefined()
   })
 
   it('with NO project connected the done card falls back to the served tree — never to the launch cwd', async () => {
@@ -1014,7 +1032,7 @@ describe('deriveState — the one-poll payload', () => {
       calls.push({ args, opts })
       return ''
     }
-    const rows = [{ id: 'BL-done', status: 'completed', lane: 'prod', title: 'ночная', completedAt: NOW }]
+    const rows = [{ id: 'BL-done-served', status: 'completed', lane: 'prod', title: 'ночная', completedAt: NOW }]
     await deriveState({
       adapter: mkAdapter(rows),
       windows: makeWindows({}),
@@ -1023,7 +1041,9 @@ describe('deriveState — the one-poll payload', () => {
       config, // no projects registry at all
       clock: () => NOW,
     })
+    await warmDoneGit({ execGit, tasks: ['BL-done-served'] })
 
+    expect(calls.filter((c) => c.args[0] === 'log' || c.args[0] === 'diff')).toHaveLength(2)
     for (const c of calls) expect(c.opts).toMatchObject({ cwd: '/served/tree' })
   })
 
@@ -1963,6 +1983,9 @@ describe('deriveState — the federation aggregator seam', () => {
       'projectMemory',
       'projects',
       'queue',
+      // КОГО МОЖНО НАЗВАТЬ ПРИ ПОСТАНОВКЕ — состав машины, свёрнутый по ролям (форма задачи
+      // спрашивает «кто возьмёт»). Ключ присутствует всегда, пустой список там, где работников нет.
+      'roles',
       'rules',
       'spend',
       'style',
@@ -2050,6 +2073,11 @@ describe('deriveRules — the «Правила» screen rides the config, never 
       model: 'opus',
       effort: 'high',
       enabled: true,
+      // РОЛЬ И «РАЗБИРАЕТ ЛИ ОЧЕРЕДЬ» — рядом с профилем, потому что таблица правил перечисляла
+      // включённого специалиста ровно так же, как включённого исполнителя, хотя задачу он не
+      // возьмёт ни при каком порядке строк. `max-1` описания агента не носит — значит исполнитель.
+      role: 'executor',
+      inQueue: true,
     })
     expect(byId['max-2'].enabled).toBe(false) // the roster toggle is visible, not guessed
     // a profile the config does not carry is OMITTED, never invented as null
@@ -2694,6 +2722,7 @@ describe('deriveState — projectMemory rides the SAME route, additively', () =>
         'projectMemory',
         'projects',
         'queue',
+        'roles',
         'rules',
         'spend',
         'style',

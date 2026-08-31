@@ -50,6 +50,25 @@ const CHANGE_SHAPES = {
 }
 
 /**
+ * ЧЕМ ИМЕННО ЭТО СПРАШИВАЕТСЯ — отдельно от того, КАК это запускается.
+ *
+ * Швов запуска у продукта стало два: синхронный (карточка и дверь диффа отвечают на один
+ * запрос) и асинхронный (досылка изменений закрытых работ, которой нельзя держать цикл
+ * событий демона). Диапазон и флаги обязаны остаться ОДНИ на оба: второе написание того же
+ * вопроса — это второй ответ, который однажды разойдётся с первым молча, ровно как разошлись
+ * панель и дверь до появления этого файла.
+ *
+ * @param {string} taskId
+ * @param {'count'|'patch'} [shape]
+ * @returns {string[]} аргументы git
+ */
+export function taskChangeArgs(taskId, shape = 'count') {
+  const flags = CHANGE_SHAPES[shape]
+  if (!flags) throw new TypeError(`unknown change shape: ${shape}`)
+  return ['diff', ...flags, taskChangeRange(taskId)]
+}
+
+/**
  * Прочитать изменения задачи через переданный шов git. Бросает ровно то, что бросил git:
  * «ветки нет» — это не пустой ответ, а другое обстоятельство, и решать, что о нём сказать
  * человеку, — дело вызывающей поверхности, а не этого места.
@@ -60,7 +79,5 @@ const CHANGE_SHAPES = {
  * @returns {string} вывод git как есть (пустая строка, когда менять было нечего)
  */
 export function readTaskChanges(taskId, execGit, { cwd, shape = 'count' } = {}) {
-  const flags = CHANGE_SHAPES[shape]
-  if (!flags) throw new TypeError(`unknown change shape: ${shape}`)
-  return String(execGit(['diff', ...flags, taskChangeRange(taskId)], cwd ? { cwd } : {}) || '')
+  return String(execGit(taskChangeArgs(taskId, shape), cwd ? { cwd } : {}) || '')
 }

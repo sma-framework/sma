@@ -11440,6 +11440,37 @@ async function cmdMemoryPreview({ flags, dirs }) {
 }
 
 /**
+ * start-map [--project <path>] [--lang en|ru] [--json] [--selftest] — the value map
+ * `/sma-start` prints BEFORE its first question. Five things this system will do in
+ * THIS (or --project's) repository, each carrying a number read from the repository
+ * itself: the tree fold, the catches already in the git history, the corpus that may
+ * already be there. Read-only, zero network, byte-deterministic at one HEAD; a
+ * directory without git degrades to the fresh-project map rather than crashing the
+ * onboarding. Direct CLI command (may exit nonzero), never hook-facing.
+ */
+async function cmdStartMap({ flags, dirs }) {
+  const map = await import('./lib/start-map.mjs')
+
+  if (flags.selftest === true) {
+    const ok = map.startMapSelftest()
+    if (wantsJson(flags)) printJson({ selftest: 'start-map', ok })
+    process.stdout.write(`${ok}\n`) // numeric LAST line (scorer contract)
+    return ok === 1 ? 0 : 1
+  }
+
+  const repoRoot = dirs?.smaRoot ? dirname(dirs.smaRoot) : process.cwd()
+  const repoDir = typeof flags.project === 'string' && flags.project.trim() ? flags.project.trim() : repoRoot
+  const lang = flags.lang === 'ru' ? 'ru' : 'en'
+  const analysis = map.analyzeForMap({ repoDir })
+  if (wantsJson(flags)) {
+    printJson({ ok: true, ...analysis })
+    return 0
+  }
+  process.stdout.write(map.renderStartMap(analysis, { lang }) + '\n')
+  return 0
+}
+
+/**
  * session-end (HOOK_FACING) — the SessionEnd hook, and the one call that ENDS a window.
  *
  * Two things happen, in this order: every claim this window holds goes back (marked «сессия
@@ -12780,6 +12811,7 @@ const HANDLERS = {
   batch: cmdBatch, // /sma-batch middle lane: risk filter + grill-lite + mandatory receipts (--assemble|--selftest-riskfilter|--selftest-checkoff)
   deleteme: cmdDeleteme, // 9.4 (v3.6) — one-click off-ramp: dry-run plan | --yes apply | --selftest; memory corpus PRESERVED
   'memory-preview': cmdMemoryPreview, // 9.4 (v3.6) — onboarding ASCII memory-graph preview (--project|--lang|--json|--selftest)
+  'start-map': cmdStartMap, // the value map /sma-start prints BEFORE its first question (--project|--lang|--json|--selftest)
   catalog: cmdCatalog, // deterministic file catalog (refresh|find|--check --count)
   context: cmdContext, // context compiler (compile|score|miss|exam|--selftest)
   statusline: cmdStatusline, // native statusline segment (render|--wrap|install|uninstall|set-webhook|--stat)
@@ -12802,7 +12834,7 @@ const HANDLERS = {
 /**
  * Verbs that print their OWN `--help`. The global intercept below hands `--help`
  * to these handlers instead of printing the verb list, so a subcommand can
- * document its own flags. Deliberately an opt-in allow-list: 94 other verbs keep
+ * document its own flags. Deliberately an opt-in allow-list: 95 other verbs keep
  * the existing behaviour untouched. (That count is the dispatch table minus this
  * allow-list, and the numbers audit now holds it to exactly that — so when two
  * lines of work add verbs at once the count is their SUM, not either side's figure.)
@@ -12819,7 +12851,7 @@ async function main() {
   // teach exactly that call. A door the docs name has to open.
   if (!cmd || cmd === '--help' || cmd === '-h' || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|turn-diff|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|chain-start|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|wires|arena|batch|deleteme|memory-preview|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|approvals|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|turn-diff|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|chain-start|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|wires|arena|batch|deleteme|memory-preview|start-map|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|approvals|exam|update>\n',
     )
     return 0
   }

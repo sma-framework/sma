@@ -569,6 +569,9 @@ describe('the completion gate asks for the note where it asks for the receipt', 
             provider: 'claude',
             account: { configDir: '/x' },
             enabled: true,
+            // ИСПОЛНИТЕЛЬ ПО СЛОВУ ЧЕЛОВЕКА: обычная задача просит исполнителя, а из имени
+            // «builder» роль исполнителя не выводится. Поле `role` главнее выведенного.
+            role: 'executor',
             roleFile: '.claude/agents/builder.md',
             skills: ['sma-debug', 'sma-quick'],
           },

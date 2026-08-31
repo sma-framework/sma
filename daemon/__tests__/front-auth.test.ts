@@ -255,8 +255,14 @@ describe('server.mjs — the closed SIXTY-FOUR-route table', () => {
   // текст, положи его», and /api/skill/assign refuses a skill whose file does not exist yet —
   // so «создать навык из окна» had no path at all. It writes into the MACHINE store only, and
   // it refuses an id that is already taken rather than overwriting somebody's skill.
-  it('the frozen table has EXACTLY sixty-five routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(65)
+  // RE-FREEZE REVISION (31.08.2026): + POST /api/project/planning — the SECOND ADDRESS of a
+  // project: the folder that holds its `.planning`. Until it existed, a house that keeps code
+  // and planning in two repositories had to be registered as TWO projects — tasks visible in
+  // one, phases and backlog in the other, and neither switchable off without losing what it
+  // held. It moves no code tree: the product stays where it stands, and only where planning is
+  // read from changes.
+  it('the frozen table has EXACTLY sixty-six routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(66)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 
@@ -941,7 +947,10 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
       })
 
       expect(res.statusCode).toBe(200)
-      expect(calls).toEqual([{ taskId: 'R-77', by: 'approve' }])
+      // …И КАТАЛОГ, В КОТОРОМ КОПИЯ ЛЕЖИТ — тот же, в котором дверь только что искала ветку.
+      // Без него уборка спрашивала бы про копию задачи одного проекта у другого и честно не
+      // находила бы её. Реестра здесь нет, поэтому это обслуживаемое дерево, как и раньше.
+      expect(calls).toEqual([{ taskId: 'R-77', by: 'approve', cwd: '/repo' }])
       const out = JSON.parse(res.body)
       expect(out.merged).toBe(true)
       expect(out.cleanup).toEqual({

@@ -14,6 +14,7 @@ import {
 } from '../../shell/format'
 import { actOf, actableActions, spentLine, spentOf } from './offer'
 import type { OfferAct } from './offer'
+import { approveWord, canApprove, refusalFor } from './approve'
 import { DoneUnfold } from './DoneUnfold'
 
 /**
@@ -90,28 +91,74 @@ function cardClass(selected: boolean): string {
   }`
 }
 
+/**
+ * СТРОКА, ЖДУЩАЯ ЧЕЛОВЕКА, — И ЕГО «ДА» ПРЯМО В НЕЙ.
+ *
+ * Раньше строка умела ровно одно: открыть боковую панель, где и стояла кнопка. Решение было в
+ * одном клике от того места, где человек его принимает, — а таких строк утром несколько, и
+ * каждая стоила открытия панели, чтения панели и закрытия панели ради одного слова.
+ *
+ * ВОЗВРАТ ОСТАЁТСЯ В ПАНЕЛИ, И ЭТО НЕ ЗАБЫВЧИВОСТЬ. «Одобрить» — это слово, а «вернуть» — это
+ * слово ПЛЮС текст, который поедет работнику; поле ввода в строке ленты сделало бы из ленты
+ * форму. Отказ от работы читают там, где видно, что именно сделано.
+ *
+ * КАРТОЧКА ПЕРЕСТАЛА БЫТЬ ОДНОЙ КНОПКОЙ — кнопка внутри кнопки разметкой не разрешена, ровно
+ * как у красной карточки ниже: открывает панель заголовок, а «Одобрить» жмётся само.
+ */
 function DecisionCard({
   row,
   selected,
   onOpen,
+  onApprove,
+  approving,
+  problem,
 }: {
   row: QueueRow
   selected: boolean
   onOpen: (id: string) => void
+  onApprove: (taskId: string) => void
+  /** Идёт ли приёмка ИМЕННО этой строки: у соседних кнопки живы. */
+  approving: boolean
+  /** Слова двери, когда работа не принята, — уже отобранные для этой строки. */
+  problem: string | null
 }) {
   return (
-    <button type="button" onClick={() => onOpen(row.id)} className={cardClass(selected)}>
-      <div className="flex items-center gap-2.5">
-        <LaneBadge lane={row.lane} title={row.title} />
-        <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold text-tx">
-          {row.title ?? 'Без названия'}
-        </span>
-        {row.agedForHours ? <AgedPill hours={row.agedForHours} stuck={false} /> : null}
-      </div>
-      <div className="mt-2 text-[11.5px] text-tx3">
-        {row.lane ?? 'без направления'} · проверено, ждёт вашего решения
-      </div>
-    </button>
+    <div
+      className={`w-full rounded-[13px] border bg-card px-[18px] py-4 text-left shadow-panel ${
+        selected ? 'border-blue' : 'border-bd'
+      }`}
+    >
+      <button type="button" onClick={() => onOpen(row.id)} className="w-full text-left">
+        <div className="flex items-center gap-2.5">
+          <LaneBadge lane={row.lane} title={row.title} />
+          <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold text-tx">
+            {row.title ?? 'Без названия'}
+          </span>
+          {row.agedForHours ? <AgedPill hours={row.agedForHours} stuck={false} /> : null}
+        </div>
+        <div className="mt-2 text-[11.5px] text-tx3">
+          {row.lane ?? 'без направления'} · проверено, ждёт вашего решения
+        </div>
+      </button>
+      {canApprove(row) ? (
+        <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+          <button
+            type="button"
+            onClick={() => onApprove(row.id)}
+            disabled={approving}
+            className="flex-none rounded-[9px] bg-blue px-3.5 py-1.5 text-[11.5px] font-semibold text-white hover:bg-blue-d disabled:opacity-60"
+          >
+            {approveWord(approving)}
+          </button>
+          <span className="min-w-0 text-[11px] text-tx3">
+            принять и слить работу — не открывая карточку
+          </span>
+        </div>
+      ) : null}
+      {/* ОТКАЗ ГОВОРИТ СЛОВАМИ И НА ЭТОЙ ЖЕ СТРОКЕ. Дверь отвечает 200 и когда работа НЕ
+          принята; строка, промолчавшая об этом, показывает самый убедительный вид успеха. */}
+      {problem ? <p className="m-0 mt-2 text-[11.5px] text-err-tx">{problem}</p> : null}
+    </div>
   )
 }
 
@@ -363,7 +410,10 @@ function DoneCard({ row, selected, onOpen }: { row: DoneRow; selected: boolean; 
         </div>
         <div className="mt-2.5 text-[11.5px] text-tx3">
           {attemptsLabel(row.attempts)}
-          {row.diffStat ? ` · ${row.diffStat}` : ''}
+          {/* ГИТ ЕЩЁ НЕ СПРОШЕН — так и сказано. Молчаливый пропуск читается как «изменений
+              нет», а это заявление о работе, которую никто не мерил: счёт досылается и
+              приезжает следующим опросом. */}
+          {row.gitPending ? ' · изменения ещё считаются' : row.diffStat ? ` · ${row.diffStat}` : ''}
         </div>
       </button>
       <button
@@ -404,6 +454,7 @@ function QueueLine({ row, selected, onOpen }: { row: QueueRow; selected: boolean
 }
 
 export function DayFeed({
+  answered,
   decisions,
   stalled,
   failed,
@@ -412,7 +463,16 @@ export function DayFeed({
   selectedId,
   onOpen,
   onAct,
+  onApprove,
+  approvingId,
+  approveProblem,
 }: {
+  /**
+   * ОТВЕТИЛА ЛИ ДВЕРЬ СОСТОЯНИЯ ХОТЬ РАЗ. Приезжает пропом, а не выводится здесь из пустых
+   * списков: пять пустых списков у ленты, которая ещё не спрашивала, и пять пустых списков у
+   * ленты, которой ответили «пусто», — это РАЗНЫЕ дни, а выглядели они одинаково.
+   */
+  answered: boolean
   decisions: QueueRow[]
   /** Сборки, вставшие на сорвавшемся элементе: они ждут человека ровно так же, как приёмка. */
   stalled: BatchRow[]
@@ -428,6 +488,16 @@ export function DayFeed({
    * быть правдой ровно на одной карточке.
    */
   onAct: (taskId: string, act: OfferAct) => void
+  /**
+   * ПРИЁМКА СТРОКИ — ТОЙ ЖЕ РУКОЙ, ЧТО И ТРИ ДЕЙСТВИЯ КРАСНОЙ КАРТОЧКИ: лента называет
+   * нажатие, дверь зовёт экран. Своих запросов у ленты нет ни одного, и это ровно то, чем
+   * «ничего своего у демона не спрашивает» остаётся правдой на всех её карточках.
+   */
+  onApprove: (taskId: string) => void
+  /** Чью приёмку экран сейчас ведёт — или `null`, когда ни одной. */
+  approvingId: string | null
+  /** Чем дверь отказала и на какой строке; `null` — отказа не было. */
+  approveProblem: { taskId: string; text: string } | null
 }) {
   const [doneOpen, setDoneOpen] = useState(true)
 
@@ -446,7 +516,25 @@ export function DayFeed({
    * door is on another screen. The owner said it plainly — «я вообще не понимаю, как там мне
    * работать». An empty state that only reports emptiness is a dead end; the one that offers
    * the next act is the whole difference between a dashboard and a workplace.
+   *
+   * …И «ПУСТО» ГОВОРИТСЯ ТОЛЬКО ПОСЛЕ ОТВЕТА. Ровно та же фраза стояла здесь и до первого
+   * ответа двери — то есть на экране, который ещё ничего не спрашивал. Дверь состояния на
+   * холодную отвечала 33 465 мс (замер 31.08.2026), и всё это время экран, на который окно
+   * открывается, сообщал «Пока тихо — команда ждёт задач» ПРИ ЧЕТЫРЁХ РАБОТАЮЩИХ РАБОТНИКАХ И
+   * ТРИДЦАТИ ПЯТИ РАБОТАХ В ОЧЕРЕДИ. Основатель прочитал это как правду о доме. Тишина —
+   * вывод, и делать его не из чего, пока нечего читать.
    */
+  if (!answered) {
+    return (
+      <section className="flex flex-1 flex-col items-center justify-center gap-2 rounded-[14px] border border-bd bg-card py-16 shadow-panel">
+        <p className="m-0 text-[13px] text-tx2">Читаю ленту дня…</p>
+        <p className="m-0 text-[11.5px] text-tx3">
+          Тихо здесь или нет — пока неизвестно: об этом скажет первый ответ.
+        </p>
+      </section>
+    )
+  }
+
   if (nothingAtAll) {
     return (
       <section className="flex flex-1 flex-col items-center justify-center gap-3 rounded-[14px] border border-bd bg-card py-16 shadow-panel">
@@ -482,7 +570,15 @@ export function DayFeed({
             <StalledBatchCard key={batch.id} batch={batch} now={Date.now()} />
           ))}
           {decisions.map((row) => (
-            <DecisionCard key={row.id} row={row} selected={row.id === selectedId} onOpen={onOpen} />
+            <DecisionCard
+              key={row.id}
+              row={row}
+              selected={row.id === selectedId}
+              onOpen={onOpen}
+              onApprove={onApprove}
+              approving={approvingId === row.id}
+              problem={refusalFor(approveProblem, row.id)}
+            />
           ))}
         </section>
       ) : null}

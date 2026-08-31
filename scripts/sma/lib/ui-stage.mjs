@@ -543,6 +543,58 @@ export function stageRows({ now = Date.now() } = {}) {
 }
 
 /**
+ * Строка реестра ждущей работы — и она НАМЕРЕННО не называет ветки.
+ *
+ * Дверь приёмки читает журнал попытки и по нему решает, есть ли что сливать: попытка, ни разу
+ * не назвавшая ветки, — это документарная стадия, и слияние для неё не «не удалось», а
+ * бессмысленно. Сцене это ровно по росту: веток у неё нет и быть не может, git она не трогает,
+ * а приёмку на ней всё равно можно НАЖАТЬ и увидеть, что строка ушла. Выдуманный «успешно
+ * слито» здесь был бы фикстурой, которая врёт про настоящее действие.
+ */
+export const STAGE_DESIGN_ATTEMPT = Object.freeze({
+  taskId: STAGE_DESIGN_TASK.id,
+  attempt: 1,
+  workerId: 'max-1',
+  provider: 'claude',
+  outcome: 'completed',
+})
+
+/**
+ * stageQueue({now}) → `{list, casExec}` — очередь сцены, которая ПОМНИТ, что человек с ней
+ * сделал.
+ *
+ * ═══════════ ЗАЧЕМ ФИКСТУРЕ ПАМЯТЬ ═══════════
+ * Приёмка — главное действие человека в этом продукте, и посмотреть на неё живьём было не на
+ * чем: сцена отдавала строки заново на каждый опрос, поэтому нажатие некуда было записать, а
+ * дверь без `casExec` отвечала «не реализовано» — на экране это читается как «этого в продукте
+ * нет». Очередь по-прежнему НИКОМУ не выдаётся: работника у сцены нет, строки закрыты, и
+ * единственное, что их двигает, — палец человека на этой самой сцене.
+ *
+ * ДВИГАЕТ ИХ НАСТОЯЩАЯ ДВЕРЬ, а не эта функция: `casExec` разбирает те же параметры, которые
+ * шлёт `casTransition`, и проигранная гонка отвечает нулём строк — ровно как отвечает база.
+ * Поэтому второе нажатие по той же строке получает здесь тот же отказ, что и в бою.
+ *
+ * @param {{now?:() => number}} [o]
+ * @returns {{list:() => Promise<object[]>, casExec:(sql:string, params:any[]) => Promise<{rows:object[]}>}}
+ */
+export function stageQueue({ now = () => Date.now() } = {}) {
+  /** id → статус, в который строку перевела дверь сцены. Живёт ровно столько, сколько сцена. */
+  const moved = new Map()
+  const list = async () =>
+    stageRows({ now: now() }).map((r) => (moved.has(r.id) ? { ...r, status: moved.get(r.id) } : r))
+  const casExec = async (_sql, params) => {
+    const to = params[0]
+    const from = params[params.length - 1]
+    const id = params[params.length - 2]
+    const row = (await list()).find((r) => r.id === id)
+    if (!row || row.status !== from) return { rows: [] }
+    moved.set(id, to)
+    return { rows: [{ id }] }
+  }
+  return { list, casExec }
+}
+
+/**
  * The coordination ledger of the busy tree, as ARGUMENTS to the runtime's own writers.
  *
  * The scene writes `.sma/` with `heartbeat`, `claimSlot` and `appendEvent` — the same three

@@ -188,15 +188,20 @@ function WorkerRow({ agent, roster }: { agent: AgentCard; roster: readonly Agent
       {open ? (
         <div className="flex flex-col gap-1.5 border-t border-bd pt-2.5 pl-11">
           <div className="flex flex-wrap items-center gap-x-[18px] gap-y-1 text-[12px] text-tx2">
+            {/*
+              ПОСТАВЩИК, А НЕ «ИСПОЛНИТЕЛЬ». Исполнитель теперь означает роль работника — того,
+              кто пишет код, — и оставить это слово за сервисом значило бы назвать одним именем
+              два разных факта на одной карточке.
+            */}
             <span>
-              Исполнитель: <span className="font-semibold text-tx">{providerLabel}</span>
+              Поставщик: <span className="font-semibold text-tx">{providerLabel}</span>
             </span>
             <span>
               Модель:{' '}
-              <span className="font-semibold text-tx">{agent.model ?? 'по умолчанию исполнителя'}</span>
+              <span className="font-semibold text-tx">{agent.model ?? 'по умолчанию поставщика'}</span>
             </span>
             <span>
-              Усилие: <span className="font-semibold text-tx">{agent.effort ?? 'по умолчанию исполнителя'}</span>
+              Усилие: <span className="font-semibold text-tx">{agent.effort ?? 'по умолчанию поставщика'}</span>
             </span>
             <button
               type="button"
@@ -478,6 +483,16 @@ export function Screen() {
   /** A draft with no kind is a worker's draft: this screen is where the forge lands by default. */
   const drafts = (harness.data?.drafts ?? []).filter((d) => d.kind === 'agent' || d.kind === null)
 
+  /**
+   * ДВА СПИСКА ВМЕСТО ОДНОГО — И ЭТО НЕ ОФОРМЛЕНИЕ. Секция называлась «Работники» и перечисляла
+   * ВСЕ профили подряд, поэтому исследователь выглядел в ней ровно как исполнитель. 28.08
+   * владелец увидел на доске `sma-code-fixer` над задачей про не-код: он не «сломался», он был в
+   * том же списке и стоял выше по алфавиту. Признак приезжает СЧИТАННЫМ (`agents[].executor`) —
+   * тем же выражением, каким роль читает маршрутизатор.
+   */
+  const workers = agents.filter((a) => a.executor)
+  const swarm = agents.filter((a) => !a.executor)
+
   const enabled = agents.filter((a) => a.enabled).length
 
   const openScreen = (detail: OpenScreenDetail) => {
@@ -488,8 +503,13 @@ export function Screen() {
     <section className="flex min-w-0 flex-1 flex-col">
       <header className="sticky top-0 z-30 flex h-[58px] flex-none items-center gap-2.5 border-b border-bd bg-head px-7 backdrop-blur-[10px]">
         <h1 className="m-0 mr-2 flex-none text-[15px] font-semibold tracking-[-0.01em] text-tx">Агенты</h1>
-        <KpiPill value={agents.length} label="всего" tone="text-tx" />
-        <KpiPill value={enabled} label="включены" tone="text-ok-tx" />
+        {/*
+          ДВА ЧИСЛА ВМЕСТО ОДНОГО «ВСЕГО». «Всего 45» человек читал как «столько народу разбирает
+          мою очередь» — а разбирали её шестеро. Теперь пилюли называют РАЗНОЕ: сколько
+          исполнителей включено в очередь и сколько специалистов рой может позвать.
+        */}
+        <KpiPill value={workers.filter((a) => a.enabled).length} label="работников в очереди" tone="text-ok-tx" />
+        <KpiPill value={swarm.length} label="агентов для фаз" tone="text-tx" />
         <KpiPill value={agents.length - enabled} label="выключены" tone="text-tx3" />
         <div className="flex-1" />
         <button
@@ -518,22 +538,42 @@ export function Screen() {
         <div className="flex max-w-[980px] flex-col gap-[30px]">
           <div>
             <div className="mb-2 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">Работники</div>
-            <div className="mb-3.5 text-[11.5px] text-tx3">
-              Исполнитель показывает, какой сервис выполняет работу: Клод или Кодекс.
+            <div className="mb-3.5 text-[11.5px] leading-[1.6] text-tx3">
+              Исполнители: они разбирают очередь — инлайн-задачи и куски сборок, пишут код и исправляют баги. Задача,
+              о роли которой Вы ничего не сказали, едет одному из них. Поставщик показывает, какой сервис выполняет
+              работу: Клод или Кодекс.
             </div>
 
-            {agents.length === 0 ? (
+            {workers.length === 0 ? (
               <p className="m-0 text-[13px] text-tx2">
                 Работников пока нет. Опишите нужного внизу — кузница соберёт черновик, включите его Вы.
               </p>
             ) : (
               <div className="flex flex-col gap-3">
-                {agents.map((a) => (
+                {workers.map((a) => (
                   <WorkerRow key={a.id} agent={a} roster={agents} />
                 ))}
               </div>
             )}
           </div>
+
+          {swarm.length > 0 ? (
+            <div>
+              <div className="mb-2 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">
+                Агенты для фаз
+              </div>
+              <div className="mb-3.5 text-[11.5px] leading-[1.6] text-tx3">
+                Специалисты роя: их поднимает фаза внутри своей работы, каждого по своему делу. Из очереди сами они не
+                берут ничего — ни при каком порядке. Чтобы отдать такому инлайн-задачу, назовите его роль при
+                постановке; это редкий случай, и он должен быть Вашим выбором, а не совпадением.
+              </div>
+              <div className="flex flex-col gap-3">
+                {swarm.map((a) => (
+                  <WorkerRow key={a.id} agent={a} roster={agents} />
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <StockTeamSection
             team={stockTeam}

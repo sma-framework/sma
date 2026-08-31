@@ -275,6 +275,18 @@ export interface WorkerHistoryRow {
 export interface WorkerRow {
   id: string
   lane: string | null
+  /**
+   * КТО ЭТО ПО РОЛИ. `executor` — исполнитель: он и есть «работник» в прямом смысле, тот, кто
+   * разбирает инлайн-задачи и куски сборок. Любое другое имя — специалист (`ai-researcher`,
+   * `code-reviewer`, …), которого поднимает фаза, а на инлайн-задачу зовут поимённо.
+   *
+   * ПРИЕЗЖАЕТ СЧИТАННЫМ. Экран не выводит роль сам по `roleFile`: её читает маршрутизатор,
+   * и второе мнение о том, кто здесь исполнитель, разошлось бы с маршрутом в первый же день.
+   */
+  role: string
+  /** Разбирает ли он очередь ПРЯМО СЕЙЧАС: исполнитель, включён и не верхушка — все три сразу. */
+  inQueue: boolean
+  enabled: boolean
   account: string
   /**
    * Present only while the worker holds a task — the roster is the only list that names a
@@ -481,9 +493,21 @@ export interface DoneRow {
   receipt: ReceiptSummary
   /** Чем доказано — та же квитанция, что и на подходе карточки. Отсутствует, когда ссылки нет. */
   proof?: ReceiptProof | null
+  /**
+   * Счёт изменений ветки и её лента коммитов — ИЛИ `null`, что значит «у git ещё не
+   * спрашивали».
+   *
+   * Дверь состояния перестала запускать git на пути ответа: холодный ответ на 136 закрытых
+   * работах стоил 272 подпроцесса и полминуты, и всё это время окно не показывало ни очереди,
+   * ни работников. История закрытой работы теперь досылается и приезжает следующим опросом, а
+   * до тех пор поля молчат. `null`, а не `[]` и не `0`: пустой список означает «спросили и
+   * узнали, что коммитов нет», и это ДРУГОЕ утверждение о чужой работе.
+   */
   diffStat: string | null
   branch: string
-  commits: string[]
+  commits: string[] | null
+  /** Ровно это молчание, названное словом: `true`, пока ответа git о работе ещё нет. */
+  gitPending?: boolean
   attempts: number
   /**
    * What was promised when the task was accepted. Absent when nothing was promised.
@@ -727,6 +751,10 @@ export interface RulesWorker {
   model?: string
   effort?: string
   enabled: boolean
+  /** Роль работника — см. `WorkerRow.role`. */
+  role: string
+  /** Разбирает ли эта строка очередь: включённый специалист — не то же самое, что исполнитель. */
+  inQueue: boolean
 }
 
 /** Where the paid channel stops. Present only when a budget is written down at all. */
@@ -992,6 +1020,26 @@ export interface StyleSnapshot {
 
 export type StyleSection = StyleSnapshot | AbsentSection
 
+/**
+ * Одна РОЛЬ, которую человек может назвать, ставя задачу, — и всё, что окну нужно знать,
+ * чтобы её предложить или честно объяснить, почему её в списке нет.
+ *
+ * Приезжает СЧИТАННЫМ из того же состава, по которому маршрутизатор выбирает работника: окно,
+ * складывающее этот список само, стало бы вторым мнением о том, кто вообще может взять работу.
+ */
+export interface RoleOption {
+  /** Каноническое имя — ровно то, что поедет на задаче полем `role`. */
+  role: string
+  /** Имя, под которым человек видит этого работника на «Агентах» (`sma-ai-researcher`). */
+  title: string
+  /** Исполнитель ли это — тот, кому едет задача, не назвавшая роли. */
+  executor: boolean
+  /** Сколько таких работников ВКЛЮЧЕНО сейчас. Ноль — «есть, но выключен»: звать некого. */
+  ready: number
+  /** Сколько их всего, включая выключенных. */
+  total: number
+}
+
 export interface StatePayload {
   kpis: Kpis
   queue: QueueRow[]
@@ -1014,6 +1062,11 @@ export interface StatePayload {
    */
   waves: WaveRow[]
   workers: WorkerRow[]
+  /**
+   * Кого можно назвать при постановке — состав машины, свёрнутый по ролям. Всегда присутствует
+   * (пустой список на машине без работников).
+   */
+  roles: RoleOption[]
   /** Верхушка машины. `null` — роли на этой машине не заведено (или демон её ещё не знает). */
   orchestrator: OrchestratorRow | null
   done: DoneRow[]
@@ -1560,6 +1613,10 @@ export interface AgentCard {
   effort?: string
   enabled: boolean
   roleFile?: string
+  /** Роль — см. `WorkerRow.role`. */
+  role: string
+  /** Исполнитель ли это, то есть работник в прямом смысле, а не агент, зовомый внутри фазы. */
+  executor: boolean
   can: string[]
   cannot: string[]
 }

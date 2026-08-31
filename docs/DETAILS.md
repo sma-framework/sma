@@ -195,7 +195,7 @@ goals, and exactly where each remaining edge is.
 
 ## The CLI reference, by version layer
 
-The coordination + accountability CLI runs underneath — 96 verbs, and the sections below group by the version layer that introduced them the ones this document walks through. Sessions and hooks call the CLI for you; you can also call any verb directly with `node scripts/sma/cli.mjs <verb>`, and every one has an in-product explainer (`node scripts/sma/cli.mjs explain <verb>`). **This grouping is not the complete list** — a few later verbs are described in the release sections further down and a few are not described here at all; the list with a line for every single verb lives in [`scripts/sma/README.md`](../scripts/sma/README.md), and that one is checked against the dispatch table by a gate.
+The coordination + accountability CLI runs underneath — 97 verbs, and the sections below group by the version layer that introduced them the ones this document walks through. Sessions and hooks call the CLI for you; you can also call any verb directly with `node scripts/sma/cli.mjs <verb>`, and every one has an in-product explainer (`node scripts/sma/cli.mjs explain <verb>`). **This grouping is not the complete list** — a few later verbs are described in the release sections further down and a few are not described here at all; the list with a line for every single verb lives in [`scripts/sma/README.md`](../scripts/sma/README.md), and that one is checked against the dispatch table by a gate.
 
 **The count moved by one, and that is worth saying out loud.** For several releases it did not move at all: real new abilities — forgetting, erasing, storage classes, the fleet's formal layer — arrived as subcommands of namespaces that already existed (`memory forget`, `memory index`) rather than as new top-level names. This release added one new top-level name, deliberately and as a decision. The alternative is a surface that grows a little every release until nobody can hold it in their head, and the growth is never anybody's decision because each single addition looked small. The number in the sentence above is not typed by hand either: a gate reads it out of the dispatch table in every document that names it, so the day it moves again no document can quietly stay behind — which is exactly what happened to this file until the gate was widened to watch it.
 
@@ -209,7 +209,7 @@ The coordination + accountability CLI runs underneath — 96 verbs, and the sect
 | `pre` · `pre-bench` | The one-spawn PreToolUse multiplexer (collision → reflex → gates → airbag → spend) and its SLO instrument; `collision-check` / `reflex-check` / `gates-check` remain as deprecated single-stream aliases |
 | `stall-check` | PostToolUse stall/loop detector; drops a flight mark |
 | `gates` · `gates-report` · `gates-ack` | Checkable project rules: advisory warns, evidence-gated soft-deny, acknowledgements |
-| `lint` · `build-index` · `load` · `snapshot` · `usage` · `consolidate` · `trim` · `memory compress` | The memory corpus toolchain: quality lint, machine-built index (a `--write` also prints how full the always-loaded budget is, and offers consolidation in words when it is over), tag-scoped loading, usage citations, scheduled consolidation, layer-aware trim, and `compress` — shrink note text (proposals only, staged in `drafts/` and applied one-by-one by hand, the original copied aside before the overwrite) |
+| `lint` · `build-index` · `load` · `snapshot` · `usage` · `consolidate` · `trim` · `memory compress` | The memory corpus toolchain: quality lint, machine-built index (a `--write` also prints how full the always-loaded budget is, and offers consolidation in words when it is over; the built index carries that same share in its own header, so a reader of the index sees it without asking), tag-scoped loading, usage citations, scheduled consolidation, layer-aware trim, and `compress` — shrink note text (proposals only, staged in `drafts/` and applied one-by-one by hand, the original copied aside before the overwrite) |
 | `predict-score` · `calibration` | Settle registered predictions with a script; read the per-domain hit-rate ledger |
 | `state` · `exec-journal` · `metrics` · `report` | Where a plan stands, the per-plan progress journal, and the whole-system report |
 
@@ -256,6 +256,7 @@ The coordination + accountability CLI runs underneath — 96 verbs, and the sect
 |---|---|
 | `deleteme` | The off-ramp: reverse every installer artifact (dry-run by default) and PRESERVE `.claude/memory/**` — leaving is as cheap as arriving |
 | `memory-preview` | The onboarding preview: an ASCII graph of how SMA will lay out YOUR repo's memory (areas from `git ls-files`, reflex candidates from `excavate`) — read-only, zero network, deterministic |
+| `start-map` | The map `/sma-start` prints BEFORE its first question: five things SMA will do in YOUR repo, every count read from your own tree and history — read-only, zero network, deterministic |
 
 The full CLI reference — every subcommand, flag, hook event, and kill-switch — lives in [scripts/sma/README.md](../scripts/sma/README.md).
 
@@ -881,7 +882,7 @@ V3 built the trust spine. **V3.5 gets that spine into a stranger's repo on day o
 
 ### Deep `/sma-start` onboarding
 
-The first run is a staged conversation that alternates teaching and asking — you learn how the accountable loop works *while* SMA records the profile every later command reads (your deploy host, your release ritual, your risk tolerance). Nothing is re-explained twice.
+The first run opens with a MAP, not a question: `sma start-map` prints five things SMA will do in this repository, every count read from the repository itself, so nobody answers «what must never break here» for a system they have not yet seen do anything. After it, the first run is a staged conversation that alternates teaching and asking — you learn how the accountable loop works *while* SMA records the profile every later command reads (your deploy host, your release ritual, your risk tolerance). Nothing is re-explained twice.
 
 ```mermaid
 flowchart LR
