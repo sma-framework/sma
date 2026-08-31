@@ -111,6 +111,9 @@ import {
   waveAddressOf,
   REASON_LABELS,
   failureAwaitsAPerson,
+  awaitsAutoRetry,
+  autoRetriesSpent,
+  AUTO_RETRY_LIMIT,
   turnCapOffer,
 } from '../queue/adapter.mjs'
 import { readWaveHolds } from '../queue/wave-holds.mjs'
@@ -299,6 +302,12 @@ export function parseReceiptSummary(receiptRef, { readReceipt } = {}) {
  *   reverify:<sha>          the code gate opened — the work was re-verified on the branch
  *   artifact:<path>@<sha>   a documentary stage really produced its document, and committed it
  *   answer:<attemptId>      the attempt correctly changed no code and answered instead
+ *   moot:<attemptId>@<ref>  the SUBJECT of the task no longer exists, and `<ref>` is what the
+ *                           daemon itself confirmed the finding on — a commit that closed the
+ *                           complaint, or a file that was read. Kept apart from `answer:`
+ *                           deliberately: «разобрался и ответил» and «предмета нет» send a
+ *                           person to two different places, and only the second one carries
+ *                           evidence a machine already re-checked
  *   preflight:<taskId>      the work was already on the branch before anybody was spawned
  *   forge:<...>             an agent draft passed its lint and was committed
  *
@@ -309,6 +318,7 @@ const RECEIPT_KINDS = Object.freeze([
   { kind: 'reverify', re: /^reverify:(.*)$/ },
   { kind: 'artifact', re: /^artifact:(.*)$/ },
   { kind: 'answer', re: /^answer:(.*)$/ },
+  { kind: 'moot', re: /^moot:(.*)$/ },
   { kind: 'preflight', re: /^preflight:(.*)$/ },
   { kind: 'forge', re: /^forge:(.*)$/ },
 ])
@@ -335,7 +345,7 @@ const RECEIPT_KINDS = Object.freeze([
  * summary is a different reader's job and is never dressed up as a verdict).
  *
  * @param {*} receiptRef
- * @returns {{kind:string, ref:string, path?:string, sha?:string, unverified?:boolean, reason?:string, branch?:string, base?:string, commits?:number, preexistingRed?:number, newRed?:number}|null}
+ * @returns {{kind:string, ref:string, path?:string, sha?:string, evidence?:string, unverified?:boolean, reason?:string, branch?:string, base?:string, commits?:number, preexistingRed?:number, newRed?:number}|null}
  */
 export function parseReceiptProof(receiptRef) {
   // ── THE OBJECT FORM: what the gate concluded when there was no receipt to point at ──
@@ -374,6 +384,13 @@ export function parseReceiptProof(receiptRef) {
       const path = at > 0 ? rest.slice(0, at) : rest
       const sha = at > 0 ? rest.slice(at + 1) : ''
       return { kind, ref, ...(path ? { path } : {}), ...(sha ? { sha } : {}) }
+    }
+    if (kind === 'moot') {
+      // `<attemptId>@<evidence>` — split on the LAST @ for the same reason artifact does:
+      // the evidence may be a path, and a path may legally carry one.
+      const at = rest.lastIndexOf('@')
+      const evidence = at > 0 ? rest.slice(at + 1) : ''
+      return { kind, ref, ...(evidence ? { evidence } : {}) }
     }
     if (kind === 'reverify') return { kind, ref, ...(rest ? { sha: rest } : {}) }
     return { kind, ref }
@@ -2458,9 +2475,12 @@ const BATCH_ITEM_SKIPPED = 'skipped'
  * the card a person presses and the door that accepts what he pressed have to be the same
  * three, or a screen would show a button nothing answers.
  *
- * WHY THERE IS NO FOURTH, «повторить автоматически»: the whole rule this question exists to
- * enforce is that nothing happens by itself. The loop of 12.08.2026 was exactly that fourth
- * option, taken without asking.
+ * WHY THERE IS NO FOURTH, «повторить автоматически»: by the time this question is asked at all,
+ * the automatic repeat has already been spent. The queue repeats a broken piece by itself —
+ * with a ceiling, a growing pause and a line in the log for each try (`awaitsAutoRetry`) — and
+ * only what those repeats could not fix ever reaches a person. So a fourth button would offer
+ * him the very thing that has just been tried and failed. The loop of 12.08.2026 was that same
+ * repetition WITHOUT the ceiling, the pause and the words; those three are what make it safe.
  */
 export const BATCH_DECISIONS = Object.freeze([
   Object.freeze({ id: 'skip', label: 'Пропустить элемент' }),
@@ -2474,10 +2494,14 @@ export const BATCH_DECISIONS = Object.freeze([
  *
  * A failure comes before a decision, and both come before anything that is merely under way:
  * the founder's rule for a batch is that a failed piece STOPS it and asks its owner what to do
- * (skip / retry / abandon), with nothing ever retried by itself. Which is also why a failed
- * item does not close: it is terminal for the QUEUE and unfinished for the ASSEMBLY, and a
- * batch reading «готово» with a failed piece in it would be the plainest lie this screen could
- * tell. Only work that actually produced counts as closed.
+ * (skip / retry / abandon). Which is also why a failed item does not close: it is terminal for
+ * the QUEUE and unfinished for the ASSEMBLY, and a batch reading «готово» with a failed piece in
+ * it would be the plainest lie this screen could tell. Only work that actually produced counts
+ * as closed.
+ *
+ * «СОРВАЛАСЬ» ЗДЕСЬ ЗНАЧИТ «СОРВАЛАСЬ ОКОНЧАТЕЛЬНО». Кусок, у которого остались автоповторы,
+ * этого слова не носит вовсе (см. состояние элемента выше): за ним стоит очередь, а не человек,
+ * и самое громкое слово сборки о нём было бы просьбой решить уже решённое.
  */
 const BATCH_STATE_ORDER = Object.freeze(['failed', 'awaiting_decision', 'running', 'waiting', 'done'])
 
@@ -2565,7 +2589,17 @@ function deriveBatches(requests, rows, { machineId, taskTokens, now = Date.now()
         id: r.id,
         title: r.title ?? null,
         status: r.status,
-        state: skipped.includes(r.id) ? BATCH_ITEM_SKIPPED : (BATCH_ITEM_STATE[r.status] ?? 'waiting'),
+        // СОРВАВШИЙСЯ КУСОК, У КОТОРОГО ОСТАЛИСЬ АВТОПОВТОРЫ, ЖДЁТ МАШИНУ, А НЕ ЧЕЛОВЕКА — и
+        // читается он поэтому как ждущий своей выдачи, а не как «сорвался». Слово тут не
+        // косметика: «сорвалась» — самое громкое состояние сборки (см. BATCH_STATE_ORDER), и
+        // сборка, которой очередь через минуту сама вернёт кусок, называлась бы сорванной, стояла
+        // бы красной в «ЖДУТ ВАС» и звала бы человека выбирать за уже принятое решение. Правило
+        // спрашивается у очереди — тем же вызовом, каким она решает, кого держать.
+        state: skipped.includes(r.id)
+          ? BATCH_ITEM_SKIPPED
+          : awaitsAutoRetry(r)
+            ? 'waiting'
+            : (BATCH_ITEM_STATE[r.status] ?? 'waiting'),
       }))
 
       const loudest = BATCH_STATE_ORDER.find((s) => items.some((i) => i.state === s))
@@ -3565,6 +3599,14 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machi
               kinds: spent ? spent.kinds : null,
             }),
           }
+        : {}),
+      // …А ЗДЕСЬ — ОБРАТНАЯ СТОРОНА ТОГО ЖЕ ПРЕДЛОЖЕНИЯ: строка, которую очередь перевыдаст сама,
+      // говорит об этом номером. Без него красная карточка зовёт человека к работе, которая
+      // поедет и без него, — тот самый шум, из-за которого столбик ожидания перестают читать.
+      // Поле ЕСТЬ, только пока повторы остались; кончились — сказать больше нечего, и молчание
+      // здесь и есть «дальше решаете вы». Правило спрашивается у очереди, а не выводится заново.
+      ...(awaitsAutoRetry(r)
+        ? { repeats: { attempt: autoRetriesSpent(r) + 1, of: AUTO_RETRY_LIMIT } }
         : {}),
     }
   }

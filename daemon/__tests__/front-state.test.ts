@@ -75,7 +75,29 @@ import { readWaveHolds } from '../src/queue/wave-holds.mjs'
 // Выражение пути каталога прогона — то самое, которым его собирают писатель и спавн.
 // Дело, знающее второе написание этого пути, доказывало бы согласие с самим собой.
 import { attemptRunDir, runsDirOf } from '../src/queue/run-dir.mjs'
-import { REASON_LABELS, createMemoryQueue, taskContextOf, TASK_CONTEXT_CAP } from '../src/queue/adapter.mjs'
+import {
+  REASON_LABELS,
+  createMemoryQueue,
+  taskContextOf,
+  TASK_CONTEXT_CAP,
+  AUTO_RETRY_LIMIT,
+} from '../src/queue/adapter.mjs'
+
+/**
+ * Кусок, сорвавшийся НАСМЕРТЬ: он падает столько раз, сколько очередь повторяет его сама, и
+ * только после этого начинает ждать человека. Повтор здесь делается дверью очереди, а не
+ * тиком, — этому файлу принадлежит читающая сторона, а не проход демона (см. `auto-repeat-wire`).
+ */
+async function breakItDead(adapter: any, worker = 'w1') {
+  let claimed = await adapter.claimNext(worker, {})
+  for (let n = 0; n <= AUTO_RETRY_LIMIT; n += 1) {
+    await adapter.fail(claimed.id, 'tests_red', { attemptToken: claimed.attemptToken })
+    if (n === AUTO_RETRY_LIMIT) break
+    await adapter.reissue(claimed.id)
+    claimed = await adapter.claimNext(worker, {})
+  }
+  return claimed
+}
 
 const HOUR = 3600000
 const NOW = 1_000_000_000_000
@@ -3261,7 +3283,7 @@ describe('POST /api/batch — the request fans out into the work it names', () =
     expect(open.batches[0].holding.id).toBe('B-9-2')
   })
 
-  it('a failed item stops the assembly and is what holds it — nothing retries by itself', async () => {
+  it('a failed item holds the assembly — waiting for its own repeat first, for a person after', async () => {
     const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
     const front = mkBatchFront({ adapter })
     const res = await callBatch(front, { title: 'разбор', items: ['первое дело', 'второе дело'] })
@@ -3270,14 +3292,30 @@ describe('POST /api/batch — the request fans out into the work it names', () =
     const a = await adapter.claimNext('w1', {})
     await adapter.complete(a.id, { receiptRef: 'reverify:ok' })
     const b = await adapter.claimNext('w2', {})
-    await adapter.fail(b.id, 'agent_error')
+    await adapter.fail(b.id, 'agent_error', { attemptToken: b.attemptToken })
 
-    const payload = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
-    const batch = payload.batches.find((bt: any) => bt.id === id)
-    // both rows are terminal for the QUEUE, and the assembly is still open: a failure is a
-    // stop that owes its owner a decision, never a closed piece of work
-    expect(batch.state).toBe('failed')
-    expect(batch.holding.id).toBe(b.id)
+    const read = async () => {
+      const payload = await deriveState({ adapter, windows: makeWindows({}), config, clock: () => NOW })
+      return payload.batches.find((bt: any) => bt.id === id)
+    }
+
+    // ПОКА У КУСКА ЕСТЬ АВТОПОВТОРЫ, сборка стоит на нём — но ждёт МАШИНУ: своё самое громкое
+    // слово она не произносит и вопроса владельцу не задаёт, потому что решать ему нечего.
+    const pending = await read()
+    expect(pending.state).not.toBe('failed')
+    expect(pending.items.find((i: any) => i.id === b.id).state).not.toBe('failed')
+    expect(pending.question).toBeUndefined()
+
+    // …а когда повторы кончились, тот же кусок держит её уже как сорвавшийся: обе строки
+    // терминальны для ОЧЕРЕДИ, и сборка всё ещё открыта — срыв должен владельцу решение.
+    for (let n = 0; n < AUTO_RETRY_LIMIT; n += 1) {
+      expect(await adapter.reissue(b.id)).toBe(true)
+      const again = await adapter.claimNext('w2', {})
+      await adapter.fail(again.id, 'agent_error', { attemptToken: again.attemptToken })
+    }
+    const dead = await read()
+    expect(dead.state).toBe('failed')
+    expect(dead.holding.id).toBe(b.id)
   })
 
   it('nothing about a batch is stored: what holds it is recomputed, and the queue rows carry no such field', async () => {
@@ -3321,14 +3359,19 @@ describe('POST /api/batch — the request fans out into the work it names', () =
     return res
   }
 
-  /** A batch of two pieces whose FIRST piece has broken — the state every case below starts in. */
+  /**
+   * A batch of two pieces whose FIRST piece has broken — the state every case below starts in.
+   *
+   * СЛОМАН НАСМЕРТЬ, а не однажды: пока у куска остаются автоповторы, сборка ждёт очередь, а не
+   * человека, и вопроса при ней нет вовсе — спрашивать его о том, что машина сделает сама, и
+   * значило бы вернуть тот самый шум, ради которого повтор и заведён.
+   */
   async function stoppedBatch() {
     const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
     const front = mkBatchFront({ adapter })
     const res = await callBatch(front, { title: 'разбор', items: ['первое дело', 'второе дело'] })
     const id = JSON.parse(res.body).id
-    const broken = await adapter.claimNext('w1', {})
-    await adapter.fail(broken.id, 'tests_red')
+    const broken = await breakItDead(adapter)
     return { adapter, front, id, brokenId: broken.id }
   }
 
@@ -3370,13 +3413,16 @@ describe('POST /api/batch — the request fans out into the work it names', () =
 
     const res = await decide(front, { batchId: id, decision: 'retry', itemId: brokenId })
     expect(res.statusCode).toBe(200)
-    expect(JSON.parse(res.body).attempt).toBe(2)
+    // ОДНИМ ПОДХОДОМ ВЫШЕ ТОГО, НА ЧЁМ ВСТАЛИ, — а встали на исчерпанных автоповторах, и
+    // счёт им общий: его же читает потолок, решая, что повторов больше нет.
+    const next = AUTO_RETRY_LIMIT + 2
+    expect(JSON.parse(res.body).attempt).toBe(next)
 
     const rows = await adapter.list({})
     const again = rows.find((r: any) => r.id === brokenId)
     expect(again.status).toBe('queued')
     expect(again.batchId).toBe(id)
-    expect(again.attempt).toBe(2)
+    expect(again.attempt).toBe(next)
     // ...and it is the piece that runs next — a repeat comes back to its own place
     expect((await adapter.claimNext('w2', {})).id).toBe(brokenId)
   })

@@ -213,3 +213,40 @@ describe('classifyForWorker — битый вход', () => {
     expect(classifyForWorker('Bash', { command: '' }).dangerous).toBe(false)
   })
 })
+
+/**
+ * ПЕРЕСБОРКА СКЛАДА ЗАВИСИМОСТЕЙ — КЛАСС, КОТОРОГО У ПОДУШКИ ТЕРМИНАЛА НЕТ ПО ЗАМЫСЛУ.
+ *
+ * Человек ставит зависимости в своём дереве, и это его работа. У работника этот каталог —
+ * ССЫЛКА на дерево человека, и менеджер идёт по ней: 31.08.2026 склад основателя опустошался
+ * трижды за сутки. Классификатор здесь только НАЗЫВАЕТ класс; отказывает по факту ссылки уже
+ * гейт вызовов (tool-gate + deps-guard), и он же пропускает установку в свой настоящий каталог.
+ */
+describe('classifyForWorker — переустановка зависимостей', () => {
+  it('глаголы, которые пересобирают каталог, названы опасными', () => {
+    expect(cls('npm ci --no-audit --no-fund')).toBe('deps-install')
+    expect(cls('npm install')).toBe('deps-install')
+    expect(cls('npm i vitest')).toBe('deps-install')
+    expect(cls('pnpm install --frozen-lockfile')).toBe('deps-install')
+    expect(cls('yarn add lodash')).toBe('deps-install')
+    // и внутри составной команды — ровно в той форме, в какой она пришла 31.08 в 17:54
+    expect(cls('cd "C:/work/copy-1" && cd daemon && npm ci --no-audit')).toBe('deps-install')
+    const verdict = classifyForWorker('Bash', { command: 'npm ci' })
+    expect(verdict.dangerous).toBe(true)
+    expect(verdict.reason).toContain('ссылке')
+  })
+
+  it('всё, что каталог НЕ пересобирает, остаётся безобидным — иначе страж выключат целиком', () => {
+    expect(cls('npm run build:spa')).toBe(null)
+    expect(cls('npm --prefix spa run build')).toBe(null)
+    expect(cls('npm test')).toBe(null)
+    expect(cls('npx vitest run daemon/__tests__/loop.test.ts')).toBe(null)
+    expect(cls('npm exec -- vitest run')).toBe(null)
+    // сообщение коммита не команда: якорь на начало части держит именно этот случай
+    expect(cls('git commit -m "docs: npm install больше не нужен"')).toBe(null)
+  })
+
+  it('класс объявлен в списке — иначе о нём не знают ни билет, ни квитанция', () => {
+    expect(WORKER_DANGER_CLASSES).toContain('deps-install')
+  })
+})

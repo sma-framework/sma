@@ -455,7 +455,7 @@ describe("taskContext — the human's snapshot of what this task is about, livin
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 25-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 28-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -486,6 +486,24 @@ describe('constants — taxonomy', () => {
       // read «ошибка работника»
       'context_exhausted',
       'tests_red',
+      // NO RED EVER HAPPENED: the run could not start, because the tree it would run in has no
+      // dependency store to start from. On 31.08.2026 that store was emptied three times in one
+      // day — a raw `git worktree remove` walking a live junction out of a copy — and every one
+      // of those attempts was closed as «тесты красные», sending a worker to hunt a regression
+      // that did not exist while the environment stayed broken for everyone. It waits for a
+      // person (AWAITS_A_PERSON): a re-issue meets the same empty store
+      'env_broken',
+      // THE GREEN THAT CERTIFIES NOTHING, and therefore a word of its own rather than a shade
+      // of tests_red. A test whose every assertion is about files this same work added cannot
+      // go red from any breakage of the product — it speaks only of itself, the suite passes,
+      // and the receipt is honest (measured 31.08.2026). «Тесты красные» would send a person to
+      // fix the tests; what needs fixing is what they are ABOUT
+      'self_referential_test',
+      // A QUESTION ABOUT WHAT THE PRODUCT IS MADE OF, not a defect in the work. A new top-level
+      // directory travels into the README, the packaging and the habits of every worker after
+      // this one, and no task carries a mandate to decide that in passing. It waits for a
+      // person (AWAITS_A_PERSON) — a re-issue would honestly create the same directory again
+      'new_top_level_dir',
       'needs_decision',
       'missing_access',
       'timeout',

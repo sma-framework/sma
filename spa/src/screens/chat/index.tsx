@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import { isNotReady } from '../../api/client'
-import { useApprove, useChatHistoryQuery, useEnqueue, usePhaseStage, useReturnTask, useSendChat, useStateQuery, useStopChat } from '../../api/queries'
+import {
+  useApprove,
+  useChatConversationsQuery,
+  useConversationTurnsQuery,
+  useEnqueue,
+  usePhaseStage,
+  useRenameConversation,
+  useReturnTask,
+  useSendChat,
+  useStateQuery,
+  useStopChat,
+} from '../../api/queries'
 import type { ChatTurn } from '../../api/types'
 import { approvalRefusal, refusalWords } from '../../shell/format'
 import { openScreen } from '../../shell/navigation'
@@ -10,7 +21,8 @@ import type { ScreenId } from '../registry'
 import { AttachmentViewer } from './AttachmentViewer'
 import { Awaiting } from './Awaiting'
 import { Composer } from './Composer'
-import { bookOf, threadOf } from './thread'
+import { ConversationList } from './ConversationList'
+import { conversationName, conversationOf, openThread } from './thread'
 import { TurnList } from './TurnList'
 import type { ChatEntry } from './TurnList'
 
@@ -39,10 +51,27 @@ import type { ChatEntry } from './TurnList'
  *
  * ═══════════════════ THE BOOK SEEDS IT; THE SESSION FILLS IT ═══════════════════
  *
- * The transcript is read ONCE, when the screen opens. It is a record of what was said — not
- * the truth about the park, which is always the reading. Every turn taken while the screen
- * is open is appended here as it happens, keeping the one thing the book does not keep: the
- * figures behind a spend answer.
+ * The transcript is read ONCE per conversation, when that conversation is opened. It is a
+ * record of what was said — not the truth about the park, which is always the reading. Every
+ * turn taken while the screen is open is appended here as it happens, keeping the one thing
+ * the book does not keep: the figures behind a spend answer.
+ *
+ * ═══════════ КНИГА — НЕ ОДНА ЛЕНТА, А РАЗГОВОРЫ, И ИХ ВИДНО СПИСКОМ ═══════════
+ *
+ * Слово владельца 31.08: «почему разговор когда открываю у него нет истории? через раз
+ * появляется, может нам разбить разговор на разные чаты? И те которые в процессе условно
+ * выполняют что-то, тогда они активные как и в chatgpt». Замер назвал «через раз» числом: 50
+ * реплик книги лежали в ПЯТНАДЦАТИ беседах — окно заводило новую почти при каждом открытии,
+ * показывало все ходы проекта подряд одной простынёй и не давало вернуться ни в одну прошлую.
+ *
+ * Экран поэтому читает ДВА раза вместо одного, и граница между чтениями — та же, что в любом
+ * привычном чате: СПИСОК бесед (что вообще было) и ХОДЫ ОДНОЙ беседы (что сказано в этой).
+ * Ни список, ни порядок в нём окно не считает само — их считает дверь по той же книге, иначе
+ * у списка слева и у ленты справа завелись бы две правды о том, какая беседа последняя.
+ *
+ * Открытие ПРОДОЛЖАЕТ самую свежую беседу (`openThread`). Новая заводится ровно одним
+ * способом — кнопкой «Новый»; во всём экране это единственное место, где нить намеренно
+ * становится `undefined`.
  *
  * ═════════════ A WORKPLACE: THE QUESTIONS, THE DOCUMENTS, THE WORK ═════════════
  *
@@ -86,11 +115,12 @@ function Pill({ value, label }: { value: string; label: string }) {
 
 export function Screen() {
   const state = useStateQuery()
-  const history = useChatHistoryQuery()
+  const conversations = useChatConversationsQuery()
   const send = useSendChat()
   const stop = useStopChat()
   const enqueue = useEnqueue()
   const startStage = usePhaseStage()
+  const rename = useRenameConversation()
 
   const [entries, setEntries] = useState<ChatEntry[]>([])
   // Разговор назван РАНЬШЕ поля ввода, потому что черновик набора привязан к разговору: пока
@@ -107,10 +137,13 @@ export function Screen() {
   const [decidingReturn, setDecidingReturn] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
 
-  // ЧЕЙ РАЗГОВОР СЕЙЧАС НА ЭКРАНЕ. Не «прочитана ли книга», а «книга КАКОГО проекта прочитана»:
+  // ЧЕЙ СПИСОК УЖЕ ОТКРЫВАЛИ. Не «прочитан ли список», а «список КАКОГО проекта прочитан»:
   // после переключения это разные вопросы, и первый из них отвечал «да» на чужую беседу.
-  // `undefined` — не читали ещё ничего; `null` — читали при невыбранном проекте.
-  const seededFor = useRef<string | null | undefined>(undefined)
+  // `undefined` — не открывали ещё ничего; `null` — открывали при невыбранном проекте.
+  const pickedFor = useRef<string | null | undefined>(undefined)
+  // ЧЬИ ХОДЫ ЛЕЖАТ В ЛЕНТЕ. Держится отдельно от самой нити, потому что лента богаче книги:
+  // живой ход несёт цифры расхода, которых в записи нет, и перезасев стёр бы их молча.
+  const seededThread = useRef<string | undefined>(undefined)
   const bottom = useRef<HTMLDivElement | null>(null)
 
   // ── the live turn: its client-minted id (for Стоп) and a per-second tick (for the
@@ -126,23 +159,39 @@ export function Screen() {
     return () => window.clearInterval(t)
   }, [send.isPending])
 
-  // ── КНИГА ЧИТАЕТСЯ ОДИН РАЗ НА ПРОЕКТ ────────────────────────────────────────────────
+  // ── ОТКРЫТИЕ ПОДНИМАЕТ ПОСЛЕДНИЙ РАЗГОВОР, А НЕ ЗАВОДИТ НОВЫЙ ─────────────────────────
   //
-  // Перечитывание посреди живой беседы повторило бы ходы, которые экран уже держит, — и с
-  // меньшим в них, чем он держит. Но «один раз» означает «один раз на ПРОЕКТ»: переключение
-  // проекта — это другая книга, другая нить и пустая лента, а не продолжение прежнего
-  // разговора под новой доской. Пока новая книга едет, засев не трогается: старые ходы,
-  // положенные в ленту на секунду, — это ровно та чужая беседа, от которой всё затевалось.
+  // Ровно один раз на ПРОЕКТ: переключение проекта — это другой список, другая нить и другая
+  // лента, а не продолжение прежнего разговора под новой доской. Пока новый список едет,
+  // выбор не трогается — беседа, показанная на секунду, была бы чужой.
   const project = state.data?.activeProject ?? null
   useEffect(() => {
-    if (!history.data || history.isFetching) return
-    if (seededFor.current === project) return
-    seededFor.current = project
-    const book = bookOf(history.data.turns, project)
-    setEntries(book.map(entryOf))
-    // Нити у этого проекта может не быть вовсе — тогда следующий ход начинает новую.
-    setConversationId(threadOf(book))
-  }, [history.data, history.isFetching, project])
+    if (!conversations.data || conversations.isFetching) return
+    if (pickedFor.current === project) return
+    pickedFor.current = project
+    const picked = openThread(conversations.data.conversations)
+    setConversationId(picked)
+    // Поднялась ДРУГАЯ нить — лента опустошается сразу, а не дожидается своих ходов: ходы,
+    // оставленные на экране на секунду, — это ровно та чужая беседа, от которой всё затевалось.
+    // Разговоров у проекта может не быть вовсе — тогда лента пуста, и первый же ход заведёт
+    // первую беседу. Это НЕ то же самое, что заводить новую при каждом открытии.
+    if (picked !== seededThread.current) {
+      seededThread.current = undefined
+      setEntries([])
+    }
+  }, [conversations.data, conversations.isFetching, project])
+
+  // ── ЛЕНТА — ХОДЫ ОДНОЙ БЕСЕДЫ, А НЕ ВСЯ КНИГА ────────────────────────────────────────
+  //
+  // Засев ровно один на нить: перечитывание посреди живой беседы повторило бы ходы, которые
+  // экран уже держит, — и с меньшим в них, чем он держит (цифры расхода живут только здесь).
+  const thread = useConversationTurnsQuery(conversationId)
+  useEffect(() => {
+    if (!conversationId || !thread.data || thread.isFetching) return
+    if (seededThread.current === conversationId) return
+    seededThread.current = conversationId
+    setEntries(thread.data.turns.map(entryOf))
+  }, [thread.data, thread.isFetching, conversationId])
 
   // A new turn belongs at the bottom of the eye, like every messenger a person already uses.
   useEffect(() => {
@@ -150,6 +199,35 @@ export function Screen() {
   }, [entries.length, send.isPending])
 
   const append = (entry: ChatEntry) => setEntries((prev) => [...prev, entry])
+
+  /** Перейти в прошлый разговор — его ходы поднимет чтение по имени нити. */
+  const openConversation = (id: string) => {
+    if (id === conversationId) return
+    setConversationId(id)
+    seededThread.current = undefined
+    setEntries([])
+    setProblem(null)
+  }
+
+  /**
+   * НОВЫЙ РАЗГОВОР ЗАВОДИТ РУКА, И ТОЛЬКО ОНА.
+   *
+   * Единственное место экрана, где нить намеренно становится `undefined`: следующий ход не
+   * найдёт имени беседы и получит от двери новое. Раньше это делало каждое открытие окна —
+   * оттого в книге и оказалось пятнадцать бесед на пятьдесят реплик.
+   */
+  const startNewConversation = () => {
+    setConversationId(undefined)
+    seededThread.current = undefined
+    setEntries([])
+    setProblem(null)
+  }
+
+  /** Имя разговора правится рукой: догадка по первым словам бывает неудачной. */
+  const renameConversation = (id: string, title: string) => {
+    setProblem(null)
+    rename.mutate({ conversationId: id, title }, { onError: (err) => setProblem(refusalWords(err)) })
+  }
 
   const onSend = () => {
     const said = text.trim()
@@ -168,6 +246,10 @@ export function Screen() {
       {
         onSuccess: (reply) => {
           liveTurnId.current = null
+          // Нить, названная дверью, объявляется ЗАСЕЯННОЙ до того, как попадёт в состояние:
+          // ход, начавший новую беседу, иначе тут же перечитал бы её из книги и стёр ленту,
+          // которую экран только что собрал — вместе с цифрами расхода, которых в книге нет.
+          seededThread.current = reply.conversationId
           setConversationId(reply.conversationId)
           const answer = reply.answer
           // A turn the founder ENDED: the words they sent come back into the composer for
@@ -344,12 +426,30 @@ export function Screen() {
 
   const kpis = state.data?.kpis
   const empty = entries.length === 0 && !send.isPending
+  const rows = conversations.data?.conversations ?? []
+  const open = conversationOf(rows, conversationId)
 
   return (
     <section className="flex min-w-0 flex-1">
+      {/* СПИСОК РАЗГОВОРОВ. Живая точка своей беседы зажигается без сети — экран знает про
+          свой ход раньше двери; чужие ходы приносит сам список. */}
+      <ConversationList
+        conversations={rows}
+        selected={conversationId}
+        liveId={send.isPending ? (conversationId ?? null) : null}
+        loading={conversations.isLoading}
+        onOpen={openConversation}
+        onNew={startNewConversation}
+        onRename={renameConversation}
+      />
+
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex h-[58px] flex-none items-center gap-2.5 border-b border-bd bg-head px-7 backdrop-blur-[10px]">
-          <h1 className="m-0 mr-2 flex-none text-[15px] font-semibold tracking-[-0.01em] text-tx">Разговор</h1>
+          <h1 className="m-0 mr-2 flex-none truncate text-[15px] font-semibold tracking-[-0.01em] text-tx">
+            {/* Заголовок называет ОТКРЫТУЮ беседу: со списком слева «Разговор» перестал быть
+                адресом — человеку нужно видеть, в котором из них он сейчас пишет. */}
+            {conversationId ? conversationName(open) : 'Новый разговор'}
+          </h1>
           {kpis ? (
             <>
               <Pill value={String(kpis.workersBusy)} label="в работе" />

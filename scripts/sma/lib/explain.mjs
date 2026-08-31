@@ -170,6 +170,9 @@ export const COMMAND_TOPICS = {
 
   // the read-only search across the journal, the plan records, the transcripts and the lessons
   history: 'history',
+
+  // the fleet window's front door: the one command that performs the token→cookie exchange
+  open: 'window',
 }
 
 /**

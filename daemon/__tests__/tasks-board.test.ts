@@ -194,6 +194,47 @@ describe('инлайн и батч стадий не имеют — их кла�
     expect(stopped[0].wait).toBeUndefined()
   })
 
+  /**
+   * И ЭТО ТОЖЕ НЕ ЖДЁТ ЧЕЛОВЕКА — но по другой причине, чем остановленное рукой: за ним стоит
+   * очередь. Она перевыдаст работу сама, номер повтора едет прямо на строке, и звать человека к
+   * тому, что произойдёт через минуту, — это ровно тот шум, из-за которого столбик ожидания
+   * перестают читать. Слово о повторе при этом СКАЗАНО, а не проглочено: карточка называет его
+   * номером, иначе красная строка выглядит как та, что стоит насмерть.
+   */
+  it('поломка, которая повторится сама, в «ЖДУТ ВАС» не встаёт — но о повторе говорит', () => {
+    const done = (over: Partial<DoneRow>): DoneRow =>
+      ({
+        id: 'd2',
+        title: 'Оборвалась',
+        project: 'sma',
+        machine: 'm1',
+        finishedAt: null,
+        finishedDuration: null,
+        workerId: null,
+        attempts: 1,
+        ...over,
+      }) as DoneRow
+
+    const repeating = units({
+      done: [
+        done({
+          failed: { reason: 'provider_error', reasonLabel: 'Оборвал провайдер', repeats: { attempt: 1, of: 2 } },
+        } as Partial<DoneRow>),
+      ],
+    })
+    expect(whereSingle(repeating)).toBe('done')
+    expect(repeating[0].wait).toBeUndefined()
+    expect(repeating[0].next).toContain('повторится сама')
+    expect(repeating[0].next).toContain('1 из 2')
+
+    // …а когда повторы кончились, поле молчит — и та же поломка встаёт к человеку.
+    const spent = units({
+      done: [done({ failed: { reason: 'provider_error', reasonLabel: 'Оборвал провайдер' } } as Partial<DoneRow>)],
+    })
+    expect(whereSingle(spent)).toBe('you')
+    expect(spent[0].wait?.cta).toContain('Открыть')
+  })
+
   it('поломка, за которую уже взялись, больше никого не ждёт — она в «Готово»', () => {
     const broke = (over: Partial<DoneRow> = {}): DoneRow =>
       ({

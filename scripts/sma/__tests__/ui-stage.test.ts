@@ -27,15 +27,23 @@ import {
   STAGE_CHAT_TURNS,
   STAGE_DESIGN_ATTEMPT,
   STAGE_DESIGN_TASK,
+  STAGE_DONE_TASK,
   STAGE_HOST,
   STAGE_PROJECTS,
   URL_ENV,
   announcement,
   missingBuildMessage,
   parseStageArgs,
+  SLOW_CAP_MS,
+  SLOW_DOOR,
+  SLOW_ENV,
+  isSlowDoor,
+  slowDoorMs,
+  slowNotice,
   stageCommandArgs,
   stageConfig,
   stageDiskConfig,
+  stageDoneAttempts,
   stageProjectFiles,
   stageProjects,
   stageQueue,
@@ -87,10 +95,20 @@ async function ask(url: string, path: string, init: RequestInit = {}) {
   return { status: res.status, text: await res.text() }
 }
 
-/** Raise a holding scene, hand its announcement to `body`, and take it down again. */
-async function onStage(body: (a: Announced) => Promise<void>): Promise<void> {
+/**
+ * Raise a holding scene, hand its announcement to `body`, and take it down again.
+ *
+ * `env` дописывается к окружению сцены и существует ради одного: сцену можно попросить
+ * отвечать МЕДЛЕННО, а «медленно» — свойство процесса, которое внутрипроцессная подделка
+ * подтвердила бы из того самого допущения, которое проверяется.
+ */
+async function onStage(body: (a: Announced) => Promise<void>, env: NodeJS.ProcessEnv = {}): Promise<void> {
   const cwd = scratchDir()
-  const child = spawn(process.execPath, [STAGE], { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [STAGE], {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, ...env },
+  })
   let out = ''
   const exited = new Promise<number | null>((done) => child.on('exit', (code) => done(code)))
   try {
@@ -523,6 +541,47 @@ describe('the wire: one command raises the window, the run engine photographs it
   )
 
   it(
+    'раскрытие готовой работы читает стенограмму подхода, а не блокирующее «не реализовано»',
+    async () => {
+      await onStage(async ({ url }) => {
+        // ИЗМЕРЕНО НА ПОДНЯТОЙ СЦЕНЕ, а не прочитано в исходнике. Раскрытая строка принятой
+        // работы предлагает стенограмму у КАЖДОГО подхода и зовёт за ней `GET /api/attempt/:id`
+        // — тем же идентификатором, каким его собирает клиент: «задача # подход». Сцена не
+        // подключала читателя журнала попыток, дверь отвечала 501, и любой живой прогон,
+        // дошедший до раскрытия готового, приносил блокирующую находку о чужой работе: вердикт
+        // переставал отвечать на вопрос, ради которого прогон и запускали.
+        for (const row of stageDoneAttempts()) {
+          const id = `${STAGE_DONE_TASK.id}#${row.attempt}`
+          const path = `/api/attempt/${encodeURIComponent(id)}?tail=200`
+          const got = await ask(url, path)
+          expect(got.status, `${path} → ${got.text}`).toBe(200)
+          expect(got.text).not.toContain('not implemented')
+
+          // …и «отвечает» здесь значит «под дверью есть запись». Пустой журнал — это ТОТ ЖЕ
+          // ответ, который сцена дала бы, будучи подключённой к чужому каталогу реестра, так
+          // что один только код 200 провода не доказывает.
+          const log = JSON.parse(got.text)
+          expect(log.lines.length, path).toBeGreaterThan(0)
+          // Записка о подходе читается тем же разбором, каким её читает живой прогон: значит
+          // под дверью лежат строки настоящей формы, а не похожие на неё.
+          expect(typeof log.note, path).toBe('string')
+          expect(log.digest.filesChanged.length, path).toBeGreaterThan(0)
+        }
+
+        // Возврат и приёмка ГОВОРЯТ РАЗНОЕ: одинаковые стенограммы у двух подходов показывали
+        // бы, что раскрытие умеет молчать о разнице между «вернули» и «приняли».
+        const [first, second] = await Promise.all(
+          stageDoneAttempts().map(async (row) =>
+            JSON.parse((await ask(url, `/api/attempt/${encodeURIComponent(`${STAGE_DONE_TASK.id}#${row.attempt}`)}`)).text),
+          ),
+        )
+        expect(first.note).not.toBe(second.note)
+      })
+    },
+    60000
+  )
+
+  it(
     'brings two trees and lets a run move between them — and the screen behind the switch changes',
     async () => {
       await onStage(async ({ url, dir, token }) => {
@@ -567,6 +626,76 @@ describe('the wire: one command raises the window, the run engine photographs it
         })
         expect(unknown.status).toBe(404) // the production applier's own named refusal, unchanged
       })
+    },
+    60000
+  )
+})
+
+describe('медленная дверь — сцена, на которой ожидание можно увидеть', () => {
+  it('без просьбы сцена быстрая: задержки нет ни от пустого, ни от мусора, ни от минуса', () => {
+    // Переменная окружения приезжает из чужих рук. Всё, что не положительное число, — это
+    // «не просили», а не повод сцене падать.
+    for (const asked of [undefined, '', '   ', 'быстро', '0', '-500', 'NaN', 'Infinity']) {
+      expect(slowDoorMs({ [SLOW_ENV]: asked as string }), String(asked)).toBe(0)
+    }
+    expect(slowDoorMs({})).toBe(0)
+    expect(slowDoorMs()).toBe(0)
+  })
+
+  it('просьбу выполняет, а описку в нуле — обрезает потолком', () => {
+    expect(slowDoorMs({ [SLOW_ENV]: '1200' })).toBe(1200)
+    expect(slowDoorMs({ [SLOW_ENV]: '1200.9' })).toBe(1200)
+    // Сцена, задержанная на час, выглядит как повисшая, и следующий человек ищет поломку
+    // там, где её нет.
+    expect(slowDoorMs({ [SLOW_ENV]: String(SLOW_CAP_MS * 100) })).toBe(SLOW_CAP_MS)
+  })
+
+  it('задерживается ОДНА дверь, и узнаётся она по пути, а не по строке целиком', () => {
+    expect(isSlowDoor(SLOW_DOOR)).toBe(true)
+    expect(isSlowDoor(`${SLOW_DOOR}?project=sma`)).toBe(true)
+    // Чтение картины замедлять нельзя: окно перечитывает её раз в три секунды, и медленное
+    // чтение держало бы страницу вечно «не устоявшейся» — прогон мерил бы недособранный экран.
+    expect(isSlowDoor('/api/state')).toBe(false)
+    expect(isSlowDoor('/api/project/selection')).toBe(false)
+    expect(isSlowDoor('')).toBe(false)
+    expect(isSlowDoor(undefined)).toBe(false)
+  })
+
+  it('медленная сцена говорит о себе вслух — иначе её сочтут повисшей', () => {
+    const notice = slowNotice(1200)
+    expect(notice).toContain(SLOW_DOOR)
+    expect(notice).toContain('1200')
+    expect(notice).toContain(SLOW_ENV)
+  })
+
+  it(
+    'на живой сцене названная дверь действительно отвечает позже, а соседняя — нет',
+    async () => {
+      const asked = 1200
+      await onStage(
+        async ({ url, port }) => {
+          expect(port).toBeGreaterThan(0)
+
+          const beganSwitch = Date.now()
+          const picked = await ask(url, SLOW_DOOR, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: STAGE_PROJECTS[1].id }),
+          })
+          const switchMs = Date.now() - beganSwitch
+
+          // Дверь ОТВЕТИЛА, и ответила своим настоящим ответом: задержан момент, а не смысл.
+          expect(picked.status).toBe(200)
+          expect(switchMs).toBeGreaterThanOrEqual(asked)
+
+          // …а чтение картины идёт как всегда: замедлена ровно одна дверь.
+          const beganRead = Date.now()
+          const state = await ask(url, '/api/state')
+          expect(state.status).toBe(200)
+          expect(Date.now() - beganRead).toBeLessThan(asked)
+        },
+        { [SLOW_ENV]: String(asked) }
+      )
     },
     60000
   )

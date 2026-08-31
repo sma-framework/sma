@@ -325,6 +325,42 @@ async function runAirbag(ctx) {
 }
 
 /**
+ * deps stream — СКЛАД ЗАВИСИМОСТЕЙ ОДИН НА ЧЕЛОВЕКА И НА ВСЕ КОПИИ РАБОТНИКОВ.
+ *
+ * Bash-only, mayDeny:true, и обе его причины отказа — ФАКТЫ файловой системы, а не догадки
+ * по имени каталога:
+ *   • команда убирает копию, внутри которой ещё висят ссылки на склад. Сырой
+ *     `git worktree remove` идёт ПО ссылке: 31.08.2026 в 17:27:58Z такая команда прошла из
+ *     соседнего окна, и через полторы секунды каталог `node_modules` основного дерева
+ *     сменил метку времени. Отказ называет верб, который убирает то же самое безопасно.
+ *   • команда ставит зависимости туда, где `node_modules` — ссылка наружу: запись уйдёт в
+ *     дерево, в котором человек работает прямо сейчас.
+ * Ссылки нет — стрим МОЛЧИТ: обычная установка в обычном чекауте его не касается вовсе,
+ * и это то, что отличает страж от помехи. Kill-switch: SMA_DEPS_GUARD_DISABLE.
+ */
+async function runDeps(ctx) {
+  const warns = []
+  try {
+    if (ctx.toolName !== 'Bash') return { warns }
+    const command = typeof ctx.toolInput.command === 'string' ? ctx.toolInput.command : ''
+    if (!command.trim()) return { warns }
+    const guard = ctx.deps && ctx.deps.depsGuard
+    if (!guard) return { warns }
+    // ГДЕ СТОИТ ВЫЗЫВАЮЩИЙ — это и есть каталог, относительно которого читаются `cd` и
+    // относительные пути команды. Корень репозитория остаётся ответом только когда харнесс
+    // своего каталога не назвал.
+    const cwd = (ctx.evt && typeof ctx.evt.cwd === 'string' && ctx.evt.cwd.trim()) || ctx.repoRoot
+    const removal = guard.copyRemovalRefusal({ command, cwd, root: ctx.repoRoot })
+    if (removal && removal.refuse) return { warns, deny: { text: `SMA-deps: ${removal.reason}` } }
+    const install = guard.installRefusal({ command, cwd })
+    if (install && install.refuse) return { warns, deny: { text: `SMA-deps: ${install.reason}` } }
+  } catch {
+    /* fail-open (C9) — a guard bug can NEVER wedge a session */
+  }
+  return { warns }
+}
+
+/**
  * spend stream — the deterministic spend ledger reflexes. Applies
  * the locked 70/90 window-budget WARNs and the Task-ONLY soft-deny past a configured
  * cap (checkSpend), and detects+trips a repeatedly-firing SMA rule in the journal
@@ -696,6 +732,9 @@ export const PRE_CHECKS = [
   { id: 'reflex', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_REFLEX_DISABLE', mayDeny: false, run: runReflex },
   { id: 'gates', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_GATES_DISABLE', mayDeny: true, run: runGates },
   { id: 'airbag', tools: ['Bash'], killSwitchEnv: 'SMA_AIRBAG_DISABLE', mayDeny: true, run: runAirbag },
+  // Стоит ПОСЛЕ подушки нарочно: подушка снимает точку возврата по git-разрушению, и отказ,
+  // поставленный раньше, лишил бы её этой работы на командах, которые всё равно не пройдут.
+  { id: 'deps', tools: ['Bash'], killSwitchEnv: 'SMA_DEPS_GUARD_DISABLE', mayDeny: true, run: runDeps },
   { id: 'spend', tools: ['Edit', 'Write', 'Bash', 'Task'], killSwitchEnv: 'SMA_SPEND_DISABLE', mayDeny: true, run: runSpend },
   { id: 'fingerprint', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_FINGERPRINT_DISABLE', mayDeny: false, run: runFingerprint },
   // enforcing scopes: SOFT-deny-with-override, on by default, silent without a
@@ -731,7 +770,7 @@ async function realGitHeadSha(repoRoot) {
 
 /** Lazy-load the real lib modules the streams depend on (overridable in tests). */
 async function loadDefaultDeps() {
-  const [collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate] =
+  const [collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate, depsGuard] =
     await Promise.all([
       import('./collision.mjs'),
       import('./reflex.mjs'),
@@ -748,8 +787,9 @@ async function loadDefaultDeps() {
       import('./fragments.mjs'), // context stream: fragment delivery
       import('./citations.mjs'), // fragment fires ride the SAME usage journal
       import('./merge-gate.mjs'), // enforce stream: verified-live-only soft-deny predicate
+      import('./deps-guard.mjs'), // deps stream: the dependency store's own refusals
     ])
-  return { collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate }
+  return { collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate, depsGuard }
 }
 
 /**

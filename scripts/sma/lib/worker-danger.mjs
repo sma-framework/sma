@@ -81,6 +81,7 @@ export const WORKER_DANGER_CLASSES = Object.freeze([
   'non-git-destruction',
   'net-exec',
   'write-outside-copy',
+  'deps-install',
 ])
 
 /** Why each class is dangerous FOR A WORKER — the words a person reads on the card. */
@@ -100,6 +101,7 @@ const REASONS = Object.freeze({
   'non-git-destruction': 'рекурсивное удаление мимо системы контроля версий не восстанавливается ничем',
   'net-exec': 'скачанный из сети код исполняется сразу — содержимое не видел никто',
   'write-outside-copy': 'запись за пределы рабочей копии трогает то, что этой задаче не принадлежит',
+  'deps-install': 'переустановка зависимостей в копии идёт по ссылке в дерево человека и опустошает его склад',
 })
 
 /** Инструменты, чей вход — строка команды оболочки. Всё остальное судится по пути. */
@@ -137,6 +139,19 @@ const rePublish = new RegExp(
     '|(\\bnpm\\s+dist-tag\\b)',
 )
 const reRmRecursive = /(^|[\s(])rm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-r\s+-f|-f\s+-r|--recursive\s+--force|--force\s+--recursive)\b/i
+/**
+ * ПЕРЕСБОРКА КАТАЛОГА ЗАВИСИМОСТЕЙ. В рабочей копии этот каталог — ССЫЛКА на дерево
+ * человека, и менеджер идёт по ней: 31.08.2026 склад основателя опустошался трижды за
+ * сутки. Ловятся только глаголы, которые каталог ПЕРЕСОБИРАЮТ; `run`, `exec`, `test`,
+ * `pack` сюда не входят — классификатор, останавливающий `npm run build`, будет выключен
+ * целиком, и вместе с ним всё остальное в этом файле.
+ *
+ * Матчер якорится на НАЧАЛО части команды (допуская присвоения переменных перед ней): иначе
+ * `git commit -m "… npm install …"` читалось бы как установка, и работник стоял бы на
+ * собственном сообщении коммита.
+ */
+const reDepsInstall =
+  /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(npm|pnpm|yarn|bun)\s+(?:-{1,2}\S+\s+|[a-z0-9._-]+\s+)*?(install|ci|add|update|upgrade|prune|dedupe|rebuild|i)(?![\w-])/i
 const reRemoveItem = /\bRemove-Item\b[^&|;]*?\s-(Recurse|Force)\b/i
 const reWindowsDirWipe = /\b(rmdir|rd)\s+\/s\b|\bdel\s+\/[sq]\b/i
 const reShred = /\b(shred|Clear-Disk|mkfs(\.[a-z0-9]+)?)\b/i
@@ -326,6 +341,7 @@ function classifyPart(part) {
 
   // ── и то, на чём подушка терминала молчит по построению ──
   if (rePublish.test(part)) return 'publish'
+  if (reDepsInstall.test(part)) return 'deps-install'
   if (reRmRecursive.test(part) || reRemoveItem.test(part) || reWindowsDirWipe.test(part) || reShred.test(part)) {
     return 'non-git-destruction'
   }

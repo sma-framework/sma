@@ -374,12 +374,18 @@ export interface ReceiptSummary {
  * until a receipt learns to carry a parsed result.
  */
 export interface ReceiptProof {
-  kind: 'reverify' | 'artifact' | 'answer' | 'preflight' | 'forge' | 'gate' | 'other' | string
+  kind: 'reverify' | 'artifact' | 'answer' | 'moot' | 'preflight' | 'forge' | 'gate' | 'other' | string
   /** The reference verbatim, as stored — never re-worded. */
   ref: string
   /** For a documentary stage: the file it committed, and that commit. */
   path?: string
   sha?: string
+  /**
+   * Для исхода «предмета нет» — ЧЕМ проверяли: коммит, закрывший жалобу, или файл, который
+   * смотрели. Демон подтвердил эту ссылку сам, до того как выдал квитанцию, поэтому её можно
+   * открыть и увидеть то же самое. Отсутствует у всех остальных видов доказательства.
+   */
+  evidence?: string
   /**
    * ═══════ «ГОТОВО» И «ГОТОВО, НО НИКТО НЕ ПЕРЕПРОВЕРЯЛ» — РАЗНЫЕ СЛОВА ═══════
    *
@@ -463,6 +469,13 @@ export interface FailureSummary {
   spent?: TurnSpend | null
   /** Три названных действия и числа под ними — только там, где следующей попытки не будет. */
   offer?: FailureOffer
+  /**
+   * СЛЕДУЮЩАЯ ПОПЫТКА, КОТОРУЮ ОЧЕРЕДЬ СДЕЛАЕТ САМА: который это будет повтор и сколько их
+   * отпущено. Поле есть, ПОКА повторы остаются, и исчезает, когда они кончились, — по нему
+   * столбик и отличает работу, ждущую машину, от работы, ждущей человека. Считает его демон
+   * (`awaitsAutoRetry`), а не экран: правило одно на обе стороны.
+   */
+  repeats?: { attempt: number; of: number }
 }
 
 export interface DoneRow {
@@ -1525,6 +1538,25 @@ export interface ReturnRounds {
   notes: string[]
 }
 
+/**
+ * СКОЛЬКО ХОДОВ ЭТОЙ РАБОТЕ ДАДУТ НА СЛЕДУЮЩЕМ ЗАПУСКЕ — и по каким признакам столько.
+ *
+ * Считается от ОБЪЯВЛЕННЫХ полей задачи (оценка, число пунктов обещания, его длина) и от
+ * потолков, которые у неё уже сгорели. Приезжает готовым: и число, и слово размера ставит
+ * дверь, потому что второй словарь на замкнутый список слов разошёлся бы с первым молча.
+ *
+ * `cap: null` — «честного числа больше нет»: всё, что мы готовы оплатить, уже сгорело, и
+ * следующий ход принадлежит человеку. Это не ноль и не «неизвестно».
+ */
+export interface TurnPlan {
+  size: 'small' | 'standard' | 'large'
+  sizeLabel: string
+  cap: number | null
+  ceiling: number
+  escalatedFrom: number | null
+  signals: { storyPoints: number | null; criteria: number; promiseChars: number } | null
+}
+
 export interface TaskDetail {
   task: {
     id: string
@@ -1540,6 +1572,12 @@ export interface TaskDetail {
      * `acceptanceList` — и на «массив это или строка» дважды не ветвится.
      */
     acceptance: string | string[] | null
+    /**
+     * Потолок ходов, который эта работа получит на следующем запуске, и признаки, по которым
+     * он такой. Отсутствует у демона постарше — тогда карточка о потолке молчит, а не рисует
+     * выдуманное число.
+     */
+    turnPlan?: TurnPlan | null
     /**
      * ═══════ ЧЕМ ОТМЕНЯЕТСЯ ПРИНЯТАЯ РАБОТА ═══════
      *
@@ -1988,6 +2026,29 @@ export interface ChatTurn {
 
 export interface ChatHistory {
   turns: ChatTurn[]
+}
+
+/**
+ * Одна БЕСЕДА книги — строка списка слева.
+ *
+ * Список собирается дверью из той же книги, поэтому здесь нет ни одного поля, которое окно
+ * могло бы посчитать иначе, чем дверь. `title` — `null` значит «без имени», а не «имя ещё не
+ * приехало»: показывать надо именно это, а не выдуманный порядковый номер.
+ */
+export interface ChatConversation {
+  id: string
+  /** Имя, данное рукой; нет такого — первые слова разговора; нет и их — `null`. */
+  title: string | null
+  /** Когда в беседе говорили в последний раз. По нему же — порядок списка. */
+  lastTs: string | null
+  turns: number
+  project: string | null
+  /** В беседе ПРЯМО СЕЙЧАС идёт ход — из реестра демона, а не из книги. */
+  active: boolean
+}
+
+export interface ChatConversations {
+  conversations: ChatConversation[]
 }
 
 // ── bringing your own helpers in (declared routes, filled by their own work) ────────

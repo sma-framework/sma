@@ -3,6 +3,7 @@ import { useSearchQuery } from '../../api/queries'
 import type { SearchHit } from '../../api/types'
 import { plural } from '../../shell/format'
 import { KindBadge, SEARCH_DEBOUNCE_MS, SEARCH_Q_CAP, groupHits, openHit } from '../../shell/search-hits'
+import { Waiting } from '../../shell/Waiting'
 
 /**
  * «Поиск» — one question, and an answer out of every corpus at once: the screens, the work,
@@ -123,9 +124,7 @@ export function Screen() {
             </p>
           ) : null}
 
-          {askedSomething && found.isLoading ? (
-            <p className="m-0 text-[13px] text-tx2">Спрашиваю…</p>
-          ) : null}
+          {askedSomething && found.isLoading ? <Waiting what="Спрашиваю" /> : null}
 
           {found.isError ? (
             <p className="m-0 text-[13px] leading-[1.6] text-tx2">

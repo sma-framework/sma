@@ -12641,6 +12641,15 @@ async function cmdMerge({ positionals, flags, dirs }) {
     if (res.unfinishedMerge) process.stderr.write(`  ⚠ ${res.howToClear}\n`)
     return 1
   }
+  // СРЕДА, А НЕ ТЕСТЫ. Отказ по непригодной среде печатается ОТДЕЛЬНО и первым: сказать
+  // здесь «тесты красные» значит отправить человека искать регрессию в ветке, когда чинить
+  // надо склад зависимостей основного дерева (31.08.2026 — трижды за сутки).
+  if (res.envBroken) {
+    process.stderr.write(`SMA merge: слияние ОТКАЗАНО — ${res.reason}\n`)
+    process.stderr.write(`  Ветка ${branch} НЕ влита, вершина main не сдвинулась, прогона не было.\n`)
+    if (res.unfinishedMerge) process.stderr.write(`  ⚠ ${res.howToClear}\n`)
+    return 1
+  }
   // ОТКАЗ — НЕ «ВЛИТ». Раньше эта печать безусловно говорила «влит в main ЛОКАЛЬНО», и на
   // красном прогоне это была ложь о том, что ветка в дереве. Теперь красный прогон означает,
   // что слияния НЕ БЫЛО: вершина не двинулась, откатывать нечего.
@@ -12855,6 +12864,85 @@ async function cmdVendor({ flags, dirs }) {
   return ok && errors.length === 0 ? 0 : 1
 }
 
+/**
+ * cmdOpen — open the fleet window, performing the ONE sanctioned token→cookie exchange.
+ *
+ * `sma open [--print] [--json]`. It reads the daemon's own config, assembles the one-shot
+ * bootstrap link from it, and hands that link to the desktop's browser. Nothing about the
+ * front's posture moves: this is the exchange the front already offers, typed for you
+ * instead of by you.
+ *
+ * WHAT IT PRINTS, AND WHY THAT IS THE INTERESTING PART. On the ordinary path the browser
+ * gets the link and the TERMINAL gets the token-free address — a session transcript, a
+ * screenshot or a scrollback is not a place a credential needs to live, and the person can
+ * already see the window. `--print` is the other machine: no browser to hand it to, so the
+ * ready link goes on the screen as one line, because the person asked for exactly that.
+ * A machine with no known launcher takes the same road on its own and SAYS it did.
+ */
+async function cmdOpen({ flags }) {
+  const win = await import('./lib/window.mjs')
+  const configPath = win.resolveDaemonConfigPath()
+  const entry = win.readWindowEntry({ configPath })
+
+  if (!entry.ok) {
+    // Three absences, three next steps — see readWindowEntry for why they are not one.
+    const said = {
+      'config-missing': `нет файла настроек демона: ${configPath}. Поднимите демон один раз (node daemon/src/main.mjs) — первый запуск создаёт файл и чеканит токен.`,
+      'config-unreadable': `файл настроек демона не читается как JSON: ${configPath}. Почините файл или уберите его, чтобы демон создал новый.`,
+      'no-token': `в файле настроек демона нет токена окна: ${configPath}. Уберите файл и поднимите демон заново, чтобы он отчеканил токен.`,
+    }
+    const detail = said[entry.reason] || `окно недоступно: ${configPath}`
+    if (wantsJson(flags)) {
+      printJson({ ok: false, reason: entry.reason, configPath })
+      return 1
+    }
+    process.stderr.write(`SMA open: ${detail}\n`)
+    return 1
+  }
+
+  const printOnly = flags.print === true
+  let opened = false
+  let launchReason = null
+
+  if (!printOnly) {
+    const { spawn } = await import('node:child_process')
+    const res = win.openInBrowser({ url: entry.url, platform: process.platform, spawn })
+    opened = res.opened
+    launchReason = res.opened ? null : res.reason
+  }
+
+  // The link crosses onto the screen only when nothing else can carry it, or when asked.
+  const showLink = win.shouldPrintLink({ printOnly, opened })
+
+  if (wantsJson(flags)) {
+    printJson({
+      ok: true,
+      address: entry.address,
+      opened,
+      ...(launchReason ? { launchReason } : {}),
+      ...(showLink ? { bootstrapUrl: entry.url } : {}),
+    })
+    return 0
+  }
+
+  if (opened) {
+    process.stdout.write(`SMA: окно открывается в браузере — ${entry.address}\n`)
+    process.stdout.write('Токен ушёл прямо в браузер и обменян на куку HttpOnly, поэтому здесь он не печатается.\n')
+    return 0
+  }
+
+  if (!printOnly) {
+    const why =
+      launchReason === 'no-launcher'
+        ? `на этой платформе (${process.platform}) браузер запускать нечем`
+        : 'браузер не запустился'
+    process.stderr.write(`SMA open: ${why} — вот готовая ссылка, откройте её сами:\n`)
+  }
+  // One line, nothing around it: this is the string a person copies.
+  process.stdout.write(`${entry.url}\n`)
+  return 0
+}
+
 const HOOK_FACING = new Set(['session-start', 'session-end', 'turn-diff', 'collision-check', 'heartbeat', 'reflex-check', 'gates-check', 'airbag-check', 'spend-check', 'stall-check', 'pre', 'pretask-pack', 'subagent-verify', 'precompact-capsule', 'statusline', 'pulse'])
 
 /** subcommand → handler. Each handler lazy-imports its lib module. */
@@ -12957,12 +13045,13 @@ const HANDLERS = {
   approvals: cmdApprovals, // deterministic acceptance-rule suggester over the attempt ledger (suggest); prints proposals only, enabling is a separate human step; read-only, no model
   exam: cmdExam, // replay exam (build|score); deterministic exam builder + match-rate scorer, LOCAL, blind key file
   update: cmdUpdate, // v5 — consumer-side updater: version report (installed vs npm vs local source) | --yes re-runs the standard installer | --selftest; memory corpus + .sma state PRESERVED (installer guarantee)
+  open: cmdOpen, // the fleet window's front door: builds the one-shot token→cookie exchange from the daemon config and hands it to the browser (--print for a machine with no browser); loosens nothing in the front's auth
 }
 
 /**
  * Verbs that print their OWN `--help`. The global intercept below hands `--help`
  * to these handlers instead of printing the verb list, so a subcommand can
- * document its own flags. Deliberately an opt-in allow-list: 96 other verbs keep
+ * document its own flags. Deliberately an opt-in allow-list: 97 other verbs keep
  * the existing behaviour untouched. (That count is the dispatch table minus this
  * allow-list, and the numbers audit now holds it to exactly that — so when two
  * lines of work add verbs at once the count is their SUM, not either side's figure.)
@@ -12979,7 +13068,7 @@ async function main() {
   // teach exactly that call. A door the docs name has to open.
   if (!cmd || cmd === '--help' || cmd === '-h' || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|turn-diff|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|chain-start|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|wires|arena|batch|deleteme|memory-preview|start-map|catalog|context|statusline|pulse|manifest|worktree|merge|sync-branch|explain|doc-audit|vendor|memory|history|ship-lane|decisions|approvals|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|turn-diff|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|chain-start|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|wires|arena|batch|deleteme|memory-preview|start-map|catalog|context|statusline|pulse|manifest|worktree|merge|sync-branch|explain|doc-audit|vendor|memory|history|ship-lane|decisions|approvals|exam|update|open>\n',
     )
     return 0
   }

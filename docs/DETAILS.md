@@ -195,9 +195,9 @@ goals, and exactly where each remaining edge is.
 
 ## The CLI reference, by version layer
 
-The coordination + accountability CLI runs underneath — 98 verbs, and the sections below group by the version layer that introduced them the ones this document walks through. Sessions and hooks call the CLI for you; you can also call any verb directly with `node scripts/sma/cli.mjs <verb>`, and every one has an in-product explainer (`node scripts/sma/cli.mjs explain <verb>`). **This grouping is not the complete list** — a few later verbs are described in the release sections further down and a few are not described here at all; the list with a line for every single verb lives in [`scripts/sma/README.md`](../scripts/sma/README.md), and that one is checked against the dispatch table by a gate.
+The coordination + accountability CLI runs underneath — 99 verbs, and the sections below group by the version layer that introduced them the ones this document walks through. Sessions and hooks call the CLI for you; you can also call any verb directly with `node scripts/sma/cli.mjs <verb>`, and every one has an in-product explainer (`node scripts/sma/cli.mjs explain <verb>`). **This grouping is not the complete list** — a few later verbs are described in the release sections further down and a few are not described here at all; the list with a line for every single verb lives in [`scripts/sma/README.md`](../scripts/sma/README.md), and that one is checked against the dispatch table by a gate.
 
-**The count moved by one, and that is worth saying out loud.** For several releases it did not move at all: real new abilities — forgetting, erasing, storage classes, the fleet's formal layer — arrived as subcommands of namespaces that already existed (`memory forget`, `memory index`) rather than as new top-level names. This release added one new top-level name, deliberately and as a decision. The alternative is a surface that grows a little every release until nobody can hold it in their head, and the growth is never anybody's decision because each single addition looked small. The number in the sentence above is not typed by hand either: a gate reads it out of the dispatch table in every document that names it, so the day it moves again no document can quietly stay behind — which is exactly what happened to this file until the gate was widened to watch it.
+**The count moved by two, and that is worth saying out loud.** For several releases it did not move at all: real new abilities — forgetting, erasing, storage classes, the fleet's formal layer — arrived as subcommands of namespaces that already existed (`memory forget`, `memory index`) rather than as new top-level names. This release added two new top-level names, deliberately and each as its own decision — the branch-sync door a worker owes before handing work over, and the window's front door — and the number is their SUM, because each line of work knew only about its own arrival. The alternative is a surface that grows a little every release until nobody can hold it in their head, and the growth is never anybody's decision because each single addition looked small. The number in the sentence above is not typed by hand either: a gate reads it out of the dispatch table in every document that names it, so the day it moves again no document can quietly stay behind — which is exactly what happened to this file until the gate was widened to watch it.
 
 ### Core (V1–V2): memory, coordination, slots
 
@@ -1125,6 +1125,55 @@ index was opened, which notes were read, how many loader calls), `reflexes` with
 observation), `autoMemoryReads` kept apart from the project's corpus, the `lesson` itself and
 the mark saying whether an approach note exists. Identifiers and marks only — no note body ever
 leaves the machine it was written on.
+
+#### The shape of the work: «there is no subject», and the two refusals that read the diff
+
+Both gates above ask whether **proof exists**. Neither asked what the work is **about** — and on
+31.08.2026 that cost a green certifying nothing. A worker given a returned card whose complaint
+had already been closed found no subject, and had no cheap way to hand back emptiness: «done, but
+no commits» reads as a failure, while a file with a test reads as work. It created a note and a
+test of three cases — the file exists, it contains the promised word, git tracks it. That test
+cannot go red from any breakage of the product: it speaks only of itself. The suite passed, the
+receipt was honest, and only a pair of eyes could tell that work from real work.
+
+Three things now stand where nothing stood.
+
+**«There is no subject» is a first-class ending**, beside «done» rather than under it. A task
+whose complaint is already closed, whose bug will not reproduce, whose requirement went stale
+ends with two markers:
+
+```
+MOOT: <what is not there, or what went stale — one line>
+MOOT_EVIDENCE: <a commit hash, or a file path — one line each>
+```
+
+The conclusion is the worker's; **the evidence is the daemon's**. A hash must resolve to a commit
+in the copy (`git cat-file`), a path must be on disk. A command or a retelling cannot be
+re-checked, so it does not count — and an unproven claim never becomes a receipt: the attempt
+stays an ordinary answer, and the downgrade is said out loud in the operator's log rather than
+happening silently. What a confirmed finding earns is a receipt of its own,
+`moot:<attempt>@<evidence>`, which the card renders as **«Предмета нет — проверено: …»** — its own
+word, never dressed up as «Ответ без правки кода», because the two send you to different places.
+
+**A test must speak about the product, not about itself.** A test file **added by this same
+attempt** is refused as `self_referential_test` when all three hold: it imports no module of the
+tree (only packages and builtins), it names at least one path, and **every** path it names was
+added by this same work. The first condition is what protects ordinary work — a new module with
+its own test imports what it tests, and testing behaviour is a conversation about the product
+whatever the diff calls the file. The word is kept apart from `tests_red` on purpose: those tests
+are green, and what needs fixing is what they are **about**.
+
+**A new top-level directory is a question, not a side effect.** What the product is made of
+travels into the README, the packaging and the habits of every worker after this one, and no task
+carries a mandate to decide it in passing. An attempt that creates one is parked as
+`new_top_level_dir` and waits for you — one of the three endings in the whole taxonomy that is
+not retried, because a re-issue would honestly create the same directory a second time. The
+measurement is against git's own answer for the base commit (`ls-tree`), never a hardcoded list of
+what the product contains.
+
+Every one of these is fail-open. An unreadable file, a git that could not answer, a diff that
+never arrived — and the recogniser says nothing at all: accusing work on the strength of a tree
+nobody could read would be worse than the hole it closes.
 
 ## V3 — The Trust Spine
 
