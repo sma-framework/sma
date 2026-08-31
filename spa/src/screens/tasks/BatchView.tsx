@@ -4,6 +4,7 @@ import type { BatchItem, BatchItemState } from '../../api/types'
 import { EntitySummary } from '../../shell/EntitySummary'
 import { LiveTimer } from '../../shell/LiveTimer'
 import { TaskPanel } from '../../shell/TaskPanel'
+import { Waiting } from '../../shell/Waiting'
 import { batchStats, clockOfMs, elapsedLabel } from '../../shell/stats'
 import { plural } from '../../shell/format'
 import { doorWords } from './phase-shared'
@@ -248,7 +249,7 @@ export function BatchView({
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto px-7 py-5">
-        {!batch && state.isLoading ? <p className="m-0 text-[13px] text-tx2">Открываю сборку…</p> : null}
+        {!batch && state.isLoading ? <Waiting what="Открываю сборку" /> : null}
         {!batch && !state.isLoading ? (
           <p className="m-0 text-[13px] text-tx2">
             Такой сборки в этом чтении состояния нет. Ничего с ней не случилось — вернитесь к задачам и

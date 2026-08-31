@@ -70,6 +70,7 @@ import { execFileSync } from 'node:child_process'
 import { claimSlot, releaseSlot, readClaims } from './claims.mjs'
 import { appendEvent } from './journal.mjs'
 import { MERGE_CLAIM_TTL_MS, MERGE_SLOT_NAME } from './constants.mjs'
+import { checkEnvironmentFitness } from './deps-guard.mjs'
 
 // Re-export the slot name so consumers import the merge contract from one place.
 export { MERGE_SLOT_NAME } from './constants.mjs'
@@ -210,6 +211,19 @@ export function checkMergeClaim(o = {}) {
 export const NO_RUNNER_NOTE = 'прогонятель тестов не подключён — прогона не было'
 export const RUNNER_SAID_NOTHING_RAN = 'прогонятель ответил, что запускать было нечего'
 
+/**
+ * ТРЕТЬЯ ПРИЧИНА, ПО КОТОРОЙ ПРОГОНА НЕ БЫЛО, И ОНА НЕ ПОХОЖА НА ДВЕ ПЕРВЫЕ: дерево не
+ * годится, чтобы в нём вообще что-то запускать.
+ *
+ * 31.08.2026 склад зависимостей основного дерева опустошался трижды, и каждый раз гейт
+ * слияния сообщал ровно одно: «тесты на сведённом рабочем дереве красные». Это неправда,
+ * и неправда дорогая: задачу возвращают работнику, работник ищет регрессию, которой нет,
+ * а сломана среда — одна на всех и чинится в другом месте другой рукой. Поэтому перед
+ * прогоном задаётся отдельный вопрос, и его ответ едет отдельным полем: `envBroken`.
+ * `testsPassed` при этом остаётся null — прогона НЕ БЫЛО, и утверждать о нём нечего.
+ */
+export const ENV_UNFIT_NOTE = 'среда прогона непригодна — прогон не запускался'
+
 /** The tree is left mid-merge only when the undo itself failed — and then it is NAMED. */
 function unfinishedMergeHint(cwd) {
   return `рабочее дерево осталось в НЕЗАВЕРШЁННОМ слиянии — выйти из него: git -C ${cwd} merge --abort`
@@ -240,6 +254,7 @@ function unfinishedMergeHint(cwd) {
  * @returns
  *   - concurrent hold: {merged:false, softDenied:true, override, holder}
  *   - nothing to merge: {merged:true, alreadyUpToDate:true, testsPassed:null, testsNote, branch, resultSha:null, receipt}
+ *   - env broken:      {merged:false, refused:true, envBroken:true, testsPassed:null, testsNote, reason, branch, receipt}
  *   - refused (red):   {merged:false, testsPassed:false, refused:true, branch, receipt[, unfinishedMerge, howToClear]}
  *   - merged:          {merged:true, testsPassed:boolean|null, testsNote?, branch, resultSha, receipt}
  *   - error:           {ok:false, message[, unfinishedMerge, howToClear]}
@@ -334,6 +349,63 @@ export async function runMerge(o = {}) {
     // true and false state an OUTCOME, null states that there was no run to have an outcome.
     let testsPassed = null
     let testsNote = NO_RUNNER_NOTE
+
+    // (4a) ПЕРЕД ПРОГОНОМ — ГОДИТСЯ ЛИ СРЕДА. Спрашивается ТОЛЬКО когда прогонятель есть:
+    // сборке без прогонятеля нечего защищать, и отказ там остановил бы работу ни за что.
+    // Ответ читается как ДАННЫЕ и по единственному правилу: непригодная среда — это отказ
+    // СО СВОИМ ИМЕНЕМ, потому что чинит её другой человек в другом дереве, а «красные
+    // тесты» отправили бы работника искать регрессию, которой нет. Собственная поломка
+    // проверки читается как «годится» (fail-open) — страж, останавливающий все слияния
+    // из-за своей ошибки, хуже отсутствующего.
+    const envCheck = typeof o.checkEnv === 'function' ? o.checkEnv : checkEnvironmentFitness
+    let fitness = { fit: true, reason: null, broken: [] }
+    if (runTests) {
+      try {
+        fitness = envCheck({ root: cwd }) || fitness
+      } catch {
+        fitness = { fit: true, reason: null, broken: [] }
+      }
+    }
+    if (runTests && fitness.fit === false) {
+      let unfinished = false
+      try {
+        execGit(['merge', '--abort'], { cwd })
+        mergeInTree = false
+      } catch {
+        unfinished = true
+      }
+      const receipt = {
+        branch,
+        resultSha: null,
+        repo: cwd,
+        testsPassed: null,
+        testsNote: ENV_UNFIT_NOTE,
+        refused: true,
+        envBroken: true,
+        reason: fitness.reason,
+        brokenDeps: Array.isArray(fitness.broken) ? fitness.broken : [],
+        ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
+      }
+      try {
+        appendEvent({ type: 'merge', scope: MERGE_SLOT_NAME, detail: receipt }, { terminalId, ...journalOpt(o) })
+      } catch {
+        /* fail-open — a journal failure never blocks the ritual */
+      }
+      releaseMergeClaim({ by: o.by, journalDir, ...claimOpts })
+      claimed = false
+      return {
+        merged: false,
+        refused: true,
+        envBroken: true,
+        testsPassed: null,
+        testsNote: ENV_UNFIT_NOTE,
+        reason: fitness.reason,
+        branch,
+        receipt,
+        ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
+      }
+    }
+
     if (runTests) {
       const tr = await runTests({ branch, resultSha: null, cwd })
       // A runner may say «I ran nothing» in its own voice: passed:null, or an explicit flag.

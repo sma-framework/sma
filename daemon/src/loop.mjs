@@ -152,6 +152,7 @@ import { PIPELINE_DRAFT_KIND } from '../../scripts/sma/lib/write-pipeline.mjs'
 import { smaRoot, tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { WORKTREE_COPIES_DIR } from '../../scripts/sma/lib/constants.mjs'
 import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
+import { checkEnvironmentFitness } from '../../scripts/sma/lib/deps-guard.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted, canonicalWindow } from './policy/windows.mjs'
@@ -1146,6 +1147,7 @@ function turnRecordOf(args, lines) {
  *   turn ceiling reached           → 'turns_exhausted'  (the run WE ended, at our own ceiling)
  *   worker marker NEEDS_DECISION   → 'needs_decision'   (a call only a human can make)
  *   worker marker MISSING_ACCESS   → 'missing_access'   (credentials/permissions absent)
+ *   red receipt + unusable tree    → 'env_broken'       (nothing could have run at all)
  *   red reverify receipt           → 'tests_red'        (targeted tests failed)
  *   nothing left + window filled   → 'context_exhausted' (the run that ran out of room)
  *   no receipt + nonzero exit      → 'agent_error'      (the worker crashed)
@@ -1183,12 +1185,17 @@ function turnRecordOf(args, lines) {
  * @param {{spawnError?:any, providerAbort?:object|null, turnCapHit?:object|null, contextExhausted?:object|null, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean}} [o]
  * @returns {string}
  */
-export function classifyFailure({ spawnError, providerAbort, turnCapHit, contextExhausted, exitCode, receipt, workerMarker, journalComplete, lessonComplete } = {}) {
+export function classifyFailure({ spawnError, providerAbort, turnCapHit, contextExhausted, exitCode, receipt, workerMarker, journalComplete, lessonComplete, envUnfit } = {}) {
   if (spawnError) return 'runtime_offline'
   if (providerAbort) return 'provider_error'
   if (turnCapHit) return 'turns_exhausted'
   if (workerMarker === 'NEEDS_DECISION') return 'needs_decision'
   if (workerMarker === 'MISSING_ACCESS') return 'missing_access'
+  // КРАСНОЕ ОТ СРЕДЫ, А НЕ ОТ ВЕТКИ, И ЭТО РАЗНЫЕ ПОЧИНКИ. Красная перепроверка на дереве,
+  // где зависимостей физически нет, ничего не говорит о работе: запуститься было не на чем.
+  // Проверяется ТОЛЬКО поверх красного (зелёная перепроверка сама доказала, что среда цела),
+  // и стоит выше tests_red — иначе человек уходит искать регрессию, а склад так и стоит пустой.
+  if (receipt && receipt.verdict === 'red' && envUnfit) return 'env_broken'
   if (receipt && receipt.verdict === 'red') return 'tests_red'
   if (!receipt) {
     if (contextExhausted) return 'context_exhausted'
@@ -5204,6 +5211,20 @@ export async function tick(deps = {}) {
         // attempt whose branch really did re-verify green AND left its note is finished work
         // whoever ended the session, and refusing it would throw away work that certified
         // itself. What changes is the NAME of a refusal — the outage is called an outage.
+        // ГОДИЛОСЬ ЛИ ДЕРЕВО ВООБЩЕ — спрашивается ТОЛЬКО поверх красной перепроверки и
+        // только у копии, в которой она шла. Полдюжины stat'ов, и они окупаются одним
+        // случаем: 31.08.2026 склад зависимостей пустел трижды за сутки, и каждый раз
+        // попытка закрывалась как «тесты красные». Своя поломка проверки читается как
+        // «годилось» — страж, обвиняющий среду из-за собственной ошибки, хуже отсутствующего.
+        let envUnfit = null
+        if (receipt && receipt.verdict === 'red') {
+          try {
+            const fitness = checkEnvironmentFitness({ root: workDir })
+            if (fitness && fitness.fit === false) envUnfit = fitness.reason
+          } catch {
+            envUnfit = null
+          }
+        }
         const reason = classifyFailure({
           spawnError: exit.spawnError,
           providerAbort,
@@ -5214,9 +5235,13 @@ export async function tick(deps = {}) {
           workerMarker: marker,
           journalComplete: noteWritten,
           lessonComplete: lessonOk,
+          envUnfit,
         })
-        await failTask(deps, task, { reason, receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
-        result.failed = { taskId: task.id, reason }
+        if (envUnfit) {
+          writeLog(deps, { type: 'task.env_broken', taskId: task.id, detail: envUnfit })
+        }
+        await failTask(deps, task, { reason, ...(envUnfit ? { failureDetail: envUnfit } : {}), receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
+        result.failed = { taskId: task.id, reason, ...(envUnfit ? { detail: envUnfit } : {}) }
       }
       return result
     } catch (err) {

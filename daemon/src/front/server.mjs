@@ -1866,6 +1866,19 @@ export function mergeRefusal(merge) {
   // condition it would have missed this branch entirely and reached the person as a nameless
   // failure. One condition covers both shapes: a red run IS the cause, and which of the two
   // shapes carried it does not change what the person has to do next.
+  // СРЕДА, А НЕ ТЕСТЫ, И ЭТО ПЕРВЫЙ ВОПРОС, А НЕ ОТТЕНОК КРАСНОГО. Гейт слияния смотрит на
+  // пригодность дерева ДО прогона; когда смотреть оказалось не на что — склад зависимостей
+  // основного дерева пуст (31.08.2026, трижды за сутки) — прогона не было вовсе, и
+  // `testsPassed` остаётся null. Сказать здесь «тесты красные» значило бы послать человека
+  // искать регрессию в ветке работника, пока чинить надо среду, одну на всех.
+  if (m.envBroken) {
+    const said = typeof m.reason === 'string' && m.reason.trim() ? m.reason.trim() : ''
+    return {
+      reasonCode: 'env_broken',
+      reason: said || 'слияние не выполнено: среда прогона сломана — тесты не запускались, чинится в основном дереве',
+    }
+  }
+
   if (m.testsPassed === false) {
     return {
       reasonCode: 'tests_red',

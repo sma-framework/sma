@@ -30,7 +30,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, appendFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, appendFileSync, readdirSync, symlinkSync, rmdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -705,5 +705,115 @@ describe('tool-gate — слово живому ходу', () => {
     })
     expect(unmarkable.decision).toBe('allow')
     expect(unmarkable.steerTexts).toEqual([WORD])
+  })
+})
+
+/**
+ * УСТАНОВКА ЗАВИСИМОСТЕЙ СКВОЗЬ ССЫЛКУ — ЕДИНСТВЕННЫЙ ОТКАЗ БЕЗ БИЛЕТА.
+ *
+ * Билет означает «пусть посмотрит человек», и он уместен там, где человек МОЖЕТ сделать
+ * вызов безопасным. Установка в каталог, чей `node_modules` — ссылка в чужое дерево,
+ * безопасной не становится ни от чьего одобрения: нажавший «Одобрить» опустошит склад, в
+ * котором сам же и работает (31.08.2026, трижды за сутки). Поэтому здесь отказ сразу и
+ * словами — а установка в СВОЙ настоящий каталог фактом не подтверждается и уезжает на
+ * обычную парковку, как всё остальное опасное.
+ */
+describe('tool-gate — установка сквозь ссылку отказывается по факту, а не паркуется', () => {
+  it('node_modules копии — ссылка наружу → ОТКАЗ сразу, без билета и без ожидания', async () => {
+    const main = join(root, 'main')
+    const copy = join(root, 'copy')
+    mkdirSync(join(main, 'node_modules'), { recursive: true })
+    mkdirSync(copy, { recursive: true })
+    symlinkSync(join(main, 'node_modules'), join(copy, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir')
+
+    const t = fakeClockAndSleep()
+    const verdict = await decideOnEvent({
+      event: { ...bashEvent('npm ci --no-audit'), cwd: copy },
+      env: { SMA_RUN_DIR: runDir },
+      clock: t.clock,
+      sleep: t.sleep,
+    })
+
+    expect(verdict.decision).toBe('deny')
+    expect(verdict.dangerous).toBe(true)
+    expect(verdict.ticketId).toBe(null) // ждать по билету было бы нечего
+    expect(verdict.waitedMs).toBe(0)
+    expect(String(verdict.reason)).toContain('установка отменена')
+    expect(existsSync(ticketsDirOf(runDir))).toBe(false)
+
+    rmdirSync(join(copy, 'node_modules'))
+  })
+
+  it('ссылки нет — установка остаётся ОПАСНОЙ и паркуется билетом, как раньше', async () => {
+    const copy = join(root, 'own-deps')
+    mkdirSync(join(copy, 'node_modules'), { recursive: true })
+
+    const t = fakeClockAndSleep()
+    const verdict = await decideOnEvent({
+      event: { ...bashEvent('npm ci'), cwd: copy },
+      env: { SMA_RUN_DIR: runDir },
+      clock: t.clock,
+      sleep: t.sleep,
+    })
+
+    expect(verdict.decision).toBe('deny') // дедлайн истёк без человека — но это ПАРКОВКА
+    expect(verdict.ticketId).toBeTruthy()
+    const ticket = JSON.parse(readFileSync(ticketPathOf(runDir, verdict.ticketId as string), 'utf8'))
+    expect(ticket.class).toBe('deps-install')
+  })
+})
+
+/**
+ * УБОРКА КОПИИ СО ЖИВОЙ ССЫЛКОЙ — ОТКАЗ, КОТОРЫЙ ОБЯЗАН СТОЯТЬ ДО КЛАССИФИКАТОРА.
+ *
+ * `git worktree remove` не подходит ни под один класс опасного для работника: ни удаление
+ * мимо git, ни ветка, ни запись наружу. То есть до этой правки такой вызов уезжал «не опасно
+ * по классификатору» и проходил МОЛЧА — а это ровно та команда, которая 31.08.2026 в 19:28
+ * опустошила склад зависимостей человека: git идёт ПО живой ссылке внутри копии.
+ *
+ * Отказ вынесен по ФАКТУ ссылки, а не по имени команды: та же уборка копии, из которой
+ * ссылки уже сняты, не останавливается ничем — иначе гейт запретил бы обычную уборку и его
+ * выключили бы целиком.
+ */
+describe('tool-gate — уборка копии сквозь ссылку отказывается до классификатора', () => {
+  it('копия ещё держит ссылку → ОТКАЗ сразу, без билета и без ожидания', async () => {
+    const main = join(root, 'main-wt')
+    const copy = join(root, 'copy-wt')
+    mkdirSync(join(main, 'node_modules'), { recursive: true })
+    mkdirSync(copy, { recursive: true })
+    symlinkSync(join(main, 'node_modules'), join(copy, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir')
+
+    const t = fakeClockAndSleep()
+    const verdict = await decideOnEvent({
+      event: { ...bashEvent(`git worktree remove --force "${copy}"`), cwd: main },
+      env: { SMA_RUN_DIR: runDir },
+      clock: t.clock,
+      sleep: t.sleep,
+    })
+
+    expect(verdict.decision).toBe('deny')
+    expect(verdict.dangerous).toBe(true)
+    expect(verdict.ticketId).toBe(null) // одобрять нечего: опустошение случится и с одобрением
+    expect(verdict.waitedMs).toBe(0)
+    expect(String(verdict.reason)).toContain('уборка отменена')
+    expect(existsSync(ticketsDirOf(runDir))).toBe(false)
+
+    rmdirSync(join(copy, 'node_modules'))
+  })
+
+  it('ссылок внутри нет — та же уборка идёт своей дорогой', async () => {
+    const copy = join(root, 'copy-unlinked')
+    mkdirSync(copy, { recursive: true })
+
+    const t = fakeClockAndSleep()
+    const verdict = await decideOnEvent({
+      event: { ...bashEvent(`git worktree remove --force "${copy}"`), cwd: root },
+      env: { SMA_RUN_DIR: runDir },
+      clock: t.clock,
+      sleep: t.sleep,
+    })
+
+    expect(verdict.decision).toBe('allow')
+    expect(existsSync(ticketsDirOf(runDir))).toBe(false)
   })
 })

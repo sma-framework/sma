@@ -6,6 +6,8 @@ import type { QueryClient } from '@tanstack/react-query'
 import { screenById } from './screens/registry'
 import { Shell } from './shell/Shell'
 import { ThemeProvider } from './shell/ThemeProvider'
+import { Waiting } from './shell/Waiting'
+import { WAIT_WINDOW } from './shell/waiting-language'
 
 /**
  * App — the window itself.
@@ -30,7 +32,21 @@ function Window() {
   // The door may not be filled in yet, or may be unreachable for a moment. Either way the
   // honest default is that the house is already set up — the window simply opens.
   const needsFirstRun = onboarding.data?.needed === true
-  if (onboarding.isLoading) return null
+  /*
+    САМЫЙ ПЕРВЫЙ БЕЛЫЙ ЭКРАН — ЗДЕСЬ, и он был буквально `null`.
+
+    Пока дверь не сказала, настроен ли дом, окно рисовало НИЧЕГО. На тёплой машине это доля
+    секунды, на холодной — те самые тридцать три, которые уже мерили: всё это время человек
+    смотрел на белый лист и не знал, запустилось ли вообще. Теперь на этом месте стоит то же
+    ожидание, что и везде, — и через пару секунд оно само говорит, сколько уже идёт.
+  */
+  if (onboarding.isLoading) {
+    return (
+      <div className="flex min-h-full flex-col">
+        <Waiting what={WAIT_WINDOW} fill />
+      </div>
+    )
+  }
   if (needsFirstRun) {
     const { Screen } = screenById('first-run')
     // `min-h-full`, а не `min-h-screen`: страница вбок не едет, содержимое возит `#root`

@@ -133,8 +133,11 @@ import {
   URL_ENV,
   announcement,
   holdNotice,
+  isSlowDoor,
   missingBuildMessage,
   parseStageArgs,
+  slowDoorMs,
+  slowNotice,
   stageCommandArgs,
   stageConfig,
   stageDiskConfig,
@@ -435,6 +438,24 @@ async function main() {
     },
   })
 
+  /*
+    МЕДЛЕННАЯ ДВЕРЬ — ДО ТОГО, КАК СЦЕНА ОТКРЫЛАСЬ.
+
+    Задержка ставится ЗДЕСЬ, а не внутри двери: обработчик смены проекта зовёт своего
+    исполнителя синхронно и на его ответе строит свой, поэтому «сделать applier медленным»
+    означало бы переписать контракт двери ради проверки. Тут же не меняется ничего — тот же
+    `handle` того же сервера получает тот же запрос, просто позже. Задерживается ровно одна
+    дверь (см. lib/ui-stage.mjs), и только когда об этом попросили переменной окружения.
+  */
+  const slowMs = slowDoorMs(process.env)
+  if (slowMs > 0) {
+    front.server.removeAllListeners('request')
+    front.server.on('request', (req, res) => {
+      if (!isSlowDoor(req.url)) return front.handle(req, res)
+      setTimeout(() => front.handle(req, res), slowMs)
+    })
+  }
+
   const server = await new Promise((ok, no) => {
     front.server.once('error', no)
     front.listen(() => ok(front.server))
@@ -445,6 +466,7 @@ async function main() {
   config.port = port
   const url = stageUrl({ port, token })
   say(announcement({ url, port, dir: home, projects, receipts }))
+  if (slowMs > 0) say(slowNotice(slowMs))
 
   if (parsed.hold) {
     say(holdNotice())
