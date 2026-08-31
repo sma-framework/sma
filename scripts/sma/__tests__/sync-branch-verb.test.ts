@@ -151,3 +151,79 @@ describe('sync-branch — вершина входит в ветку в копи�
     expect(after.stdout).toContain('сводить нечего')
   })
 })
+
+/**
+ * `--keep` И `--abort` — ОБЯЗАННОСТЬ, У КОТОРОЙ ПОЯВИЛОСЬ ЧЕМ ЕЁ ИСПОЛНИТЬ.
+ *
+ * Отказ выше говорит верно: «разведите спор САМИ — вы знаете, что писали». Но откат уносил
+ * разметку конфликта, а `git merge` работнику отказан конвертом возможностей — то есть
+ * развести было НЕЧЕМ, и договор сдачи снова становился текстом. Здесь запирается вся дорога
+ * целиком, настоящим CLI по настоящему репозиторию: спор остаётся размеченным, работник
+ * доводит его разрешёнными глаголами, вершина оказывается в родителях — и из того же
+ * состояния есть выход, если он передумал.
+ */
+describe('sync-branch --keep / --abort — развести спор своими руками, не выходя из конверта', () => {
+  it('--keep оставляет спор в дереве, называет файл, и работник доводит слияние сам', () => {
+    const dir = makeCopy(
+      { 'engine.txt': 'строка вершины\n', 'README.md': '# README\n\nабзац соседней работы\n' },
+      { 'engine.txt': 'строка работника\n', 'README.md': '# README\n\nабзац моей работы\n' },
+      { 'engine.txt': 'исходная строка\n', 'README.md': '# README\n' },
+    )
+
+    const res = runVerb(['--keep'], dir)
+    expect(res.code).toBe(1)
+    expect(res.stderr).toContain('engine.txt')
+    expect(res.stderr).toContain('спор ОСТАВЛЕН')
+    // Спор действительно РАЗМЕЧЕН в дереве — иначе разводить было бы нечего.
+    expect(git(['status', '--porcelain'], dir)).toContain('U engine.txt')
+    expect(readFileSync(join(dir, 'engine.txt'), 'utf8')).toContain('<<<<<<<')
+    // …а механическая половина уже разведена и лежит в индексе: доводить остаётся спорное.
+    const readme = readFileSync(join(dir, 'README.md'), 'utf8')
+    expect(readme).toContain('абзац моей работы')
+    expect(readme).toContain('абзац соседней работы')
+    expect(readme).not.toContain('<<<<<<<')
+
+    // Работник разводит спор ТЕМИ ГЛАГОЛАМИ, которые ему разрешены, и слияние закрывается.
+    writeFileSync(join(dir, 'engine.txt'), 'строка вершины и работника\n', 'utf8')
+    git(['add', '--', 'engine.txt'], dir)
+    git(['commit', '--no-edit'], dir)
+    expect(trunkIsAncestor(dir)).toBe(true)
+    expect(runVerb(['--check'], dir).stdout).toContain('сводить нечего')
+  })
+
+  it('--abort выходит из оставленного слияния: вершина не приехала, дерево целое', () => {
+    const dir = makeCopy({ 'engine.txt': 'строка вершины\n' }, { 'engine.txt': 'строка работника\n' }, {
+      'engine.txt': 'исходная строка\n',
+    })
+    const before = git(['rev-parse', 'HEAD'], dir).trim()
+    expect(runVerb(['--keep'], dir).code).toBe(1)
+    expect(git(['status', '--porcelain'], dir)).toContain('U engine.txt')
+
+    const out = runVerb(['--abort'], dir)
+    expect(out.code).toBe(0)
+    expect(out.stdout).toContain('отменено')
+    expect(git(['status', '--porcelain'], dir)).not.toContain('U engine.txt')
+    expect(git(['rev-parse', 'HEAD'], dir).trim()).toBe(before)
+    expect(trunkIsAncestor(dir)).toBe(false)
+    expect(readFileSync(join(dir, 'engine.txt'), 'utf8')).toBe('строка работника\n')
+  })
+
+  it('отменять нечего → это факт о дереве, а не отказ', () => {
+    const dir = makeCopy({ 'neighbour.txt': 'работа соседа\n' }, { 'mine.txt': 'моя работа\n' }, {
+      'neighbour.txt': 'пусто\n',
+      'mine.txt': 'пусто\n',
+    })
+    const out = runVerb(['--abort'], dir)
+    expect(out.code).toBe(0)
+    expect(out.stdout).toContain('отменять нечего')
+  })
+
+  it('обычный отказ НАЗЫВАЕТ дверь, которой спор разводят, — совет исполним', () => {
+    const dir = makeCopy({ 'engine.txt': 'строка вершины\n' }, { 'engine.txt': 'строка работника\n' }, {
+      'engine.txt': 'исходная строка\n',
+    })
+    const res = runVerb([], dir)
+    expect(res.code).toBe(1)
+    expect(res.stderr).toContain('sync-branch --keep')
+  })
+})

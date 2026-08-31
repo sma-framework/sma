@@ -433,6 +433,58 @@ export function unfinishedMergeHint(cwd) {
 }
 
 /**
+ * unresolvedMergeHint(cwd) — что делать со спором, ОСТАВЛЕННЫМ в дереве по просьбе сдающего.
+ *
+ * Три строки, и все три обязательны. Половинчатое слияние опаснее несведённой ветки ровно до
+ * тех пор, пока человек не знает, что оно тут: названное вместе с обеими дорогами наружу
+ * (довести или выйти) оно перестаёт быть ловушкой и становится шагом.
+ *
+ * `git add` и `git commit` названы прямо, а `git merge --abort` — НЕТ: выход отдан вербу
+ * (`sync-branch --abort`), потому что глагол слияния работнику отказан конвертом возможностей,
+ * и совет, который нечем исполнить, — это не совет.
+ */
+export function unresolvedMergeHint(cwd) {
+  return (
+    `спор ОСТАВЛЕН в рабочей копии: разведите названные файлы руками, затем ` +
+    `git -C ${cwd} add -- <файлы> и git -C ${cwd} commit --no-edit; ` +
+    `передумали — node scripts/sma/cli.mjs sync-branch --abort`
+  )
+}
+
+/**
+ * abortSync({cwd, execGit}) → `{ok, aborted, reason|detail}` — ВЫЙТИ из оставленного слияния.
+ *
+ * Отдельной дверью, а не советом в тексте: `git merge --abort` работнику отказан тем же
+ * конвертом, что и само слияние, — а раз в половинчатое состояние его теперь пускают нарочно
+ * (`keepConflict`), то и выход из него обязан быть дверью, которую он может открыть. Дверь,
+ * в которую можно только войти, — это не дверь.
+ *
+ * FAIL-HONEST, как всё здесь: слияния в дереве нет → так и сказано (`no-merge`), и это не
+ * отказ, а факт о дереве.
+ */
+export function abortSync({ cwd, execGit } = {}) {
+  const git = typeof execGit === 'function' ? execGit : defaultExecGit
+  if (!cwd) return { ok: false, aborted: false, detail: 'рабочей копии нет — выходить неоткуда' }
+  try {
+    git(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], { cwd })
+  } catch {
+    return { ok: true, aborted: false, reason: 'no-merge', detail: 'незавершённого слияния в этой копии нет' }
+  }
+  try {
+    git(['merge', '--abort'], { cwd })
+    return { ok: true, aborted: true }
+  } catch (err) {
+    return {
+      ok: false,
+      aborted: false,
+      detail: String((err && err.message) || err).split('\n')[0],
+      unfinishedMerge: true,
+      howToClear: unfinishedMergeHint(cwd),
+    }
+  }
+}
+
+/**
  * behindBy({cwd, trunk, execGit}) → сколько коммитов вершины ещё нет в ветке, или null.
  *
  * Отдельной функцией, потому что это ЕДИНСТВЕННЫЙ дешёвый вопрос, отделяющий «сводить нечего»
@@ -463,19 +515,36 @@ export function behindBy({ cwd, trunk = TRUNK_DEFAULT, execGit } = {}) {
  *      никакого слияния не делается вовсе;
  *   3. `merge --no-ff --no-commit <trunk>` — вершина въезжает в копию, НО НЕ В ИСТОРИЮ;
  *   4. конфликт → назвать файлы, развести механическое, и только если не осталось НИЧЕГО —
- *      зафиксировать; иначе `merge --abort` и честный отказ с именами файлов;
+ *      зафиксировать; иначе `merge --abort` и честный отказ с именами файлов. Позвали с
+ *      `keepConflict` — слияние ОСТАЁТСЯ в дереве, и спор разводит сам сдающий (см. ниже);
  *   5. зафиксировать слияние (`commit --no-edit`) — вот теперь ветка сведена по-настоящему,
  *      с вершиной в родителях. Собрать содержимое руками и положить обычным коммитом нельзя:
  *      граф не узнает о сведении, и те же файлы конфликтнут заново при вливании.
+ *
+ * `keepConflict` — НЕ ОТКАТЫВАТЬ то, что не развелось само, а оставить спор в дереве.
+ *
+ * ЗАЧЕМ ЭТОТ РЕЖИМ ВООБЩЕ ЕСТЬ. Отказ говорит сдающему «разведите спор САМИ — вы знаете, что
+ * писали», и это верно: одна сторона конфликта его собственная, и никто, кроме него, не знает
+ * её замысла. Но откат целиком не оставлял ему НИЧЕГО, чем это сделать: `git merge` работнику
+ * отказан конвертом возможностей, и обязанность сдать сведённое снова становилась текстом,
+ * который нечем исполнить, — той же болезнью, от которой лечит сам верб. Здесь у неё есть
+ * дверь: спор остаётся размеченным в дереве, механическое уже разведено и добавлено в индекс,
+ * а сдающий доводит остальное `git add` + `git commit` — глаголами, которые ему разрешены.
+ *
+ * ПО УМОЛЧАНИЮ РЕЖИМ ВЫКЛЮЧЕН, И ЭТО НЕ ОСТОРОЖНОСТЬ, А ДОГОВОР: автоматический вызов (дверь
+ * сдачи в демоне) обязан оставлять дерево в целом состоянии, потому что там разводить некому.
+ * Половинчатое слияние опаснее несведённой ветки — оно ВЫГЛЯДИТ готовым, — поэтому его
+ * оставляют только по просьбе того, кто сейчас смотрит на экран.
  *
  * @returns
  *   - вершины нет:      {ok:true, synced:false, reason:'no-trunk', detail}
  *   - сводить нечего:   {ok:true, synced:false, alreadyCurrent:true, behind:0}
  *   - сведено:          {ok:true, synced:true, behind, resolved:[], mergeSha}
  *   - конфликт:         {ok:false, conflict:true, files, count, remaining, resolved, detail[, unfinishedMerge, howToClear]}
+ *   - спор оставлен:    {ok:false, conflict:true, kept:true, …то же…, howToFinish}
  *   - иная беда:        {ok:false, conflict:false, detail[, unfinishedMerge, howToClear]}
  */
-export async function syncWithTrunk({ cwd, trunk = TRUNK_DEFAULT, execGit, io, run, rules = MECHANICAL_DEFAULTS, message } = {}) {
+export async function syncWithTrunk({ cwd, trunk = TRUNK_DEFAULT, execGit, io, run, rules = MECHANICAL_DEFAULTS, message, keepConflict = false } = {}) {
   const git = typeof execGit === 'function' ? execGit : defaultExecGit
   let mergeInTree = false
   try {
@@ -521,6 +590,25 @@ export async function syncWithTrunk({ cwd, trunk = TRUNK_DEFAULT, execGit, io, r
     }
 
     if (conflict) {
+      // СПОР ОСТАВЛЕН В ДЕРЕВЕ — только когда спор действительно есть и об этом просили.
+      // Слияние, не пошедшее НЕ из-за конфликта (грязное дерево, отказ самого git), оставлять
+      // нечего и незачем: там нет размеченных файлов, которые кто-то мог бы развести.
+      if (keepConflict && conflict.count > 0) {
+        mergeInTree = false // за откат отвечает сдающий (`sync-branch --abort`), не общий catch
+        return {
+          ok: false,
+          conflict: true,
+          kept: true,
+          behind,
+          files: conflict.files,
+          count: conflict.count,
+          remaining: conflict.remaining,
+          resolved: conflict.resolved,
+          ...(conflict.notes && conflict.notes.length ? { notes: conflict.notes } : {}),
+          detail: conflict.detail,
+          howToFinish: unresolvedMergeHint(cwd),
+        }
+      }
       let unfinished = false
       try {
         git(['merge', '--abort'], { cwd })

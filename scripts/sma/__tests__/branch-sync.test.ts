@@ -15,7 +15,11 @@
  *      слияния, а по коммитам считают, была ли работа);
  *   7. неразведённое → `merge --abort` и честный отказ; наполовину разведённое слияние хуже
  *      неразведённого, потому что выглядит готовым;
- *   8. НИ ОДНОГО `push` ни на одном пути — тот же закон, что у ритуала слияния.
+ *   8. НИ ОДНОГО `push` ни на одном пути — тот же закон, что у ритуала слияния;
+ *   9. спор ОСТАВЛЯЕТСЯ в дереве только по просьбе (`keepConflict`) и только когда он есть —
+ *      и тогда у него есть выход (`abortSync`), потому что дверь, в которую можно только
+ *      войти, — это не дверь: `git merge --abort` работнику отказан тем же конвертом, что и
+ *      само слияние.
  *
  * Швы: execGit / io / run — подделки. Ни настоящего git, ни настоящего диска, ни одной
  * настоящей команды пересборки.
@@ -31,6 +35,8 @@ import {
   resolveMechanical,
   behindBy,
   syncWithTrunk,
+  abortSync,
+  unresolvedMergeHint,
   matchesPattern,
   hasConflictMarkers,
   CONFLICT_FILES_CAP,
@@ -426,5 +432,111 @@ describe('syncWithTrunk — свести ветку с вершиной ДО с�
       'rev-list --count': new Error('нет такой ветки'),
     })
     expect(behindBy({ cwd: '/copy', execGit: git })).toBeNull()
+  })
+})
+
+/**
+ * СПОР, ОСТАВЛЕННЫЙ В ДЕРЕВЕ, — и почему без него отказ был обязанностью без двери.
+ *
+ * «Разведите спор САМИ — вы знаете, что писали» верно по существу и невыполнимо на деле, если
+ * разметку конфликта унёс откат, а `git merge` работнику отказан конвертом возможностей. Здесь
+ * заперты обе половины лечения: спор остаётся размеченным ТОЛЬКО когда об этом попросили и
+ * только когда он есть, и из оставленного состояния есть выход своим глаголом.
+ */
+describe('keepConflict — спор остаётся в дереве, и из него есть выход', () => {
+  it('попросили оставить → НИ ОДНОГО merge --abort, и сказано, чем доводить', async () => {
+    const { git, calls } = fakeGit({
+      'rev-list --count': '2\n',
+      'merge --no-ff --no-commit': CONFLICT_ERROR,
+      'diff --name-only': `daemon/src/loop.mjs${NUL}README.md${NUL}`,
+    })
+    const res = await syncWithTrunk({
+      cwd: '/copy',
+      execGit: git,
+      keepConflict: true,
+      io: {
+        readFileSync: () => ['<<<<<<< HEAD', 'моё', '||||||| base', '=======', 'чужое', '>>>>>>> main'].join('\n'),
+        writeFileSync: () => {},
+      },
+    })
+    expect(res.ok).toBe(false)
+    expect(res.kept).toBe(true)
+    expect(res.remaining).toEqual(['daemon/src/loop.mjs'])
+    expect(res.detail).toContain('daemon/src/loop.mjs')
+    // Механическая половина уже разведена и лежит в индексе — доводить остаётся только спорное.
+    expect(res.resolved).toEqual([{ file: 'README.md', how: 'union' }])
+    expect(calls.some((c) => c[0] === 'add' && c.includes('README.md'))).toBe(true)
+    expect(calls.some((c) => c[0] === 'merge' && c.includes('--abort'))).toBe(false)
+    // Коммит слияния НЕ ставится за сдающего: разведённое наполовину выглядело бы сведённым.
+    expect(calls.some((c) => c[0] === 'commit')).toBe(false)
+    expect(res.howToFinish).toContain('add')
+    expect(res.howToFinish).toContain('commit')
+    expect(res.howToFinish).toContain('sync-branch --abort')
+  })
+
+  it('сорвалось НЕ по конфликту → оставлять нечего, и откат делается даже с keepConflict', async () => {
+    const { git, calls } = fakeGit({
+      'rev-list --count': '1\n',
+      'merge --no-ff --no-commit': new Error('error: Your local changes would be overwritten'),
+      'diff --name-only': '',
+    })
+    const res = await syncWithTrunk({ cwd: '/copy', execGit: git, keepConflict: true })
+    expect(res.ok).toBe(false)
+    expect(res.kept).toBeUndefined()
+    expect(calls.some((c) => c[0] === 'merge' && c.includes('--abort'))).toBe(true)
+  })
+
+  it('всё развелось механически → keepConflict ничего не меняет: слияние доводится до конца', async () => {
+    const { git, calls } = fakeGit({
+      'rev-list --count': '2\n',
+      'merge --no-ff --no-commit': CONFLICT_ERROR,
+      'diff --name-only': `README.md${NUL}`,
+      'rev-parse -q --verify MERGE_HEAD': 'abc\n',
+      'rev-parse HEAD': 'beef\n',
+    })
+    const res = await syncWithTrunk({
+      cwd: '/copy',
+      execGit: git,
+      keepConflict: true,
+      io: {
+        readFileSync: () => ['<<<<<<< HEAD', 'моё', '||||||| base', '=======', 'чужое', '>>>>>>> main'].join('\n'),
+        writeFileSync: () => {},
+      },
+    })
+    expect(res.ok).toBe(true)
+    expect(res.synced).toBe(true)
+    expect(res.kept).toBeUndefined()
+    expect(calls.some((c) => c[0] === 'commit')).toBe(true)
+  })
+
+  it('abortSync выходит из оставленного слияния', () => {
+    const { git, calls } = fakeGit({ 'rev-parse -q --verify MERGE_HEAD': 'abc\n' })
+    const res = abortSync({ cwd: '/copy', execGit: git })
+    expect(res).toMatchObject({ ok: true, aborted: true })
+    expect(calls.some((c) => c[0] === 'merge' && c.includes('--abort'))).toBe(true)
+  })
+
+  it('слияния в дереве нет → это ФАКТ о дереве, а не отказ, и merge не зовётся вовсе', () => {
+    const { git, calls } = fakeGit({ 'rev-parse -q --verify MERGE_HEAD': new Error('нет такой ссылки') })
+    const res = abortSync({ cwd: '/copy', execGit: git })
+    expect(res).toMatchObject({ ok: true, aborted: false, reason: 'no-merge' })
+    expect(calls.some((c) => c[0] === 'merge')).toBe(false)
+  })
+
+  it('сам откат отказал → названо вместе с командой выхода, а не проглочено', () => {
+    const { git } = fakeGit({
+      'rev-parse -q --verify MERGE_HEAD': 'abc\n',
+      'merge --abort': new Error('fatal: There is no merge to abort\nвторая строка'),
+    })
+    const res = abortSync({ cwd: '/copy', execGit: git })
+    expect(res.ok).toBe(false)
+    expect(res.unfinishedMerge).toBe(true)
+    expect(res.howToClear).toContain('merge --abort')
+    expect(res.detail).not.toContain('вторая строка')
+  })
+
+  it('копии нет → честный отказ, а не бросок', () => {
+    expect(abortSync({ cwd: '', execGit: () => '' })).toMatchObject({ ok: false, aborted: false })
+    expect(unresolvedMergeHint('/copy')).toContain('/copy')
   })
 })

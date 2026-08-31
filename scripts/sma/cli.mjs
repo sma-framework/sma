@@ -12667,7 +12667,7 @@ async function cmdMerge({ positionals, flags, dirs }) {
 }
 
 /**
- * sync-branch [--trunk <имя>] [--check] [--json] — СВЕСТИ СВОЮ ВЕТКУ С ВЕРШИНОЙ, дверь
+ * sync-branch [--trunk <имя>] [--check|--keep|--abort] [--json] — СВЕСТИ СВОЮ ВЕТКУ С ВЕРШИНОЙ, дверь
  * СДАЮЩЕГО. Направление противоположно `merge`: тот вносит ветку в main (ритуал человека,
  * сериализованный слотом, со смоком на сведённом дереве), этот вносит main в ветку — в той
  * копии, где верб запущен, и общего дерева не касается вовсе.
@@ -12687,7 +12687,16 @@ async function cmdMerge({ positionals, flags, dirs }) {
  * потому что выглядит готовым.
  *
  * `--check` НИЧЕГО НЕ МЕНЯЕТ: печатает, на сколько коммитов ветка отстала, и выходит 1, если
- * сводить есть что. НИКОГДА не пушит. NOT hook-facing.
+ * сводить есть что.
+ *
+ * `--keep` — ОСТАВИТЬ СПОР В ДЕРЕВЕ, а не откатывать его. Отказ говорит сдающему «разведите
+ * САМИ — вы знаете, что писали», и до этого флага это была обязанность без двери: откат уносил
+ * разметку конфликта, а `git merge` работнику отказан конвертом. С ним механическое уже
+ * разведено и добавлено в индекс, спорное размечено, и сдающий доводит слияние `git add` +
+ * `git commit` — глаголами, которые ему разрешены. `--abort` — выход из оставленного слияния
+ * той же дверью, потому что `git merge --abort` работнику отказан ровно так же.
+ *
+ * НИКОГДА не пушит. NOT hook-facing.
  */
 async function cmdSyncBranch({ flags }) {
   const bs = await import('./lib/branch-sync.mjs')
@@ -12695,6 +12704,27 @@ async function cmdSyncBranch({ flags }) {
   // связанных копий НАРОЧНО, и сведение по нему свело бы чужую ветку в чужом дереве.
   const cwd = process.cwd()
   const trunk = typeof flags.trunk === 'string' && flags.trunk.trim() ? flags.trunk.trim() : bs.TRUNK_DEFAULT
+
+  // ВЫХОД ИЗ ОСТАВЛЕННОГО СЛИЯНИЯ — первым, до всякой попытки свести: звать его посреди
+  // размеченного дерева бессмысленно, а `--abort` для того и позван, что дерево размечено.
+  if (flags.abort === true) {
+    const res = bs.abortSync({ cwd })
+    if (wantsJson(flags)) {
+      printJson({ trunk, ...res })
+      return res.ok ? 0 : 1
+    }
+    if (res.ok && res.aborted) {
+      process.stdout.write('sync-branch: слияние отменено, рабочее дерево вернулось в прежнее состояние.\n')
+      return 0
+    }
+    if (res.ok) {
+      process.stdout.write(`sync-branch: ${res.detail} — отменять нечего.\n`)
+      return 0
+    }
+    process.stderr.write(`sync-branch: отменить слияние не удалось — ${res.detail || 'причина не названа'}\n`)
+    if (res.howToClear) process.stderr.write(`  ⚠ ${res.howToClear}\n`)
+    return 1
+  }
 
   if (flags.check === true) {
     const behind = bs.behindBy({ cwd, trunk })
@@ -12714,7 +12744,7 @@ async function cmdSyncBranch({ flags }) {
     return 1
   }
 
-  const res = await bs.syncWithTrunk({ cwd, trunk })
+  const res = await bs.syncWithTrunk({ cwd, trunk, keepConflict: flags.keep === true })
   if (wantsJson(flags)) {
     printJson({ trunk, ...res })
     return res.ok ? 0 : 1
@@ -12745,11 +12775,21 @@ async function cmdSyncBranch({ flags }) {
   process.stderr.write(`sync-branch: свести с ${trunk} не удалось — ${res.detail || 'причина не названа'}\n`)
   for (const n of Array.isArray(res.notes) ? res.notes : []) process.stderr.write(`  ${n}\n`)
   if (Array.isArray(res.resolved) && res.resolved.length) {
-    process.stderr.write(`  механически развелось: ${res.resolved.map((r) => r.file).join(' · ')} (слияние всё равно отменено целиком)\n`)
+    // СУДЬБА РАЗВЕДЁННОГО НАЗЫВАЕТСЯ ВЕРНО В ОБОИХ СЛУЧАЯХ: с `--keep` оно лежит в индексе и
+    // доедет до коммита, без него — уехало вместе с откатом. Одна фраза на два разных исхода
+    // была бы ровно тем враньём о состоянии дерева, от которого лечит весь этот верб.
+    const fate = res.kept ? 'уже в индексе, доводить остаётся только спорное' : 'слияние всё равно отменено целиком'
+    process.stderr.write(`  механически развелось: ${res.resolved.map((r) => r.file).join(' · ')} (${fate})\n`)
   }
-  if (res.unfinishedMerge) process.stderr.write(`  ⚠ ${res.howToClear}\n`)
+  if (res.kept) process.stderr.write(`  ⚠ ${res.howToFinish}\n`)
+  else if (res.unfinishedMerge) process.stderr.write(`  ⚠ ${res.howToClear}\n`)
   else process.stderr.write('  сведение отменено, рабочее дерево вернулось в прежнее состояние.\n')
   process.stderr.write('  разведите спор САМИ — вы знаете, что писали; не можете без решения человека — назовите файлы и спросите.\n')
+  // СОВЕТ НАЗЫВАЕТ СВОЮ ДВЕРЬ. «Разведите сами» без неё — обязанность, которую нечем
+  // исполнить: разметку конфликта только что унёс откат, а `git merge` работнику отказан.
+  if (!res.kept) {
+    process.stderr.write('  развести в дереве: node scripts/sma/cli.mjs sync-branch --keep (спор останется размеченным; выход — --abort).\n')
+  }
   return 1
 }
 
