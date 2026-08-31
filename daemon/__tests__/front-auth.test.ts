@@ -746,6 +746,33 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
     })
 
     /**
+     * КАКОЙ ТЕСТ И ПОЧЕМУ — В САМОМ ОТКАЗЕ. Замерено 31.08.2026: отказ приехал словами
+     * «тесты на сведённом дереве красные» и ничем больше, и приёмщик пошёл искать причину
+     * руками — час чужого времени и возвращённая работнику здоровая работа. Ритуал теперь
+     * называет упавший тест и первые строки причины; дверь обязана ДОВЕСТИ это до глаз, а
+     * не оставить в квитанции, которую на карточке никто не разворачивает.
+     */
+    it('красный отказ несёт имя упавшего теста и первые строки причины', async () => {
+      const out = await refuse('R-90d', () => ({
+        merged: false,
+        refused: true,
+        testsPassed: false,
+        failedTest: 'scripts/sma/__tests__/merge-gate.test.ts > гейт слияния > Test 5',
+        failureDetail: 'AssertionError: expected false to be true\n  at merge-gate.test.ts:260:24',
+      }))
+      expect(out.reasonCode).toBe('tests_red')
+      expect(out.reason).toContain('merge-gate.test.ts')
+      expect(out.reason).toContain('Test 5')
+      expect(out.reason).toContain('AssertionError')
+    })
+
+    it('красный отказ без имени теста честно говорит, что имени не назвали', async () => {
+      const out = await refuse('R-90e', () => ({ merged: false, refused: true, testsPassed: false }))
+      expect(out.reasonCode).toBe('tests_red')
+      expect(out.reason, 'выдуманное имя отправит человека чинить не тот тест').toMatch(/имя.*не назв/i)
+    })
+
+    /**
      * СРЕДА, А НЕ ТЕСТЫ. Гейт слияния смотрит на пригодность дерева ДО прогона; когда
      * склада зависимостей нет, прогона не было вовсе и `testsPassed` остаётся null.
      * 31.08.2026 склад опустошался трижды за сутки, и каждый раз человек читал «тесты

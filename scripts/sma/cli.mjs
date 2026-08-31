@@ -12657,6 +12657,12 @@ async function cmdMerge({ positionals, flags, dirs }) {
     process.stderr.write(
       `SMA merge: слияние ОТКАЗАНО — тесты на сведённом дереве КРАСНЫЕ. Ветка ${branch} НЕ влита, вершина main не сдвинулась.\n`,
     )
+    // КАКОЙ ТЕСТ И ПОЧЕМУ — здесь же, а не в отдельном расследовании читателя. Прогонятель
+    // читает вывод и называет упавшее; печатать вокруг этого одну общую фразу значило бы
+    // выбросить единственное, что отличает этот отказ от любого другого красного.
+    if (res.failedTest) process.stderr.write(`  упал: ${res.failedTest}\n`)
+    else process.stderr.write('  имя упавшего теста прогонятель не назвал — смотрите вывод прогона.\n')
+    if (res.failureDetail) for (const line of String(res.failureDetail).split('\n')) process.stderr.write(`  ${line}\n`)
     if (res.unfinishedMerge) process.stderr.write(`  ⚠ ${res.howToClear}\n`)
     else process.stderr.write('  сведение отменено, рабочее дерево вернулось в прежнее состояние.\n')
     return 1
