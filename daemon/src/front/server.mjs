@@ -122,6 +122,9 @@ import {
 } from '../queue/run-dir.mjs'
 import { approvalWall, defaultEnvelope } from '../queue/capability-envelope.mjs'
 import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
+// СКОЛЬКО ИМЁН КОНФЛИКТА ПОКАЗЫВАТЬ — потолок один на весь продукт и живёт там, где живёт сам
+// словарь конфликта. Второе число здесь однажды разошлось бы с тем, от которого считается «ещё N».
+import { CONFLICT_FILES_CAP as MERGE_CONFLICT_FILES_SHOWN } from '../../../scripts/sma/lib/branch-sync.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
 import { writeWaveHold, WAVE_ACTIONS } from '../queue/wave-holds.mjs'
 import { BATCH_DECISIONS, parseReceiptProof } from './state.mjs'
@@ -1834,6 +1837,26 @@ export function mergeRefusal(merge) {
   const said = typeof m.message === 'string' ? m.message.trim() : ''
   const firstLine = said.split('\n')[0].slice(0, 200)
 
+  // КОНФЛИКТ, НАЗВАННЫЙ САМИМ РИТУАЛОМ — по именам файлов и по их числу. Ритуал спрашивает
+  // git, ЧТО осталось неразведённым, и кладёт список в ответ; до этой ветки человек получал
+  // «конфликт с основным деревом» без единого имени и КАЖДЫЙ РАЗ выяснял состав сам (замерено
+  // 31.08.2026 на пяти приёмках подряд). Если часть конфликта ритуал развёл механически —
+  // сказано и это: иначе автоматический развод неотличим от слияния, где спора не было.
+  if (m.conflict === true && Array.isArray(m.conflictFiles) && m.conflictFiles.length > 0) {
+    const shown = m.conflictFiles.slice(0, MERGE_CONFLICT_FILES_SHOWN)
+    const rest = Math.max(0, m.conflictFiles.length - shown.length)
+    const n = Number.isFinite(m.conflictCount) ? m.conflictCount : m.conflictFiles.length
+    const settled = Array.isArray(m.conflictResolved) && m.conflictResolved.length
+      ? ` (механическое уже разведено: ${m.conflictResolved.map((r) => r && r.file).filter(Boolean).join(' · ')})`
+      : ''
+    return {
+      reasonCode: 'conflict',
+      reason:
+        `ветка работника не сливается: конфликт в ${n} файл(ах) — ` +
+        `${shown.join(' · ')}${rest ? ` … ещё ${rest}` : ''}${settled}; ` +
+        'остальное разводит человек',
+    }
+  }
   if (/CONFLICT|merge conflict|fix conflicts|Automatic merge failed/i.test(said)) {
     return {
       reasonCode: 'conflict',

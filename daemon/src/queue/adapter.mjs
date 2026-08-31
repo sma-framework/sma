@@ -1117,6 +1117,113 @@ export function waveHeldOf(rows, holds) {
 }
 
 /**
+ * Расширения, по которым слово в тексте задачи признаётся ПУТЁМ, а не прозой. Закрытый список
+ * намеренно: «версия 5.7.1» и «замерено 31.08» тоже выглядят как имя с расширением, и открытый
+ * список превратил бы даты в файлы, а придержанные работы — в загадку.
+ */
+const DECLARED_FILE_EXT = 'md|mjs|cjs|js|ts|tsx|json|html|css|yml|yaml|sql|sh|txt'
+
+/** Слово, похожее на путь: буквы/цифры/точки/дефисы/слэши и расширение из списка выше. */
+const DECLARED_FILE_RE = new RegExp(`[A-Za-z0-9_./\\-]+\\.(?:${DECLARED_FILE_EXT})\\b`, 'g')
+
+/** Сколько путей засчитывается с одной работы. Потолок против карточки-простыни. */
+export const DECLARED_FILES_CAP = 40
+
+/**
+ * declaredFiles(row) → пути, которые работа ОБЪЯВИЛА, — нормализованные, без повторов.
+ *
+ * ОТКУДА ОНИ БЕРУТСЯ. Из собственных слов задачи: заголовка, описания и признаков успеха. Это
+ * не догадка о будущем и не эвристика о смысле — это то, что человек НАПИСАЛ на карточке, а
+ * пишет он там пути постоянно («конфликты садятся в `daemon/src/loop.mjs`, оба README»). Строка
+ * `files` на самой задаче, если она когда-нибудь появится, читается первой и отменяет разбор
+ * текста: объявленное явно всегда сильнее вычитанного.
+ *
+ * ПОЧЕМУ РАВЕНСТВО, А НЕ БЛИЗОСТЬ. Пересечение считается ТОЧНЫМ совпадением пути. Слово,
+ * похожее на путь, но путём не бывшее, тогда просто ни с чем не совпадает и никого не
+ * придерживает — цена ошибки разбора равна нулю. Догадка «эти двое, наверное, про один
+ * каталог» стоила бы обратного: молча остановленной очереди, причину которой не видно.
+ *
+ * @param {object} row строка очереди (title/description/acceptance — как их отдаёт `list`)
+ * @returns {string[]}
+ */
+export function declaredFiles(row) {
+  if (!row || typeof row !== 'object') return []
+  const out = []
+  const add = (p) => {
+    const clean = String(p ?? '')
+      .replace(/\\/g, '/')
+      .replace(/^[`'"(<[]+/, '')
+      .replace(/[`'")>\],.;:]+$/, '')
+      .replace(/^\.\//, '')
+      .trim()
+    if (!clean || clean.length > 200) return
+    if (!out.includes(clean) && out.length < DECLARED_FILES_CAP) out.push(clean)
+  }
+  // ОБЪЯВЛЕННОЕ ЯВНО — первым и вместо разбора текста.
+  if (Array.isArray(row.files) && row.files.length > 0) {
+    for (const f of row.files) if (typeof f === 'string') add(f)
+    return out
+  }
+  const words = [row.title, row.description]
+  const acc = row.acceptance
+  if (Array.isArray(acc)) words.push(...acc)
+  else if (acc !== undefined && acc !== null) words.push(acc)
+  for (const w of words) {
+    if (typeof w !== 'string' || w === '') continue
+    const found = w.match(DECLARED_FILE_RE)
+    if (found) for (const f of found) add(f)
+  }
+  return out
+}
+
+/**
+ * fileHeldOf(rows) → идентификаторы ОЖИДАЮЩИХ строк, чьи объявленные файлы пересекаются с
+ * файлами работы, ИДУЩЕЙ ПРЯМО СЕЙЧАС.
+ *
+ * ЧИСТАЯ ФУНКЦИЯ И ЕДИНСТВЕННОЕ МЕСТО ЭТОГО ПРАВИЛА — близнец `batchHeldOf` и `waveHeldOf`,
+ * и сделан так же намеренно: справочный бэкенд держит обещание, пропуская названные здесь
+ * строки, долговечный — откладывая их, а договорной сьют проверяет ПРЕДЛОЖЕНИЕ, а не
+ * механизм.
+ *
+ * ЗАЧЕМ. Очередь выдавала работы веером на четыре места, и все четыре отводились от одной
+ * вершины; через двадцать минут той вершины не существовало, и система, сама создав себе
+ * конфликт, перекладывала его разбор на человека. Замерено 31.08.2026: пять готовых работ из
+ * шести не слились с первого раза. Две работы про один файл — это не «параллельно», это
+ * «последовательно, но с ручным разводом в конце»; здесь они и становятся последовательными.
+ *
+ * ПРИДЕРЖИВАЕТ ТОЛЬКО ЖИВОЕ. Занятыми считаются файлы строк в статусе `claimed` — тех, что
+ * прямо сейчас в работе. Строка, ждущая ЧЕЛОВЕКА (`awaiting_approval`), очередь не
+ * останавливает: приёмка может стоять часами, и остановленный на это время конвейер был бы
+ * лекарством дороже болезни. Тот случай закрыт с другой стороны — сведением ветки с вершиной
+ * перед сдачей и механическим разводом на приёмке.
+ *
+ * МОЛЧАНИЕ БЕЗОПАСНО. Работа, не назвавшая ни одного файла, не придерживает никого и не
+ * придерживается сама: неизвестность здесь читается как «не пересекается», иначе первая же
+ * карточка без путей заморозила бы всю очередь.
+ *
+ * @param {object[]} rows все строки очереди
+ * @returns {string[]}
+ */
+export function fileHeldOf(rows) {
+  const all = Array.isArray(rows) ? rows : []
+  const busy = []
+  for (const r of all) {
+    if (!r || typeof r !== 'object' || r.status !== 'claimed') continue
+    for (const f of declaredFiles(r)) if (!busy.includes(f)) busy.push(f)
+  }
+  if (busy.length === 0) return []
+  const held = []
+  for (const r of all) {
+    if (!r || typeof r !== 'object' || r.status !== 'queued') continue
+    if (isBatchParent(r)) continue
+    const mine = declaredFiles(r)
+    if (mine.length === 0) continue
+    if (mine.some((f) => busy.includes(f))) held.push(r.id)
+  }
+  return held
+}
+
+/**
  * batchWorkerOf(rows, batchId, exceptId) → the worker this assembly is pinned to, or null.
  *
  * The pieces of one batch belong to ONE worker («один работник, по одному за раз»), and which
@@ -1690,12 +1797,17 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     // the caller (they live in a register on disk, which this module may not read — it stays
     // free of the filesystem), and they name phase+wave exactly. Everything else moves.
     const waveHeld = waveHeldOf(rows, holds)
+    // И ЧЬИ ФАЙЛЫ УЖЕ ЗАНЯТЫ ИДУЩЕЙ РАБОТОЙ. Третье правило той же формы и того же
+    // происхождения: две работы про один файл, выданные разом, отводятся от одной вершины и
+    // приезжают на приёмку конфликтом, который система создала себе сама.
+    const fileHeld = fileHeldOf(rows)
 
     let best = null
     for (const rec of records.values()) {
       if (rec.status !== 'queued') continue
       if (held.includes(rec.task.id)) continue
       if (waveHeld.includes(rec.task.id)) continue
+      if (fileHeld.includes(rec.task.id)) continue
       // THE REQUEST OF A BATCH IS NOT WORK. Handing it to a worker would dispatch «разгреби
       // мелочь перед демо» as a task of its own, in parallel with the very items it was
       // broken into. Skipped BEFORE the ordering so no priority and no arrival time can
