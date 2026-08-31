@@ -613,3 +613,104 @@ describe('enforcing scopes (verified-live-only soft-deny + default-on stream)', 
     expect(cooling.action).not.toBe('soft-deny')
   })
 })
+
+/**
+ * СРЕДА, В КОТОРОЙ НЕЧЕМ ЗАПУСТИТЬСЯ, — ЭТО НЕ КРАСНЫЕ ТЕСТЫ.
+ *
+ * 31.08.2026 склад зависимостей основного дерева опустошался трижды за сутки (сырой
+ * `git worktree remove` шёл по живой ссылке из копии), и каждый раз этот гейт отвечал
+ * «тесты на сведённом дереве красные». Ответ отправлял человека искать регрессию в ветке
+ * работника, пока чинить надо было среду — одну на всех и в другом дереве.
+ *
+ * Что закреплено здесь: перед прогоном задаётся ОТДЕЛЬНЫЙ вопрос; непригодная среда
+ * останавливает слияние СО СВОИМ именем (`envBroken`), прогонятель при этом не зовётся
+ * вовсе, `testsPassed` остаётся null (утверждать о прогоне, которого не было, нельзя),
+ * сведение откатывается, а собственная поломка проверки не мешает работать никому.
+ */
+describe('гейт слияния: непригодная среда называется средой', () => {
+  it('непригодная среда — отказ со своим именем, прогонятель не зовётся, сведение откатано', async () => {
+    const execGit = makeExecGit()
+    let ranTests = false
+    const res: any = await runMerge({
+      branch: 'wt/SB-195',
+      by: 'T-env',
+      execGit,
+      runTests: () => {
+        ranTests = true
+        return { passed: true }
+      },
+      checkEnv: () => ({ fit: false, reason: 'среда сломана: daemon — каталог зависимостей daemon/node_modules ПУСТ', broken: [{ project: 'daemon', why: 'пуст' }] }),
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })
+
+    expect(ranTests).toBe(false) // спрашивают ДО прогона, а не после
+    expect(res.merged).toBe(false)
+    expect(res.envBroken).toBe(true)
+    expect(res.testsPassed).toBe(null) // прогона не было — красным его назвать нельзя
+    expect(String(res.reason)).toContain('среда сломана')
+    expect(verbsOf(execGit)).toContain('merge --abort')
+    expect(verbsOf(execGit)).not.toContain('commit')
+
+    // и то же самое в квитанции: журнал читают через месяцы буквально
+    expect(res.receipt.envBroken).toBe(true)
+    expect(res.receipt.testsPassed).toBe(null)
+
+    // слот отпущен — отказ по среде не запирает слияния всем остальным
+    expect(acquireMergeClaim({ by: 'T-next', claimsDir, journalDir }).acquired).toBe(true)
+  })
+
+  it('годная среда ничего не меняет, а поломка самой проверки читается как «годится»', async () => {
+    const ok: any = await runMerge({
+      branch: 'wt/ok',
+      by: 'T-env-2',
+      execGit: makeExecGit(),
+      runTests: () => ({ passed: true }),
+      checkEnv: () => ({ fit: true, reason: null, broken: [] }),
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })
+    expect(ok.merged).toBe(true)
+    expect(ok.envBroken).toBeFalsy()
+    expect(ok.testsPassed).toBe(true)
+
+    releaseMergeClaim({ by: 'T-env-2', claimsDir, journalDir })
+
+    const failOpen: any = await runMerge({
+      branch: 'wt/fail-open',
+      by: 'T-env-3',
+      execGit: makeExecGit(),
+      runTests: () => ({ passed: true }),
+      checkEnv: () => {
+        throw new Error('страж среды сам сломался')
+      },
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })
+    expect(failOpen.merged).toBe(true) // страж, останавливающий работу своей поломкой, хуже отсутствующего
+    expect(failOpen.envBroken).toBeFalsy()
+  })
+
+  it('без прогонятеля среда не спрашивается вовсе — защищать нечего', async () => {
+    let asked = false
+    const res: any = await runMerge({
+      branch: 'wt/no-runner',
+      by: 'T-env-4',
+      execGit: makeExecGit(),
+      checkEnv: () => {
+        asked = true
+        return { fit: false, reason: 'среда сломана: .', broken: [] }
+      },
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })
+    expect(asked).toBe(false)
+    expect(res.merged).toBe(true)
+    expect(res.testsPassed).toBe(null)
+    expect(res.testsNote).toBe(NO_RUNNER_NOTE)
+  })
+})

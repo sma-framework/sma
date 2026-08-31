@@ -740,6 +740,28 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
       expect(out.reason).toMatch(/не выполнено/i)
     })
 
+    /**
+     * СРЕДА, А НЕ ТЕСТЫ. Гейт слияния смотрит на пригодность дерева ДО прогона; когда
+     * склада зависимостей нет, прогона не было вовсе и `testsPassed` остаётся null.
+     * 31.08.2026 склад опустошался трижды за сутки, и каждый раз человек читал «тесты
+     * красные» — то есть шёл искать регрессию в ветке работника, пока чинить надо было
+     * среду. Отказ стоит ВЫШЕ красного прогона, потому что это разные починки.
+     */
+    it('сломанная среда названа средой, а не красными тестами', async () => {
+      const out = await refuse('R-90c', (o: any) => ({
+        merged: false,
+        refused: true,
+        envBroken: true,
+        testsPassed: null,
+        reason: 'среда сломана: daemon — каталог зависимостей daemon/node_modules ПУСТ',
+        branch: o.branch,
+      }))
+      expect(out.ok).toBe(false)
+      expect(out.reasonCode).toBe('env_broken')
+      expect(out.reason).toMatch(/среда сломана/i)
+      expect(out.reason).not.toMatch(/тесты красные/i)
+    })
+
     it('конфликт слияния назван конфликтом', async () => {
       const out = await refuse('R-91', {
         ok: false,

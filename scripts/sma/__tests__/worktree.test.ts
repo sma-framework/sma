@@ -19,8 +19,10 @@
  * exercised here — plan 14 provisions working-tree directories only.
  */
 
-import { describe, it, expect } from 'vitest'
-import { resolve as resolvePath } from 'node:path'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { resolve as resolvePath, join } from 'node:path'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 import {
   provisionWorktree,
@@ -32,6 +34,9 @@ import {
   verifyWorktreeBase,
   WORKTREE_BRANCH_PREFIX,
   lockPushInCopy,
+  removeWorktreeSafely,
+  linksRemainingIn,
+  rmInsideOnly,
   PUSH_LOCK_URL,
   PUSH_LOCK_NO_EXTENSION_REASON,
 } from '../lib/worktree.mjs'
@@ -380,5 +385,197 @@ describe('worktree.mjs — копия без адреса для push, дере�
     })
     expect(reused.reused).toBe(true)
     expect(reused.pushLock?.applied, 'переиспользованная копия осталась с правом push').toBe(true)
+  })
+})
+
+/**
+ * УБОРКА КОПИИ НЕ ИМЕЕТ ПРАВА ПРОЙТИ ПО ССЫЛКЕ — И НЕ ИМЕЕТ ПРАВА ВЕРИТЬ СЕБЕ НА СЛОВО.
+ *
+ * Порядок «снять ссылки → отдать копию git» жил здесь с самого начала, но снятие
+ * ПРОВЕРЯЛОСЬ только тем, что оно себя не уронило: ссылка, которая не снялась, попадала в
+ * ответ строкой с полем `error`, и следующая же команда отдавала копию git. git, встретив
+ * живую ссылку, идёт ПО НЕЙ и опустошает каталог-цель в основном дереве — так 31.08.2026
+ * в 19:28 опустел склад зависимостей человека (сырой `git worktree remove --force` из
+ * соседнего окна; метка времени каталога — через полторы секунды после команды).
+ *
+ * Кейс красный без правки: подделка отказывается снимать ссылку, и старый порядок всё
+ * равно вызывал `worktree remove`. Проверяется ровно это — что git НЕ ЗВАЛИ.
+ */
+describe('removeWorktreeSafely — выжившая ссылка останавливает уборку', () => {
+  /** Копия из одного каталога и одной ссылки; `unremovableLink` — ссылка, которая не снимается. */
+  function makeCopyFs(opts: { unremovableLink?: boolean } = {}) {
+    const entry = (name: string, kind: 'link' | 'dir' | 'file') => ({
+      name,
+      isSymbolicLink: () => kind === 'link',
+      isDirectory: () => kind === 'dir',
+      isFile: () => kind === 'file',
+    })
+    const removed: string[] = []
+    return {
+      removed,
+      fs: {
+        readdirSync: (dir: string) =>
+          String(dir).replace(/\\/g, '/').endsWith('/copy')
+            ? [entry('node_modules', 'link'), entry('README.md', 'file')]
+            : [],
+        readlinkSync: () => '/main/node_modules',
+        rmdirSync: (p: string) => {
+          if (opts.unremovableLink) throw new Error('EPERM: link is held')
+          removed.push(String(p))
+        },
+        unlinkSync: (p: string) => {
+          if (opts.unremovableLink) throw new Error('EPERM: link is held')
+          removed.push(String(p))
+        },
+        rmSync: () => undefined,
+        realpathSync: Object.assign((p: string) => String(p), { native: (p: string) => String(p) }),
+      } as any,
+    }
+  }
+
+  const trees = 'worktree /main\nHEAD aaa\nbranch refs/heads/main\n\nworktree /copy\nHEAD bbb\nbranch refs/heads/wt/SB-195\n\n'
+
+  it('ссылка не снялась → уборка ОТКАЗАНА, и git к копии не подпускают', () => {
+    const calls: string[][] = []
+    const execGit = (args: string[]) => {
+      calls.push(args)
+      if (args[0] === 'worktree' && args[1] === 'list') return trees
+      return ''
+    }
+    const { fs } = makeCopyFs({ unremovableLink: true })
+
+    const res: any = removeWorktreeSafely({ path: '/copy', cwd: '/main', execGit, fsImpl: fs, platform: 'linux', force: true })
+
+    expect(res.ok).toBe(false)
+    expect(String(res.message)).toContain('уборка отменена')
+    expect(res.linksRemaining?.[0]?.path).toBe('node_modules')
+    // ЭТО И ЕСТЬ УТВЕРЖДЕНИЕ ФАЙЛА: удаления не было ни одного.
+    expect(calls.some((a) => a[0] === 'worktree' && a[1] === 'remove')).toBe(false)
+  })
+
+  it('ссылка снялась → уборка идёт дальше как прежде', () => {
+    const calls: string[][] = []
+    const execGit = (args: string[]) => {
+      calls.push(args)
+      if (args[0] === 'worktree' && args[1] === 'list') return trees
+      if (args[0] === 'status') return ''
+      return ''
+    }
+    // Подделка отдаёт ссылку ОДИН раз: первый обход её снимает, повторный уже не видит.
+    let handedOut = false
+    const fs: any = {
+      readdirSync: (dir: string) => {
+        if (!String(dir).replace(/\\/g, '/').endsWith('/copy') || handedOut) return []
+        return [
+          {
+            name: 'node_modules',
+            isSymbolicLink: () => true,
+            isDirectory: () => false,
+            isFile: () => false,
+          },
+        ]
+      },
+      readlinkSync: () => '/main/node_modules',
+      rmdirSync: () => {
+        handedOut = true
+      },
+      unlinkSync: () => {
+        handedOut = true
+      },
+      rmSync: () => undefined,
+      realpathSync: Object.assign((p: string) => String(p), { native: (p: string) => String(p) }),
+    }
+
+    const res: any = removeWorktreeSafely({ path: '/copy', cwd: '/main', execGit, fsImpl: fs, platform: 'linux' })
+
+    expect(res.ok).toBe(true)
+    expect(res.unlinked?.[0]?.path).toBe('node_modules')
+    expect(calls.some((a) => a[0] === 'worktree' && a[1] === 'remove')).toBe(true)
+  })
+
+  it('linksRemainingIn не входит В ссылку: junction отвечает «каталог», и обход ушёл бы в чужое дерево', () => {
+    const fs: any = {
+      readdirSync: (dir: string) => {
+        const d = String(dir).replace(/\\/g, '/')
+        if (d.endsWith('/copy')) {
+          return [
+            // junction: и ссылка, И каталог — порядок вопросов решает всё
+            { name: 'node_modules', isSymbolicLink: () => true, isDirectory: () => true, isFile: () => false },
+          ]
+        }
+        throw new Error(`обход вошёл в ссылку и читает ${d}`)
+      },
+      readlinkSync: () => '/main/node_modules',
+    }
+    const remaining = linksRemainingIn({ copyPath: '/copy', fsImpl: fs })
+    expect(remaining).toEqual([{ path: 'node_modules', target: '/main/node_modules' }])
+  })
+})
+
+/**
+ * ГРАНИЦА УБОРКИ — НА НАСТОЯЩЕЙ ФАЙЛОВОЙ СИСТЕМЕ, А НЕ НА ПОДДЕЛКЕ.
+ *
+ * Подделка выше доказывает ПОРЯДОК (git не зовут, пока ссылка цела); здесь доказывается
+ * сам инструмент последней руки. `rmInsideOnly` вызывается ровно там, где git уже отказал
+ * и копию доламывают вручную, — то есть в единственном месте, где ошибка стоила бы склада
+ * зависимостей человека: 31.08.2026 такой проход по живой ссылке опустошил его трижды.
+ *
+ * Утверждение файла одно и оно про ЦЕЛЬ: копии нет, а то, на что она ссылалась, цело.
+ * Песочница одноразовая (`mkdtemp`), ни одна рабочая копия не участвует.
+ */
+describe('rmInsideOnly — удаление не покидает своего каталога (настоящие ссылки)', () => {
+  const IS_WIN = process.platform === 'win32'
+  let sandbox = ''
+
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), 'sma-rm-inside-'))
+  })
+
+  afterEach(() => {
+    // Уборка песочницы идёт ТЕМ ЖЕ правилом: ссылки к этому моменту сняты самим тестом,
+    // а `rmSync` по каталогу без ссылок наружу не ведёт.
+    try {
+      rmSync(sandbox, { recursive: true, force: true, maxRetries: 3 })
+    } catch {
+      /* песочница во временном каталоге — её судьба ничего не решает */
+    }
+  })
+
+  it('копия со ссылкой на чужой склад: копии нет, склад ЦЕЛ', () => {
+    const main = join(sandbox, 'main')
+    const store = join(main, 'node_modules')
+    mkdirSync(join(store, 'vitest'), { recursive: true })
+    writeFileSync(join(store, 'vitest', 'index.js'), 'export default 1\n')
+
+    const copy = join(sandbox, 'copy')
+    mkdirSync(join(copy, 'scripts'), { recursive: true })
+    writeFileSync(join(copy, 'scripts', 'cli.mjs'), '// своё\n')
+    writeFileSync(join(copy, 'README.md'), '# своё\n')
+    // junction на Windows — тот самый вид ссылки, которым провизия подключает склад
+    symlinkSync(store, join(copy, 'node_modules'), IS_WIN ? 'junction' : 'dir')
+
+    const counts = rmInsideOnly({ root: copy })
+
+    expect(existsSync(copy), 'копия должна исчезнуть целиком').toBe(false)
+    expect(counts.links, 'ссылка снята как ссылка, а не обойдена как каталог').toBe(1)
+    expect(counts.files).toBe(2)
+    // ВОТ РАДИ ЧЕГО ВСЁ ОСТАЛЬНОЕ: удаление не прошло по ссылке в чужое дерево.
+    expect(existsSync(store), 'склад зависимостей главного дерева уцелел').toBe(true)
+    expect(readFileSync(join(store, 'vitest', 'index.js'), 'utf8')).toBe('export default 1\n')
+  })
+
+  it('ссылка на ОДИН файл снаружи — снимается так же, файл-цель остаётся', () => {
+    const outside = join(sandbox, 'outside.txt')
+    writeFileSync(outside, 'нельзя терять\n')
+
+    const copy = join(sandbox, 'copy2')
+    mkdirSync(copy, { recursive: true })
+    symlinkSync(outside, join(copy, 'linked.txt'), 'file')
+
+    const counts = rmInsideOnly({ root: copy })
+
+    expect(existsSync(copy)).toBe(false)
+    expect(counts.links).toBe(1)
+    expect(readFileSync(outside, 'utf8')).toBe('нельзя терять\n')
   })
 })

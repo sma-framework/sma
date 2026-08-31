@@ -1624,6 +1624,39 @@ describe('classifyFailure — the taxonomy (pure)', () => {
   })
 
   /**
+   * КРАСНОЕ ОТ СРЕДЫ, А НЕ ОТ ВЕТКИ — И ЭТО РАЗНЫЕ ПОЧИНКИ, ПОЭТОМУ РАЗНЫЕ СЛОВА.
+   *
+   * 31.08.2026 склад зависимостей основного дерева опустошался трижды за сутки, и каждая
+   * попытка закрывалась как «тесты красные»: работника отправляли искать регрессию, которой
+   * нет, пока чинить надо было среду — одну на всех, в другом дереве и другой рукой.
+   * `env_broken` стоит ВЫШЕ `tests_red` ровно поэтому и ждёт человека: перевыдача встретит
+   * тот же пустой склад.
+   */
+  it('красная перепроверка на дереве без зависимостей → env_broken, а не tests_red', () => {
+    expect(
+      classifyFailure({ exitCode: 0, receipt: { verdict: 'red', ref: 'reverify:red' }, envUnfit: 'среда сломана: daemon — каталог зависимостей daemon/node_modules ПУСТ' }),
+    ).toBe('env_broken')
+  })
+
+  /**
+   * ВОПРОС ЗАДАЁТСЯ ТОЛЬКО ПОВЕРХ КРАСНОГО. Зелёная перепроверка сама доказала, что среде
+   * было на чём запуститься, а попытка без квитанции не запускала тестов вовсе — обвинять
+   * среду там значило бы прятать настоящую причину за поломкой, которой в этот раз не было.
+   */
+  it('среда не называется причиной там, где красного прогона не было', () => {
+    const unfit = 'среда сломана: . — каталог зависимостей node_modules ПУСТ'
+    expect(classifyFailure({ exitCode: 0, receipt: { verdict: 'green', ref: 'r' }, journalComplete: false, envUnfit: unfit })).not.toBe('env_broken')
+    expect(classifyFailure({ exitCode: 1, receipt: null, envUnfit: unfit })).toBe('agent_error')
+    expect(classifyFailure({ exitCode: 0, receipt: null, envUnfit: unfit })).toBe('no_receipt')
+  })
+
+  it('маркер работника сильнее сломанной среды — он назвал причину точнее', () => {
+    expect(
+      classifyFailure({ exitCode: 1, receipt: { verdict: 'red', ref: 'r' }, envUnfit: 'среда сломана: …', workerMarker: 'NEEDS_DECISION' }),
+    ).toBe('needs_decision')
+  })
+
+  /**
    * ОБРЫВ У ПРОВАЙДЕРА — ЭТО НЕ ВИНА РАБОТНИКА, и таксономия обязана их различать.
    *
    * Живой прогон: попытку убил 529 Overloaded на стороне провайдера, а окно сказало «нет

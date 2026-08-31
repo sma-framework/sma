@@ -92,6 +92,9 @@ import {
 import { basename, join } from 'node:path'
 
 import { classifyForWorker } from './worker-danger.mjs'
+// ОДИН СУДЬЯ О ССЫЛКАХ НА СКЛАД ЗАВИСИМОСТЕЙ на весь продукт — этот же модуль спрашивают
+// поток `sma pre` и гейт слияния. Второй ответ на «а ссылка ли это?» разошёлся бы молча.
+import { installRefusal } from './deps-guard.mjs'
 // THE FORM OF A DECISION comes from the one file both sides import — the window's bundle and
 // this hook. Re-exported here so a caller that already holds the gate needs no second import,
 // and so `TICKET_DECISION_FORM` names the same string in both processes by construction.
@@ -481,6 +484,25 @@ export async function decideOnEvent({
         decision: 'allow',
         reason: 'не опасно по классификатору работника',
         steerTexts: harvestSteerTexts(redirectsFile, fsImpl, clock),
+      }
+    }
+
+    // ── ОТКАЗ ПО ФАКТУ, А НЕ БИЛЕТ, И ЭТО ЕДИНСТВЕННОЕ ТАКОЕ МЕСТО ──
+    // Билет — это «пусть посмотрит человек». Он уместен там, где человек МОЖЕТ сделать
+    // вызов безопасным. Установка зависимостей в каталог, чей node_modules есть ссылка в
+    // чужое дерево, безопасной не становится ни от чьего одобрения: нажавший «Одобрить»
+    // опустошит склад, в котором сам же и работает (измерено 31.08.2026, трижды за сутки).
+    // Поэтому здесь отказ — сразу, словами и с названным выходом, а билет не заводится:
+    // ждать по нему было бы нечего. Установка в СВОЙ настоящий каталог (ссылку уже сняли)
+    // фактом не подтверждается и уезжает на обычную парковку.
+    if (verdict.class === 'deps-install') {
+      const refusal = installRefusal({
+        command: typeof input.command === 'string' ? input.command : '',
+        cwd,
+        fsImpl,
+      })
+      if (refusal.refuse) {
+        return { ...base, configured: true, dangerous: true, decision: 'deny', reason: refusal.reason }
       }
     }
 
