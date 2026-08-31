@@ -193,7 +193,7 @@ const IDLE_WORDS: Record<string, string> = {
  * ОТСУТСТВИИ отметки. Поэтому отрицательная и нечисловая разница тоже дают прочерк, а не
  * подогнанный ноль.
  */
-function spanLabel(ms: number | null | undefined): string {
+export function spanLabel(ms: number | null | undefined): string {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '—'
   const totalMinutes = Math.floor(ms / 60000)
   const whole = Math.floor(totalMinutes / 60)
