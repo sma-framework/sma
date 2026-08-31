@@ -33,7 +33,7 @@ import { describe, it, expect } from 'vitest'
 
 import { tick, BATCH_STALL_MS } from '../src/loop.mjs'
 import { createSummons, summonWords } from '../src/summon.mjs'
-import { createMemoryQueue, BATCH_PARENT, brokenItemOf } from '../src/queue/adapter.mjs'
+import { createMemoryQueue, BATCH_PARENT, brokenItemOf, AUTO_RETRY_LIMIT } from '../src/queue/adapter.mjs'
 import { deriveState } from '../src/front/state.mjs'
 
 const BOT_TOKEN = '7654321:AAH-fake-secret-value-for-tests-only'
@@ -99,14 +99,21 @@ async function stalledWorld({ telegram = true, pieces = 6, breakAt = 1 } = {}) {
   // отметка срыва совпали бы, и «стоит» нельзя было бы отличить от «идёт» даже в прогоне.
   c.advance(4 * MINUTE)
 
-  // Куски до сорвавшегося доводятся до конца, сорвавшийся — роняется.
+  // Куски до сорвавшегося доводятся до конца, сорвавшийся — роняется. И РОНЯЕТСЯ СТОЛЬКО РАЗ,
+  // сколько очередь повторяет его сама: пока автоповторы не исчерпаны, сборка ждёт МАШИНУ, а не
+  // человека, и звать его о ней не о чем. Сюда, к зову, доходит только то, что повтор не вылечил.
   for (let n = 1; n <= breakAt; n += 1) {
-    const claimed: any = await queue.claimNext('w1', {})
-    expect(claimed && claimed.id).toBe(`B-1-${n}`)
     if (n < breakAt) {
+      const claimed: any = await queue.claimNext('w1', {})
+      expect(claimed && claimed.id).toBe(`B-1-${n}`)
       await queue.complete(claimed.id, { receiptRef: `reverify:${n}`, attemptToken: claimed.attemptToken })
     } else {
-      await queue.fail(claimed.id, 'tests_red', { attemptToken: claimed.attemptToken })
+      for (let attempt = 0; attempt <= AUTO_RETRY_LIMIT; attempt += 1) {
+        const claimed: any = await queue.claimNext('w1', {})
+        expect(claimed && claimed.id).toBe(`B-1-${n}`)
+        await queue.fail(claimed.id, 'tests_red', { attemptToken: claimed.attemptToken })
+        if (attempt < AUTO_RETRY_LIMIT) expect(await queue.reissue(claimed.id)).toBe(true)
+      }
     }
     c.advance(1000)
   }
@@ -158,9 +165,13 @@ describe('доска называет сборку, которая ждёт ре
       data: { batch: BATCH_PARENT },
     })
     // Куски первой сборки очередь больше не выдаёт — она стоит; свободен только кусок второй.
-    const claimed: any = await w.queue.claimNext('w1', {})
-    expect(claimed.id).toBe('B-2-1')
-    await w.queue.fail(claimed.id, 'tests_red', { attemptToken: claimed.attemptToken })
+    // И он тоже роняется НАСМЕРТЬ: пока у куска есть автоповторы, его сборка ждёт очередь.
+    for (let attempt = 0; attempt <= AUTO_RETRY_LIMIT; attempt += 1) {
+      const claimed: any = await w.queue.claimNext('w1', {})
+      expect(claimed.id).toBe('B-2-1')
+      await w.queue.fail(claimed.id, 'tests_red', { attemptToken: claimed.attemptToken })
+      if (attempt < AUTO_RETRY_LIMIT) expect(await w.queue.reissue(claimed.id)).toBe(true)
+    }
 
     const payload: any = await w.read()
     expect(payload.kpis.batchesAwaitingDecision).toBe(2)

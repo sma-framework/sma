@@ -239,6 +239,15 @@ const STATE_TO_STATUS = Object.freeze({
 })
 
 /**
+ * The library states our vocabulary reads as a CLOSED-BY-FAILURE row — DERIVED from the map
+ * above rather than written down beside it. `reissue` refuses everything else, and the sentence
+ * it has to keep is «only a row a reader sees as `failed`»: a second hand-written list would be a
+ * second answer to that, and the day either moved the door would re-issue work that is still
+ * running or refuse work a screen shows as broken.
+ */
+const FAILED_STATES = Object.freeze(Object.keys(STATE_TO_STATUS).filter((s) => STATE_TO_STATUS[s] === 'failed'))
+
+/**
  * The approval-row statuses that mean «this task still owes a PERSON a word», and the ONLY
  * ones allowed to overrule what pg-boss says about a job.
  *
@@ -1175,6 +1184,56 @@ export function createPgBossQueue({
   }
 
   /**
+   * reissue(taskId) — ТА ЖЕ РАБОТА, СЛЕДУЮЩИЙ ПОДХОД: сорвавшаяся строка ставится в очередь
+   * заново под тем же номером и со счётом попыток на единицу больше.
+   *
+   * ПОСТАНОВКОЙ, А НЕ ПРАВКОЙ СОСТОЯНИЯ. Строку, которую библиотека уже закрыла, нельзя «вернуть
+   * в очередь» своим UPDATE: план выдачи принадлежит pg-boss, и состояние, написанное нашим
+   * оператором, обязано было бы совпадать с этим планом вечно, во всякой версии библиотеки, по
+   * обещанию, которого никто не проверяет. Поэтому повтор — это обычный `send` через собственную
+   * дверь постановки: та же нормализация, та же граница повторов, тот же придерживающий старт у
+   * куска сборки. Ровно так же под тем же номером ставит работу дверь возврата.
+   *
+   * ПАВЛОАД БЕРЁТСЯ СО СТРОКИ, А НЕ СОБИРАЕТСЯ ЗАНОВО. В нём лежит вся задача целиком — слова,
+   * обещание, конверт стадии, снимок контекста человека. Собранная из ЧИТАЕМОЙ строки задача
+   * потеряла бы то, чего читаемая форма намеренно не отдаёт (снимок контекста, заметку), и
+   * работник получил бы на повторе меньше, чем на первой попытке, — молча.
+   *
+   * ТОЛЬКО СОРВАВШУЮСЯ, и это тот же промах, который держит памятный бэкенд: живую, ждущую
+   * работника или ждущую слова человека работу повтор не трогает. Признак — состояние ПОСЛЕДНЕЙ
+   * строки этой задачи: перевыдача пишет новую строку рядом со старой, и «последняя» — это то
+   * единственное слово о задаче, по которому вообще можно судить.
+   *
+   * @param {string} taskId
+   * @returns {Promise<boolean>} true, когда сорвавшаяся строка найдена и поставлена заново
+   */
+  async function reissue(taskId) {
+    if (typeof taskId !== 'string' || taskId === '') return false
+    let row = null
+    try {
+      const res = await runSql(
+        `SELECT data, retry_count, state FROM pgboss.job WHERE data->>'id' = $1 ORDER BY created_on DESC LIMIT 1`,
+        [taskId],
+      )
+      const rows = res && Array.isArray(res.rows) ? res.rows : []
+      row = rows[0] || null
+    } catch (err) {
+      // Нечитаемая строка стоит одного несделанного повтора; проход попробует снова через тик.
+      log(`reissue of ${taskId} not resolved: ${maskError(err)}`)
+      return false
+    }
+    const data = row && row.data && typeof row.data === 'object' ? row.data : null
+    if (!data) return false
+    if (!FAILED_STATES.includes(String(row.state))) return false
+    const attempt = attemptNumberOf(data, row.retry_count, { unclaimed: true })
+    const out = await enqueue({ ...data, attempt: (Number.isFinite(attempt) ? attempt : 1) + 1 })
+    // СЛИПШАЯСЯ ПОСТАНОВКА — ЭТО НЕ ПОВТОР. Живая строка под этим номером уже стоит в очереди
+    // (её вернул сторож живости или поставил человек), работа поедет и без нас, и `false` не даёт
+    // проходу объявить в журнале повтор, которого он не делал.
+    return !!out && out.coalesced !== true
+  }
+
+  /**
    * READ-ONLY resolution of a job that is WAITING TO BE HANDED OUT — in EITHER of the two
    * states this queue waits in.
    *
@@ -1537,6 +1596,7 @@ export function createPgBossQueue({
     complete,
     fail,
     parkForPerson,
+    reissue,
     cancelTask,
     list,
     stats,

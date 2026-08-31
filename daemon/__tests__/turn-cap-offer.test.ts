@@ -345,6 +345,66 @@ describe('провод: нажатие «поднять потолок» дое�
     expect(capAt(spec.args)).toBeGreaterThan(160)
   })
 
+  /**
+   * «ПОВТОРИТЬ ТУ ЖЕ СТРОКУ» ЗНАЧИТ ТУ ЖЕ, А НЕ ЕЁ ОГРЫЗОК.
+   *
+   * Повторная постановка под тем же номером не дополняет запись, а ПЕРЕЗАПИСЫВАЕТ её целиком:
+   * всё, чего дверь не назвала, задача теряет молча. Дверь называла имя, полосу, конверт и
+   * заметку — и работа возвращалась в очередь БЕЗ обещания, БЕЗ описания и БЕЗ оценки. То
+   * есть нажатие «поднять потолок» стирало ровно те поля, по которым потолок и считается, а
+   * работник второй попытки получал задачу без условий приёмки.
+   */
+  it('повтор ставит ТУ ЖЕ строку: обещание, описание и оценка едут с ней, а не теряются', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const enqueued: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: {
+        adapter: {
+          list: async () => [
+            {
+              id: 'R-1',
+              attempt: 1,
+              status: 'failed',
+              title: 'работа, которая не поместилась',
+              source: 'roster',
+              lane: 'prod',
+              storyPoints: 5,
+              description: 'что это за работа',
+              acceptance: ['красный тест до кода', 'полный сьют зелёный', 'ветка сливается', 'живой прогон'],
+            },
+          ],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          enqueue: async (t: any) => {
+            enqueued.push(t)
+            return { id: t.id }
+          },
+        },
+        casExec: casFrom('failed'),
+      },
+    })
+
+    const res = mkRes()
+    await front.handle(
+      mkReq({
+        url: '/api/return',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        body: { taskId: 'R-1', note: '' },
+      }),
+      res,
+    )
+
+    expect(res.statusCode).toBe(200)
+    expect(enqueued[0].acceptance).toEqual([
+      'красный тест до кода',
+      'полный сьют зелёный',
+      'ветка сливается',
+      'живой прогон',
+    ])
+    expect(enqueued[0].description).toBe('что это за работа')
+    expect(enqueued[0].storyPoints).toBe(5)
+  })
+
   it('работа, которая ждёт приёмки, возвращается ровно одним переходом — второго записывающего нет', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const enqueued: any[] = []
