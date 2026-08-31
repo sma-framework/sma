@@ -140,6 +140,11 @@ import { namedPaths, missingPaths } from './tree-probe.mjs'
 import { collectDiagnostics } from './diagnostics.mjs'
 import { projectEntry, codeTreeOf, planningHomeOf, pipelineMaxTurns } from '../config.mjs'
 import { taskTurnCap, burnedTurnCapsOf, TURN_SIZE_LABELS } from '../policy/turn-budget.mjs'
+// NOTE: только ПРЕДИКАТ формы идентификатора сессии импортируется из сборщика аргументов —
+// чистая функция без состояния и без выхода наружу. Спавн этой дверью не заводится: она
+// спрашивает то же правило, каким пользуется запуск, чтобы не завести второго мнения о том,
+// какую сессию вообще можно продолжить.
+import { isResumableSessionId } from '../runner/args.mjs'
 // NOTE: diagnostics.mjs is STATICALLY imported for the same reason as the two below: it is
 // pure over an injected os/process/fs, it writes nothing, it reaches no model and no spawn,
 // and its whole job is to REFUSE to carry anything — there is no capability here to gate.
@@ -832,6 +837,32 @@ function attemptSpawnArgs(deps, runDir) {
   }
 }
 
+/**
+ * accountDirOf(config, workerId) → каталог аккаунта, под которым идёт работник этой строки,
+ * или `null`.
+ *
+ * ПОЧЕМУ ОН ЕДЕТ РЯДОМ С СЕССИЕЙ. Сессия лежит НЕ «в системе», а внутри аккаунта, который
+ * получил спавн (`CLAUDE_CONFIG_DIR`). Человек, набравший продолжение в своём терминале, ходит
+ * под СВОИМ аккаунтом и не найдёт там ничего — команда отработает и честно скажет, что такой
+ * сессии нет. Каталог аккаунта — то единственное, что превращает предложенную строку в
+ * работающую.
+ *
+ * ЧИТАЕТСЯ ПРОФИЛЬ РАБОТНИКА, НАЗВАННОГО НА СТРОКЕ, тем же правилом, каким его находит сборщик
+ * аргументов, — по идентификатору. Отсюда и граница честности: если профиль с тех пор
+ * переписали, ответ говорит про СЕГОДНЯШНИЙ аккаунт этого работника, а не про вчерашний.
+ * Строка попытки каталога не хранит, а выдумывать его по имени работника нельзя тем более.
+ *
+ * `null` — «в настройках такого работника нет»: экран об этом молчит вслух, а не подставляет
+ * путь, которого никто не называл.
+ */
+function accountDirOf(config, workerId) {
+  if (typeof workerId !== 'string' || workerId === '') return null
+  const workers = Array.isArray(config && config.workers) ? config.workers : []
+  const found = workers.find((w) => w && w.id === workerId)
+  const dir = found && found.account && found.account.configDir
+  return typeof dir === 'string' && dir !== '' ? dir : null
+}
+
 async function handleTask({ res, params, config, deps }) {
   const id = params.id
   const adapter = deps.adapter
@@ -997,6 +1028,21 @@ async function handleTask({ res, params, config, deps }) {
     materialized: Array.isArray(a.materialized) ? a.materialized : null,
     provisionMs: Number.isFinite(a.provisionMs) ? a.provisionMs : null,
     cleanup: a.cleanup && typeof a.cleanup === 'object' ? a.cleanup : null,
+    // ═══ ЧЕМ ВЕРНУТЬСЯ В СЕССИЮ ЭТОГО ПОДХОДА ════════════════════════════════════
+    //
+    // Машинная половина этой дороги закрыта давно: продолжение попытки поднимает ТУ ЖЕ
+    // сессию, потому что демон хранит её идентификатор здесь же, на строке реестра. У
+    // человека такой дороги не было вовсе — он читал на карточке, что подход сорвался, и не
+    // мог войти туда, где это случилось. Знание было, доступа не было, и разница между ними
+    // стоила отдельного разбора после каждой сорванной попытки.
+    //
+    // НАРУЖУ ЕДЕТ ТОЛЬКО ПРИГОДНОЕ К ПРОДОЛЖЕНИЮ. Форма спрашивается у того же предиката,
+    // которым её спрашивает сборщик аргументов запуска: второе написание правила разошлось
+    // бы с первым молча, и окно предлагало бы строку, которую командная строка отвергает.
+    // Идентификатор другой формы уезжает нулём — «этой попыткой воспользоваться нельзя», а
+    // не «идентификатора нет».
+    sessionId: isResumableSessionId(a.sessionId) ? a.sessionId : null,
+    accountDir: accountDirOf(config, a.workerId),
     // ═══ ПОД КАКИМ СЛОЕМ ЭТО РАБОТАЛО ════════════════════════════════════════════
     //
     // Что зеркало положило в аккаунт работника перед спавном (CLAUDE.md, хуки, сужающие
@@ -1160,6 +1206,11 @@ async function handleTask({ res, params, config, deps }) {
       materialized: null,
       provisionMs: null,
       cleanup: null,
+      // Идентификатор сессии тоже пишется в строку попытки, когда попытка ЗАКАНЧИВАЕТСЯ, —
+      // у идущей его ещё нет, и каталог аккаунта без него не о чем сказать. Названы нулями,
+      // а не опущены, по той же причине, что и поля выше: карточка читает одну форму.
+      sessionId: null,
+      accountDir: null,
       // Слой и файл MCP пишутся в строку попытки, когда попытка ЗАКАНЧИВАЕТСЯ, поэтому у
       // идущей их ещё нет. Названы нулями, а не опущены: карточка читает одну форму для
       // каждой записи, и «этого ключа здесь нет» — то, с чего поверхность начинает гадать.

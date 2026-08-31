@@ -2354,20 +2354,31 @@ describe('server.mjs — GET /api/task/:id carries the decision journal', () => 
     expect(trace.approach).toBe('journaled')
   })
 
-  it('the sessionId on a ledger row does NOT travel to the card — the read model is an explicit pick', async () => {
+  it('the sessionId travels ONLY when it can be resumed — the read model is still an explicit pick', async () => {
+    // ПРЕЖНЕЕ УТВЕРЖДЕНИЕ ЭТОГО СЛУЧАЯ БЫЛО ОБРАТНЫМ: идентификатор сессии не уезжал к
+    // карточке вовсе, потому что «экрану он ни к чему». Это оказалось верно про экран и
+    // неверно про человека: продолжение попытки давно поднимает ТУ ЖЕ сессию, а войти в неё
+    // самому — посмотреть, спросить, продолжить — было нельзя, и разница между «демон знает»
+    // и «человек может» стоила разбора после каждой сорванной попытки. Теперь дверь называет
+    // его явным выбором, и явность выбора сторожится ровно как раньше: наружу едет ТОЛЬКО
+    // пригодное к продолжению, а всё прочее по-прежнему остаётся на строке аудита.
+    const resumable = '9f8e7d6c-1234-4abc-8def-0123456789ab'
     const withSession = {
-      readAttempts: () => [
-        { attempt: 1, workerId: 'max-1', outcome: 'completed', sessionId: '9f8e7d6c-1234-4abc-8def-0123456789ab' },
-      ],
+      readAttempts: () => [{ attempt: 1, workerId: 'max-1', outcome: 'completed', sessionId: resumable }],
     }
     const front = createFrontServer({ config: { token: TOKEN }, deps: { adapter, ledger: withSession } })
     const res = await call(front, { url: '/api/task/R-9', headers: bearer() })
     expect(res.statusCode).toBe(200)
-    // The audit row keeps it — it is the one fact about a finished attempt nothing can
-    // recover afterwards. The screen has no use for it, so the payload never names it, and
-    // that is asserted on the BYTES rather than on the shape.
-    expect(res.body).not.toContain('9f8e7d6c-1234-4abc-8def-0123456789ab')
-    expect(Object.hasOwn(JSON.parse(res.body).attempts[0], 'sessionId')).toBe(false)
+    expect(JSON.parse(res.body).attempts[0].sessionId).toBe(resumable)
+
+    // …а ручка не той формы не едет никуда: командная строка её отвергнет, и предложить по
+    // ней возврат значило бы дать человеку строку, которая выглядит рабочей. Утверждается на
+    // БАЙТАХ, а не на форме — ключ есть всегда, и молчать он обязан значением.
+    const junk = { readAttempts: () => [{ attempt: 1, workerId: 'max-1', outcome: 'failed', sessionId: 'сессия-которой-нет' }] }
+    const second = createFrontServer({ config: { token: TOKEN }, deps: { adapter, ledger: junk } })
+    const other = await call(second, { url: '/api/task/R-9', headers: bearer() })
+    expect(other.body).not.toContain('сессия-которой-нет')
+    expect(JSON.parse(other.body).attempts[0].sessionId).toBe(null)
   })
 
   it('a task older than the journal → EMPTY layers, never an error', async () => {
