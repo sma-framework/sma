@@ -14,6 +14,7 @@ import type {
   BudgetSetResult,
   CancelTaskResult,
   ChatHistory,
+  ChatConversations,
   ChatReply,
   ClaimClearResult,
   CoordinationSnapshot,
@@ -722,12 +723,43 @@ export function holdWave(input: {
  * окно: она читает книгу и знает, при каком проекте сказан каждый ход. Без `project` дверь
  * отдаёт книгу целиком — это честное «сужать нечем», а не «покажи всё на всякий случай».
  */
-export function getChatHistory(opts: { limit?: number; project?: string } = {}): Promise<ChatHistory> {
+export function getChatHistory(
+  opts: { limit?: number; project?: string; conversationId?: string } = {},
+): Promise<ChatHistory> {
+  const parts = [
+    ...(opts.limit ? [`limit=${encodeURIComponent(String(opts.limit))}`] : []),
+    ...(opts.project ? [`project=${encodeURIComponent(opts.project)}`] : []),
+    // Сужение до ОДНОЙ беседы — то, чего экрану не хватало: без него лента показывала
+    // все разговоры проекта подряд, одной сплошной простынёй (слово владельца 31.08).
+    ...(opts.conversationId ? [`conversationId=${encodeURIComponent(opts.conversationId)}`] : []),
+  ]
+  return getJson<ChatHistory>(`/api/chat/history${parts.length ? `?${parts.join('&')}` : ''}`)
+}
+
+/**
+ * КАКИЕ РАЗГОВОРЫ БЫЛИ — свежий первым. Список считает дверь по той же книге; окно ничего
+ * здесь не группирует и не сортирует, иначе у списка и у ленты завелись бы две правды о том,
+ * какая беседа последняя.
+ */
+export function getChatConversations(
+  opts: { limit?: number; project?: string } = {},
+): Promise<ChatConversations> {
   const parts = [
     ...(opts.limit ? [`limit=${encodeURIComponent(String(opts.limit))}`] : []),
     ...(opts.project ? [`project=${encodeURIComponent(opts.project)}`] : []),
   ]
-  return getJson<ChatHistory>(`/api/chat/history${parts.length ? `?${parts.join('&')}` : ''}`)
+  return getJson<ChatConversations>(`/api/chat/conversations${parts.length ? `?${parts.join('&')}` : ''}`)
+}
+
+/** Имя беседы, данное рукой. Пустое имя — СНЯТЬ своё имя, а не назвать беседу пустотой. */
+export function renameConversation(input: {
+  conversationId: string
+  title: string
+}): Promise<{ id: string; title: string | null }> {
+  return postJson<{ id: string; title: string | null }>('/api/chat/rename', {
+    conversationId: input.conversationId,
+    title: input.title,
+  })
 }
 
 // ── bringing your own helpers in ────────────────────────────────────────────────────
