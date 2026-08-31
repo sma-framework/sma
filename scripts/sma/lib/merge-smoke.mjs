@@ -296,7 +296,12 @@ export function runMergeSmokeAsync(o = {}) {
       if (said.length > CAPTURE_CAP_BYTES) said = said.slice(0, CAPTURE_CAP_BYTES)
     }
     for (const stream of [child.stdout, child.stderr]) {
-      if (stream && typeof stream.on === 'function') stream.on('data', keep)
+      if (!stream || typeof stream.on !== 'function') continue
+      // ТЕКСТ, А НЕ БАЙТЫ, И ЭТО НЕ УКРАШЕНИЕ. Куски приходят по границе трубы, а имена
+      // тестов в этом дереве написаны по-русски: буква, разорванная надвое между двумя
+      // кусками, склеится в мусор — и отказ назовёт тест, которого нет.
+      if (typeof stream.setEncoding === 'function') stream.setEncoding('utf8')
+      stream.on('data', keep)
     }
     let deadline = false
     const timer = setTimeout(() => {

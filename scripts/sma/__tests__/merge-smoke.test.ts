@@ -23,6 +23,7 @@
 import { describe, it, expect } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 
@@ -457,6 +458,28 @@ describe('the asynchronous runner tells the same three worlds apart', () => {
     // Та же поправка, что и у синхронного близнеца: вывод ловится, потому что имя упавшего
     // теста живёт только в нём, а код выхода называет лишь факт красноты.
     expect(call.opts.stdio, 'выброшенный вывод — это отказ без имени упавшего теста').toEqual(['ignore', 'pipe', 'pipe'])
+  })
+
+  /**
+   * ГРАНИЦА КУСКА ПРОХОДИТ ПОСРЕДИ БУКВЫ, И ЭТО НЕ РЕДКОСТЬ, А УСТРОЙСТВО ТРУБЫ. Имена тестов
+   * в этом дереве написаны по-русски: буква занимает два байта, и кусок, оборванный между
+   * ними, при склейке байтами даёт мусор — отказ назвал бы тест, которого нет. Поэтому здесь
+   * настоящий поток (не заглушка-эмиттер): только он умеет декодировать через границу, и
+   * только на нём эта разница видна.
+   */
+  it('русское имя не рвётся на границе куска — поток декодируется, а не склеивается по байтам', async () => {
+    const child = stubChild()
+    child.stdout = new PassThrough()
+    const p = runMergeSmokeAsync({ cwd: '/repo', ...treeWithTarget, spawn: () => child })
+    const out = Buffer.from(' FAIL  a.test.ts > набор > падает\nAssertionError: нет\n', 'utf8')
+    const cut = 20 // ровно посередине первой русской буквы
+    child.stdout.write(out.subarray(0, cut))
+    child.stdout.write(out.subarray(cut))
+    await new Promise((r) => setImmediate(r))
+    child.emit('exit', 1, null)
+    const res: any = await p
+    expect(res.failedTest, 'имя приехало склеенным из байтов').toBe('a.test.ts > набор > падает')
+    expect(res.failedTest).not.toContain('�')
   })
 
   it('красный ребёнок называет упавший тест — вывод прочитан, а не выброшен', async () => {
