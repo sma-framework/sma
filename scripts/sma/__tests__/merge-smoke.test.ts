@@ -30,6 +30,7 @@ import {
   runMergeSmoke,
   runMergeSmokeAsync,
   resolveSuiteEntry,
+  summarizeRedRun,
   MERGE_SMOKE_TARGET,
   MERGE_SMOKE_TIMEOUT_MS,
   NO_TARGET_NOTE,
@@ -48,12 +49,39 @@ function spawnFailure(code: string) {
 }
 
 /** A child that RAN and left with a non-zero code — the only shape that means «red». */
-function exitedWith(status: number) {
+function exitedWith(status: number, said = '') {
   const err: any = new Error(`Command failed with exit code ${status}`)
   err.status = status
   err.signal = null
+  err.stdout = said
+  err.stderr = ''
   return err
 }
+
+/**
+ * Вывод настоящего красного прогона, урезанный до формы: сводка по файлу, строка `×` с
+ * первой причиной и блок `Failed Tests` с полным именем и утверждением. Разбирается
+ * ИМЕННО такой текст, потому что именно его печатает сьютер, которого зовёт этот модуль.
+ */
+const RED_OUTPUT = [
+  ' RUN  v3.2.4 C:/tmp/tree',
+  '',
+  ' ❯ scripts/sma/__tests__/merge-gate.test.ts (2 tests | 1 failed) 41ms',
+  '   ✓ merge-claim triplet + the sma merge ritual > Test 1 3ms',
+  '   × гейт слияния: непригодная среда называется средой > отказ несёт имя 12ms',
+  '     → expected false to be true // Object.is equality',
+  '',
+  '⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯',
+  '',
+  ' FAIL  scripts/sma/__tests__/merge-gate.test.ts > гейт слияния: непригодная среда называется средой > отказ несёт имя',
+  'AssertionError: expected false to be true // Object.is equality',
+  '',
+  '- Expected',
+  '+ Received',
+  '',
+  ' ❯ scripts/sma/__tests__/merge-gate.test.ts:651:24',
+  '',
+].join('\n')
 
 /** A child killed on its deadline: a signal, no status, and the killed flag execFileSync sets. */
 function killedOnDeadline() {
@@ -149,10 +177,96 @@ describe('the three worlds are told apart — red is never «there was no run»'
     expect(res.note, 'a verdict has no «why there was no run» to give').toBeUndefined()
   })
 
+  /**
+   * ═══ КРАСНЫЙ ОТВЕТ БЕЗ ИМЕНИ ТЕСТА — ЭТО ПОЛОВИНА ОТВЕТА ═══════════════════════════
+   *
+   * Замерено 31.08.2026: приёмка вернула «тесты на сведённом дереве красные» и ни одного
+   * слова о том, какой тест и почему, — приёмщик искал это руками, а нашёл вовсе не тесты.
+   * Код выхода говорит ЧТО случилось и молчит ГДЕ. Поэтому красный ответ несёт имя первого
+   * упавшего теста и первые строки причины, взятые из вывода того же прогона.
+   */
+  it('красный ответ несёт ИМЯ упавшего теста и первые строки причины', () => {
+    const res: any = runMergeSmoke({
+      cwd: '/repo',
+      ...treeWithTarget,
+      exec: () => {
+        throw exitedWith(1, RED_OUTPUT)
+      },
+    })
+    expect(res.passed).toBe(false)
+    expect(res.failedTest, 'красный отказ без имени теста отправляет человека искать вручную').toContain(
+      'отказ несёт имя',
+    )
+    expect(res.failedTest).toContain('merge-gate.test.ts')
+    expect(res.failureDetail).toContain('AssertionError')
+    expect(res.failureDetail).toContain('expected false to be true')
+  })
+
+  it('зелёный ответ не несёт ни имени, ни причины — успех себя не объясняет', () => {
+    const res: any = runMergeSmoke({ cwd: '/repo', ...treeWithTarget, exec: () => '' })
+    expect(res.passed).toBe(true)
+    expect(res.failedTest).toBeUndefined()
+    expect(res.failureDetail).toBeUndefined()
+  })
+
   it('a child that RAN and exited zero is green', () => {
     const res: any = runMergeSmoke({ cwd: '/repo', ...treeWithTarget, exec: () => '' })
     expect(res.passed).toBe(true)
     expect(res.ran).toBe(true)
+  })
+})
+
+/**
+ * ═══ РАЗБОР ВЫВОДА: ЧТО ИМЕННО ЕДЕТ В ОТКАЗ ══════════════════════════════════════════
+ *
+ * Разбор отделён от запуска, потому что это две разные ошибки: «не поймали вывод» и «поймали,
+ * но прочли не то». Правило одно и жёсткое — НИЧЕГО НЕ ВЫДУМЫВАТЬ: вывод, в котором имени
+ * теста нет (сьютер упал на сборке файла, а не на утверждении), отдаёт имя `null`, а не
+ * правдоподобную строку. Ложное имя хуже отсутствующего: по нему пойдут чинить чужой тест.
+ */
+describe('разбор красного вывода — имя теста и первые строки причины', () => {
+  it('берёт полное имя из блока Failed Tests и утверждение под ним', () => {
+    const sum: any = summarizeRedRun(RED_OUTPUT)
+    expect(sum.failedTest).toContain('merge-gate.test.ts')
+    expect(sum.failedTest).toContain('отказ несёт имя')
+    expect(sum.failedTest, 'хвост со временем прогона — не часть имени').not.toMatch(/\d+ms$/)
+    expect(sum.failureDetail).toContain('AssertionError')
+    expect(sum.failureDetail, 'рамка отчёта — не причина').not.toMatch(/⎯{3,}/)
+  })
+
+  it('строка «×» тоже даёт имя, когда блока Failed Tests в выводе нет', () => {
+    const sum: any = summarizeRedRun(
+      [' ❯ a.test.ts (1 test | 1 failed) 4ms', '   × набор > падает 2ms', '     → expected 1 to be 2'].join('\n'),
+    )
+    expect(sum.failedTest).toContain('набор > падает')
+    expect(sum.failureDetail).toContain('expected 1 to be 2')
+  })
+
+  it('цвет терминала снимается — имя теста не носит на себе управляющих последовательностей', () => {
+    const ESC = String.fromCharCode(27) // краска терминала приезжает управляющей последовательностью
+    const sum: any = summarizeRedRun(`${ESC}[31m FAIL ${ESC}[39m a.test.ts > набор > падает\nAssertionError: нет\n`)
+    expect(sum.failedTest).toBe('a.test.ts > набор > падает')
+    expect(sum.failedTest).not.toContain(ESC)
+  })
+
+  it('вывод без единого упавшего теста НЕ выдумывает имени — оно null, а причина всё равно едет', () => {
+    const sum: any = summarizeRedRun(
+      ['⎯⎯⎯ Unhandled Errors ⎯⎯⎯', 'Error: Failed to load url ./missing.mjs', '  at loadModule'].join('\n'),
+    )
+    expect(sum.failedTest, 'придуманное имя отправит человека чинить не тот тест').toBe(null)
+    expect(sum.failureDetail).toContain('Failed to load url')
+  })
+
+  it('пустой вывод — ни имени, ни причины, и ни одного придуманного слова', () => {
+    expect(summarizeRedRun('')).toMatchObject({ failedTest: null, failureDetail: null })
+    expect(summarizeRedRun(undefined as any)).toMatchObject({ failedTest: null, failureDetail: null })
+  })
+
+  it('причина обрезана: отказ — это первые строки, а не весь протокол прогона', () => {
+    const long = [' FAIL  a.test.ts > набор > падает', ...Array.from({ length: 40 }, (_, i) => `строка причины ${i} ${'я'.repeat(400)}`)].join('\n')
+    const sum: any = summarizeRedRun(long)
+    expect(sum.failureDetail.split('\n').length).toBeLessThanOrEqual(3)
+    for (const line of sum.failureDetail.split('\n')) expect(line.length).toBeLessThanOrEqual(200)
   })
 })
 
@@ -182,6 +296,12 @@ describe('the launch itself — the form that was measured to work on this platf
     expect(call.opts.shell, 'no shell — the entry is absolute, so none is needed').toBeUndefined()
     expect(call.opts.cwd, 'the run happens in the tree being merged, not in ours').toBe('/repo')
     expect(call.opts.timeout, 'a run without a ceiling can hold the approval door open').toBe(MERGE_SMOKE_TIMEOUT_MS)
+    // ВЫВОД ЛОВИТСЯ, А НЕ ВЫБРАСЫВАЕТСЯ. Раньше здесь стояло `stdio:'ignore'` под словами
+    // «сьют говорит кодом выхода» — и код выхода действительно говорит ЧТО, но молчит ГДЕ.
+    // Имя упавшего теста живёт только в выводе; выброшенный вывод — это отказ, который
+    // приёмщик обязан расследовать руками.
+    expect(call.opts.stdio, 'выброшенный вывод — это отказ без имени упавшего теста').toEqual(['ignore', 'pipe', 'pipe'])
+    expect(call.opts.encoding, 'вывод читается текстом, а не байтами').toBe('utf8')
   })
 
   it('the suite runner really resolves from this installation, to a file that exists', () => {
@@ -227,6 +347,11 @@ describe('the runner actually runs tests — proved by launching them', () => {
       expect(res.ran, 'a red verdict must come from a run that HAPPENED').toBe(true)
       expect(typeof res.exitCode, 'a red verdict carries the exit code, not a signal').toBe('number')
       expect(res.exitCode).not.toBe(0)
+      // И ИМЯ — ИЗ НАСТОЯЩЕГО ВЫВОДА НАСТОЯЩЕГО СЬЮТЕРА. Разбор подделанного текста
+      // доказывает разбор; только этот случай доказывает, что сьютер печатает именно то,
+      // что разбирают, и что вывод действительно доехал до нас.
+      expect(res.failedTest, `настоящий красный прогон не назвал теста: ${JSON.stringify(res)}`).toContain('fails')
+      expect(String(res.failureDetail)).toMatch(/expected 1 to be 2/)
     } finally {
       rmSync(tree, { recursive: true, force: true })
     }
@@ -262,6 +387,10 @@ function stubChild() {
   child.kill = () => {
     child.killed = true
   }
+  // Настоящий ребёнок с перехваченным выводом отдаёт два потока — на них и подписывается
+  // модуль. Заглушка без них молча роняла бы подписку в исключение.
+  child.stdout = new EventEmitter()
+  child.stderr = new EventEmitter()
   return child
 }
 
@@ -325,7 +454,20 @@ describe('the asynchronous runner tells the same three worlds apart', () => {
     expect(call.args).toContain(MERGE_SMOKE_TARGET)
     expect(call.opts.shell, 'no shell — the entry is absolute, so none is needed').toBeUndefined()
     expect(call.opts.cwd).toBe('/repo')
-    expect(call.opts.stdio, 'the smoke speaks in its exit code, never into our buffers').toBe('ignore')
+    // Та же поправка, что и у синхронного близнеца: вывод ловится, потому что имя упавшего
+    // теста живёт только в нём, а код выхода называет лишь факт красноты.
+    expect(call.opts.stdio, 'выброшенный вывод — это отказ без имени упавшего теста').toEqual(['ignore', 'pipe', 'pipe'])
+  })
+
+  it('красный ребёнок называет упавший тест — вывод прочитан, а не выброшен', async () => {
+    const child = stubChild()
+    const p = runMergeSmokeAsync({ cwd: '/repo', ...treeWithTarget, spawn: () => child })
+    child.stdout.emit('data', RED_OUTPUT)
+    child.emit('exit', 1, null)
+    const res: any = await p
+    expect(res).toMatchObject({ passed: false, ran: true, exitCode: 1 })
+    expect(res.failedTest).toContain('отказ несёт имя')
+    expect(res.failureDetail).toContain('AssertionError')
   })
 
   it('a tree without the target resolves immediately, and nothing is launched at all', async () => {
