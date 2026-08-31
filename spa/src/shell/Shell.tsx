@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useStateQuery } from '../api/queries'
+import { selectedProject } from '../api/selected-project'
+import { useProjectSwitchId, useStateQuery } from '../api/queries'
 import { HOME_SCREEN, screenById } from '../screens/registry'
 import type { ScreenId } from '../screens/registry'
 import { HubBanner } from './HubBanner'
@@ -11,6 +12,8 @@ import { NarrowShell } from './narrow/NarrowShell'
 import { Palette } from './Palette'
 import { Sidebar } from './Sidebar'
 import { SystemConsole } from './SystemConsole'
+import { Waiting } from './Waiting'
+import { screenWaits, waitingLabel } from './waiting-language'
 
 /**
  * Shell — the frame every screen lives in: the sidebar on the left, one screen on the
@@ -46,6 +49,38 @@ export function Shell() {
   const state = useStateQuery()
   const narrow = useIsNarrow()
   const { Screen } = screenById(active)
+
+  /*
+    ОЖИДАНИЕ ЖИВЁТ У РАМЫ, А НЕ У ЭКРАНОВ.
+
+    Белело не переключение — белело СОДЕРЖИМОЕ: селектор уже говорил, куда идёт, а справа
+    оставалось пустое место, потому что зеркало выбора переставлено, экраны фильтруют по новому
+    проекту, а строк нового проекта в старом ответе нет. Никакой экран этого не чинит у себя:
+    пустой он в этот момент КАЖДЫЙ, и двадцать одинаковых починок — это двадцать разных
+    ожиданий. Рама знает про смену и про картину сразу, поэтому решение принимается здесь и
+    ровно один раз.
+
+    Само решение — в `screenWaits`, чистой функцией: «ждать или показывать» зависит от четырёх
+    входов, и написанное прямо в разметке оно врало бы молча (см. waiting-language.ts).
+  */
+  const switchingId = useProjectSwitchId()
+  const askedFor = selectedProject()
+  const answeredFor = state.data?.activeProject ?? null
+  const waits = screenWaits({
+    switching: switchingId !== null,
+    hasPicture: state.data !== undefined,
+    answeredFor,
+    askedFor,
+    fetching: state.isFetching,
+  })
+  /*
+    ИМЯ ПРОЕКТА БЕРЁТСЯ У ЗЕРКАЛА, А НЕ У ДЕЙСТВИЯ. Смена состоит из двух половин — дверь и
+    перечитывание картины, — и действие живо только в первой. Если бы имя брали у него, слова
+    посреди ожидания менялись бы с «Открываю проект «sma»» на «Открываю окно»: то же ожидание,
+    другой рассказ о нём. Зеркало помнит выбор обе половины.
+  */
+  const openingId = switchingId ?? (answeredFor !== askedFor ? askedFor : null)
+  const opening = openingId ? ((state.data?.projects ?? []).find((p) => p.id === openingId)?.name ?? null) : null
 
   useEffect(() => {
     const onAsked = (e: Event) => {
@@ -83,9 +118,21 @@ export function Shell() {
         */}
         <LinkLost />
         <HubBanner federation={state.data?.federation} />
-        <OpenedWithProvider value={openedWith}>
-          <Screen />
-        </OpenedWithProvider>
+        {waits ? (
+          <Waiting what={waitingLabel(opening, openingId !== null)} fill />
+        ) : (
+          <OpenedWithProvider value={openedWith}>
+            {/*
+              ПРИЕХАВШЕЕ СОДЕРЖИМОЕ ПРОСТУПАЕТ. Ключ — проект, про который приехала картина:
+              экран пересобирается ровно тогда, когда картина стала про другой проект, и
+              проступает ровно в этот момент. Ключ по чему-нибудь меняющемуся чаще (по опросу,
+              по экрану) пересобирал бы экран под рукой человека, а это дороже мягкости.
+            */}
+            <div key={answeredFor ?? 'нет проекта'} className="sma-wait-settle flex min-w-0 flex-1 flex-col">
+              <Screen />
+            </div>
+          </OpenedWithProvider>
+        )}
       </main>
       {/*
         The palette lives HERE and not inside a screen, for the same reason the shell owns the

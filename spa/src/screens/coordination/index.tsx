@@ -5,6 +5,7 @@ import { onFrame } from '../../api/hints'
 import { COORDINATION_KEY, useClaimClear, useCoordinationQuery } from '../../api/queries'
 import type { CoordinationClaim, CoordinationCollision, CoordinationSession } from '../../api/types'
 import { plural } from '../../shell/format'
+import { Waiting } from '../../shell/Waiting'
 
 /**
  * «Координация» — who else has this checkout open right now, what each of them reserved before
@@ -287,7 +288,7 @@ export function Screen() {
 
       <div className="min-h-0 flex-1 overflow-y-auto px-7 pt-6 pb-8">
         <div className="flex max-w-[900px] flex-col gap-[22px]">
-          {snapshot.isLoading ? <p className="m-0 text-[13px] text-tx2">Читаю, кто здесь работает…</p> : null}
+          {snapshot.isLoading ? <Waiting what="Читаю, кто здесь работает" /> : null}
 
           {snapshot.isError ? (
             <p className="m-0 text-[13px] text-tx2">

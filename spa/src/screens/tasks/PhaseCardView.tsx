@@ -26,6 +26,7 @@ import { DecisionCard, EMPTY_DRAFT } from '../../shell/DecisionCard'
 import type { DecisionDraft } from '../../shell/DecisionCard'
 import { EntitySummary } from '../../shell/EntitySummary'
 import { LiveTimer } from '../../shell/LiveTimer'
+import { Waiting } from '../../shell/Waiting'
 import { approvalRefusal } from '../../shell/format'
 import { currentStage, phaseStats } from '../../shell/stats'
 import { ArtifactViewer } from './ArtifactViewer'
@@ -971,7 +972,7 @@ export function PhaseCardView({
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto px-7 py-5">
-        {card.isLoading ? <p className="m-0 text-[13px] text-tx2">Открываю фазу…</p> : null}
+        {card.isLoading ? <Waiting what="Открываю фазу" /> : null}
         {card.isError ? (
           <p className="m-0 text-[13px] text-err-tx">
             Фаза не открылась. Ничего с ней не случилось — попробуйте ещё раз.
