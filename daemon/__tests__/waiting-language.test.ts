@@ -202,6 +202,7 @@ describe('вид ожидания: глубина, границы переход
     // Два написания одной длительности расходятся молча: правят одно, второе остаётся.
     expect(TOKENS).toContain(`${APPEAR_MS}ms`)
     expect(TOKENS).toContain(`${WORDS_MS}ms`)
+    expect(TOKENS).toContain(`${SETTLE_MS}ms`)
   })
 
   it('«уменьшить движение» — и слои замирают', () => {
@@ -221,6 +222,8 @@ describe('ожидание доехало до окна', () => {
   it('рама показывает ожидание ВМЕСТО экрана, а не рядом с ним', () => {
     expect(SHELL).toContain('screenWaits')
     expect(SHELL).toMatch(/waits\s*\?\s*\(?\s*<Waiting/)
+    // …и обратная половина: приехавшее содержимое проступает, а не вспыхивает на месте полосы.
+    expect(SHELL).toContain('sma-wait-settle')
   })
 
   it('первое открытие окна больше не рисует пустоту', () => {

@@ -122,7 +122,15 @@ export function Shell() {
           <Waiting what={waitingLabel(opening, openingId !== null)} fill />
         ) : (
           <OpenedWithProvider value={openedWith}>
-            <Screen />
+            {/*
+              ПРИЕХАВШЕЕ СОДЕРЖИМОЕ ПРОСТУПАЕТ. Ключ — проект, про который приехала картина:
+              экран пересобирается ровно тогда, когда картина стала про другой проект, и
+              проступает ровно в этот момент. Ключ по чему-нибудь меняющемуся чаще (по опросу,
+              по экрану) пересобирал бы экран под рукой человека, а это дороже мягкости.
+            */}
+            <div key={answeredFor ?? 'нет проекта'} className="sma-wait-settle flex min-w-0 flex-1 flex-col">
+              <Screen />
+            </div>
           </OpenedWithProvider>
         )}
       </main>
