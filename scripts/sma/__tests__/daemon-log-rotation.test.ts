@@ -30,10 +30,12 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
+
+import { dayLogPath } from '../../../supervisor/lift-log.mjs'
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..')
 const DRILL = join(REPO_ROOT, 'supervisor', 'log-rotation-drill.ps1')
@@ -72,6 +74,83 @@ describe('the wrapper keeps writing through the one place that decides the day',
     // A clock a drill cannot move is not a seam; a fallback the drill can break is not safe.
     expect(fn).toContain("Get-Date -Format 'yyyyMMdd'")
   })
+})
+
+/**
+ * THE SECOND CLOCK. The wrapper above rotates on the LOCAL midnight — `Get-Date` in PowerShell is
+ * local, and so is the calendar the operator reads. The supervisor keeps two more daily logs next
+ * to it, `daemon-lift-<day>.log` and `daemon-watch-<day>.log`, and both are named by
+ * `dayLogPath()` in supervisor/lift-log.mjs, whose own comment claims the two journals "differ
+ * only by prefix, not in their idea of midnight".
+ *
+ * They differed. `dayLogPath` stamped the day from `toISOString()`, which is UTC, so east of
+ * Greenwich the lift log rotated at 02:00 local (CEST) instead of at midnight, and every lift in
+ * that window was filed under YESTERDAY. Measured on this host: the restart of the night of
+ * 30→31.08 left `[2026-08-30T22:34:03.498Z] -- подъём:` in daemon-lift-20260830.log while the
+ * wrapper it started wrote `2026-08-31T00:36:54 queue Postgres answers the socket` into
+ * daemon-20260831.log. Same event, two files, two different days — the operator who opens the
+ * night's files finds the lift missing from all of them.
+ *
+ * This is the same defect class the wrapper was cured of in August, one file over: a second place
+ * with its own opinion about what day it is. The gate is that both places answer with the same
+ * stamp for the same instant.
+ */
+describe('both of the supervisor day logs read midnight off the same clock', () => {
+  // 00:30 by the wall clock: still yesterday in UTC anywhere east of Greenwich, which is where
+  // this host and the founder are. Built from local parts on purpose — the contract is the LOCAL
+  // day, so the expectation has to be phrased in local days too.
+  const justAfterLocalMidnight = new Date(2026, 7, 31, 0, 30, 0)
+
+  it('names the lift log by the day the operator sees on the clock, not the UTC one', () => {
+    expect(dayLogPath('/logs', 'daemon-lift-', justAfterLocalMidnight)).toBe(
+      join('/logs', 'daemon-lift-20260831.log'),
+    )
+  })
+
+  it('rotates the watch log on the same boundary, since it is the same function with a prefix', () => {
+    expect(dayLogPath('/logs', 'daemon-watch-', justAfterLocalMidnight)).toBe(
+      join('/logs', 'daemon-watch-20260831.log'),
+    )
+    // 23:30 the evening before must still be the old day — a fix that just shifted the boundary
+    // by a fixed offset would pass the case above and fail here.
+    expect(dayLogPath('/logs', 'daemon-watch-', new Date(2026, 7, 30, 23, 30, 0))).toBe(
+      join('/logs', 'daemon-watch-20260830.log'),
+    )
+  })
+
+  it.skipIf(process.platform !== 'win32')(
+    'agrees with the PowerShell writer line for line, which is the whole point',
+    () => {
+      // The two implementations, asked about the same instant. The wrapper is asked through the
+      // drill clock it already honours; nothing here re-implements either side's rule.
+      const dir = mkdtempSync(join(tmpdir(), 'sma-log-day-'))
+      const clockFile = join(dir, 'clock.txt')
+      try {
+        for (const at of [justAfterLocalMidnight, new Date(2026, 7, 30, 23, 30, 0)]) {
+          const local = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(
+            at.getDate(),
+          ).padStart(2, '0')}T${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}:00`
+          writeFileSync(clockFile, local, 'ascii')
+          const res = spawnSync(
+            'powershell',
+            [
+              '-NoProfile',
+              '-ExecutionPolicy',
+              'Bypass',
+              '-Command',
+              `. '${join(REPO_ROOT, 'supervisor', 'daemon-log-day.ps1')}'; Get-SmaDaemonLogDay`,
+            ],
+            { cwd: REPO_ROOT, encoding: 'utf8', env: { ...process.env, SMA_LOG_CLOCK_FILE: clockFile } },
+          )
+          const fromPowerShell = (res.stdout ?? '').trim()
+          const fromNode = dayLogPath('/logs', 'daemon-lift-', at).slice(-12, -4)
+          expect(fromNode, `PowerShell said ${fromPowerShell} for ${local}`).toBe(fromPowerShell)
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    },
+  )
 })
 
 /**
