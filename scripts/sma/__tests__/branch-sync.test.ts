@@ -19,7 +19,10 @@
  *   9. спор ОСТАВЛЯЕТСЯ в дереве только по просьбе (`keepConflict`) и только когда он есть —
  *      и тогда у него есть выход (`abortSync`), потому что дверь, в которую можно только
  *      войти, — это не дверь: `git merge --abort` работнику отказан тем же конвертом, что и
- *      само слияние.
+ *      само слияние;
+ *  10. код возврата команды пересборки — не всегда итог записи: у правила, объявившего
+ *      `exitIsVerdict`, решает доказательство на самом файле, а отказ называется вслух. Без
+ *      этого один посторонний упрёк аудитора отправлял человеку уже пересобранную карту.
  *
  * Швы: execGit / io / run — подделки. Ни настоящего git, ни настоящего диска, ни одной
  * настоящей команды пересборки.
@@ -305,21 +308,120 @@ describe('resolveMechanical — разводит без выбора и не т�
       expect(out.notes.join(' ')).toContain('маркеры конфликта остались')
     })
 
-    it('отказ команды уводит карту человеку, а не роняет весь развод', () => {
-      const { git } = fakeGit({ checkout: () => '' })
+    it('отказ команды не решает за файл: стороны разошлись → человеку, сосед разведён', () => {
+      const state = { side: '' }
+      const { git } = fakeGit({
+        checkout: (args: string[]) => {
+          if (args.includes('--ours')) state.side = 'ours'
+          else if (args.includes('--theirs')) state.side = 'theirs'
+          return ''
+        },
+      })
+      const sides: Record<string, string> = { ours: '<p>наша подпись</p>', theirs: '<p>чужая подпись</p>' }
       const out = resolveMechanical({
         cwd: '/copy',
         execGit: git,
         files: [GRAPH, 'README.md'],
-        io: { readFileSync: () => unionFile, writeFileSync: () => {} },
+        io: {
+          readFileSync: (p: string) => (String(p).includes('master-graph') ? sides[state.side] : unionFile),
+          writeFileSync: () => {},
+        },
         run: () => {
-          throw new Error('doc-audit refused')
+          throw new Error('doc-audit: 1 violation(s).')
         },
       })
-      expect(out.remaining).toContain(GRAPH)
-      expect(out.notes.join(' ')).toContain('пересобрать обе стороны не удалось')
+      expect(out.remaining).toEqual([GRAPH])
+      expect(out.notes.join(' ')).toContain('пересобираются в РАЗНОЕ')
       // Соседний union-файл разведён как ни в чём не бывало — отказ одного не топит другого.
       expect(out.resolved).toEqual([{ file: 'README.md', how: 'union' }])
+    })
+
+    // ── КОД ВОЗВРАТА КОМАНДЫ — НЕ ВСЕГДА ИТОГ ЗАПИСИ ──────────────────────────────────
+    //
+    // Замерено 31.08.2026 живым прогоном верба: карта уехала человеку со словами «пересобрать
+    // обе стороны не удалось», хотя пересобрана была дважды и успешно. Команда здесь аудитор:
+    // пишет выведенные числа и ТУТ ЖЕ возвращает вердикт обо всём документе, и одно постороннее
+    // замечание (о другом файле) делало код возврата ненулевым. Заперто ровно это: у правила,
+    // объявившего `exitIsVerdict`, решает доказательство на файле, а отказ НАЗЫВАЕТСЯ.
+    it('exitIsVerdict: команда отказала, а обе пересборки сошлись → развод по результату', () => {
+      const state = { side: '' }
+      const { git, calls } = fakeGit({
+        checkout: (args: string[]) => {
+          state.side = args.includes('--ours') ? 'ours' : 'theirs'
+          return ''
+        },
+      })
+      const out = resolveMechanical({
+        cwd: '/copy',
+        execGit: git,
+        files: [GRAPH],
+        io: sideIo({ ours: '<p>5913 tests</p>', theirs: '<p>5913 tests</p>' }, state),
+        run: () => {
+          throw new Error('doc-audit: 1 violation(s).')
+        },
+      })
+      expect(out.resolved).toEqual([{ file: GRAPH, how: 'rederive' }])
+      expect(out.remaining).toEqual([])
+      // Отказ не проглочен: человек читает и его, и то, почему он ничего не решил.
+      expect(out.notes.join(' ')).toContain('по результату, а не по коду возврата')
+      expect(out.notes.join(' ')).toContain('1 violation')
+      expect(calls.some((c) => c[0] === 'add' && c.includes(GRAPH))).toBe(true)
+    })
+
+    it('без флага код возврата судит, как судил: отказ уводит файл человеку', () => {
+      const { git } = fakeGit({ checkout: () => '' })
+      const out = resolveMechanical({
+        cwd: '/copy',
+        execGit: git,
+        files: [GRAPH],
+        rules: { union: [], regenerate: [{ files: [GRAPH], command: ['node', 'rebuild.mjs'], strategy: 'rederive' }] },
+        io: { readFileSync: () => '<p>всё равно что</p>', writeFileSync: () => {} },
+        run: () => {
+          throw new Error('rebuild refused')
+        },
+      })
+      expect(out.resolved).toEqual([])
+      expect(out.remaining).toEqual([GRAPH])
+      expect(out.notes.join(' ')).toContain('пересобрать обе стороны не удалось')
+    })
+
+    it('походка rebuild с флагом: отказ пережит РОВНО тогда, когда маркеры ушли из файла', () => {
+      const { git } = fakeGit()
+      const rules = {
+        union: [],
+        regenerate: [{ files: ['docs/gen.md'], command: ['node', 'gen.mjs'], exitIsVerdict: true }],
+      }
+      const refused = () => {
+        throw new Error('gen: 2 warning(s)')
+      }
+      const ok = resolveMechanical({
+        cwd: '/copy',
+        execGit: git,
+        files: ['docs/gen.md'],
+        rules,
+        io: { readFileSync: () => 'пересобранное без маркеров', writeFileSync: () => {} },
+        run: refused,
+      })
+      expect(ok.resolved).toEqual([{ file: 'docs/gen.md', how: 'regenerate' }])
+      expect(ok.notes.join(' ')).toContain('по результату, а не по коду возврата')
+
+      const kept = resolveMechanical({
+        cwd: '/copy',
+        execGit: git,
+        files: ['docs/gen.md'],
+        rules,
+        io: { readFileSync: () => unionFile, writeFileSync: () => {} },
+        run: refused,
+      })
+      expect(kept.resolved).toEqual([])
+      expect(kept.remaining).toEqual(['docs/gen.md'])
+      expect(kept.notes.join(' ')).toContain('маркеры конфликта остались')
+    })
+
+    it('флаг объявлен ровно у карты замера — индекс памяти судится кодом возврата', () => {
+      const split = classifyConflicts([GRAPH, '.claude/memory/MEMORY.md'], MECHANICAL_DEFAULTS)
+      expect(split.regenerate.find((r) => r.file === GRAPH)?.exitIsVerdict).toBe(true)
+      expect(split.regenerate.find((r) => r.file === '.claude/memory/MEMORY.md')?.exitIsVerdict).toBe(false)
     })
   })
 })

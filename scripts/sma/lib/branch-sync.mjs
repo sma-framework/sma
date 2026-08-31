@@ -61,6 +61,22 @@
  *              рукописном, и файл уходит человеку. Это и есть доказательство отсутствия
  *              выбора, а не догадка о нём: ни одна сторона не объявляется правой.
  *
+ * КОД ВОЗВРАТА КОМАНДЫ — НЕ ВСЕГДА ИТОГ ЗАПИСИ, и это не придирка. Замерено 31.08.2026 живым
+ * прогоном самого верба: карта замера ушла человеку со словами «пересобрать обе стороны не
+ * удалось», хотя пересобрана она была дважды и успешно. Команда пересборки здесь — аудитор:
+ * он ПИШЕТ выведенные числа, а потом возвращает ВЕРДИКТ аудита, и один посторонний упрёк (в
+ * тот вечер — квитанция, снятая раньше вершины) делал ненулевым код возврата. Развод, судящий
+ * по коду возврата, читал этот вердикт как «файл не пересобран» — то есть механический конфликт
+ * ехал к человеку из-за постороннего замечания о другом файле.
+ *
+ * Поэтому правило может объявить `exitIsVerdict: true` — «код возврата этой команды говорит о
+ * вердикте, а не о записи». Тогда отказ команды НЕ является отказом развода сам по себе: решает
+ * доказательство на самом файле, а отказ называется в примечаниях, а не проглатывается. Это не
+ * ослабление: у походки `rederive` доказательство — совпадение ДВУХ пересборок, и команда, не
+ * сделавшая ничего, его не проходит (несовпавшие стороны на то и конфликтуют). У походки
+ * `rebuild` доказательство слабее (ушли ли маркеры), поэтому флаг ставится только там, где
+ * известно, что именно означает ненулевой код, — и по умолчанию его нет ни у кого.
+ *
  * ПОЧЕМУ НЕ «ВЗЯТЬ НАШУ И ПЕРЕСОБРАТЬ». Карта несёт не только числа: пять исторических точек
  * роста и подпись под рисунком написаны руками. Взять одну сторону и пересобрать поверх неё —
  * это ровно тот тихий откат чужой правки, ради которого весь модуль и затевался. Сравнение
@@ -125,6 +141,10 @@ export const MECHANICAL_DEFAULTS = Object.freeze({
       files: Object.freeze(['docs/master-graph.html']),
       command: Object.freeze(['node', 'scripts/sma/cli.mjs', 'doc-audit', '--target', 'numbers', '--write']),
       strategy: 'rederive',
+      // Аудитор пишет числа и ТУТ ЖЕ возвращает вердикт обо всём документе: ненулевой код у
+      // него значит «нашлось замечание», а не «не записал». Судим по совпадению двух
+      // пересборок (см. шапку файла), иначе посторонний упрёк отправляет карту человеку.
+      exitIsVerdict: true,
     }),
   ]),
 })
@@ -228,7 +248,13 @@ export function classifyConflicts(files, rules = MECHANICAL_DEFAULTS) {
     if (rule) {
       // Походка по умолчанию — `rebuild`: правило, не назвавшее своей, ведёт себя ровно так,
       // как вело до появления второй, и ни одна чужая таблица правил от этого не поехала.
-      regenerate.push({ file, command: [...rule.command], strategy: rule.strategy === 'rederive' ? 'rederive' : 'rebuild' })
+      // То же и с `exitIsVerdict`: не объявлен — код возврата команды судит, как судил.
+      regenerate.push({
+        file,
+        command: [...rule.command],
+        strategy: rule.strategy === 'rederive' ? 'rederive' : 'rebuild',
+        exitIsVerdict: rule.exitIsVerdict === true,
+      })
       continue
     }
     if (unionPatterns.some((pat) => matchesPattern(file, pat))) {
@@ -360,12 +386,20 @@ export function resolveMechanical({ cwd, execGit, files, rules = MECHANICAL_DEFA
   // пересобирается, а решает СРАВНЕНИЕ: совпали две пересборки — вся разница между сторонами
   // была производной, и выбирать было не из чего; разошлись — спор о рукописном, и он уходит
   // человеку. Ни одна сторона не объявляется правой ни в одном из исходов.
-  for (const { file, command } of regenerate.filter((r) => r.strategy === 'rederive')) {
+  for (const { file, command, exitIsVerdict } of regenerate.filter((r) => r.strategy === 'rederive')) {
     const path = join(cwd, file)
+    /** Отказы команды, проглоченные по правилу `exitIsVerdict`, — они будут названы вслух. */
+    const refusals = []
     /** Материализовать сторону, пересобрать и вернуть получившиеся байты. */
     const sideBytes = (side) => {
       git(['checkout', `--${side}`, '--', file], { cwd })
-      runner(command, { cwd })
+      try {
+        runner(command, { cwd })
+      } catch (err) {
+        // Правило не объявляло свой код возврата вердиктом — значит он и есть итог записи.
+        if (!exitIsVerdict) throw err
+        refusals.push(`${side}: ${String((err && err.message) || err).split('\n')[0]}`)
+      }
       return String(readFile(path, 'utf8'))
     }
     try {
@@ -385,6 +419,14 @@ export function resolveMechanical({ cwd, execGit, files, rules = MECHANICAL_DEFA
       }
       git(['add', '--', file], { cwd })
       resolved.push({ file, how: 'rederive' })
+      // Отказ команды, переживший развод, НЕ проглатывается: две пересборки сошлись, выбирать
+      // было не из чего, но человек читает, что аудитор при этом был чем-то недоволен.
+      if (refusals.length) {
+        notes.push(
+          `${file}: команда пересборки вернула отказ (${refusals.join(' · ')}), но обе стороны ` +
+            'пересобрались в ОДНО — развожу по результату, а не по коду возврата',
+        )
+      }
     } catch (err) {
       remaining.push(file)
       notes.push(`${file}: пересобрать обе стороны не удалось — ${String((err && err.message) || err)}`)
@@ -396,16 +438,24 @@ export function resolveMechanical({ cwd, execGit, files, rules = MECHANICAL_DEFA
   const byCommand = new Map()
   for (const item of regenerate.filter((r) => r.strategy !== 'rederive')) {
     const key = item.command.join(' ')
-    if (!byCommand.has(key)) byCommand.set(key, { command: item.command, files: [] })
+    if (!byCommand.has(key)) {
+      byCommand.set(key, { command: item.command, exitIsVerdict: item.exitIsVerdict === true, files: [] })
+    }
     byCommand.get(key).files.push(item.file)
   }
-  for (const { command, files: group } of byCommand.values()) {
+  for (const { command, exitIsVerdict, files: group } of byCommand.values()) {
+    /** Отказ команды, который правило разрешило пережить, — назовём его на каждом файле. */
+    let refusal = null
     try {
       runner(command, { cwd })
     } catch (err) {
-      remaining.push(...group)
-      notes.push(`${group.join(' · ')}: пересборка отказала — ${String((err && err.message) || err)}`)
-      continue
+      const said = String((err && err.message) || err)
+      if (!exitIsVerdict) {
+        remaining.push(...group)
+        notes.push(`${group.join(' · ')}: пересборка отказала — ${said}`)
+        continue
+      }
+      refusal = said.split('\n')[0]
     }
     for (const file of group) {
       try {
@@ -417,6 +467,12 @@ export function resolveMechanical({ cwd, execGit, files, rules = MECHANICAL_DEFA
         }
         git(['add', '--', file], { cwd })
         resolved.push({ file, how: 'regenerate' })
+        if (refusal) {
+          notes.push(
+            `${file}: команда пересборки вернула отказ (${refusal}), а маркеры конфликта из ` +
+              'файла ушли — развожу по результату, а не по коду возврата',
+          )
+        }
       } catch (err) {
         remaining.push(file)
         notes.push(`${file}: после пересборки файл не прочитан — ${String((err && err.message) || err)}`)
