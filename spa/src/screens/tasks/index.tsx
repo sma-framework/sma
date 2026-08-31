@@ -248,9 +248,18 @@ export function Screen() {
    */
   const answered = data !== undefined && (phaseIndex.data !== undefined || phaseIndex.isError)
 
-  /** The roster in one sentence — who is on the work right now. */
+  /**
+   * The roster in one sentence — who is on the work right now.
+   *
+   * И «РАБОТНИКОВ НЕТ» — ТОЖЕ ПРИГОВОР, вынесенный до первого ответа. Дверь состояния на
+   * холодную отвечала 33 465 мс (замер 31.08.2026), и всё это время шапка этого экрана
+   * сообщала «Работников нет» при ЧЕТЫРЁХ РАБОТАЮЩИХ. Тот же дефект, что двумя абзацами ниже
+   * лечит `answered` для списка: пустой список у окна, которое ещё не спрашивало, и пустой
+   * список у окна, которому ответили «пусто», — разные утверждения.
+   */
   const workerLine = useMemo(() => {
-    const rows = data?.workers ?? []
+    if (data === undefined) return 'Работники — читаю…'
+    const rows = data.workers ?? []
     if (rows.length === 0) return 'Работников нет'
     if (rows.length === 1) return `Работник: ${rows[0].id} · ${rows[0].presence}`
     const busy = rows.filter((w) => !!w.taskId).length

@@ -132,9 +132,21 @@ export function Screen() {
   const failed = done.filter((r) => r.failed)
   const finished = done.filter((r) => !r.failed)
 
-  const parts: string[] = [
-    `Пока вас не было, команда закрыла ${finished.length} ${plural(finished.length, 'задачу', 'задачи', 'задач')}`,
-  ]
+  /**
+   * ОТВЕТИЛО ЛИ ЧТЕНИЕ ХОТЬ РАЗ — и до этого мгновения экран не подводит итогов ночи.
+   *
+   * `data === undefined` — это ровно «дверь ещё не ответила». Пока её нет, все списки выше
+   * пусты по построению, и фраза под заголовком складывалась из этих пустот: «команда закрыла
+   * 0 задач», ни одного ждущего, ни одной поломки. Дверь при этом отвечала 33 секунды на
+   * холодную (замер 31.08.2026), и основатель полминуты читал отчёт о ночи, которого никто не
+   * составлял, — при четырёх работающих работниках и тридцати пяти работах в очереди. Ноль в
+   * этой фразе не «ещё не знаю», а «ничего не было»; сказать первое можно только словами.
+   */
+  const answered = data !== undefined
+
+  const parts: string[] = answered
+    ? [`Пока вас не было, команда закрыла ${finished.length} ${plural(finished.length, 'задачу', 'задачи', 'задач')}`]
+    : ['Читаю, что было ночью — пока ничего не сосчитано']
   if (failed.length > 0) parts.push(`${failed.length} не получилось`)
   if (decisions.length > 0) {
     parts.push(
@@ -166,6 +178,7 @@ export function Screen() {
           <KpiStrip kpis={data?.kpis} accounts={data?.spend.accounts ?? []} stalledSince={longestStall} />
           {actProblem ? <p className="m-0 px-0.5 text-[12px] text-err-tx">{actProblem}</p> : null}
           <DayFeed
+            answered={answered}
             decisions={decisions}
             stalled={stalledBatches}
             failed={failed}

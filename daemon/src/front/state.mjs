@@ -121,7 +121,7 @@ import { concurrencyCap } from '../queue/in-flight.mjs'
 import { deriveRestartScoped } from '../config-restart.mjs'
 import { readAttempts, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { attemptIdFor } from './journal.mjs'
-import { readTaskChanges, taskBranch, TASK_BRANCH_PREFIX } from './task-changes.mjs'
+import { taskChangeArgs, taskBranch, TASK_BRANCH_PREFIX } from './task-changes.mjs'
 import { runsDirOf, sumRunTokens, zeroTokens, TOKEN_FIELDS, RUN_DIRS_KEEP } from '../queue/run-dir.mjs'
 import { parseNote } from '../../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../../scripts/sma/lib/write-pipeline.mjs'
@@ -3191,33 +3191,163 @@ function attemptDuration(attempt) {
 /**
  * The GIT PART of a finished card, remembered per task — because it is history.
  *
- * Both reads below are SYNCHRONOUS subprocesses, and the done list is every finished task the
- * fold still carries. Measured 26.08.2026 on the founder's machine: two spawns per finished
- * task per poll, an uncapped list, a 3-second poll — /api/state answered in 26,7 s while
+ * Both reads are SYNCHRONOUS subprocesses, and the done list is every finished task the fold
+ * still carries. Measured 26.08.2026 on the founder's machine: two spawns per finished task
+ * per poll, an uncapped list, a 3-second poll — /api/state answered in 26,7 s while
  * /api/diff (one spawn) answered in 0,4 s, and for those 26 s the ONE event loop served
  * nobody. A finished task's commit log does not change after it finishes, so paying that
- * price more than once per task is pure waste.
+ * price more than once per task is pure waste. That is what the memory below is for.
+ *
+ * ═══════════ И ПОЧЕМУ ПАМЯТИ ОКАЗАЛОСЬ МАЛО ═══════════
+ *
+ * Память лечит ВТОРОЙ опрос и не лечит ПЕРВЫЙ. Замерено 31.08.2026 на живом конвейере: три
+ * подряд вызова двери — 33 465 мс, 717 мс, 704 мс. Разница между первым и вторым и есть цена
+ * набора этой памяти, и платит её тот единственный человек, который открыл окно после
+ * перезапуска демона. В той же копии на 136 закрытых работах: 25 100 мс всего, 24 779 мс из
+ * них — git, ровно 276 запусков, из которых 272 — это ДВА запуска на каждую закрытую работу.
+ * 98,6 % холодного ответа. И всё это время окно показывало «Работников нет» и «Пока тихо»
+ * при четырёх работающих работниках и тридцати пяти работах в очереди, а сторож простоя
+ * (`probeDoor`, потолок 3 000 мс) читал живую дверь как мёртвую.
+ *
+ * ПОЭТОМУ НА ПУТИ ЗАПРОСА GIT НЕ СПРАШИВАЮТ ВОВСЕ. `doneGitFacts` только ЧИТАЕТ память; чего
+ * в ней нет — записывается в список желаемого, а спрашивается у git отдельным ходом
+ * (`warmDoneGit`), который зовёт композиционный корень ПОСЛЕ того, как ответ уехал человеку.
+ * Дверь отдаёт сразу то, что уже знает — очередь, работников, приёмку, — а история закрытых
+ * работ доезжает к следующему опросу.
+ *
+ * ЧЕГО НЕ ЗНАЮТ — НАЗЫВАЮТ НЕИЗВЕСТНЫМ. Незаполненная карточка едет с `commits: null` и
+ * `gitPending: true`, а не с пустым списком: пустой список означает «спросили и узнали, что
+ * коммитов нет», и это ДРУГОЕ утверждение. Ровно та же разница, по какой в этом файле нигде
+ * не стоит ноль вместо молчания.
  *
  * An EMPTY answer is remembered too, but only briefly: after approve the branch is deleted,
  * so the oldest cards fail both reads on every poll — the full spawn price for an exit code.
  * Briefly, not forever, because empty can also mean «asked in the wrong tree» (a project
- * connected a moment later), and that answer deserves a second chance.
+ * connected a moment later), and that answer deserves a second chance. Устаревшую пустоту
+ * дверь при этом ПРОДОЛЖАЕТ отдавать, пока досылка не принесёт новый ответ: измеренная
+ * когда-то пустота — всё ещё измерение, а «неизвестно» на её месте было бы шагом назад.
  */
 const DONE_GIT_CACHE = new Map() // `${taskId}|${cwd}` -> { commits, diffStat, emptyAt }
 const DONE_GIT_CACHE_CAP = 1000
 const DONE_GIT_EMPTY_RETRY_MS = 60_000
 
-function doneGitFacts(taskId, execGit, gitOpts) {
-  if (typeof execGit !== 'function') return { commits: [], diffStat: null }
-  const key = `${taskId}|${gitOpts.cwd || ''}`
-  const hit = DONE_GIT_CACHE.get(key)
-  if (hit && (hit.emptyAt === null || Date.now() - hit.emptyAt < DONE_GIT_EMPTY_RETRY_MS)) return hit
+/**
+ * ЧЕГО ЕЩЁ НЕ СПРАШИВАЛИ У GIT — очередь желаемого, которую наполняет дерайв и разбирает
+ * досылка. Ограничена сверху по той же причине, по какой ограничено всё остальное здесь:
+ * список закрытых работ растёт сам по себе, и неограниченный список — это память, которая
+ * однажды станет утечкой.
+ */
+const DONE_GIT_WANTED = new Map() // key -> { taskId, cwd }
+const DONE_GIT_WANTED_CAP = 5000
 
-  const branch = taskBranch(taskId)
+/** «Ещё не спрошено» — одна форма на все карточки, и ни одного нуля в ней. */
+const DONE_GIT_UNKNOWN = Object.freeze({ commits: null, diffStat: null, pending: true })
+
+/** Одно написание ключа памяти на читателя и на досылку. */
+function doneGitKey(taskId, cwd) {
+  return `${taskId}|${cwd || ''}`
+}
+
+/** Чем спрашивается лента коммитов закрытой работы — одно написание на читателя и досылку. */
+function doneCommitArgs(taskId) {
+  return ['log', '--oneline', `-${DONE_COMMIT_CAP}`, taskBranch(taskId)]
+}
+
+function wantDoneGit(key, taskId, cwd) {
+  if (DONE_GIT_WANTED.has(key) || DONE_GIT_WANTED.size >= DONE_GIT_WANTED_CAP) return
+  DONE_GIT_WANTED.set(key, { taskId, cwd: cwd || null })
+}
+
+function rememberDoneGit(key, entry) {
+  DONE_GIT_CACHE.set(key, entry)
+  if (DONE_GIT_CACHE.size > DONE_GIT_CACHE_CAP) {
+    // the Map iterates in insertion order — the first key is the oldest memory
+    DONE_GIT_CACHE.delete(DONE_GIT_CACHE.keys().next().value)
+  }
+}
+
+/**
+ * Что известно про git этой закрытой работы ПРЯМО СЕЙЧАС — без единого подпроцесса.
+ * Неизвестное записывается в желаемое и называется неизвестным.
+ */
+function doneGitFacts(taskId, execGit, gitOpts) {
+  // Шва git нет вовсе — это не «ещё не спросили», а «спрашивать нечем»: досылка сюда никогда
+  // не придёт, и карточка честно живёт без истории вместо вечного «считаю».
+  if (typeof execGit !== 'function') return { commits: [], diffStat: null }
+  const key = doneGitKey(taskId, gitOpts.cwd)
+  const hit = DONE_GIT_CACHE.get(key)
+  if (hit) {
+    if (hit.emptyAt !== null && Date.now() - hit.emptyAt >= DONE_GIT_EMPTY_RETRY_MS) {
+      wantDoneGit(key, taskId, gitOpts.cwd)
+    }
+    return hit
+  }
+  wantDoneGit(key, taskId, gitOpts.cwd)
+  return DONE_GIT_UNKNOWN
+}
+
+/** Одна досылка за раз: второй заход поверх первого удвоил бы ровно те подпроцессы, которых мы и избегаем. */
+let doneGitWarmInFlight = null
+
+/**
+ * warmDoneGit({execGit, execGitAsync, tasks, concurrency}) → сколько работ досчитано.
+ *
+ * ХОД, КОТОРЫЙ ЧЕЛОВЕК НЕ ЖДЁТ. Зовётся композиционным корнем ПОСЛЕ того, как ответ двери
+ * уехал, и наполняет память для следующего опроса. Ничего не решает сам: КАКИЕ работы и в
+ * КАКОМ дереве спрашивать, уже решил дерайв — здесь только исполнение, поэтому «карточка
+ * читает git в подключённом проекте» остаётся одним правилом, живущим в одном месте.
+ *
+ * `execGitAsync` — предпочтительный шов: подпроцесс, не держащий цикл событий. Синхронный
+ * `execGit` принимается как запасной (им пользуются тесты и демон, который асинхронного не
+ * подключил), но тогда досылка стоит ровно столько же, сколько стоила дверь, — просто платит
+ * это не человек у окна.
+ *
+ * `tasks` сужает досылку до названных работ. Нужен там, где важно, что спрошено РОВНО про
+ * них: общая очередь желаемого живёт на модуле и переживает отдельный вызов.
+ *
+ * FAIL-OPEN ПОШТУЧНО: работа, о которой git отказался говорить, запоминается пустой (это и
+ * есть старое поведение) и не мешает соседним.
+ */
+export async function warmDoneGit({ execGit, execGitAsync, tasks, concurrency = 4 } = {}) {
+  if (doneGitWarmInFlight) return doneGitWarmInFlight
+  const only = Array.isArray(tasks) ? new Set(tasks) : null
+  const wanted = [...DONE_GIT_WANTED.entries()].filter(([, job]) => only === null || only.has(job.taskId))
+  if (wanted.length === 0) return 0
+  for (const [key] of wanted) DONE_GIT_WANTED.delete(key)
+
+  const ask =
+    typeof execGitAsync === 'function'
+      ? execGitAsync
+      : typeof execGit === 'function'
+        ? async (args, opts) => execGit(args, opts)
+        : null
+  if (ask === null) return 0 // спрашивать нечем — желаемое просто снято, без выдуманных ответов
+
+  const run = (async () => {
+    let next = 0
+    const lanes = Math.max(1, Math.min(Number(concurrency) || 1, wanted.length))
+    await Promise.all(
+      Array.from({ length: lanes }, async () => {
+        while (next < wanted.length) {
+          const [key, job] = wanted[next++]
+          await warmOneDoneGit(key, job, ask)
+        }
+      }),
+    )
+    return wanted.length
+  })()
+  doneGitWarmInFlight = run.finally(() => {
+    doneGitWarmInFlight = null
+  })
+  return doneGitWarmInFlight
+}
+
+async function warmOneDoneGit(key, job, ask) {
+  const gitOpts = job.cwd ? { cwd: job.cwd } : {}
   let commits = []
   let diffStat = null
   try {
-    commits = String(execGit(['log', '--oneline', `-${DONE_COMMIT_CAP}`, branch], gitOpts) || '')
+    commits = String((await ask(doneCommitArgs(job.taskId), gitOpts)) || '')
       .split(/\r?\n/)
       .map((l) => l.trim())
       .filter(Boolean)
@@ -3231,18 +3361,15 @@ function doneGitFacts(taskId, execGit, gitOpts) {
     // and while each surface built its own range they answered it differently: this one
     // counted the whole branch, that one showed the last commit. The range lives in one
     // place now, so the panel and the door cannot tell a person two different stories.
-    diffStat = readTaskChanges(taskId, execGit, { cwd: gitOpts.cwd, shape: 'count' }).trim() || null
+    diffStat = String((await ask(taskChangeArgs(job.taskId, 'count'), gitOpts)) || '').trim() || null
   } catch {
     diffStat = null
   }
-
-  const entry = { commits, diffStat, emptyAt: commits.length === 0 && diffStat === null ? Date.now() : null }
-  DONE_GIT_CACHE.set(key, entry)
-  if (DONE_GIT_CACHE.size > DONE_GIT_CACHE_CAP) {
-    // the Map iterates in insertion order — the first key is the oldest memory
-    DONE_GIT_CACHE.delete(DONE_GIT_CACHE.keys().next().value)
-  }
-  return entry
+  rememberDoneGit(key, {
+    commits,
+    diffStat,
+    emptyAt: commits.length === 0 && diffStat === null ? Date.now() : null,
+  })
 }
 
 /**
@@ -3271,7 +3398,7 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machi
 
   const branch = `wt/${r.id}`
   const gitOpts = gitDir ? { cwd: gitDir } : {}
-  const { commits, diffStat } = doneGitFacts(r.id, execGit, gitOpts)
+  const { commits, diffStat, pending: gitPending } = doneGitFacts(r.id, execGit, gitOpts)
 
   const out = {
     id: r.id,
@@ -3297,6 +3424,10 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machi
     diffStat,
     branch,
     commits,
+    // ГИТ ЕЩЁ НЕ СПРОШЕН — сказано ключом, а не выведено экраном из пустоты. Без него
+    // `commits: null` пришлось бы читать как «коммитов нет», и карточка вынесла бы приговор
+    // работе, о которой никто ничего не спрашивал.
+    ...(gitPending ? { gitPending: true } : {}),
     attempts: attempts.length || (Number.isFinite(r.attempt) ? r.attempt : 0),
   }
   // acceptance («обещано») — carried ONLY when the task had one (roster/return exempt).

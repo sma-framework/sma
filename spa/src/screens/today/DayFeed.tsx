@@ -363,7 +363,10 @@ function DoneCard({ row, selected, onOpen }: { row: DoneRow; selected: boolean; 
         </div>
         <div className="mt-2.5 text-[11.5px] text-tx3">
           {attemptsLabel(row.attempts)}
-          {row.diffStat ? ` · ${row.diffStat}` : ''}
+          {/* ГИТ ЕЩЁ НЕ СПРОШЕН — так и сказано. Молчаливый пропуск читается как «изменений
+              нет», а это заявление о работе, которую никто не мерил: счёт досылается и
+              приезжает следующим опросом. */}
+          {row.gitPending ? ' · изменения ещё считаются' : row.diffStat ? ` · ${row.diffStat}` : ''}
         </div>
       </button>
       <button
@@ -404,6 +407,7 @@ function QueueLine({ row, selected, onOpen }: { row: QueueRow; selected: boolean
 }
 
 export function DayFeed({
+  answered,
   decisions,
   stalled,
   failed,
@@ -413,6 +417,12 @@ export function DayFeed({
   onOpen,
   onAct,
 }: {
+  /**
+   * ОТВЕТИЛА ЛИ ДВЕРЬ СОСТОЯНИЯ ХОТЬ РАЗ. Приезжает пропом, а не выводится здесь из пустых
+   * списков: пять пустых списков у ленты, которая ещё не спрашивала, и пять пустых списков у
+   * ленты, которой ответили «пусто», — это РАЗНЫЕ дни, а выглядели они одинаково.
+   */
+  answered: boolean
   decisions: QueueRow[]
   /** Сборки, вставшие на сорвавшемся элементе: они ждут человека ровно так же, как приёмка. */
   stalled: BatchRow[]
@@ -446,7 +456,25 @@ export function DayFeed({
    * door is on another screen. The owner said it plainly — «я вообще не понимаю, как там мне
    * работать». An empty state that only reports emptiness is a dead end; the one that offers
    * the next act is the whole difference between a dashboard and a workplace.
+   *
+   * …И «ПУСТО» ГОВОРИТСЯ ТОЛЬКО ПОСЛЕ ОТВЕТА. Ровно та же фраза стояла здесь и до первого
+   * ответа двери — то есть на экране, который ещё ничего не спрашивал. Дверь состояния на
+   * холодную отвечала 33 465 мс (замер 31.08.2026), и всё это время экран, на который окно
+   * открывается, сообщал «Пока тихо — команда ждёт задач» ПРИ ЧЕТЫРЁХ РАБОТАЮЩИХ РАБОТНИКАХ И
+   * ТРИДЦАТИ ПЯТИ РАБОТАХ В ОЧЕРЕДИ. Основатель прочитал это как правду о доме. Тишина —
+   * вывод, и делать его не из чего, пока нечего читать.
    */
+  if (!answered) {
+    return (
+      <section className="flex flex-1 flex-col items-center justify-center gap-2 rounded-[14px] border border-bd bg-card py-16 shadow-panel">
+        <p className="m-0 text-[13px] text-tx2">Читаю ленту дня…</p>
+        <p className="m-0 text-[11.5px] text-tx3">
+          Тихо здесь или нет — пока неизвестно: об этом скажет первый ответ.
+        </p>
+      </section>
+    )
+  }
+
   if (nothingAtAll) {
     return (
       <section className="flex flex-1 flex-col items-center justify-center gap-3 rounded-[14px] border border-bd bg-card py-16 shadow-panel">

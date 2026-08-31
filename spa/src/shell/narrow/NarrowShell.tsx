@@ -85,8 +85,14 @@ export function NarrowShell() {
           <rect x="5.4" y="15.2" width="11.4" height="3" rx="1.5" fill="url(#smaMarkNarrow)" />
         </svg>
 
+        {/* «Проект не выбран» — ответ, а не заставка: до первого ответа двери спрашивать было
+            не у кого, и приговор о доме здесь стоял ровно так же, как в широкой оболочке. */}
         <span className="min-w-0 flex-1 truncate text-[13px] leading-[1.3] text-tx2">
-          {project ? `Проект: ${project}` : 'Проект не выбран — выбрать можно с компьютера'}
+          {project
+            ? `Проект: ${project}`
+            : state.data === undefined
+              ? 'Читаю…'
+              : 'Проект не выбран — выбрать можно с компьютера'}
         </span>
 
         <button
