@@ -223,6 +223,99 @@ describe('resolveMechanical — разводит без выбора и не т�
     expect(out.remaining).toEqual(['.claude/memory/MEMORY.md'])
     expect(out.notes.join(' ')).toContain('пересборка отказала')
   })
+
+  // ── ПОХОДКА `rederive` — КАРТА ЗАМЕРА ─────────────────────────────────────────────────
+  //
+  // Числа графика названы в задаче механическим местом, но команда, которая их пишет, правит
+  // в файле ТОЛЬКО свои размеченные спаны: запусти её поверх конфликта — маркеры останутся,
+  // потому что она их не трогает. Поэтому решает сравнение двух пересборок, и заперто здесь
+  // именно оно: совпали — разница была производной и выбирать было не из чего; разошлись —
+  // спорили о рукописном (пять исторических точек, подпись под рисунком), и это человеку.
+  describe('rederive — две пересборки решают, был ли выбор', () => {
+    const GRAPH = 'docs/master-graph.html'
+
+    /** io, отвечающий тем, что «пересборка» положила на диск для текущей стороны. */
+    const sideIo = (bySide: Record<string, string>, state: { side: string }) => ({
+      readFileSync: () => bySide[state.side],
+      writeFileSync: () => {},
+    })
+
+    it('обе стороны пересобираются в ОДНО → файл разведён без человека', () => {
+      const state = { side: '' }
+      const { git, calls } = fakeGit({
+        checkout: (args: string[]) => {
+          state.side = args.includes('--ours') ? 'ours' : 'theirs'
+          return ''
+        },
+      })
+      const out = resolveMechanical({
+        cwd: '/copy',
+        execGit: git,
+        files: [GRAPH],
+        io: sideIo({ ours: '<p>2984 tests</p>', theirs: '<p>2984 tests</p>' }, state),
+        run: () => '',
+      })
+      expect(out.resolved).toEqual([{ file: GRAPH, how: 'rederive' }])
+      expect(out.remaining).toEqual([])
+      // ОБЕ стороны материализованы — ни одна не объявлена правой без второй.
+      expect(calls.some((c) => c.includes('--ours'))).toBe(true)
+      expect(calls.some((c) => c.includes('--theirs'))).toBe(true)
+      expect(calls.some((c) => c[0] === 'add' && c.includes(GRAPH))).toBe(true)
+    })
+
+    it('стороны пересобираются в РАЗНОЕ → человеку, и ни одна не выбрана', () => {
+      const state = { side: '' }
+      const { git, calls } = fakeGit({
+        checkout: (args: string[]) => {
+          state.side = args.includes('--ours') ? 'ours' : 'theirs'
+          return ''
+        },
+      })
+      const out = resolveMechanical({
+        cwd: '/copy',
+        execGit: git,
+        files: [GRAPH],
+        io: sideIo({ ours: '<p>наша подпись</p>', theirs: '<p>чужая подпись</p>' }, state),
+        run: () => '',
+      })
+      expect(out.resolved).toEqual([])
+      expect(out.remaining).toEqual([GRAPH])
+      expect(out.notes.join(' ')).toContain('пересобираются в РАЗНОЕ')
+      expect(calls.some((c) => c[0] === 'add' && c.includes(GRAPH))).toBe(false)
+    })
+
+    it('совпали, но маркеры уцелели → разведённым НЕ считается', () => {
+      const state = { side: '' }
+      const { git } = fakeGit({ checkout: () => '' })
+      const out = resolveMechanical({
+        cwd: '/copy',
+        execGit: git,
+        files: [GRAPH],
+        io: sideIo({ '': unionFile }, state),
+        run: () => '',
+      })
+      expect(out.resolved).toEqual([])
+      expect(out.remaining).toEqual([GRAPH])
+      expect(out.notes.join(' ')).toContain('маркеры конфликта остались')
+    })
+
+    it('отказ команды уводит карту человеку, а не роняет весь развод', () => {
+      const { git } = fakeGit({ checkout: () => '' })
+      const out = resolveMechanical({
+        cwd: '/copy',
+        execGit: git,
+        files: [GRAPH, 'README.md'],
+        io: { readFileSync: () => unionFile, writeFileSync: () => {} },
+        run: () => {
+          throw new Error('doc-audit refused')
+        },
+      })
+      expect(out.remaining).toContain(GRAPH)
+      expect(out.notes.join(' ')).toContain('пересобрать обе стороны не удалось')
+      // Соседний union-файл разведён как ни в чём не бывало — отказ одного не топит другого.
+      expect(out.resolved).toEqual([{ file: 'README.md', how: 'union' }])
+    })
+  })
 })
 
 describe('syncWithTrunk — свести ветку с вершиной ДО сдачи', () => {

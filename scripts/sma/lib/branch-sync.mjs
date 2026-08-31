@@ -109,6 +109,8 @@ const MARK_THEIRS = '>>>>>>>'
  * `regenerate` — машинные артефакты и команда, которая их пересобирает. Индекс памяти собран
  * из заметок корпуса, каждая из которых лежит своим файлом: две ветки, добавившие по уроку,
  * спорят только в производном индексе, и спор снимается пересборкой, а не выбором стороны.
+ * Карта замера идёт походкой `rederive`: её числа выводятся из квитанции прогона, а вокруг них
+ * рукописное, поэтому две стороны пересобираются порознь и сравниваются (см. шапку файла).
  *
  * Список — ДАННЫЕ, а не закон: звонящий передаёт свои правила и получает своё поведение.
  */
@@ -118,6 +120,11 @@ export const MECHANICAL_DEFAULTS = Object.freeze({
     Object.freeze({
       files: Object.freeze(['.claude/memory/MEMORY.md', '.claude/memory/INDEX-*.md']),
       command: Object.freeze(['node', 'scripts/sma/cli.mjs', 'build-index', '--write']),
+    }),
+    Object.freeze({
+      files: Object.freeze(['docs/master-graph.html']),
+      command: Object.freeze(['node', 'scripts/sma/cli.mjs', 'doc-audit', '--target', 'numbers', '--write']),
+      strategy: 'rederive',
     }),
   ]),
 })
@@ -145,8 +152,8 @@ export function matchesPattern(path, pattern) {
   const p = String(path ?? '').replace(/\\/g, '/')
   const raw = String(pattern ?? '').replace(/\\/g, '/')
   if (!p || !raw) return false
-  const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, (ch) => (ch === '*' ? ' ' : `\\${ch}`))
-  const rx = new RegExp(`^${escaped.split(' ').join('[^/]*')}$`)
+  const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, (ch) => (ch === '*' ? NUL : `\\${ch}`))
+  const rx = new RegExp(`^${escaped.split(NUL).join('[^/]*')}$`)
   return rx.test(p)
 }
 
@@ -219,7 +226,9 @@ export function classifyConflicts(files, rules = MECHANICAL_DEFAULTS) {
         r.files.some((pat) => matchesPattern(file, pat)),
     )
     if (rule) {
-      regenerate.push({ file, command: [...rule.command] })
+      // Походка по умолчанию — `rebuild`: правило, не назвавшее своей, ведёт себя ровно так,
+      // как вело до появления второй, и ни одна чужая таблица правил от этого не поехала.
+      regenerate.push({ file, command: [...rule.command], strategy: rule.strategy === 'rederive' ? 'rederive' : 'rebuild' })
       continue
     }
     if (unionPatterns.some((pat) => matchesPattern(file, pat))) {
@@ -344,10 +353,48 @@ export function resolveMechanical({ cwd, execGit, files, rules = MECHANICAL_DEFA
     }
   }
 
+  // ── ПОХОДКА `rederive`: ДВЕ ПЕРЕСБОРКИ, И ОНИ ДОЛЖНЫ СОВПАСТЬ ────────────────────────
+  //
+  // Команда правит в файле только свои участки, поэтому поверх конфликта её запускать
+  // бессмысленно — маркеры она не трогает. Вместо этого материализуется КАЖДАЯ сторона и
+  // пересобирается, а решает СРАВНЕНИЕ: совпали две пересборки — вся разница между сторонами
+  // была производной, и выбирать было не из чего; разошлись — спор о рукописном, и он уходит
+  // человеку. Ни одна сторона не объявляется правой ни в одном из исходов.
+  for (const { file, command } of regenerate.filter((r) => r.strategy === 'rederive')) {
+    const path = join(cwd, file)
+    /** Материализовать сторону, пересобрать и вернуть получившиеся байты. */
+    const sideBytes = (side) => {
+      git(['checkout', `--${side}`, '--', file], { cwd })
+      runner(command, { cwd })
+      return String(readFile(path, 'utf8'))
+    }
+    try {
+      const ours = sideBytes('ours')
+      const theirs = sideBytes('theirs')
+      if (ours !== theirs) {
+        remaining.push(file)
+        notes.push(`${file}: стороны пересобираются в РАЗНОЕ — спор не только в производных числах`)
+        continue
+      }
+      // Маркеры после пересборки означают, что своя сторона их и несла: файл этой командой
+      // не собирается целиком, и разведённым он не считается.
+      if (hasConflictMarkers(theirs)) {
+        remaining.push(file)
+        notes.push(`${file}: пересборка прошла, а маркеры конфликта остались — файл её командой не собирается`)
+        continue
+      }
+      git(['add', '--', file], { cwd })
+      resolved.push({ file, how: 'rederive' })
+    } catch (err) {
+      remaining.push(file)
+      notes.push(`${file}: пересобрать обе стороны не удалось — ${String((err && err.message) || err)}`)
+    }
+  }
+
   // Одна команда пересобирает СВОЙ набор файлов целиком, поэтому запускается один раз на
   // команду, а не один раз на файл: индекс памяти и его INDEX-*.md — это один прогон.
   const byCommand = new Map()
-  for (const item of regenerate) {
+  for (const item of regenerate.filter((r) => r.strategy !== 'rederive')) {
     const key = item.command.join(' ')
     if (!byCommand.has(key)) byCommand.set(key, { command: item.command, files: [] })
     byCommand.get(key).files.push(item.file)
