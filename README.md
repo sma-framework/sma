@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.7.1-3B82F6" alt="version 5.7.1">
-  <img src="https://img.shields.io/badge/tests-5610%2F5610-3CC0A0" alt="tests 5610/5610">
+  <img src="https://img.shields.io/badge/tests-5671%2F5671-3CC0A0" alt="tests 5671/5671">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -222,6 +222,7 @@ A note is a **claim** with a schema — type, truth mode, authority, scope, temp
 A daemon on your machine runs worker sessions around the clock, and serves its own app — two dozen screens behind one token and a **frozen route table** whose size is a test, so the surface cannot quietly grow into remote command execution.
 
 - **Terminal parity, proven per attempt.** A worker runs in its own copy of your project on its own branch, carrying the layer git does not: your rules, hooks, memory, skills and narrowing permission lists — and *not* your widening rights, plugins or claude.ai connectors, each named. Six receipts per attempt — hooks, memory, rules, skills, rights, profile — are computed by the daemon and printed by one command; the last of them shows that the model and effort the session burned are the ones you assigned it. Missing data is a failure, never a default pass.
+- **A project has two addresses, and the second one is optional.** Code and planning often live in two repositories: the product's checkout, and the folder that holds its `.planning` — backlog, phases, roadmap. One registry entry carries both, so a two-repository house is **one** project instead of two (tasks visible in one, phases and backlog in the other, and neither switchable off without losing what it held). Work is cut from the code tree; a documentary stage of a phase is cut from the planning home; the acceptance looks for the branch in whichever of the two the work was actually done in — never in whatever the window happens to be showing. Name no second address and every reader answers exactly as before.
 - **Human-only stays human-only.** Push, merge, tag, deploy travel as a refusal list in the launch arguments of the worker's own process — in force inside the process, not in the wording of a prompt. The window's ship card runs the gate and records the run; **the publish itself stays a human action, by construction**.
 - **Rollback is a record.** Every attempt journals its base commit, branch, changed files (from git, so shell edits count), deletions as their own line — and one whole copy-paste command that undoes it.
 - **Money cannot go quiet.** Every worker attempt leaves a line in the spend book — the killed ones too, as labelled estimates — and the budget stop reads the same number the costs screen shows, through one seam.

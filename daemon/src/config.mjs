@@ -36,6 +36,10 @@
  * id is a slug (PROJECT_ID_RE) and it is the KEY that tasks reference — renaming a
  * project moves its `name` and NEVER its `id`.
  *
+ * A PROJECT HAS TWO ADDRESSES AND THE SECOND IS OPTIONAL: `path` is the code tree, and
+ * `planningPath` is the folder holding its `.planning` when the house keeps the two apart.
+ * Unset, the second address IS the first — see validateProject.
+ *
  * ONE MACHINE OWNS AN ACCOUNT. A subscription account belongs to exactly one machine:
  * federation aggregates VIEWS across machines, never credentials. No peer entry carries
  * an account, and no account is ever addressed across a peer boundary.
@@ -275,6 +279,23 @@ function defaultConfig(token) {
  * carried across a registry pass so a duplicate id is a named error rather than a silent
  * shadow. Throws InvalidProjectError; the handler maps a named error to 400/404.
  *
+ * ═══════════ У ПРОЕКТА ДВА АДРЕСА, И ВТОРОЙ НЕОБЯЗАТЕЛЕН ═══════════════════════════
+ * `path` — ДЕРЕВО КОДА: репозиторий, из которого работнику режут копию и в который приёмка
+ * сливает его ветку. `planningPath` — ДОМ ПЛАНИРОВАНИЯ: каталог, где лежит `.planning` этого
+ * же продукта (беклог, фазы, дорожная карта). Дом планирования НЕ ЗАДАН — он и есть дерево
+ * кода, и всё работает ровно как до появления второго поля.
+ *
+ * ЗАЧЕМ ВТОРОЕ ПОЛЕ ВООБЩЕ. Закон дома о двух репозиториях разводит код и планирование по
+ * разным каталогам, а запись проекта знала РОВНО ОДИН адрес — поэтому дом планирования
+ * приходилось заводить ВТОРЫМ ПРОЕКТОМ. Оттуда вся путаница, замеренная за ночь 31.08: в
+ * одном проекте видны задачи, в другом фазы и беклог; сканер беклога читал дерево кода и
+ * молчал; ступень фазы получала копию продукта, где каталогов фаз нет; приёмка работы
+ * продукта при подключённой мастерской не находила ветки. Выключить лишний проект было
+ * нельзя — фазы и беклог не переехали бы, а исчезли.
+ *
+ * ПУСТАЯ СТРОКА НА МЕСТЕ АДРЕСА — ОШИБКА, А НЕ «АДРЕСА НЕТ»: отсутствие выражается
+ * отсутствием ключа, иначе «не задан» и «задан в никуда» стали бы одним и тем же.
+ *
  * @param {object} p
  * @param {{seen?:Set<string>}} [opts]
  * @returns {object} the normalized entry
@@ -288,11 +309,58 @@ export function validateProject(p, { seen } = {}) {
   if (typeof p.name !== 'string' || p.name.trim() === '') {
     throw new InvalidProjectError(`project "${p.id}" missing a non-empty "name"`)
   }
+  const hasPlanning = p.planningPath !== undefined && p.planningPath !== null
+  if (hasPlanning && (typeof p.planningPath !== 'string' || p.planningPath.trim() === '')) {
+    throw new InvalidProjectError(`project "${p.id}" has an empty "planningPath" — a second address must name a folder`)
+  }
   if (seen) {
     if (seen.has(p.id)) throw new InvalidProjectError(`duplicate project id "${p.id}"`)
     seen.add(p.id)
   }
-  return { ...p, id: p.id, name: p.name }
+  const entry = { ...p, id: p.id, name: p.name }
+  if (!hasPlanning) delete entry.planningPath
+  return entry
+}
+
+/**
+ * projectEntry(config, id) → the registry entry with that key, or null.
+ *
+ * ОДИН ЧИТАТЕЛЬ РЕЕСТРА НА ВЕСЬ ДЕМОН. Тик, дверь приёмки, карточка и композитор задавали
+ * этот вопрос каждый своим выражением; пока адрес был один, разойтись им было негде, а с
+ * двумя адресами четыре выражения — это четыре разных ответа на «где лежит эта работа».
+ *
+ * @param {object} config
+ * @param {string} id
+ * @returns {object|null}
+ */
+export function projectEntry(config, id) {
+  const key = typeof id === 'string' ? id.trim() : ''
+  if (!key) return null
+  const list = Array.isArray(config && config.projects) ? config.projects : []
+  return list.find((p) => p && p.id === key) || null
+}
+
+/** activeProjectEntry(config) → the entry the window currently shows, or null. */
+export function activeProjectEntry(config) {
+  const list = Array.isArray(config && config.projects) ? config.projects : []
+  if (list.length === 0) return null
+  const activeId = (config && config.activeProject) ?? (list[0] && list[0].id)
+  return list.find((p) => p && p.id === activeId) || null
+}
+
+/** codeTreeOf(entry) → ДЕРЕВО КОДА записи реестра, или null when the entry names no folder. */
+export function codeTreeOf(entry) {
+  const p = entry && typeof entry.path === 'string' ? entry.path : ''
+  return p.trim() === '' ? null : p
+}
+
+/**
+ * planningHomeOf(entry) → ДОМ ПЛАНИРОВАНИЯ записи реестра: второй адрес, а без него — дерево
+ * кода. `null` только когда запись не называет ни одного каталога.
+ */
+export function planningHomeOf(entry) {
+  const p = entry && typeof entry.planningPath === 'string' ? entry.planningPath : ''
+  return p.trim() === '' ? codeTreeOf(entry) : p
 }
 
 /** validateProjects(list) — the whole registry, duplicate-checked in one pass. */
@@ -874,15 +942,29 @@ export function loadConfig({ env = process.env, homedir = osHomedir, fsImpl, rep
  * THE ID GRAMMAR HAS EXACTLY ONE OWNER — this module. An omitted `id` is minted here from
  * the name by the SAME slug+collision path the quiet migration uses, so no caller (least of
  * all a request handler) ever gets to invent a key shape of its own. `path` is the folder a
- * human picked; it is carried as opaque DATA on the entry.
+ * human picked; it is carried as opaque DATA on the entry. `planningPath` is the SECOND,
+ * optional address — the folder that holds this product's `.planning` when the house keeps
+ * code and planning in two repositories. Omitted, the entry has one address, as before.
  *
  * @returns {object} the updated config
  */
-export function addProject(config, { id, name, path } = {}, { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {}) {
+export function addProject(
+  config,
+  { id, name, path, planningPath } = {},
+  { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {},
+) {
   const projects = Array.isArray(config && config.projects) ? config.projects : []
   const seen = new Set(projects.map((p) => p.id))
   const mintedId = id ?? freeProjectId(slugify(name), seen)
-  const entry = validateProject({ id: mintedId, name, ...(path !== undefined ? { path } : {}) }, { seen })
+  const entry = validateProject(
+    {
+      id: mintedId,
+      name,
+      ...(path !== undefined ? { path } : {}),
+      ...(planningPath !== undefined && planningPath !== null ? { planningPath } : {}),
+    },
+    { seen },
+  )
   const next = { ...config, projects: [...projects, entry], activeProject: config.activeProject ?? entry.id }
   // The selection is only OWNED by this door when it is the one making it: an add that lands
   // on a registry which already has a selection must not move the file's selection back.
@@ -909,6 +991,38 @@ export function renameProject(config, { id, name } = {}, { env = process.env, ho
   const idx = projects.findIndex((p) => p && p.id === id)
   if (idx === -1) throw new UnknownProjectError(`renameProject: unknown project "${id}"`)
   const entry = validateProject({ ...projects[idx], id: projects[idx].id, name })
+  const next = { ...config, projects: projects.map((p, i) => (i === idx ? entry : p)) }
+  writeConfig(next, { env, homedir, fsImpl, fields: ['projects'], ...(launchDir !== undefined ? { launchDir } : {}) })
+  return next
+}
+
+/**
+ * setProjectPlanning(config, {id, planningPath}, io) — set or clear the SECOND address of one
+ * project: the folder that holds its `.planning`.
+ *
+ * ЭТО НЕ ПЕРЕЕЗД, А ВТОРОЙ АДРЕС. Дерево кода не трогается ни в одну сторону: продукт остаётся
+ * там же, где стоял, а фазы, беклог и дорожная карта начинают читаться из названного каталога.
+ * Ровно поэтому двухрепный дом настраивается ОДНИМ проектом и второй заводить не нужно.
+ *
+ * `planningPath: null` (или пустая строка) — СНЯТЬ второй адрес: проект возвращается к одному,
+ * и всё снова читается из дерева кода. Отсутствие выражается отсутствием ключа — см.
+ * validateProject о том, почему пустая строка на месте адреса это ошибка, а не «нет адреса».
+ *
+ * Unknown id → UnknownProjectError (a named error the door maps to 404).
+ *
+ * @returns {object} the updated config
+ */
+export function setProjectPlanning(
+  config,
+  { id, planningPath } = {},
+  { env = process.env, homedir = osHomedir, fsImpl, launchDir } = {},
+) {
+  const projects = Array.isArray(config && config.projects) ? config.projects : []
+  const idx = projects.findIndex((p) => p && p.id === id)
+  if (idx === -1) throw new UnknownProjectError(`setProjectPlanning: unknown project "${id}"`)
+  const clearing = planningPath === undefined || planningPath === null || String(planningPath).trim() === ''
+  const { planningPath: _dropped, ...rest } = projects[idx]
+  const entry = validateProject(clearing ? rest : { ...rest, planningPath }, {})
   const next = { ...config, projects: projects.map((p, i) => (i === idx ? entry : p)) }
   writeConfig(next, { env, homedir, fsImpl, fields: ['projects'], ...(launchDir !== undefined ? { launchDir } : {}) })
   return next
