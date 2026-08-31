@@ -474,6 +474,31 @@ describe('syncWithTrunk — свести ветку с вершиной ДО с�
     expect(calls.some((c) => c[0] === 'merge' && c.includes('--abort'))).toBe(false)
   })
 
+  // Развод с оговоркой и развод гладкий — РАЗНЫЕ события, и различие обязано пережить успех.
+  // Раньше примечания жили только на пути отказа: сведение, прошедшее вопреки отказу команды
+  // пересборки, выглядело точно так же, как прошедшее без единой заминки.
+  it('оговорка механического развода доезжает и на УСПЕХЕ, а не только на отказе', async () => {
+    const { git } = fakeGit({
+      'rev-list --count': '2\n',
+      'merge --no-ff --no-commit': CONFLICT_ERROR,
+      'diff --name-only': `docs/master-graph.html${NUL}`,
+      'rev-parse -q --verify MERGE_HEAD': 'abc\n',
+      'rev-parse HEAD': 'feed\n',
+    })
+    const res = await syncWithTrunk({
+      cwd: '/copy',
+      execGit: git,
+      io: { readFileSync: () => '<p>5913 tests</p>', writeFileSync: () => {} },
+      run: () => {
+        throw new Error('doc-audit: 1 violation(s).')
+      },
+    })
+    expect(res.ok).toBe(true)
+    expect(res.synced).toBe(true)
+    expect(res.resolved).toEqual([{ file: 'docs/master-graph.html', how: 'rederive' }])
+    expect((res.notes || []).join(' ')).toContain('по результату, а не по коду возврата')
+  })
+
   it('осталось неразведённое → merge --abort и отказ С ИМЕНАМИ ФАЙЛОВ', async () => {
     const { git, calls } = fakeGit({
       'rev-list --count': '2\n',

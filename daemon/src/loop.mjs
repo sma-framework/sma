@@ -5745,12 +5745,16 @@ async function syncBeforeHandoff(deps, task, worktree) {
   const settled = Array.isArray(res.resolved) && res.resolved.length
     ? ` механически разведено: ${res.resolved.map((r) => `${r.file} (${r.how})`).join(' · ')};`
     : ''
+  // ОГОВОРКИ РАЗВОДА ЕДУТ ВМЕСТЕ С НИМ. Развод, прошедший с оговоркой («команда пересборки
+  // вернула отказ, но обе стороны сошлись»), и развод, прошедший гладко, — разные события;
+  // журнал, называющий их одинаково, врёт оператору ровно в том месте, ради которого он ведётся.
+  const caveats = Array.isArray(res.notes) && res.notes.length ? ` оговорки: ${res.notes.join(' | ')};` : ''
   if (res.ok && res.synced) {
     writeLog(deps, {
       type: 'task.branch_synced',
       taskId: task.id,
       branch,
-      detail: `ветка сведена с ${trunk} до сдачи: отставала на ${res.behind} коммит(ов);${settled} слияние ${(res.mergeSha || '').slice(0, 7) || 'без имени'}`,
+      detail: `ветка сведена с ${trunk} до сдачи: отставала на ${res.behind} коммит(ов);${settled}${caveats} слияние ${(res.mergeSha || '').slice(0, 7) || 'без имени'}`,
     })
   } else if (!res.ok) {
     writeLog(deps, {

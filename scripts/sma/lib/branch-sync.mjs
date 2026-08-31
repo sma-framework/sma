@@ -595,7 +595,7 @@ export function behindBy({ cwd, trunk = TRUNK_DEFAULT, execGit } = {}) {
  * @returns
  *   - вершины нет:      {ok:true, synced:false, reason:'no-trunk', detail}
  *   - сводить нечего:   {ok:true, synced:false, alreadyCurrent:true, behind:0}
- *   - сведено:          {ok:true, synced:true, behind, resolved:[], mergeSha}
+ *   - сведено:          {ok:true, synced:true, behind, resolved:[], mergeSha[, notes]}
  *   - конфликт:         {ok:false, conflict:true, files, count, remaining, resolved, detail[, unfinishedMerge, howToClear]}
  *   - спор оставлен:    {ok:false, conflict:true, kept:true, …то же…, howToFinish}
  *   - иная беда:        {ok:false, conflict:false, detail[, unfinishedMerge, howToClear]}
@@ -618,6 +618,14 @@ export async function syncWithTrunk({ cwd, trunk = TRUNK_DEFAULT, execGit, io, r
     let conflict = null
     /** Что развелось без человека — назовём это вслух в ответе, а не оставим молчаливым. */
     let mechanically = []
+    /**
+     * …И ЧТО ПРИ ЭТОМ БЫЛО НЕ ТАК. Оговорка развода («команда пересборки вернула отказ, но обе
+     * стороны сошлись») стоит РОВНО столько же, сколько сам развод: сведение, прошедшее с
+     * оговоркой, и сведение, прошедшее гладко, — разные события, и молчание о разнице между
+     * ними и есть тот молчаливый автоматический развод, которого дом боится. Раньше эти строки
+     * жили только на пути отказа и на успехе терялись.
+     */
+    let mechanicalNotes = []
     try {
       git(['merge', '--no-ff', '--no-commit', trunk], { cwd })
     } catch (err) {
@@ -641,7 +649,10 @@ export async function syncWithTrunk({ cwd, trunk = TRUNK_DEFAULT, execGit, io, r
         // Всё до одного развелось механически — слияние продолжается, как если бы конфликта
         // не было. Разведённое названо вслух в ответе: молчаливый автоматический развод и
         // есть тот тихий откат, которого дом боится.
-        if (!conflict) mechanically = fixed.resolved
+        if (!conflict) {
+          mechanically = fixed.resolved
+          mechanicalNotes = fixed.notes
+        }
       }
     }
 
@@ -709,7 +720,14 @@ export async function syncWithTrunk({ cwd, trunk = TRUNK_DEFAULT, execGit, io, r
     } catch {
       mergeSha = ''
     }
-    return { ok: true, synced: true, behind, resolved: mechanically, mergeSha: mergeSha || null }
+    return {
+      ok: true,
+      synced: true,
+      behind,
+      resolved: mechanically,
+      ...(mechanicalNotes.length ? { notes: mechanicalNotes } : {}),
+      mergeSha: mergeSha || null,
+    }
   } catch (err) {
     let unfinished = false
     if (mergeInTree) {
