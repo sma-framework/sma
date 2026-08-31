@@ -714,6 +714,41 @@ describe('сломанная проба живости не даёт приго�
     const [attemptRow] = ledger.readAttempts('BL-1')
     expect(attemptRow.failureReason).toBe('attempt_lifetime_exceeded')
   })
+
+  /**
+   * И ОТКАЗ СУДИТЬ ОБЯЗАН ДЕРЖАТЬ АРЕНДУ — иначе он не держит НИЧЕГО.
+   *
+   * Перевыдать строку умеет не только сторож. Аренда в pg-boss — это `started_on +
+   * expire_seconds`, метода продления у библиотеки нет вовсе (pgboss-backend.touch, проверено на
+   * живом экземпляре), и строка, которую сторож оставил себе, но не продлил, уезжает второму
+   * работнику по сроку аренды — молча, мимо всякого вердикта. Тогда «не сужу по сломанной пробе»
+   * покупает ровно 15 минут отсрочки и тот же самый счёт: два процесса на одной работе.
+   */
+  it('отказ судить ДЕРЖИТ аренду — иначе строку по сроку отдаёт сама очередь, мимо сторожа', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = staleAdapter(c.clock, ledger)
+    const journal: any[] = []
+    c.advance(500000)
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      journal: (e: any) => journal.push(e),
+      attemptTurns: brokenProbe([]),
+    })
+
+    expect(res.probeBroken).toBe(1)
+    const [row] = await adapter.list()
+    expect(row.leaseRenewedAt, 'строка оставлена себе, но не продлена — очередь заберёт её по сроку').toBe(c.clock())
+    // …И ПОТОЛОК ОТ ЭТОГО НЕ СДВИГАЕТСЯ: продление трогает часы АРЕНДЫ, а жизнь попытки считается
+    // от захвата. Иначе «не сужу» стало бы «не судить никогда», и бессмертие вернулось бы дверью,
+    // которую закрывал MAX_ATTEMPT_LIFETIME_MS.
+    expect(row.claimedAt, 'продление сдвинуло момент захвата — потолок жизни попытки стал недостижим').toBe(1000)
+    expect(journal.find((e) => e.type === 'liveness.probe_unavailable').leaseHeld).toBe(true)
+  })
 })
 
 /**
@@ -792,5 +827,38 @@ describe('строка не закрывается, пока процесс жи
     expect(res.requeued).toBe(1)
     expect(ledger.readAttempts('BL-1')[0].failureReason).toBe('attempt_lifetime_exceeded')
     expect(journal.filter((e) => e.type === 'liveness.attempt_killed')).toHaveLength(1)
+  })
+
+  /**
+   * ПЕРЕЖИВШИЙ ОСТАНОВКУ СОХРАНЯЕТ НЕ ТОЛЬКО СТРОКУ, НО И АРЕНДУ ПОД НЕЙ.
+   *
+   * «Строка остаётся своей» держится ровно до срока аренды: дальше очередь отдаёт её сама, и
+   * ребёнок, переживший остановку, получает соседа на ту же работу — тот самый счёт 31.08, только
+   * дверью очереди вместо двери сторожа. Здесь право на продление самое твёрдое из трёх: процесс
+   * ВИДЕН живым секунду назад.
+   */
+  it('переживший остановку держит и аренду — «не закрываем» иначе живёт только до срока', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ id: 'BL-1', attempt: 1, claimedAt: 1000, leaseRenewedAt: 1000 }))
+    const journal: any[] = []
+    c.advance(MAX_ATTEMPT_LIFETIME_MS + 60000)
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      journal: (e: any) => journal.push(e),
+      attemptTurns: { alive: () => true, stop: () => true },
+      sleep: async () => {},
+    })
+
+    expect(res.killUnconfirmed).toBe(1)
+    const [row] = await adapter.list()
+    expect(row.leaseRenewedAt, 'строка не закрыта, но и не продлена — очередь заберёт её по сроку').toBe(c.clock())
+    expect(row.claimedAt, 'продление сдвинуло момент захвата — потолок жизни попытки стал недостижим').toBe(1000)
+    expect(journal.find((e) => e.type === 'liveness.kill_unconfirmed').leaseHeld).toBe(true)
   })
 })
