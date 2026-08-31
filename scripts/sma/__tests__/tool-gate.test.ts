@@ -762,3 +762,58 @@ describe('tool-gate — установка сквозь ссылку отказ�
     expect(ticket.class).toBe('deps-install')
   })
 })
+
+/**
+ * УБОРКА КОПИИ СО ЖИВОЙ ССЫЛКОЙ — ОТКАЗ, КОТОРЫЙ ОБЯЗАН СТОЯТЬ ДО КЛАССИФИКАТОРА.
+ *
+ * `git worktree remove` не подходит ни под один класс опасного для работника: ни удаление
+ * мимо git, ни ветка, ни запись наружу. То есть до этой правки такой вызов уезжал «не опасно
+ * по классификатору» и проходил МОЛЧА — а это ровно та команда, которая 31.08.2026 в 19:28
+ * опустошила склад зависимостей человека: git идёт ПО живой ссылке внутри копии.
+ *
+ * Отказ вынесен по ФАКТУ ссылки, а не по имени команды: та же уборка копии, из которой
+ * ссылки уже сняты, не останавливается ничем — иначе гейт запретил бы обычную уборку и его
+ * выключили бы целиком.
+ */
+describe('tool-gate — уборка копии сквозь ссылку отказывается до классификатора', () => {
+  it('копия ещё держит ссылку → ОТКАЗ сразу, без билета и без ожидания', async () => {
+    const main = join(root, 'main-wt')
+    const copy = join(root, 'copy-wt')
+    mkdirSync(join(main, 'node_modules'), { recursive: true })
+    mkdirSync(copy, { recursive: true })
+    symlinkSync(join(main, 'node_modules'), join(copy, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir')
+
+    const t = fakeClockAndSleep()
+    const verdict = await decideOnEvent({
+      event: { ...bashEvent(`git worktree remove --force "${copy}"`), cwd: main },
+      env: { SMA_RUN_DIR: runDir },
+      clock: t.clock,
+      sleep: t.sleep,
+    })
+
+    expect(verdict.decision).toBe('deny')
+    expect(verdict.dangerous).toBe(true)
+    expect(verdict.ticketId).toBe(null) // одобрять нечего: опустошение случится и с одобрением
+    expect(verdict.waitedMs).toBe(0)
+    expect(String(verdict.reason)).toContain('уборка отменена')
+    expect(existsSync(ticketsDirOf(runDir))).toBe(false)
+
+    rmdirSync(join(copy, 'node_modules'))
+  })
+
+  it('ссылок внутри нет — та же уборка идёт своей дорогой', async () => {
+    const copy = join(root, 'copy-unlinked')
+    mkdirSync(copy, { recursive: true })
+
+    const t = fakeClockAndSleep()
+    const verdict = await decideOnEvent({
+      event: { ...bashEvent(`git worktree remove --force "${copy}"`), cwd: root },
+      env: { SMA_RUN_DIR: runDir },
+      clock: t.clock,
+      sleep: t.sleep,
+    })
+
+    expect(verdict.decision).toBe('allow')
+    expect(existsSync(ticketsDirOf(runDir))).toBe(false)
+  })
+})

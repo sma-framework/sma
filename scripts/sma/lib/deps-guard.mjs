@@ -381,10 +381,19 @@ export function copyRemovalTargetsOf(opts = {}) {
  */
 export function copyRemovalRefusal(opts = {}) {
   const fs = opts.fsImpl ?? nodeFs
+  // СНАЧАЛА РАЗБОР КОМАНДЫ, ПОТОМ ДИСК. Этот вопрос задаётся перед КАЖДЫМ вызовом Bash — и в
+  // потоке `sma pre`, и в гейте работника, — а уборка копии встречается раз в сотни команд.
+  // Спрашивать файловую систему до того, как в команде нашлось что убирать, значит платить
+  // разведкой подпроектов за каждый `git status`.
+  const targets = copyRemovalTargetsOf({ command: opts.command, cwd: opts.cwd })
+  if (!targets.length) return { refuse: false }
   const root = opts.root ?? opts.cwd
-  const rels = dependencyDirsOf({ root, fsImpl: fs })
+  // `discover:true` по той же причине, что и в linkedDepsOf: чаще всего об уборке спрашивают
+  // ИЗ копии, а `.sma/` в копию не переносится — без разведки виден был бы только корневой
+  // склад, и `daemon/node_modules`, опустевший 31.08, не попал бы в вопрос вовсе.
+  const rels = dependencyDirsOf({ root, fsImpl: fs, discover: true })
   if (!rels.length) return { refuse: false }
-  for (const target of copyRemovalTargetsOf({ command: opts.command, cwd: opts.cwd })) {
+  for (const target of targets) {
     const links = linksAt({ dir: target, rels, fsImpl: fs })
     if (!links.length) continue
     const named = links.map((l) => `${l.path}${l.target ? ` → ${l.target}` : ''}`).join(', ')

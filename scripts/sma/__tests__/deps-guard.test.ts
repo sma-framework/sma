@@ -179,6 +179,41 @@ describe('сырая уборка копии со ссылками — отка�
     mkdirSync(other, { recursive: true })
     expect(copyRemovalRefusal({ command: `rm -rf "${other}"`, cwd: sandbox, root: mainTree }).refuse).toBe(false)
   })
+
+  it('спрошен ИЗ копии, где манифеста нет, — daemon/node_modules всё равно назван', () => {
+    // Гейт вызовов работника стоит ВНУТРИ копии, а `.sma/` в копию не переносится: список
+    // ссылок сводится к умолчанию `['node_modules']`. Снимаем корневую ссылку — и без
+    // разведки подпроектов остаётся ровно тот каталог, который 31.08 в 19:28 и опустел,
+    // а страж о нём молчит.
+    rmdirSync(join(copyTree, 'node_modules'))
+    const res: any = copyRemovalRefusal({ command: `git worktree remove --force "${copyTree}"`, cwd: copyTree, root: copyTree })
+    expect(res.refuse).toBe(true)
+    expect(res.links.map((l: any) => l.path)).toEqual(['daemon/node_modules'])
+  })
+
+  it('в команде нечего убирать — до диска дело не доходит вовсе', () => {
+    // Этот вопрос задаётся перед КАЖДЫМ вызовом Bash в двух местах сразу. Разведка
+    // подпроектов на каждом `git status` — цена, которую страж брал бы ни за что, поэтому
+    // сначала разбирается команда. Считаем обращения, а не ловим исключение: все обращения
+    // стража к диску обёрнуты в try, и брошенная ошибка ничего бы не доказала.
+    let touched = 0
+    const fsImpl: any = {
+      readFileSync: () => {
+        touched += 1
+        throw new Error('ENOENT')
+      },
+      readdirSync: () => {
+        touched += 1
+        return []
+      },
+      lstatSync: () => {
+        touched += 1
+        throw new Error('ENOENT')
+      },
+    }
+    expect(copyRemovalRefusal({ command: 'git status --porcelain', cwd: mainTree, root: mainTree, fsImpl }).refuse).toBe(false)
+    expect(touched).toBe(0)
+  })
 })
 
 describe('пригодность среды — «среда сломана» вместо «тесты красные»', () => {
