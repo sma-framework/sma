@@ -13,7 +13,11 @@
  *   approval — работа стоит на приёмке: принять или вернуть может только он;
  *   parked   — работник упёрся и остановлен до решения (потолок ходов, нужный доступ,
  *              нужное решение) — повтора за этим концом нет по устройству очереди;
- *   stopped  — очередь исчерпала перевыдачи и больше не вернётся к этой работе сама.
+ *   stopped  — очередь исчерпала перевыдачи и больше не вернётся к этой работе сама;
+ *   batch    — сборка встала на сорвавшемся элементе и держит ОСТАЛЬНЫЕ свои элементы, пока
+ *              владелец не выберет «пропустить / повторить / отменить». Повода честнее не
+ *              бывает: очередь не выдаёт больше ни одного куска этой сборки по устройству,
+ *              и ждать она будет ровно столько, сколько человек не будет знать, что она ждёт.
  *
  * И НЕ ПОВОД — ровно по тому же правилу. Обычный провал попытки повода не даёт: следующую
  * попытку заведёт демон, человеку решать нечего. Возврат работы тоже: возврат — это ХОД
@@ -57,7 +61,7 @@ import { telegramChatId, telegramConfigured } from './telegram/client.mjs'
 import { REASON_LABELS } from './queue/adapter.mjs'
 
 /** Поводы позвать. Слово вне списка — не зов: незнакомый повод молчит, а не выдумывает текст. */
-export const SUMMON_KINDS = Object.freeze(['approval', 'parked', 'stopped'])
+export const SUMMON_KINDS = Object.freeze(['approval', 'parked', 'stopped', 'batch'])
 
 /** Повтор за долгое ожидание — шесть часов. Реже, чем смена; чаще, чем «двое суток молча». */
 export const SUMMON_REPEAT_MS = 6 * 60 * 60 * 1000
@@ -97,9 +101,16 @@ function nameOf(title, taskId) {
 }
 
 /** Первый абзац: ЧТО именно ждёт. */
-function whatWaits(kind, name, reason) {
+function whatWaits(kind, name, reason, itemName) {
   const label = REASON_LABELS[reason] || ''
   if (kind === 'approval') return `Работа «${name}» стоит на приёмке — сама она оттуда не уйдёт.`
+  if (kind === 'batch') {
+    // ИМЕНАМИ, А НЕ ЧИСЛАМИ: «сборка N стоит на элементе M» человек читает с телефона и по
+    // этим двум именам находит карточку. Сборка без имени зовёт по ярлыку — как и работа.
+    return itemName
+      ? `Сборка «${name}» стоит на элементе «${itemName}» — остальные её элементы очередь не выдаёт.`
+      : `Сборка «${name}» стоит на сорвавшемся элементе — остальные её элементы очередь не выдаёт.`
+  }
   if (kind === 'parked') {
     return label
       ? `Работа «${name}» остановлена и ждёт вас: ${label}.`
@@ -115,6 +126,11 @@ function whatIsAsked(kind) {
   if (kind === 'approval') {
     return 'Нужно ваше решение: принять или вернуть. Кнопок в этом чате нет — это делается в окне, где видно диффы и квитанции.'
   }
+  if (kind === 'batch') {
+    // Три ответа названы теми же словами, какими их предлагает карточка сборки. Здесь они
+    // ПЕРЕЧИСЛЕНЫ, а не нажимаются: выбор делается там, где видно, на чём кусок сломался.
+    return 'Нужен ваш выбор: пропустить элемент, повторить его или отменить сборку. Кнопок в этом чате нет — выбирают на карточке сборки в окне.'
+  }
   if (kind === 'parked') {
     return 'Нужно ваше решение: снять ограничение, разрезать работу или отменить её. Кнопок в этом чате нет — решают в окне, там же видно, что попытка успела сделать.'
   }
@@ -122,15 +138,30 @@ function whatIsAsked(kind) {
 }
 
 /**
- * summonWords({kind, taskId, title, reason, since, now, again}) — что человек читает в телеграме.
- * ЧИСТАЯ: те же входы дают тот же текст, поэтому слова проверяются без сети и без часов.
+ * summonWords({kind, taskId, title, reason, since, now, again, itemId, itemTitle}) — что человек
+ * читает в телеграме. ЧИСТАЯ: те же входы дают тот же текст, поэтому слова проверяются без сети
+ * и без часов.
+ *
+ * `itemId`/`itemTitle` называют КУСОК вставшей сборки и читаются только поводом `batch`: у
+ * остальных поводов куска нет, и подставлять его было бы вымыслом.
  */
-export function summonWords({ kind, taskId, title = '', reason = '', since = null, now = Date.now(), again = false } = {}) {
+export function summonWords({
+  kind,
+  taskId,
+  title = '',
+  reason = '',
+  since = null,
+  now = Date.now(),
+  again = false,
+  itemId = '',
+  itemTitle = '',
+} = {}) {
   const name = nameOf(title, taskId)
+  const item = kind === 'batch' && (itemTitle || itemId) ? nameOf(itemTitle, itemId) : ''
   const seconds = Number.isFinite(since) && Number.isFinite(now) && now >= since ? Math.round((now - since) / 1000) : null
   const waited = waitWords(seconds)
   const stands = again ? `Стоит уже ${waited} — и всё ещё ждёт.` : `Стоит ${waited}.`
-  return [whatWaits(kind, name, reason), whatIsAsked(kind), stands].join('\n\n')
+  return [whatWaits(kind, name, reason, item), whatIsAsked(kind), stands].join('\n\n')
 }
 
 /**
@@ -175,6 +206,9 @@ export function createSummons({
      * keepOnly(kind, taskIds) — подрезать память по живому списку: работа ушла с приёмки, значит
      * человек ответил, и помнить о ней нечего. Тот же приём, что у памяти старения, и по той же
      * причине: память обязана описывать очередь как она есть сейчас.
+     *
+     * Список даётся ТЕМИ ЖЕ адресами, какими зовут: у повода с куском это `<id>:<idКуска>`.
+     * Иначе подрезка не нашла бы ни одного своего ключа и молча ничего не забывала бы.
      */
     keepOnly(kind, taskIds) {
       const live = new Set((Array.isArray(taskIds) ? taskIds : []).filter(Boolean).map(String))
@@ -184,7 +218,15 @@ export function createSummons({
       }
     },
 
-    async raise({ kind, taskId, title = '', reason = '', since = null } = {}) {
+    /**
+     * `itemId` — АДРЕС ОЖИДАНИЯ ВНУТРИ ОДНОЙ ЕДИНИЦЫ РАБОТЫ, и он входит в ключ памяти.
+     *
+     * Без него сборка из шести кусков была бы «одним ожиданием» на все шесть: владелец
+     * пропустил сломавшийся кусок, следующий сорвался через минуту — и зов промолчал бы шесть
+     * часов, потому что о ЭТОЙ СБОРКЕ уже говорили. Каждый кусок — своё ожидание и свой вопрос;
+     * запрет на шум остаётся тем же самым, просто он теперь считает то, что и правда одно.
+     */
+    async raise({ kind, taskId, title = '', reason = '', since = null, itemId = '', itemTitle = '' } = {}) {
       if (!SUMMON_KINDS.includes(kind) || !taskId) return { sent: false, silenced: false, reason: 'звать не о чем' }
 
       // БОТ НЕ ПОДКЛЮЧЁН — ВЫХОД ДО ВСЯКОЙ ПАМЯТИ. Ожидание не помечается позванным, в журнал
@@ -195,7 +237,7 @@ export function createSummons({
 
       const at = now()
       forgetStale(at)
-      const key = keyOf(kind, taskId)
+      const key = keyOf(kind, itemId ? `${taskId}:${itemId}` : taskId)
       const seen = waiting.get(key)
       if (seen) {
         // Успевший уйти зов молчит долго; не ушедший — короткую выдержку. Разные числа, потому
@@ -210,7 +252,17 @@ export function createSummons({
       entry.lastTryAt = at
       waiting.set(key, entry)
 
-      const text = summonWords({ kind, taskId, title, reason, since: startedAt, now: at, again: entry.lastSentAt > 0 })
+      const text = summonWords({
+        kind,
+        taskId,
+        title,
+        reason,
+        since: startedAt,
+        now: at,
+        again: entry.lastSentAt > 0,
+        itemId,
+        itemTitle,
+      })
       let out
       try {
         out = (await notify({ config, text, fetchImpl })) || {}

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { openScreen } from '../../shell/navigation'
-import type { DoneRow, FailureAction, QueueRow, ReceiptSummary } from '../../api/types'
+import type { BatchRow, DoneRow, FailureAction, QueueRow, ReceiptSummary } from '../../api/types'
+import { elapsedLabel } from '../../shell/stats'
 import {
   acceptanceList,
   accentFor,
@@ -108,6 +109,51 @@ function DecisionCard({
       </div>
       <div className="mt-2 text-[11.5px] text-tx3">
         {row.lane ?? 'без направления'} · проверено, ждёт вашего решения
+      </div>
+    </button>
+  )
+}
+
+/**
+ * ВСТАВШАЯ СБОРКА — В ТОЙ ЖЕ СТОПКЕ, ЧТО И ВСЁ ОСТАЛЬНОЕ, ЧТО НЕ ДВИНЕТСЯ БЕЗ ЧЕЛОВЕКА.
+ *
+ * Раньше этой карточки здесь не было, и это была не забывчивость вёрстки, а разница в
+ * устройстве: работа на приёмке названа СТАТУСОМ очереди, а вставшая сборка — нет. Её элемент
+ * лежит просто «сорвался», и ждущей её делает постановка над ним. Экран, который показывал
+ * только статусы, честно показывал ноль ждущих над батчем, простоявшим пятнадцать часов.
+ *
+ * КАРТОЧКА НЕ РЕШАЕТ, А ВЕДЁТ. Три ответа — «пропустить / повторить / отменить» — нажимаются
+ * там, где видно, на чём именно кусок сломался; здесь стоит имя элемента, срок простоя и
+ * дорога к развилке. Кнопка «решить» прямо тут была бы решением вслепую — тем же самым, что
+ * запрещено кнопке одобрения в телеграме.
+ */
+function StalledBatchCard({ batch, now }: { batch: BatchRow; now: number }) {
+  const item = batch.question?.itemTitle ?? batch.question?.itemId ?? null
+  const stalled = elapsedLabel(typeof batch.stalledSince === 'number' ? batch.stalledSince : null, now)
+  return (
+    <button
+      type="button"
+      onClick={() => openScreen({ screen: 'tasks', taskId: batch.id })}
+      className="w-full rounded-[13px] border border-warn-s bg-warn-s px-[18px] py-4 text-left hover:bg-card-hov"
+    >
+      <div className="flex items-center gap-2.5">
+        <LaneBadge lane={null} title={batch.title} />
+        <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold text-tx">
+          {batch.title ?? 'Без названия'}
+        </span>
+        {/* Срок простоя стоит на самой карточке: «сборка встала» без числа не отличает минуту
+            от суток, а решение человек принимает как раз по этой разнице. */}
+        {stalled ? (
+          <span className="flex-none rounded-full bg-card px-2.5 py-0.5 text-[10.5px] whitespace-nowrap text-warn-tx">
+            стоит {stalled}
+          </span>
+        ) : null}
+      </div>
+      <div className="mt-2 text-[11.5px] leading-[1.5] text-tx2">
+        {item
+          ? `Сборка стоит на элементе «${item}» — нужен ваш выбор: пропустить, повторить или отменить.`
+          : 'Сборка стоит на сорвавшемся элементе — нужен ваш выбор.'}{' '}
+        Пока вы не ответите, ни один её элемент работнику не выдаётся.
       </div>
     </button>
   )
@@ -326,6 +372,7 @@ function QueueLine({ row, selected, onOpen }: { row: QueueRow; selected: boolean
 
 export function DayFeed({
   decisions,
+  stalled,
   failed,
   finished,
   waiting,
@@ -334,6 +381,8 @@ export function DayFeed({
   onAct,
 }: {
   decisions: QueueRow[]
+  /** Сборки, вставшие на сорвавшемся элементе: они ждут человека ровно так же, как приёмка. */
+  stalled: BatchRow[]
   failed: DoneRow[]
   finished: DoneRow[]
   waiting: QueueRow[]
@@ -350,7 +399,11 @@ export function DayFeed({
   const [doneOpen, setDoneOpen] = useState(true)
 
   const nothingAtAll =
-    decisions.length === 0 && failed.length === 0 && finished.length === 0 && waiting.length === 0
+    decisions.length === 0 &&
+    stalled.length === 0 &&
+    failed.length === 0 &&
+    finished.length === 0 &&
+    waiting.length === 0
 
   /**
    * AN EMPTY DAY MUST OFFER THE WAY IN.
@@ -387,9 +440,14 @@ export function DayFeed({
 
   return (
     <div className="flex flex-col gap-5">
-      {decisions.length > 0 ? (
+      {decisions.length > 0 || stalled.length > 0 ? (
         <section className="flex flex-col gap-3">
           <SectionTitle>Ждут вашего решения</SectionTitle>
+          {/* Сборки идут ПЕРВЫМИ: за работой на приёмке не стоит ничего, кроме неё самой, а за
+              вставшей сборкой стоят её незапущенные элементы — всё это время они не выдаются. */}
+          {stalled.map((batch) => (
+            <StalledBatchCard key={batch.id} batch={batch} now={Date.now()} />
+          ))}
           {decisions.map((row) => (
             <DecisionCard key={row.id} row={row} selected={row.id === selectedId} onOpen={onOpen} />
           ))}
