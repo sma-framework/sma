@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import type { MaterializedEntry, MemoryTrace, TaskAttempt } from '../../api/types'
+import { useDiagnosticsQuery } from '../../api/queries'
 import { AttemptLog } from '../../shell/AttemptLog'
 import { clockLabel, receiptChecks, receiptProofLabel } from '../../shell/format'
 import { syncLine } from './branch-sync'
+import { sessionReturn } from './session-return'
 
 /**
  * AttemptTimeline — the whole history of one task, in the order it happened.
@@ -487,6 +489,45 @@ function Checks({ attempt }: { attempt: TaskAttempt }) {
   )
 }
 
+/**
+ * ВЕРНУТЬСЯ В СЕССИЮ РАБОТНИКА — одна строка и одна кнопка, которая её отдаёт.
+ *
+ * Строку собирает чистый модуль под систему, о которой сказал демон; здесь только показ и
+ * кнопка. Команда остаётся ТЕКСТОВЫМ УЗЛОМ: путь копии и каталог аккаунта приходят из данных
+ * и в разметку не превращаются. Отказ буфера обмена ничего не ломает — строка на месте, её
+ * по-прежнему можно выделить и скопировать руками.
+ */
+function ReturnLine({ command, notes }: { command: string; notes: string[] }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="mb-2 flex flex-col gap-0.5 text-[11px] leading-[1.45] text-tx3">
+      <div className="flex items-baseline justify-between gap-2">
+        <span>вернуться в сессию работника:</span>
+        <button
+          type="button"
+          onClick={() => {
+            void navigator.clipboard?.writeText(command).then(
+              () => setCopied(true),
+              () => setCopied(false),
+            )
+          }}
+          className="flex-none text-[11px] whitespace-nowrap text-blue hover:text-teal"
+        >
+          {copied ? 'скопировано' : 'скопировать'}
+        </button>
+      </div>
+      <code className="mt-0.5 block rounded-[6px] border border-bd bg-card px-2 py-1 font-mono text-[10.5px] break-all text-tx2 select-all">
+        {command}
+      </code>
+      {notes.map((n) => (
+        <span key={n} className="break-words">
+          {n}
+        </span>
+      ))}
+    </div>
+  )
+}
+
 function Row({
   attempt,
   note,
@@ -494,6 +535,7 @@ function Row({
   taskId,
   trace,
   merge,
+  platform,
 }: {
   attempt: TaskAttempt
   /** The comment that sent this run back, when this run was sent back. */
@@ -514,6 +556,12 @@ function Row({
    * то же выдумывание, что и прочерк вместо данных.
    */
   trace: MemoryTrace | null
+  /**
+   * Система, о которой сказал демон, — ею и написана строка возврата: одна и та же переменная
+   * пишется в PowerShell и в POSIX-оболочке по-разному. `null` — окно ещё не спросило или
+   * дверь не ответила, и тогда панели возврата нет: оболочку не угадывают.
+   */
+  platform: string | null
 }) {
   /**
    * ЧТО В ИТОГЕ — РАСКРЫТО НА ТОМ ПОДХОДЕ, РАДИ КОТОРОГО КАРТОЧКУ И ОТКРЫЛИ.
@@ -540,6 +588,7 @@ function Row({
   const sync = syncLine(attempt)
   const rollback = rollbackLines(attempt)
   const undo = rollbackCommand(attempt, merge)
+  const back = sessionReturn(attempt, platform)
 
   return (
     <div className="flex gap-3.5">
@@ -589,6 +638,10 @@ function Row({
                 ))}
               </div>
             ) : null}
+            {/* ВОЗВРАТ: сессия этого подхода жива, и вот чем в неё зайти. Панель приходит
+                ровно тогда, когда для строки есть всё нужное; нет сессии или неизвестна
+                система — блока нет вовсе, потому что оболочку не угадывают. */}
+            {back ? <ReturnLine command={back.command} notes={back.notes} /> : null}
             {/* ОТКАТ: что изменилось, что исчезло, чего никто не перепроверял — и ОДНА
                 команда, которой это откатывается. Строки приходят из строки попытки и из
                 записи о приёмке; пустой список означает «попытка этого не знает», и тогда
@@ -766,6 +819,11 @@ export function AttemptTimeline({
    */
   memoryTrace?: MemoryTrace | null
 }) {
+  // ЧЕМ НАПИСАНА СТРОКА ВОЗВРАТА. Систему называет демон — тот самый, что держит сессии, — и
+  // спрошена она ОДИН раз на всю ленту, а не в каждом ряду. Ответ кэшируется навсегда: это
+  // свойство машины, а не состояние работы.
+  const platform = useDiagnosticsQuery().data?.platform ?? null
+
   if (attempts.length === 0) {
     return <p className="m-0 text-[12.5px] text-tx3">Работа ещё не начиналась — задача ждёт своей очереди.</p>
   }
@@ -788,6 +846,7 @@ export function AttemptTimeline({
             taskId={taskId}
             trace={last ? memoryTrace : null}
             merge={last ? merge : null}
+            platform={platform}
           />
         )
       })}
