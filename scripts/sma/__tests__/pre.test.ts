@@ -387,3 +387,77 @@ describe('Task 2 — CLI surface', () => {
     expect(res.stdout).toMatch(/p95/i) // human stats table present
   }, 30000)
 })
+
+/**
+ * ПОТОК `deps` — ЕДИНСТВЕННАЯ ДВЕРЬ, ЧЕРЕЗ КОТОРУЮ СЫРАЯ УБОРКА КОПИИ НЕ ПРОХОДИТ.
+ *
+ * 31.08.2026 в 17:27:58Z из соседнего окна прошёл `git worktree remove --force <копия>` при
+ * трёх живых ссылках на склад зависимостей внутри копии; метка времени каталога
+ * `node_modules` основного дерева сменилась через полторы секунды. Верб проекта снимает
+ * ссылки первым делом — сырой git идёт ПО НИМ. Этот поток стоит перед той самой командой.
+ *
+ * Что закреплено: отказ по ФАКТУ живой ссылки (а не по имени каталога), молчание там, где
+ * ссылок нет, выключатель на месте, и собственная поломка стража ничего не останавливает.
+ */
+describe('поток deps — склад зависимостей', () => {
+  const depsStream = () => PRE_CHECKS.find((s: any) => s.id === 'deps') as any
+
+  it('зарегистрирован как Bash-поток, умеющий мягкий отказ, и с собственным выключателем', () => {
+    const s = depsStream()
+    expect(s).toBeTruthy()
+    expect(s.tools).toEqual(['Bash'])
+    expect(s.mayDeny).toBe(true)
+    expect(s.killSwitchEnv).toBe('SMA_DEPS_GUARD_DISABLE')
+  })
+
+  it('сырая уборка копии со ссылкой внутри — мягкий отказ, называющий верб проекта', async () => {
+    const guard = {
+      copyRemovalRefusal: ({ command }: any) =>
+        command.includes('worktree remove')
+          ? { refuse: true, reason: 'уборка отменена: в копии ещё висят ссылки — убирайте вербом: node scripts/sma/cli.mjs worktree remove …' }
+          : { refuse: false },
+      installRefusal: () => ({ refuse: false }),
+    }
+    const ctx = await silentCtx(
+      { tool_name: 'Bash', tool_input: { command: 'git worktree remove --force /copy' }, cwd: '/main' },
+      { deps: { depsGuard: guard } },
+    )
+    const res = await depsStream().run(ctx)
+    expect(res.deny?.text).toContain('уборка отменена')
+    expect(res.deny?.text).toContain('worktree remove') // выход назван внутри самого отказа
+  })
+
+  it('установка сквозь ссылку — тот же мягкий отказ; чистая команда проходит молча', async () => {
+    const guard = {
+      copyRemovalRefusal: () => ({ refuse: false }),
+      installRefusal: ({ command }: any) =>
+        command.startsWith('npm ci') ? { refuse: true, reason: 'установка отменена: node_modules — ССЫЛКА' } : { refuse: false },
+    }
+    const denied = await depsStream().run(
+      await silentCtx({ tool_name: 'Bash', tool_input: { command: 'npm ci' }, cwd: '/copy' }, { deps: { depsGuard: guard } }),
+    )
+    expect(denied.deny?.text).toContain('установка отменена')
+
+    const quiet = await depsStream().run(
+      await silentCtx({ tool_name: 'Bash', tool_input: { command: 'npm run build' }, cwd: '/copy' }, { deps: { depsGuard: guard } }),
+    )
+    expect(quiet.deny).toBeFalsy()
+    expect(quiet.warns).toEqual([])
+  })
+
+  it('страж сломался или его нет — работа не останавливается ничем', async () => {
+    const thrower = {
+      copyRemovalRefusal: () => {
+        throw new Error('страж сам упал')
+      },
+      installRefusal: () => ({ refuse: false }),
+    }
+    const broken = await depsStream().run(
+      await silentCtx({ tool_name: 'Bash', tool_input: { command: 'rm -rf /copy' }, cwd: '/main' }, { deps: { depsGuard: thrower } }),
+    )
+    expect(broken.deny).toBeFalsy()
+
+    const absent = await depsStream().run(await silentCtx({ tool_name: 'Bash', tool_input: { command: 'rm -rf /copy' } }))
+    expect(absent.deny).toBeFalsy()
+  })
+})
