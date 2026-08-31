@@ -225,7 +225,7 @@
   <p>A ten-minute tour of everything V3.5 adds. Each is a deterministic script over files and git, and each kills a specific failure.</p>
 
   <h3>Deep onboarding — <code>/sma-start</code></h3>
-  <p>The first run is a staged, in-conversation teaching of how the accountable loop works and why, and it records a full infrastructure and working-style profile that every later command reads. It asks about your deploy host and your release ritual once, so nothing has to be re-explained.</p>
+  <p>The first run opens with a map, not a question: <code>sma start-map</code> prints five things SMA will do in this repository, every count read from the repository itself, so nobody answers what must never break here for a system they have not yet seen do anything. After it, the first run is a staged, in-conversation teaching of how the accountable loop works and why, and it records a full infrastructure and working-style profile that every later command reads. It asks about your deploy host and your release ritual once, so nothing has to be re-explained.</p>
 
   <h3>The calibration passport + badge</h3>
   <p>The <b>calibration passport</b> builds a public README badge from the ledger, for example <code>SMA-calibrated: 94% hits, n=48</code>, reproducible on a fresh clone. A model-version guard <b>hides the badge until n reaches 20</b> after a model change, because an old hit rate no longer describes a new model. That is honesty about statistics, not modesty.</p>
