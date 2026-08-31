@@ -263,6 +263,18 @@ export interface WorkerHistoryRow {
 export interface WorkerRow {
   id: string
   lane: string | null
+  /**
+   * КТО ЭТО ПО РОЛИ. `executor` — исполнитель: он и есть «работник» в прямом смысле, тот, кто
+   * разбирает инлайн-задачи и куски сборок. Любое другое имя — специалист (`ai-researcher`,
+   * `code-reviewer`, …), которого поднимает фаза, а на инлайн-задачу зовут поимённо.
+   *
+   * ПРИЕЗЖАЕТ СЧИТАННЫМ. Экран не выводит роль сам по `roleFile`: её читает маршрутизатор,
+   * и второе мнение о том, кто здесь исполнитель, разошлось бы с маршрутом в первый же день.
+   */
+  role: string
+  /** Разбирает ли он очередь ПРЯМО СЕЙЧАС: исполнитель, включён и не верхушка — все три сразу. */
+  inQueue: boolean
+  enabled: boolean
   account: string
   /**
    * Present only while the worker holds a task — the roster is the only list that names a
@@ -697,6 +709,10 @@ export interface RulesWorker {
   model?: string
   effort?: string
   enabled: boolean
+  /** Роль работника — см. `WorkerRow.role`. */
+  role: string
+  /** Разбирает ли эта строка очередь: включённый специалист — не то же самое, что исполнитель. */
+  inQueue: boolean
 }
 
 /** Where the paid channel stops. Present only when a budget is written down at all. */
@@ -1482,6 +1498,10 @@ export interface AgentCard {
   effort?: string
   enabled: boolean
   roleFile?: string
+  /** Роль — см. `WorkerRow.role`. */
+  role: string
+  /** Исполнитель ли это, то есть работник в прямом смысле, а не агент, зовомый внутри фазы. */
+  executor: boolean
   can: string[]
   cannot: string[]
 }

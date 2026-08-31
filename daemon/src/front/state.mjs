@@ -98,7 +98,10 @@ import {
   monthToDateApiSpendUsd,
   spendAccountNames,
 } from '../policy/spend.mjs'
-import { orchestratorView } from '../policy/orchestrator.mjs'
+import { isOrchestrator, orchestratorView } from '../policy/orchestrator.mjs'
+// РОЛЬ РАБОТНИКА ЧИТАЕТСЯ ОДНИМ ВЫРАЖЕНИЕМ НА ВЕСЬ ПРОДУКТ — тем же, каким её читает
+// маршрутизатор. Иначе «кто здесь исполнитель» стало бы вопросом с двумя ответами.
+import { isExecutor, roleOf } from '../policy/worker-role.mjs'
 import {
   isBatchParent,
   batchItemsOf,
@@ -798,6 +801,11 @@ export function deriveRules(config = {}, { switchMode, configOnDisk = null } = {
       ...(w.model !== undefined ? { model: w.model } : {}),
       ...(w.effort !== undefined ? { effort: w.effort } : {}),
       enabled: w.enabled === undefined ? true : Boolean(w.enabled),
+      // РОЛЬ — И ТУТ ЖЕ ОТВЕТ, РАЗБИРАЕТ ЛИ ЭТА СТРОКА ОЧЕРЕДЬ. Таблица «Кто что делает»
+      // перечисляла сорок пять строк подряд, и включённый специалист выглядел в ней ровно как
+      // включённый исполнитель — при том, что задачу он не возьмёт ни при каком порядке.
+      role: roleOf(w),
+      inQueue: isExecutor(w) && w.enabled !== false && !isOrchestrator(w),
     }
   })
 
@@ -2902,6 +2910,17 @@ export async function deriveState(deps = {}) {
     return {
       id: w.id,
       lane: w.lane,
+      // КТО ЭТО ПО РОЛИ И БЕРЁТ ЛИ ОН ЗАДАЧИ ИЗ ОЧЕРЕДИ. Экран «Команда» рисовал одну сетку из
+      // сорока пяти карточек и называл её работниками, хотя тридцать восемь из них — специалисты,
+      // которых поднимает фаза, а не очередь. Оба поля СЧИТАНЫ здесь и тем же выражением, каким
+      // их читает маршрутизатор: экран, выводящий «исполнитель ли это» сам, стал бы вторым
+      // мнением о том же — а два мнения об одном работнике и есть способ перестать верить обоим.
+      role: roleOf(w),
+      // «В ОЧЕРЕДИ» — ЭТО ТРИ УСЛОВИЯ СРАЗУ, и ни одного из них не видно на карточке по
+      // отдельности: он исполнитель, он включён, и он не верхушка. Именно это число человек
+      // читает как «работников», и именно оно расходилось с составом пула на порядок.
+      inQueue: isExecutor(w) && w.enabled !== false && !isOrchestrator(w),
+      enabled: w.enabled !== false,
       account: accountName,
       ...(active
         ? {
@@ -3001,9 +3020,25 @@ export async function deriveState(deps = {}) {
   const seatsTotal = concurrencyCap(config)
   const seatsBusy =
     deps.inFlight && typeof deps.inFlight.size === 'function' ? deps.inFlight.size() : null
+  // ── «РАБОТНИКОВ N» — ЭТО ПУЛ ОЧЕРЕДИ, А НЕ ДЛИНА СПИСКА В КОНФИГЕ ──
+  //
+  // Доска говорила «работников 44», когда задачи разбирали шестеро: `workersCfg.length` считал
+  // ВСЕХ — вместе с тридцатью восемью выключенными и вместе со специалистами, которых очередь
+  // не раздаёт вовсе. Человек читает это число как «столько народу разбирает мою очередь» и
+  // верит ему; ошибиться в нём в семь раз — значит соврать о пропускной способности машины.
+  //
+  // ПУЛ — ЭТО ТРИ УСЛОВИЯ, И ВСЕ ТРИ ОБЯЗАТЕЛЬНЫ: он исполнитель (специалиста берут поимённо,
+  // а не в порядке очереди), он включён, и он не верхушка. То же самое, что спрашивает фильтр
+  // маршрутизатора, — и спрошено тем же выражением, чтобы «сколько их» и «кого выберут» не
+  // могли разойтись.
+  //
+  // ЗАНЯТЫЕ СЧИТАЮТСЯ ПО ТОМУ ЖЕ НАБОРУ. Пара «занято X из N» обязана быть парой об одном и том
+  // же множестве: занятые по всем сорока пяти против общего по шести давали бы «занято 3 из 6»
+  // сегодня и «занято 8 из 6» в тот день, когда человек позовёт специалистов поимённо.
+  const queuePool = workers.filter((w) => w.inQueue)
   const kpis = {
-    workersBusy: workers.filter((w) => !!w.taskId).length,
-    workersTotal: workersCfg.length,
+    workersBusy: queuePool.filter((w) => !!w.taskId).length,
+    workersTotal: queuePool.length,
     queued: queuedRows.length,
     awaitingApproval: awaitingRows.length,
     // СИНОНИМ `costs.apiFallback.todayUsd`, и взят ИЗ НЕГО, а не посчитан второй раз. Число
