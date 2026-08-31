@@ -1,4 +1,4 @@
-import { QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { QueryClient, useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { UseMutationResult } from '@tanstack/react-query'
 import * as api from './client'
 import { ApiError, isNotReady } from './client'
@@ -488,12 +488,40 @@ export async function selectProjectAndRefresh(
   return result
 }
 
+/**
+ * КЛЮЧ СМЕНЫ ПРОЕКТА — чтобы про неё знал не только переключатель.
+ *
+ * Состояние действия принадлежит тому хуку, который его завёл, и до сих пор про идущую смену
+ * знал ровно один компонент — сам переключатель. Между тем белеет от неё СОДЕРЖИМОЕ, а оно
+ * живёт в раме, у другого хука. Именованный ключ — единственный способ спросить «идёт ли смена
+ * прямо сейчас» из другого места, не заводя второго источника правды рядом с первым.
+ */
+export const PROJECT_SELECT_KEY = ['project', 'select'] as const
+
 /** Look at another project. */
 export function useSelectProject() {
   const queryClient = useQueryClient()
   return useMutation<Awaited<ReturnType<typeof api.selectProject>>, Error, { id: string }>({
+    mutationKey: PROJECT_SELECT_KEY,
     mutationFn: (input) => selectProjectAndRefresh(queryClient, input.id),
   })
+}
+
+/**
+ * На какой проект идёт смена прямо сейчас — или `null`, если ни на какой.
+ *
+ * Спрашивается у общей книги действий по ключу выше, поэтому рама узнаёт о смене ровно то же и
+ * ровно тогда же, что и переключатель, — без провода между ними и без второго состояния,
+ * которое однажды разошлось бы с первым.
+ */
+export function useProjectSwitchId(): string | null {
+  const pending = useMutationState({
+    filters: { mutationKey: PROJECT_SELECT_KEY, status: 'pending' },
+    select: (mutation) => (mutation.state.variables as { id?: string } | undefined)?.id ?? null,
+  })
+  // Смена одна за раз — переключатель не принимает второго нажатия, — но книга отдаёт список, и
+  // последняя запись честнее первой: она про то нажатие, которое было позже.
+  return pending.length > 0 ? (pending[pending.length - 1] ?? null) : null
 }
 
 /** Take a folder into the register of projects. */
