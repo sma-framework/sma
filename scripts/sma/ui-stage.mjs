@@ -122,6 +122,7 @@ import {
   EXIT_NO_BUILD,
   STAGE_ACTIVE_PROJECT,
   STAGE_CHAT_TURNS,
+  STAGE_DESIGN_ATTEMPT,
   STAGE_DIR_PREFIX,
   STAGE_LEDGER,
   STAGE_PARKED_ATTEMPT,
@@ -136,7 +137,7 @@ import {
   stageDiskConfig,
   stageProjectFiles,
   stageProjects,
-  stageRows,
+  stageQueue,
   stageUrl,
 } from './lib/ui-stage.mjs'
 
@@ -300,6 +301,12 @@ async function main() {
   // потратила, окно читает с этой строки — и читает настоящим читателем реестра, поэтому
   // фикстура кладётся настоящим `recordAttempt`, а не файлом, сложенным здесь руками.
   recordAttempt(home, { ...STAGE_PARKED_ATTEMPT, turnKinds: { ...STAGE_PARKED_ATTEMPT.turnKinds } })
+  // …И СТРОКА ЖДУЩЕЙ РАБОТЫ, БЕЗ ВЕТКИ. По ней дверь приёмки сама решает, что сливать нечего,
+  // и приёмка на сцене остаётся настоящей дверью, ни разу не позвавшей git.
+  recordAttempt(home, { ...STAGE_DESIGN_ATTEMPT })
+  // Очередь сцены, помнящая нажатия человека: без неё дверь приёмки отвечала «не реализовано»,
+  // а на экране это читается как «этого в продукте нет».
+  const queue = stageQueue({ now: () => Date.now() })
 
   const config = stageConfig({ port: 0, token, projects, activeProject: STAGE_ACTIVE_PROJECT })
   // ФАЙЛ НАСТРОЕК СЦЕНЫ — во временном каталоге сцены и НАМЕРЕННО не такой, как копия выше.
@@ -334,8 +341,22 @@ async function main() {
       // row — the work that ran out of turns — because the card that offers a person his three
       // ways out cannot be looked at on a scene where nothing ever failed. Closed is the whole
       // difference: nothing here waits for a worker, so the queue is as empty as it was.
-      adapter: { list: async () => stageRows({ now: Date.now() }) },
+      adapter: { list: queue.list },
       deriveState,
+      // ═══ ПРИЁМКУ НА СЦЕНЕ МОЖНО НАЖАТЬ — И ЭТО НАСТОЯЩАЯ ДВЕРЬ ═══════════════════════
+      // Кнопка «Одобрить» стоит теперь прямо в строке ленты дня, то есть на первом же экране,
+      // и проверить её живьём без работающей двери нельзя вовсе: незакрытая дверь отвечает 501,
+      // а человек читает это как отсутствующую в продукте функцию.
+      //
+      // Двигает строку НАСТОЯЩИЙ CAS двери, а не сцена: сцена лишь помнит, куда он её перевёл.
+      // Слияния при этом не происходит ни одного — журнал попытки не называет ветки, и дверь
+      // сама решает, что сливать нечего. Ритуал слияния всё же назван, потому что без него
+      // дверь не открылась бы вовсе, и он ОТКАЗЫВАЕТ вслух: сцена веток не заводит, и молчаливо
+      // подтверждённое слияние было бы фикстурой, которая врёт про настоящее действие.
+      casExec: queue.casExec,
+      verbRunner: async () => {
+        throw new Error('сцена не сливает веток — их у неё нет')
+      },
       // ЧТО СТОИТ В ФАЙЛЕ НАСТРОЕК СЦЕНЫ — тем же чтением, каким его читает настоящий демон,
       // и по пути из окружения сцены, а не из дома оператора.
       configOnDisk: () => readConfigOnDisk({ env: { SMA_DAEMON_CONFIG: configPath } }),

@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react'
-import { useCancelTask, useReturnTask, useStateQuery } from '../../api/queries'
+import { useApprove, useCancelTask, useReturnTask, useStateQuery } from '../../api/queries'
 import { openScreen } from '../../shell/navigation'
 import type { BatchRow, DoneRow, QueueRow, WorkerRow } from '../../api/types'
 import { DayFeed } from './DayFeed'
 import type { OfferAct } from './offer'
 import { KpiStrip } from './KpiStrip'
 import { TaskPanel } from '../../shell/TaskPanel'
-import { accentFor, initialOf, plural } from '../../shell/format'
+import { accentFor, approvalRefusal, initialOf, plural, refusalWords } from '../../shell/format'
 
 /**
  * «Сегодня» — the screen a person opens in the morning to find out what happened while
@@ -65,6 +65,13 @@ export function Screen() {
   const putBack = useReturnTask()
   const cancel = useCancelTask(null)
   const [actProblem, setActProblem] = useState<string | null>(null)
+  // ПРИЁМКА ПРЯМО ИЗ СТРОКИ — ТА ЖЕ ДВЕРЬ, ЧТО У БОКОВОЙ ПАНЕЛИ, И НИ ОДНОГО НОВОГО МАРШРУТА.
+  // Экран держит две вещи, которых строка о себе знать не может: чью приёмку он сейчас ведёт
+  // (у соседних строк кнопки обязаны остаться живыми) и чем дверь отказала — по имени работы,
+  // потому что строк в ленте несколько, а отказ приехал на одну.
+  const approve = useApprove()
+  const [approvingId, setApprovingId] = useState<string | null>(null)
+  const [approveProblem, setApproveProblem] = useState<{ taskId: string; text: string } | null>(null)
 
   /**
    * ЧТО ДЕЛАЕТ НАЖАТИЕ НА КРАСНОЙ КАРТОЧКЕ. Три дела, и все три существовали до неё — не было
@@ -91,6 +98,36 @@ export function Screen() {
       return
     }
     cancel.mutate({ taskId }, { onError: failed })
+  }
+
+  /**
+   * ЧТО ДЕЛАЕТ НАЖАТИЕ «ОДОБРИТЬ» В СТРОКЕ. Ровно то же, что и в боковой панели: та же дверь,
+   * то же тело запроса, та же одна перечитка картины после ответа.
+   *
+   * УСПЕХ НИЧЕГО НЕ ГОВОРИТ, И ЭТО НЕ МОЛЧАНИЕ: принятая работа уходит из «Ждут вашего
+   * решения» на первом же перечитывании — это и есть ответ экрана. А вот ОТКАЗ обязан быть
+   * сказан словами, потому что дверь отвечает 200 и на нём: строка, промолчавшая об отказе,
+   * показывает человеку самый убедительный вид успеха — ровно та ловушка, на которой один раз
+   * уже стояла кнопка панели.
+   */
+  const approveRow = (taskId: string) => {
+    setApproveProblem(null)
+    setApprovingId(taskId)
+    const done = () => setApprovingId((id) => (id === taskId ? null : id))
+    approve.mutate(
+      { taskId },
+      {
+        onSuccess: (out) => {
+          done()
+          const refused = approvalRefusal(out)
+          if (refused) setApproveProblem({ taskId, text: refused })
+        },
+        onError: (err) => {
+          done()
+          setApproveProblem({ taskId, text: refusalWords(err) })
+        },
+      },
+    )
   }
 
   const data = state.data
@@ -174,6 +211,9 @@ export function Screen() {
             selectedId={selectedId}
             onOpen={setSelectedId}
             onAct={act}
+            onApprove={approveRow}
+            approvingId={approvingId}
+            approveProblem={approveProblem}
           />
         </div>
 

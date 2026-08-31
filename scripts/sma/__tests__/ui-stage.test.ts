@@ -25,6 +25,8 @@ import { describe, expect, it } from 'vitest'
 import {
   STAGE_ACTIVE_PROJECT,
   STAGE_CHAT_TURNS,
+  STAGE_DESIGN_ATTEMPT,
+  STAGE_DESIGN_TASK,
   STAGE_HOST,
   STAGE_PROJECTS,
   URL_ENV,
@@ -36,6 +38,8 @@ import {
   stageDiskConfig,
   stageProjectFiles,
   stageProjects,
+  stageQueue,
+  stageRows,
   stageUrl,
 } from '../lib/ui-stage.mjs'
 
@@ -271,6 +275,45 @@ describe('the kit — two trees, deliberately unalike', () => {
 
   it('answers an unknown tree with an empty one rather than throwing at the command that raises it', () => {
     expect(stageProjectFiles('nobody')).toEqual([])
+  })
+})
+
+/**
+ * ПРИЁМКУ НА СЦЕНЕ МОЖНО НАЖАТЬ — иначе главное действие человека в этом продукте проверяется
+ * живьём только на его настоящей очереди, то есть не проверяется вовсе. Строка при этом не
+ * выдаётся никому: сцена остаётся окном, а не флотом.
+ */
+describe('очередь сцены помнит, что человек с ней сделал', () => {
+  it('ждущая строка стоит в том самом статусе, из которого ходит дверь приёмки', () => {
+    const waiting = stageRows({ now: 1 }).filter((r) => r.status === 'awaiting_approval')
+    expect(waiting.map((r) => r.id)).toEqual([STAGE_DESIGN_TASK.id])
+  })
+
+  it('её строка реестра не называет ветки — дверь сама решает, что сливать нечего, и git не зовут', () => {
+    expect(STAGE_DESIGN_ATTEMPT.taskId).toBe(STAGE_DESIGN_TASK.id)
+    expect(STAGE_DESIGN_ATTEMPT).not.toHaveProperty('branch')
+  })
+
+  it('переход двери виден следующему чтению: строка ушла из ожидания человека', async () => {
+    const queue = stageQueue({ now: () => 1 })
+    const won = await queue.casExec('UPDATE …', ['approving', STAGE_DESIGN_TASK.id, 'awaiting_approval'])
+
+    expect(won.rows).toHaveLength(1)
+    const after = await queue.list()
+    expect(after.find((r) => r.id === STAGE_DESIGN_TASK.id)?.status).toBe('approving')
+  })
+
+  it('проигранная гонка отвечает нулём строк — второе нажатие не одобряет дважды', async () => {
+    const queue = stageQueue({ now: () => 1 })
+    await queue.casExec('UPDATE …', ['approving', STAGE_DESIGN_TASK.id, 'awaiting_approval'])
+    const again = await queue.casExec('UPDATE …', ['approving', STAGE_DESIGN_TASK.id, 'awaiting_approval'])
+
+    expect(again.rows).toEqual([])
+  })
+
+  it('никакая строка сцены работника не ждёт: очередь по-прежнему пуста для флота', async () => {
+    const rows = await stageQueue({ now: () => 1 }).list()
+    expect(rows.some((r) => r.status === 'queued' || r.status === 'claimed')).toBe(false)
   })
 })
 
