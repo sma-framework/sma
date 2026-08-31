@@ -49,6 +49,7 @@ import { DiffSummary, DiffText } from './DiffView'
 import { JournalSection } from './JournalSection'
 import { LiveFlow } from './LiveFlow'
 import { SpendPanel } from './SpendPanel'
+import { turnPlanLine, turnPlanWhy } from './turn-plan'
 
 /**
  * Три судьбы, которые может иметь поправка, набранная поверх живой работы. Названы типом, а не
@@ -951,6 +952,11 @@ export function Screen() {
     text,
     mark: promiseMark(status),
   }))
+  // СКОЛЬКО ХОДОВ ЭТОЙ РАБОТЕ ДАДУТ — рядом с обещанием, потому что считается оно ПО НЕМУ:
+  // по числу признаков и по их длине. Человек, видящий «мелкая» над списком из шести пунктов,
+  // видит ошибку формы обещания до того, как она будет стоить попытки.
+  const planLine = turnPlanLine(task?.turnPlan)
+  const planWhy = turnPlanWhy(task?.turnPlan)
   const done = doneItems(attempts, detail.data?.commits ?? [])
   const proof = proofItems(lastWithProof)
   const closing = closingWords(status)
@@ -1234,6 +1240,12 @@ export function Screen() {
                 empty="Квитанции пока нет — проверять ещё нечего."
               />
             </div>
+            {planLine ? (
+              <p className="m-0 px-1 text-[11.5px] text-tx3">
+                Размер работы: <span className="text-tx">{planLine}</span>
+                {planWhy ? <span> · {planWhy}</span> : null}
+              </p>
+            ) : null}
             {closing ? <p className="m-0 px-1 text-[11.5px] text-tx3">{closing}</p> : null}
           </div>
 

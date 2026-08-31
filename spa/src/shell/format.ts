@@ -80,6 +80,9 @@ export function attemptsLabel(n: number): string {
   return `${n} ${plural(n, 'подход', 'подхода', 'подходов')}`
 }
 
+/** Разметка пункта в начале строки — та же, что читает очередь (`PROMISE_BULLET` в adapter.mjs). */
+const PROMISE_BULLET = /^[ \t]*(?:[-–—*•]|\d{1,2}[.)])[ \t]+(\S.*)$/
+
 /**
  * ОБЕЩАННОЕ — СПИСКОМ, и ОДИН путь чтения на всё окно.
  *
@@ -91,13 +94,45 @@ export function attemptsLabel(n: number): string {
  * одним, границы пунктов исчезали, и пункт приёмки было физически не прочитать.
  *
  * Поэтому запись переехала сюда, где живёт всё, что нужно двум экранам сразу, и осталась ОДНА.
- * Строка — это РОВНО ОДИН пункт: резать её по точкам и запятым значило бы расставить границы,
- * которых автор не ставил, и отчитаться потом по выдуманному пункту.
+ * Строку режет ЕЁ СОБСТВЕННАЯ разметка — тире, звёздочка, номер в начале строки, — и ничего
+ * кроме: резать сплошной текст по точкам и запятым значило бы расставить границы, которых
+ * автор не ставил, и отчитаться потом по выдуманному пункту.
+ *
+ * ЭТО ЗЕРКАЛО `acceptanceItems` ИЗ ОЧЕРЕДИ, И ОНО СВЕРЯЕТСЯ ПРОГОНОМ (promise-shape.test.ts).
+ * Читающих троп две, потому что окно не ходит в код демона; разъехавшись, они показали бы
+ * человеку не тот список признаков, по которому судят работника, — а по пунктам обещания
+ * считается ещё и потолок ходов, так что расхождение стоило бы работе цены.
  */
 export function acceptanceList(acceptance: string | string[] | null | undefined): string[] {
   if (Array.isArray(acceptance)) return acceptance.map((s) => s.trim()).filter((s) => s.length > 0)
   const one = (acceptance ?? '').trim()
-  return one.length > 0 ? [one] : []
+  if (one.length === 0) return []
+  const lines = one.split(/\r?\n/)
+  if (!lines.some((l) => PROMISE_BULLET.test(l))) return [one]
+
+  const items: string[] = []
+  let cur: string | null = null
+  const close = () => {
+    if (cur === null) return
+    const s = cur.trim()
+    if (s.length > 0) items.push(s)
+    cur = null
+  }
+  for (const line of lines) {
+    const marked = PROMISE_BULLET.exec(line)
+    if (marked) {
+      close()
+      cur = marked[1].trim()
+      continue
+    }
+    if (line.trim().length === 0) {
+      close()
+      continue
+    }
+    cur = cur === null ? line.trim() : `${cur} ${line.trim()}`
+  }
+  close()
+  return items.length > 0 ? items : [one]
 }
 
 /** The clock face of a moment, in the reader's own time. A missing moment stays a dash. */
