@@ -224,6 +224,23 @@ export const RUNNER_SAID_NOTHING_RAN = 'прогонятель ответил, �
  */
 export const ENV_UNFIT_NOTE = 'среда прогона непригодна — прогон не запускался'
 
+/**
+ * ОТКАЗ, КОТОРЫЙ НЕ НАЗЫВАЕТ УПАВШЕГО ТЕСТА, ПЕРЕКЛАДЫВАЕТ РАССЛЕДОВАНИЕ НА ЧИТАТЕЛЯ.
+ *
+ * 31.08.2026 приёмка вернула ровно одну фразу — «тесты на сведённом рабочем дереве красные» —
+ * и ни слова о том, какой тест и почему. Приёмщик пошёл искать руками и нашёл не регрессию, а
+ * пустой склад зависимостей: час чужого времени и возвращённая работнику здоровая работа.
+ *
+ * Имя берётся у прогонятеля и НИКОГДА не выдумывается: прогонятель, который смолчал, назван
+ * смолчавшим. Правдоподобное имя хуже отсутствующего — по нему чинят не тот тест, а настоящая
+ * причина остаётся на месте.
+ */
+export const RED_RUN_NAME_MISSING = 'имя упавшего теста прогонятель не назвал — смотрите вывод прогона'
+export function redRunReason(failedTest) {
+  const named = typeof failedTest === 'string' && failedTest.trim() ? failedTest.trim() : null
+  return `тесты на сведённом рабочем дереве красные — слияние не зафиксировано; упал: ${named ?? RED_RUN_NAME_MISSING}`
+}
+
 /** The tree is left mid-merge only when the undo itself failed — and then it is NAMED. */
 function unfinishedMergeHint(cwd) {
   return `рабочее дерево осталось в НЕЗАВЕРШЁННОМ слиянии — выйти из него: git -C ${cwd} merge --abort`
@@ -255,7 +272,7 @@ function unfinishedMergeHint(cwd) {
  *   - concurrent hold: {merged:false, softDenied:true, override, holder}
  *   - nothing to merge: {merged:true, alreadyUpToDate:true, testsPassed:null, testsNote, branch, resultSha:null, receipt}
  *   - env broken:      {merged:false, refused:true, envBroken:true, testsPassed:null, testsNote, reason, branch, receipt}
- *   - refused (red):   {merged:false, testsPassed:false, refused:true, branch, receipt[, unfinishedMerge, howToClear]}
+ *   - refused (red):   {merged:false, testsPassed:false, refused:true, branch, receipt[, failedTest, failureDetail][, unfinishedMerge, howToClear]}
  *   - merged:          {merged:true, testsPassed:boolean|null, testsNote?, branch, resultSha, receipt}
  *   - error:           {ok:false, message[, unfinishedMerge, howToClear]}
  */
@@ -349,6 +366,11 @@ export async function runMerge(o = {}) {
     // true and false state an OUTCOME, null states that there was no run to have an outcome.
     let testsPassed = null
     let testsNote = NO_RUNNER_NOTE
+    // ЧТО ИМЕННО УПАЛО — если прогонятель это сказал. Ритуал ничего не выясняет сам и ничего
+    // не додумывает: он ДОНОСИТ. Прогонятель, промолчавший об имени, оставляет здесь null, и
+    // отказ ниже скажет об этом словами вместо правдоподобной выдумки.
+    let failedTest = null
+    let failureDetail = null
 
     // (4a) ПЕРЕД ПРОГОНОМ — ГОДИТСЯ ЛИ СРЕДА. Спрашивается ТОЛЬКО когда прогонятель есть:
     // сборке без прогонятеля нечего защищать, и отказ там остановил бы работу ни за что.
@@ -418,6 +440,8 @@ export async function runMerge(o = {}) {
       } else {
         testsPassed = !!(tr && tr.passed)
         testsNote = null
+        failedTest = typeof tr.failedTest === 'string' && tr.failedTest.trim() ? tr.failedTest.trim() : null
+        failureDetail = typeof tr.failureDetail === 'string' && tr.failureDetail.trim() ? tr.failureDetail.trim() : null
       }
     }
 
@@ -439,7 +463,9 @@ export async function runMerge(o = {}) {
         repo: cwd,
         testsPassed: false,
         refused: true,
-        reason: 'тесты на сведённом рабочем дереве красные — слияние не зафиксировано',
+        reason: redRunReason(failedTest),
+        ...(failedTest ? { failedTest } : {}),
+        ...(failureDetail ? { failureDetail } : {}),
         ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
       }
       try {
@@ -455,6 +481,8 @@ export async function runMerge(o = {}) {
         refused: true,
         branch,
         receipt,
+        ...(failedTest ? { failedTest } : {}),
+        ...(failureDetail ? { failureDetail } : {}),
         ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
       }
     }

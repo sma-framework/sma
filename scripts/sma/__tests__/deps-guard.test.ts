@@ -64,6 +64,10 @@ beforeEach(() => {
   write(join(mainTree, '.sma', 'worktree-include'), JSON.stringify({ copy: [], link: ['node_modules', 'daemon/node_modules', 'spa/node_modules'] }))
   write(join(mainTree, 'package.json'), JSON.stringify({ devDependencies: { vitest: '^4' } }))
   write(join(mainTree, 'node_modules', 'vitest', 'index.js'), '// dep\n')
+  // Здоровая машина умеет ЗАПУСТИТЬ движок, а не только показать его папку: манифест с
+  // файлом запуска и сам файл. Без них дерево этой песочницы честно непригодно.
+  write(join(mainTree, 'node_modules', 'vitest', 'package.json'), JSON.stringify({ bin: { vitest: './vitest.mjs' } }))
+  write(join(mainTree, 'node_modules', 'vitest', 'vitest.mjs'), '// entry\n')
   write(join(mainTree, 'daemon', 'package.json'), JSON.stringify({ dependencies: { 'pg-boss': '^11' } }))
   write(join(mainTree, 'daemon', 'node_modules', 'pg-boss', 'index.js'), '// dep\n')
 
@@ -264,6 +268,11 @@ describe('пригодность среды — «среда сломана» в
     files: {
       '/tree/package.json': JSON.stringify({ devDependencies: { vitest: '^4' } }),
       '/tree/node_modules/vitest': '',
+      // МАНИФЕСТ ДВИЖКА И ЕГО ФАЙЛ ЗАПУСКА — часть здорового дерева, а не украшение:
+      // склад, в котором папка движка есть, а запускать нечем, 31.08 читался как «тесты
+      // красные», и разница видна только отсюда.
+      '/tree/node_modules/vitest/package.json': JSON.stringify({ bin: { vitest: './vitest.mjs' } }),
+      '/tree/node_modules/vitest/vitest.mjs': '',
       '/tree/daemon/package.json': JSON.stringify({ dependencies: { 'pg-boss': '^11' } }),
       '/tree/daemon/node_modules/pg-boss': '',
     },
@@ -318,6 +327,56 @@ describe('пригодность среды — «среда сломана» в
     const res: any = checkEnvironmentFitness({ root: ROOT, fsImpl: fakeFs(spec) })
     expect(res.fit).toBe(false)
     expect(res.reason).toContain('нет каталога зависимостей')
+  })
+
+  /**
+   * ═══ ДВИЖОК ТЕСТОВ — ОТДЕЛЬНЫЙ ВОПРОС, А НЕ ЧАСТЬ ОБЩЕЙ ПЕРЕКЛИЧКИ ══════════════════
+   *
+   * 31.08.2026 в складе осталось 39 записей из сотен, каталога `.bin` не было вовсе, и
+   * `vitest` не находился КОМАНДОЙ. Перекличка объявленных зависимостей такой склад может
+   * и пропустить: папка движка на месте, а запускать в ней нечего. Гейт обязан спросить
+   * ровно то, что ему нужно от дерева, — «этот прогон вообще запустится?», — и ответить
+   * своими словами, а не молча пропустить прогон, которого не будет.
+   */
+  it('папка движка есть, а файла запуска нет — это среда, и движок назван по имени', () => {
+    const spec = healthy()
+    delete spec.files['/tree/node_modules/vitest/vitest.mjs']
+    const res: any = checkEnvironmentFitness({ root: ROOT, fsImpl: fakeFs(spec) })
+    expect(res.fit, 'дерево, в котором нечем запуститься, не годится').toBe(false)
+    expect(res.reason).toContain('движок тестов')
+    expect(res.reason).toContain('vitest')
+  })
+
+  it('манифест движка не читается — тоже среда, а не красные тесты', () => {
+    const spec = healthy()
+    delete spec.files['/tree/node_modules/vitest/package.json']
+    const res: any = checkEnvironmentFitness({ root: ROOT, fsImpl: fakeFs(spec) })
+    expect(res.fit).toBe(false)
+    expect(res.reason).toContain('движок тестов')
+  })
+
+  it('дерево, не объявлявшее движка, о нём и не спрашивается', () => {
+    const spec: any = healthy()
+    spec.files['/tree/package.json'] = JSON.stringify({ dependencies: { 'pg-boss': '^11' } })
+    spec.files['/tree/node_modules/pg-boss'] = ''
+    spec.dirs['/tree/node_modules'] = [{ name: 'pg-boss', dir: true }]
+    delete spec.files['/tree/node_modules/vitest']
+    delete spec.files['/tree/node_modules/vitest/package.json']
+    delete spec.files['/tree/node_modules/vitest/vitest.mjs']
+    const res: any = checkEnvironmentFitness({ root: ROOT, fsImpl: fakeFs(spec) })
+    expect(res.fit, 'проект без движка тестов не сломан — он просто другой').toBe(true)
+  })
+
+  /**
+   * ОТКАЗ БЕЗ КОМАНДЫ ВЫХОДА — это половина отказа: человек у окна читает «среда сломана» и
+   * идёт спрашивать, чем её чинят. 31.08 чинилось одной командой, и она была известна.
+   */
+  it('отказ по среде несёт КОМАНДУ восстановления, а не только диагноз', () => {
+    const spec = healthy()
+    spec.dirs['/tree/daemon/node_modules'] = []
+    const res: any = checkEnvironmentFitness({ root: ROOT, fsImpl: fakeFs(spec) })
+    expect(res.fit).toBe(false)
+    expect(res.reason, 'диагноз без команды заставляет человека спрашивать').toContain('--frozen-lockfile')
   })
 
   it('своя поломка читается как «годится»: страж не останавливает работу собственной ошибкой', () => {
