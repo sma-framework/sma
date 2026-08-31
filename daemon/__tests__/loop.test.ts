@@ -67,7 +67,7 @@ import {
 } from '../src/loop.mjs'
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { createAgingMemory } from '../src/policy/aging-memory.mjs'
-import { createMemoryQueue, REASON_LABELS } from '../src/queue/adapter.mjs'
+import { createMemoryQueue, REASON_LABELS, failureAwaitsAPerson } from '../src/queue/adapter.mjs'
 // Единый журнал срывов — читается и пишется здесь через те же две функции, что демон
 // подаёт тику швом `ledger`: тест о том, что срыв доезжает до журнала САМ, не имеет права
 // подсовывать проходу свой журнал в памяти.
@@ -1780,6 +1780,146 @@ describe('обрыв на стороне провайдера назван об�
     })
     const { res } = await runWithLines([talk, JSON.stringify({ type: 'result', is_error: false, session_id: 's-ok' })])
     expect(res.failed).toEqual({ taskId: 'BL-529', reason: 'no_journal' })
+  })
+})
+
+/**
+ * ═══════ ОБРЫВ ПОСТАВЩИКА НЕ БЫВАЕТ «СДЕЛАНО» — И НЕ ПРОПАДАЕТ ИЗ ВИДУ ═══════
+ *
+ * ЗАМЕР 30.08.2026, живой самотёк, две задачи подряд: в 19:02 и 19:03 UTC поставщик оборвал
+ * два прогона одной причиной (`api_error 429: You've hit your session limit`). Демон честно
+ * назвал обрыв в своём журнале — и обе строки ушли в `done`. Работы не было сделано никакой:
+ * квитанция у обеих оказалась ВЫВЕДЕННОЙ (`unverified`), то есть посчитанной из числа
+ * коммитов на ветке, а не заработанной перепроверкой. С доски они исчезли совсем — «сделано»
+ * не ждёт приёмки так, как ждёт её красная строка, — и человек о потере не узнал.
+ *
+ * ДВЕ ПОЛОВИНЫ ЗАКОНА, И ОБЕ ЗДЕСЬ:
+ *   · выведенная квитанция у оборванного прогона не считается ничем: ничего не заверено, а
+ *     число коммитов у прогона, который не начинался, — это чужие коммиты вершины;
+ *   · перепроверка, ДЕЙСТВИТЕЛЬНО прогнавшая ветку зелёной, остаётся зачтённой, кто бы ни
+ *     закрыл сессию: отказать ей значило бы выбросить подтверждённую работу и оплатить её
+ *     заново. Этот случай стоит ниже рядом с первыми — иначе починка «на всякий случай»
+ *     съела бы соседний закон, и никто бы этого не заметил.
+ *
+ * И ТРЕТЬЕ: журнал срывов узнаёт об обрыве В МОМЕНТ события. Метла (шаг 1c) видит только то,
+ * что очередь САМА называет сорвавшимся, а срыв поставщика — конец ПЕРЕВЫДАВАЕМЫЙ: строка
+ * возвращается в очередь как ожидающая, и метле она не видна вовсе, пока не кончатся
+ * перевыдачи. Замерено 30.08: строки о двух обрывах не было в журнале и через 40 минут.
+ */
+describe('обрыв поставщика: не «сделано», и журнал срывов узнаёт сразу', () => {
+  // Кадр из живого прогона 30.08: лимит сессии, CLI закончил прогон своей ошибкой.
+  const PROVIDER_429 = JSON.stringify({
+    type: 'result',
+    subtype: 'error_during_execution',
+    is_error: true,
+    terminal_reason: 'api_error',
+    api_error_status: 429,
+    result: "API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"You've hit your session limit\"}}",
+    session_id: 's-429',
+  })
+  const NOTE = 'APPROACH_NOTE: прямой путь'
+
+  /**
+   * Попытка, у которой ЕСТЬ и записка, и слово об уроке, — то есть все условия двери «сделано»,
+   * кроме заработанной квитанции, — оборванная поставщиком на завершающем кадре.
+   */
+  const runAborted = async (reverify: any) => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const bugs: any[] = []
+    const attempts: any[] = []
+    const { deps } = makeDeps({
+      adapter,
+      responses: DIFF_RESPONSES(reverify),
+      spawnWorker: makeSpawnWorker(undefined, { lines: ['stream line', NOTE, PROVIDER_429], code: 1 }),
+      deps: {
+        execGit: makeGateGit(),
+        ledger: {
+          recordAttempt: (a: any) => {
+            attempts.push(a)
+            return a
+          },
+          readAttempts: (id: string) => attempts.filter((x) => x.taskId === id),
+          appendBug: (b: any) => {
+            bugs.push(b)
+            return b
+          },
+          readBugs: () => bugs,
+        },
+      },
+    })
+    const res = await tick(deps)
+    return { res, adapter, bugs, attempts }
+  }
+
+  /** Снимок с историческим расхождением: до попытки и после неё он один и тот же. */
+  const stale = answer([rec('R-A', 'divergent')])
+
+  it('дерево без рецептов: квитанция ВЫВЕДЕНА из коммитов → не done, а provider_error', async () => {
+    const { res, adapter } = await runAborted(inTurn([answer([]), answer([])]))
+
+    expect(res.completed).toBeUndefined()
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'provider_error' })
+    expect(adapter.calls.map((c: any) => c.op)).toEqual(['fail'])
+  })
+
+  it('снимки совпали: та же выведенная квитанция у оборванного прогона → provider_error', async () => {
+    const { res, adapter } = await runAborted(inTurn([stale, stale]))
+
+    expect(res.completed).toBeUndefined()
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'provider_error' })
+    expect(adapter.calls[0]).toMatchObject({ op: 'fail', reason: 'provider_error' })
+  })
+
+  it('строка не пропадает тихо: конец перевыдаваемый, и подпись называет поставщика словами', async () => {
+    const { res } = await runAborted(inTurn([stale, stale]))
+
+    expect(res.failed?.reason).toBe('provider_error')
+    // Перевыдаваемый конец = строка возвращается в очередь, а не закрывается «ждёт человека».
+    expect(failureAwaitsAPerson('provider_error')).toBe(false)
+    expect(REASON_LABELS.provider_error).toMatch(/провайдер/i)
+  })
+
+  it('журнал срывов получает строку В МОМЕНТ обрыва — метла тут ни при чём', async () => {
+    const { bugs } = await runAborted(inTurn([stale, stale]))
+
+    expect(bugs).toHaveLength(1)
+    expect(bugs[0]).toMatchObject({
+      taskId: 'BL-1',
+      attempt: 1,
+      reason: 'provider_error',
+      cause: 'provider_error',
+      // Кто дописал строку — сказано полем, а не выведено из формы: у метлы своё слово.
+      source: 'live',
+    })
+    // Очередь этой попытки метле не показывала вовсе (`list` пуст) — строка пришла от двери.
+    expect(bugs[0].endedAt).toEqual(expect.any(String))
+  })
+
+  it('журнал, которого нет, не стоит задаче ничего: реестр без двери срывов — не отказ', async () => {
+    const adapter = oneTaskAdapter(backlogTask({ attempt: 1 }))
+    const { deps } = makeDeps({
+      adapter,
+      responses: DIFF_RESPONSES(inTurn([stale, stale])),
+      spawnWorker: makeSpawnWorker(undefined, { lines: ['stream line', NOTE, PROVIDER_429], code: 1 }),
+      deps: { execGit: makeGateGit() }, // реестр по умолчанию — без appendBug
+    })
+
+    const res = await tick(deps)
+
+    expect(res.failed).toEqual({ taskId: 'BL-1', reason: 'provider_error' })
+  })
+
+  /**
+   * СОСЕДНИЙ ЗАКОН НЕ СЪЕДЕН. Ветка, которую перепроверка прогнала зелёной и выдала на неё
+   * СВОЮ квитанцию, — законченная работа, кто бы ни закрыл сессию следом. Починка выше режет
+   * ровно выведенную квитанцию, и этот случай — граница между ними.
+   */
+  it('перепроверка выдала СВОЮ квитанцию → работа остаётся сделанной, кто бы ни закрыл сессию', async () => {
+    const { res, adapter, bugs } = await runAborted(GREEN_REVERIFY)
+
+    expect(res.completed).toBe('BL-1')
+    expect(adapter.calls[0]).toMatchObject({ op: 'complete' })
+    expect(bugs).toEqual([]) // сорвавшейся эта попытка не была — и в журнале срывов ей не место
   })
 })
 
