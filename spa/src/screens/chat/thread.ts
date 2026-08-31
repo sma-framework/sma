@@ -1,4 +1,4 @@
-import type { ChatTurn } from '../../api/types'
+import type { ChatConversation, ChatTurn } from '../../api/types'
 
 /**
  * НИТЬ РАЗГОВОРА — ОДНА НА ПРОЕКТ, И ЕЁ ВЫБИРАЕТ КНИГА, А НЕ ПАМЯТЬ ОКНА.
@@ -38,4 +38,51 @@ export function threadOf(turns: readonly ChatTurn[] | undefined): string | undef
     if (id) return id
   }
   return undefined
+}
+
+/**
+ * ═════ ОТКРЫТИЕ ОКНА ПОДНИМАЕТ ПОСЛЕДНИЙ РАЗГОВОР, А НЕ ЗАВОДИТ НОВЫЙ ═════
+ *
+ * Слово владельца 31.08: «почему разговор когда открываю у него нет истории? через раз
+ * появляется». Замер назвал причину числом: в книге лежало 50 реплик, разложенных по
+ * ПЯТНАДЦАТИ беседам, — то есть окно заводило новую почти при каждом открытии, а показывало
+ * только текущую. «Через раз» — это и есть вид новой беседы изнутри.
+ *
+ * Правило поэтому одно и оно НАЗВАНО: открытие ПРОДОЛЖАЕТ самую свежую беседу списка. Новая
+ * заводится ровно одним способом — рукой человека («Новый разговор»), и это единственное
+ * место во всём экране, где `undefined` появляется намеренно.
+ *
+ * Список приезжает от двери свежим первым, и порядок здесь НЕ пересчитывается: он посчитан по
+ * книге там же, где книга и лежит. Иначе у списка слева и у ленты справа завелись бы две
+ * правды о том, какая беседа последняя, и разошлись бы они молча — ровно так и жил дефект.
+ */
+export function openThread(conversations: readonly ChatConversation[] | undefined): string | undefined {
+  const list = Array.isArray(conversations) ? conversations : []
+  const first = list.find((c) => c && typeof c.id === 'string' && c.id !== '')
+  return first ? first.id : undefined
+}
+
+/**
+ * Беседа списка по имени — или `undefined`, если такой в списке уже нет.
+ *
+ * Нужна затем, что имя беседы окно держит и ПОСЛЕ того, как список перечитан: беседа могла
+ * уехать за край книги, пока окно было открыто, и это «её больше не видно», а не «покажите
+ * пустоту вместо имени».
+ */
+export function conversationOf(
+  conversations: readonly ChatConversation[] | undefined,
+  id: string | undefined,
+): ChatConversation | undefined {
+  if (!id) return undefined
+  const list = Array.isArray(conversations) ? conversations : []
+  return list.find((c) => c && c.id === id)
+}
+
+/** Как беседа называется на экране, когда имени у неё нет вовсе. */
+export const UNNAMED_CONVERSATION = 'Без названия'
+
+/** Имя строки списка: данное рукой, выведенное из первых слов, или честное «без названия». */
+export function conversationName(conversation: ChatConversation | undefined): string {
+  const named = conversation && typeof conversation.title === 'string' ? conversation.title.trim() : ''
+  return named || UNNAMED_CONVERSATION
 }

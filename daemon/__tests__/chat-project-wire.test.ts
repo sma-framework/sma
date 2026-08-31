@@ -22,7 +22,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 import * as api from '../../spa/src/api/client'
 import { selectedProject, setSelectedProject } from '../../spa/src/api/selected-project'
-import { CHAT_KEY, STATE_KEY, chatHistoryQueryFn, selectProjectAndRefresh } from '../../spa/src/api/queries'
+import { CHAT_KEY, CHAT_LIST_KEY, STATE_KEY, chatHistoryQueryFn, selectProjectAndRefresh } from '../../spa/src/api/queries'
 import { bookOf, threadOf } from '../../spa/src/screens/chat/thread'
 
 type Call = { url: string; method: string }
@@ -103,6 +103,9 @@ describe('смена проекта перезапрашивает книгу р
 
     expect(invalidated).toContainEqual(STATE_KEY)
     expect(invalidated).toContainEqual(CHAT_KEY)
+    // …и ОГЛАВЛЕНИЕ книги вместе с ней: у другого проекта другие беседы, и список слева
+    // обязан смениться вместе с лентой, иначе окно предложит вернуться в чужой разговор
+    expect(invalidated).toContainEqual(CHAT_LIST_KEY)
   })
 
   it('перезапрос заказан ПОСЛЕ того, как зеркало переставлено — иначе перечиталась бы чужая книга', async () => {
@@ -117,7 +120,8 @@ describe('смена проекта перезапрашивает книгу р
 
     await selectProjectAndRefresh(queryClient, 'sma-dev')
 
-    expect(seen).toEqual(['sma-dev', 'sma-dev'])
+    // по разу на каждый перезапрашиваемый ключ: картина, книга и её оглавление
+    expect(seen).toEqual(['sma-dev', 'sma-dev', 'sma-dev'])
   })
 })
 
