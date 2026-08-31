@@ -72,8 +72,8 @@ export function StepPanel({
   const words = wordCount(draft)
 
   return (
-    <div className="flex flex-1 flex-col px-[34px] pt-[26px] pb-[30px]">
-      <div className="flex items-center gap-2.5 border-b border-bd pb-[18px]">
+    <div className="flex flex-1 flex-col px-5 pt-[26px] pb-[30px] sm:px-[34px]">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-bd pb-[18px]">
         <span aria-hidden className="h-1.5 w-1.5 flex-none rounded-full bg-green" />
         <span className="text-[11.5px] font-semibold tracking-[0.09em] text-tx3 uppercase">
           Руководитель команды · на связи
@@ -85,7 +85,10 @@ export function StepPanel({
       {answered.length > 0 || hiddenAnswers > 0 ? (
         <div className="my-1 max-h-[184px] overflow-y-auto">
           {answered.map((a) => (
-            <div key={a.key} className="flex items-baseline gap-3 border-b border-bd px-0.5 py-2.5">
+            <div
+              key={a.key}
+              className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-bd px-0.5 py-2.5"
+            >
               <span aria-hidden className="flex-none text-[12px] font-semibold text-ok-tx">
                 ✓
               </span>
@@ -173,7 +176,12 @@ export function StepPanel({
 
       {problem ? <p className="mt-3.5 mb-0 text-[12.5px] text-err-tx">{problem}</p> : null}
 
-      <div className="mt-auto flex items-center gap-2.5 pt-[22px]">
+      {/*
+        Кнопки и подсказка переносятся: «Назад», «Пропустить вопрос», строка про Ctrl+Enter и
+        «Дальше» в один ряд на телефоне не помещаются, а ряд без переноса растянул бы панель,
+        панель — страницу.
+      */}
+      <div className="mt-auto flex flex-wrap items-center gap-2.5 pt-[22px]">
         {onBack ? (
           <button
             type="button"

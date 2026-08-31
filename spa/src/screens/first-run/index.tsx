@@ -32,6 +32,23 @@ import type { Asked } from './shared'
  * The window has no navigation yet: a person meets the house after it is theirs. The shell
  * appears by itself when the interview is done, because `needed` turns false the moment the
  * profile exists — this screen does not switch anything; it simply stops being needed.
+ *
+ * ═════════════════ ПОМЕЩАЕТСЯ В ТЕЛЕФОН, ПОТОМУ ЧТО ЕГО ВИДЯТ С ТЕЛЕФОНА ═════════════
+ *
+ * Здесь единственный экран продукта, у которого нет рамы: он занимает страницу целиком,
+ * минуя оболочку, а вместе с ней и её развилку «широкое окно или узкая полоса». Поэтому то,
+ * что для остальных экранов решает рама, здесь не решает никто — и жёсткий пол ширины,
+ * поставленный на этот контейнер, уносил вбок ВСЮ страницу: на планшете и на телефоне человек
+ * видел логотип и два полуслова, а прокрутка вправо тащила интерфейс вместо того, чтобы
+ * показать следующую колонку. Это первое, что видит новый человек, и увидеть он это может с
+ * чего угодно, что было под рукой.
+ *
+ * Пола ширины больше нет, и вместо него — перестроение: до `lg` разговор и колонка «что уже
+ * готово» стоят друг под другом, полоса шагов складывается с четырёх столбцов на два и на
+ * один, поля экрана ужимаются. Ничего не спрятано и не обрезано — на узкой ширине показано
+ * ровно то же самое, только сверху вниз. Своя боковая прокрутка была бы вторым вариантом, но
+ * прокручивать первый экран знакомства вбок — это просить человека возить страницу руками,
+ * чтобы прочитать вопрос.
  */
 
 /** The mark on a step: done, being asked, or still ahead. */
@@ -53,7 +70,10 @@ function StepMark({ step }: { step: OnboardingStep }) {
 
 function StepsBar({ steps }: { steps: OnboardingStep[] }) {
   return (
-    <div className="grid grid-cols-4 gap-3.5 pb-6">
+    // Четыре шага в ряд — там, где на ряд хватает ширины. Ниже они складываются на два и на
+    // один: подпись шага не переносится по словам, и четыре таких подписи на телефоне не
+    // ужимаются, а выталкивают полосу за край экрана вместе со всей страницей.
+    <div className="grid grid-cols-1 gap-3.5 pb-6 sm:grid-cols-2 lg:grid-cols-4">
       {steps.map((s) => {
         const pct = s.total > 0 ? Math.round((s.answered / s.total) * 100) : 0
         const full = s.total > 0 && s.answered >= s.total
@@ -100,7 +120,7 @@ function DonePanel({
   onBack: (() => void) | null
 }) {
   return (
-    <div className="flex flex-1 flex-col px-[34px] pt-[52px] pb-11">
+    <div className="flex flex-1 flex-col px-5 pt-[52px] pb-11 sm:px-[34px]">
       <div className="text-[34px] leading-[1.2] font-bold tracking-[-0.02em] text-tx">Дом готов</div>
       <div className="mt-3 max-w-[52ch] text-[15px] leading-[1.6] text-tx2">
         Команда на связи, правила безопасности включены, записная книжка ждёт Ваших уроков.
@@ -128,7 +148,7 @@ function DonePanel({
 
       {problem ? <p className="mt-4 mb-0 text-[12.5px] text-err-tx">{problem}</p> : null}
 
-      <div className="mt-auto flex items-center gap-3.5 pt-[26px]">
+      <div className="mt-auto flex flex-wrap items-center gap-3.5 pt-[26px]">
         <button
           type="button"
           onClick={onOpen}
@@ -291,8 +311,13 @@ export function Screen() {
     <div className="flex min-h-screen flex-col">
       <div className="h-[3px] flex-none bg-gradient-to-r from-[#243B66] via-[#1B7E9C] to-[#74DBA0]" />
 
-      <div className="mx-auto flex w-full max-w-[1520px] min-w-[1280px] flex-1 flex-col px-14 pt-6">
-        <header className="flex items-center justify-between gap-6 pb-5">
+      {/*
+        Потолок ширины есть, пола нет: содержимое не разъезжается на большом экране и не
+        требует минимума на маленьком. Поля — единственное число, из которого считается, что
+        помещается в телефон, поэтому узкое значение стоит первым и безусловным.
+      */}
+      <div className="mx-auto flex w-full max-w-[1520px] flex-1 flex-col px-5 pt-6 lg:px-14">
+        <header className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 pb-5">
           <div className="flex items-center gap-2.5">
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden>
               <defs>
@@ -317,7 +342,7 @@ export function Screen() {
             <span className="text-[13px] font-medium text-tx2">Первый запуск</span>
           </div>
           {state ? (
-            <div className="flex items-center gap-2.5">
+            <div className="flex flex-wrap items-center justify-end gap-2.5">
               <span className="text-[12.5px] text-tx3">
                 Рассказано {told} из {totalQuestions} · {words} сл.
               </span>
@@ -340,7 +365,13 @@ export function Screen() {
 
         <StepsBar steps={steps} />
 
-        <div className="flex items-start gap-[22px] pb-[26px]">
+        {/*
+          Разговор и колонка «что уже готово» встают в ряд там, где на два столбца хватает
+          ширины, и друг под другом там, где не хватает. Порог один и тот же у обоих — у ряда
+          здесь и у ширины колонки в ReadyColumn: разойдясь, они дали бы либо колонку в 356px
+          на телефоне, либо ряд из двух нечитаемых полосок.
+        */}
+        <div className="flex flex-col gap-[22px] pb-[26px] lg:flex-row lg:items-start">
           <div className="flex min-h-[560px] min-w-0 flex-1 flex-col rounded-[14px] border border-bd bg-card shadow-panel">
             {onboarding.isLoading ? (
               <div className="p-[34px] text-[13px] text-tx2">Открываю первый запуск…</div>
