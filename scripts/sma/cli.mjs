@@ -1280,6 +1280,11 @@ async function cmdLint({ flags, dirs }) {
     ...((d) => (d ? { calibrationDir: d } : {}))(
       lint.plansHouseCalibrationDir(plansDir, dirs && dirs.calibrationDir ? dirs.calibrationDir : undefined),
     ),
+    // PRED-POSTEDIT/CONS-POSTEDIT date the pre-registration lock from a plan's
+    // FIRST EXECUTION ATTEMPT, and the attempts of a plans tree are journalled by
+    // ITS house's execute ritual — resolved beside the tree for the same reason
+    // the ledger is, falling back to the verb's own .sma/exec.
+    ...((d) => (d ? { execDir: d } : {}))(lint.plansHouseExecDir(plansDir, dirs && dirs.execDir ? dirs.execDir : undefined)),
     // MEM-OFFPIPELINE needs the write pipeline's own journal — the ONE machine
     // record of which notes actually walked it. The verb has already resolved
     // that directory (the same one `memory write` appends to), so it is handed

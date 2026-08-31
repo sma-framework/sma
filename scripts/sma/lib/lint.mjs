@@ -93,6 +93,10 @@ import { PERSONAL_PATTERNS, JOURNAL_EVENT_TYPE, CORPUS_LANDED_OUTCOMES } from '.
 // missing-dir-safe) and never opens a .jsonl itself — the same delegation lock
 // every other family here lives under.
 import { readJournal } from './journal.mjs'
+// The POSTEDIT family dates a plan's FIRST EXECUTION ATTEMPT through the exec
+// journal's own reader (same delegation lock): the attempt is the moment the
+// pre-registration lock closes, so this file must read that record, never guess it.
+import { read as readExecJournal } from './exec-journal.mjs'
 // the FRAG family delegates ALL fragment schema/byte/trigger
 // judgment to the fragments lib (validateFragment over <corpusDir>/fragments/) — one
 // boundary, never duplicated (same lock as PRED → predict.mjs). A missing/empty
@@ -362,8 +366,24 @@ export function extractPredictionsBlock(text) {
  * before this wire existed.
  */
 export function plansHouseCalibrationDir(plansDir, fallback, existsFn = existsSync) {
+  return plansHouseDir(plansDir, 'calibration', fallback, existsFn)
+}
+
+/**
+ * The exec journals a plans TREE is judged against — same wire, same reason as
+ * the ledger above: a plan's execution attempts are recorded by ITS house's
+ * execute ritual into <house>/.sma/exec. PRED-POSTEDIT/CONS-POSTEDIT date the
+ * pre-registration lock from that record, so linting another house's tree
+ * against the CALLER's exec dir would read «no attempt» for every plan there.
+ */
+export function plansHouseExecDir(plansDir, fallback, existsFn = existsSync) {
+  return plansHouseDir(plansDir, 'exec', fallback, existsFn)
+}
+
+/** <house>/.sma/<leaf> for the canonical <house>/.planning/phases layout. */
+function plansHouseDir(plansDir, leaf, fallback, existsFn) {
   if (typeof plansDir === 'string' && plansDir.trim() !== '') {
-    const house = join(plansDir, '..', '..', '.sma', 'calibration')
+    const house = join(plansDir, '..', '..', '.sma', leaf)
     if (existsFn(house)) return house
   }
   return fallback
@@ -552,6 +572,9 @@ function buildContext(opts) {
     // PRED-UNSCORED: where the verdicts live. Undefined means «not told», which
     // the rule reports as a degradation instead of reading as «nothing scored».
     calibrationDir: opts.calibrationDir,
+    // POSTEDIT family: where the per-plan execution journals live. This is what
+    // dates the FIRST EXECUTION ATTEMPT — the moment a pre-registered block locks.
+    execDir: opts.execDir,
     plans: opts.plansDir ? readOnce(listPlanFiles(opts.plansDir, '-PLAN.md')) : [],
     // RECEIPT-PROSE: SUMMARY files are read ONCE here, same posture as
     // plans — no check re-reads the disk.
@@ -1302,10 +1325,93 @@ function toPosixPath(p) {
 }
 
 /**
- * firstCommitTexts(ctx) — ONE git history walk, shared by the two POSTEDIT checks.
+ * The plan's FIRST EXECUTION ATTEMPT, read from its exec journal — epoch ms, or
+ * null when no attempt was ever recorded. Memoized on ctx.
+ *
+ * WHY THE ATTEMPT IS THE LOCK POINT. Pre-registration protects against fitting
+ * the predictions TO the result, so the lock must close at the moment a result
+ * becomes possible: the first attempt to EXECUTE the plan. Until then the plan is
+ * a draft, and the planning ritual itself prescribes revising it — «planner
+ * writes → checker checks → planner revises» is one loop, and the checker's
+ * revision legitimately touches the pre-registered blocks. Dating the lock from
+ * the first commit called that ritual fraud: measured 31.08.2026, six criticals
+ * on every freshly planned phase, for work the ritual demands.
+ *
+ * The <phase>-<plan> key is derived here rather than imported from goodhart.mjs
+ * (that module imports THIS one); the shape is the exec journal's own file naming.
+ */
+function firstAttempts(ctx) {
+  if (ctx._firstAttempts) return ctx._firstAttempts
+  const cache = new Map()
+  const execDir = typeof ctx.execDir === 'string' && ctx.execDir.trim() !== '' ? ctx.execDir : null
+  const api = {
+    at(plan) {
+      if (cache.has(plan.path)) return cache.get(plan.path)
+      let at = null
+      const id = basename(plan.path).replace(/-PLAN\.md$/i, '')
+      const cut = id.lastIndexOf('-')
+      if (execDir !== null && cut > 0) {
+        try {
+          const { events } = readExecJournal({ phase: id.slice(0, cut), plan: id.slice(cut + 1), execDir })
+          for (const e of events ?? []) {
+            const t = Date.parse(e && e.ts)
+            if (Number.isFinite(t) && (at === null || t < at)) at = t
+          }
+        } catch {
+          /* fail-open — an unreadable journal is «no attempt on record», never an accusation */
+        }
+      }
+      cache.set(plan.path, at)
+      return at
+    },
+  }
+  ctx._firstAttempts = api
+  return api
+}
+
+/**
+ * `<sha> <author-date-ISO>` -> {hash, at} (null on anything else). The AUTHOR
+ * date, like the summary-close walk next door: a rebase (this house squashes
+ * before every push) rewrites committer dates to «now», which would push every
+ * commit past every attempt and quietly restore the first-commit anchor.
+ */
+function parseLogRecord(line) {
+  const [hash, date] = String(line).trim().split(' ')
+  if (!/^[0-9a-f]{7,40}$/.test(hash ?? '')) return null
+  const at = Date.parse(date)
+  return { hash, at: Number.isFinite(at) ? at : null }
+}
+
+/** The commit whose text is the baseline: the newest one at-or-before the
+ *  attempt. Falls back to the plan's creation in the two cases where that
+ *  question has no answer — no attempt to date the lock, and every commit
+ *  postdating the attempt (a plan committed late still answers with the
+ *  earliest text it has, never with silence). */
+function pickBaselineRecord(list, at) {
+  if (at !== null) {
+    let best = null
+    for (const rec of list) {
+      if (rec.at === null || rec.at > at) continue
+      if (best === null || rec.at > best.at) best = rec
+    }
+    if (best) return best
+  }
+  return list[list.length - 1] // git log is newest-first: the last record is the creation
+}
+
+/** What a POSTEDIT finding compares against, in words — the reader must be able
+ *  to re-derive the verdict from the message alone. */
+function anchorWords(base) {
+  return base.anchor === 'attempt'
+    ? `the plan as it stood at its first execution attempt (${new Date(base.at).toISOString()}, exec journal)`
+    : "the plan's first commit (closed plan, no exec journal to date the attempt)"
+}
+
+/**
+ * lockBaselines(ctx) — ONE git history walk, shared by the two POSTEDIT checks.
  *
  * PRED-POSTEDIT and CONS-POSTEDIT ask the SAME question of the SAME files ("what
- * did this plan look like in its first commit?") and each used to answer it with
+ * did this plan look like when its blocks locked?") and each used to answer it with
  * `git log --follow` + `git show` PER PLAN. On the house corpus (151 plans) that
  * is 604 git processes, and it was 92 % of the whole lint's wall clock — measured
  * 2026-08-05: 176 s of a 193 s run, `git log --follow` alone ~0.55 s a file.
@@ -1313,25 +1419,34 @@ function toPosixPath(p) {
  *
  * The replacement asks git once per run and keeps every verdict identical:
  *   - one repo-wide `log --name-status --find-renames` walk gives, per path, the
- *     commits that touched it, newest first; the OLDEST record is its creation;
+ *     commits that touched it (with dates), newest first; the OLDEST is its creation;
  *   - a plan whose only commit IS that creation, and whose worktree copy is not
  *     modified against HEAD, needs no `git show` at all — the text already in
- *     memory IS its first-commit text;
+ *     memory IS its baseline text;
  *   - a plan the walk cannot answer for (untracked, renamed — renames are exactly
  *     what `--follow` exists for, and a path space the batch cannot map) falls
  *     back to the per-file `--follow` walk. A verdict is never silently lost.
  *
+ * WHICH commit is the baseline is decided by firstAttempts (above), not by this
+ * walk: the newest commit at-or-before the plan's first execution attempt. A plan
+ * with NO attempt on record is a draft — baselineOf returns null and neither check
+ * judges it. A CLOSED plan whose house kept no exec journal (the whole history
+ * before the journal existed) falls back to its first commit: a summary IS proof
+ * the plan ran, and «cannot date the attempt» must never read as «never ran».
+ *
  * Memoized on ctx: the second check pays nothing.
  */
-function firstCommitTexts(ctx) {
-  if (ctx._firstCommitTexts) return ctx._firstCommitTexts
+function lockBaselines(ctx) {
+  if (ctx._lockBaselines) return ctx._lockBaselines
   const execGit = ctx.execGit
+  const attempts = firstAttempts(ctx)
+  const closed = new Set((ctx.summaries ?? []).map((s) => basename(s.path)))
   const cache = new Map()
   // stderr is dropped on the batch calls: `git diff` narrates CRLF conversions,
   // and lint's own stderr is a progress channel, not git's.
   const readOpts = (cwd) => ({ cwd, stdio: ['ignore', 'pipe', 'ignore'] })
 
-  /** repo-relative path -> [{status, hash}], newest first. */
+  /** repo-relative path -> [{status, hash, at}], newest first. */
   const records = new Map()
   let dirty = null
   let prefix = null
@@ -1342,12 +1457,12 @@ function firstCommitTexts(ctx) {
       // NO pathspec: rename detection must see the whole tree, or a plan moved IN
       // from outside would read as a fresh creation (which `--follow` would not).
       const walk = String(
-        execGit(['-c', 'core.quotePath=false', 'log', '--find-renames', '--format=%x00%H', '--name-status'], readOpts(cwd)),
+        execGit(['-c', 'core.quotePath=false', 'log', '--find-renames', '--format=%x00%H %aI', '--name-status'], readOpts(cwd)),
       )
       for (const group of walk.split('\u0000').slice(1)) {
         const lines = group.split('\n')
-        const hash = lines[0].trim()
-        if (!/^[0-9a-f]{7,40}$/.test(hash)) continue
+        const commit = parseLogRecord(lines[0])
+        if (!commit) continue
         for (let i = 1; i < lines.length; i++) {
           if (lines[i].trim() === '') continue
           const parts = lines[i].split('\t')
@@ -1356,9 +1471,10 @@ function firstCommitTexts(ctx) {
           // path this walk knows, recorded as R so the plan takes the --follow path.
           const path = status === 'R' || status === 'C' ? parts[2] : parts[1]
           if (!path) continue
+          const rec = { status, hash: commit.hash, at: commit.at }
           const list = records.get(path)
-          if (list) list.push({ status, hash })
-          else records.set(path, [{ status, hash }])
+          if (list) list.push(rec)
+          else records.set(path, [rec])
         }
       }
       const diffOut = String(
@@ -1370,59 +1486,74 @@ function firstCommitTexts(ctx) {
     }
   }
 
-  /** The original per-file walk: `--follow` + `show`, unchanged. */
-  const perFile = (plan) => {
+  /** The original per-file walk: `--follow` + `show`, now date-aware. */
+  const perFile = (plan, at) => {
     try {
       // All git ops run with cwd = the plan's own directory and cwd-relative
       // paths (`<hash>:./<name>`), so Windows 8.3 short-path tmpdirs never
       // desync from git's long-name toplevel.
       const cwd = dirname(plan.path)
       const name = basename(plan.path)
-      // First commit = the LAST line of the --diff-filter=A first-parent walk.
-      const log = String(execGit(['log', '--follow', '--diff-filter=A', '--format=%H', '--', name], { cwd })).trim()
-      const hashes = log.split('\n').filter(Boolean)
-      if (!hashes.length) return null // never committed — the block is not locked yet
-      const first = hashes[hashes.length - 1]
-      return String(execGit(['show', `${first}:./${name}`], { cwd }))
+      const log = String(execGit(['log', '--follow', '--format=%H %aI', '--', name], { cwd })).trim()
+      const list = log.split('\n').map(parseLogRecord).filter(Boolean)
+      if (!list.length) return null // never committed — the block is not locked yet
+      return String(execGit(['show', `${pickBaselineRecord(list, at).hash}:./${name}`], { cwd }))
     } catch {
       return null // fail-soft: outside a repo / git error → no verdict on this plan
     }
   }
 
-  const resolve = (plan) => {
+  const resolve = (plan, at) => {
     if (prefix !== null && dirty !== null) {
       const key = prefix + toPosixPath(relative(ctx.plansDir, plan.path))
       const list = records.get(key)
       const oldest = list && list.length ? list[list.length - 1] : null
       if (oldest && oldest.status === 'A') {
-        // Only one commit ever touched it and the worktree matches HEAD: the
-        // first-commit text and the text in memory are the same bytes.
+        // Only one commit ever touched it and the worktree matches HEAD: whichever
+        // commit the lock point picks, its text and the text in memory are the same bytes.
         if (list.length === 1 && !dirty.has(key)) return plan.text
         try {
-          return String(execGit(['show', `${oldest.hash}:./${basename(plan.path)}`], { cwd: dirname(plan.path) }))
+          const pick = pickBaselineRecord(list, at)
+          return String(execGit(['show', `${pick.hash}:./${basename(plan.path)}`], { cwd: dirname(plan.path) }))
         } catch {
           return null
         }
       }
     }
-    return typeof execGit === 'function' ? perFile(plan) : null
+    return typeof execGit === 'function' ? perFile(plan, at) : null
   }
 
   const api = {
-    textOf(plan) {
+    /**
+     * The plan's baseline: {text, anchor:'attempt'|'first-commit', at} — or null
+     * when nothing locks it yet (no attempt on record and the plan is still open)
+     * or git can give no verdict (untracked, outside a repo).
+     */
+    baselineOf(plan) {
       if (cache.has(plan.path)) return cache.get(plan.path)
-      const text = resolve(plan)
-      cache.set(plan.path, text)
-      return text
+      const at = attempts.at(plan)
+      const anchor =
+        at !== null
+          ? 'attempt'
+          : closed.has(basename(plan.path).replace(/-PLAN\.md$/i, '-SUMMARY.md'))
+            ? 'first-commit'
+            : null
+      let res = null
+      if (anchor !== null) {
+        const text = resolve(plan, anchor === 'attempt' ? at : null)
+        if (text !== null) res = { text, anchor, at }
+      }
+      cache.set(plan.path, res)
+      return res
     },
   }
-  ctx._firstCommitTexts = api
+  ctx._lockBaselines = api
   return api
 }
 
 const PRED_POSTEDIT = {
   id: 'PRED-POSTEDIT',
-  title: 'Predictions are immutable after the plan\'s first commit (HARKing guard)',
+  title: 'Predictions are immutable from the plan\'s first execution attempt (HARKing guard)',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -1436,14 +1567,12 @@ const PRED_POSTEDIT = {
       }
       return out
     }
-    const first = firstCommitTexts(ctx)
-    // The boundary softening mirrors PRED-SELFTEST: before the form became law,
-    // the planning loop legitimately revised blocks between the plan's first
-    // commit and execution (checker-revision commits, measured on the live
-    // corpus: every flagged legacy diff sits in a pre-execution plan revision).
-    // A plan CLOSED before the boundary is MARKED (warn) — demanding a revert
-    // NOW would itself edit closed history. Open plans and plans closed after
-    // the boundary stay critical: the block lands in the first commit and holds.
+    const baselines = lockBaselines(ctx)
+    // The boundary softening mirrors PRED-SELFTEST: a plan CLOSED before the
+    // boundary is MARKED (warn) — demanding a revert NOW would itself edit closed
+    // history. Plans closed after the boundary stay critical. (The pre-execution
+    // planning revisions this softening used to absorb are no longer flagged at
+    // all: the lock closes at the first execution attempt, not at the first commit.)
     const dates = summaryCloseDates(ctx)
     const summaryByName = new Map()
     for (const s of ctx.summaries ?? []) summaryByName.set(basename(s.path), s)
@@ -1456,18 +1585,21 @@ const PRED_POSTEDIT = {
       done++
       if (ctx.tick) ctx.tick('PRED-POSTEDIT', done, ctx.plans.length, 'plans')
       const nowBlock = extractPredictionsBlock(plan.text)
-      const firstText = first.textOf(plan)
-      if (firstText === null) continue // never committed / no git verdict on this plan
-      const firstBlock = extractPredictionsBlock(firstText)
-      if (nowBlock === '' && firstBlock === '') continue
-      if (sha256(nowBlock) !== sha256(firstBlock)) {
+      const base = baselines.baselineOf(plan)
+      // No baseline = nothing to judge: the plan has no execution attempt on
+      // record (a draft the planning loop may still revise), or git can give no
+      // verdict on it (untracked, outside a repo).
+      if (base === null) continue
+      const baseBlock = extractPredictionsBlock(base.text)
+      if (nowBlock === '' && baseBlock === '') continue
+      if (sha256(nowBlock) !== sha256(baseBlock)) {
         const summary = summaryByName.get(basename(plan.path).replace(/-PLAN\.md$/i, '-SUMMARY.md'))
         let legacy = false
         if (summary) {
           const closedOn = dates ? dates.dates.get(dates.prefix + toPosixPath(relative(ctx.plansDir, summary.path))) : undefined
           legacy = closedOn === undefined || closedOn < PREDICTIONS_MEASURE_WORK_FROM
         }
-        out.push(finding('PRED-POSTEDIT', legacy ? 'warn' : 'critical', basename(plan.path), `predictions block in ${basename(plan.path)} differs from the plan's first commit — pre-registered predictions are immutable (HARKing guard)${legacy ? ` (closed before ${PREDICTIONS_MEASURE_WORK_FROM}: marked, pre-registered history is immutable — reverting a closed plan would itself rewrite history)` : '; revert the block, new claims go in a NEW plan'}`))
+        out.push(finding('PRED-POSTEDIT', legacy ? 'warn' : 'critical', basename(plan.path), `predictions block in ${basename(plan.path)} differs from ${anchorWords(base)} — pre-registered predictions are immutable from the first execution attempt on (HARKing guard)${legacy ? ` (closed before ${PREDICTIONS_MEASURE_WORK_FROM}: marked, pre-registered history is immutable — reverting a closed plan would itself rewrite history)` : '; revert the block, new claims go in a NEW plan'}`))
       }
     }
     return out
@@ -1868,7 +2000,7 @@ const CONS_SCHEMA = {
 
 const CONS_POSTEDIT = {
   id: 'CONS-POSTEDIT',
-  title: 'Consequences are immutable after the plan\'s first commit (the law cannot be renegotiated)',
+  title: 'Consequences are immutable from the plan\'s first execution attempt (the law cannot be renegotiated)',
   tier: 'critical',
   run(ctx) {
     const out = []
@@ -1882,9 +2014,12 @@ const CONS_POSTEDIT = {
       }
       return out
     }
-    // The SAME first-commit index PRED-POSTEDIT built (memoized on ctx): the two
-    // checks ask one question of one file set, so they pay for it once.
-    const first = firstCommitTexts(ctx)
+    // The SAME baseline index PRED-POSTEDIT built (memoized on ctx): the two
+    // checks ask one question of one file set, so they pay for it once. The lock
+    // point is the same too, and for the same reason — a consequence renegotiated
+    // while the plan is still a draft is not a renegotiation, it is planning; the
+    // law binds from the moment the bet can be settled, i.e. the first attempt.
+    const baselines = lockBaselines(ctx)
     let done = 0
     for (const plan of ctx.plans) {
       if (ctx.overBudget && ctx.overBudget()) {
@@ -1894,12 +2029,12 @@ const CONS_POSTEDIT = {
       done++
       if (ctx.tick) ctx.tick('CONS-POSTEDIT', done, ctx.plans.length, 'plans')
       const nowBlock = extractFrontmatterBlock(plan.text, 'consequences')
-      const firstText = first.textOf(plan)
-      if (firstText === null) continue // never committed — the law is not locked yet
-      const firstBlock = extractFrontmatterBlock(firstText, 'consequences')
-      if (nowBlock === '' && firstBlock === '') continue
-      if (sha256(nowBlock) !== sha256(firstBlock)) {
-        out.push(finding('CONS-POSTEDIT', 'critical', basename(plan.path), `consequences block in ${basename(plan.path)} differs from the plan's first commit — consequences are immutable after the plan's first commit (the law cannot be renegotiated after the bet is placed); revert the block, new terms go in a NEW plan`))
+      const base = baselines.baselineOf(plan)
+      if (base === null) continue // no attempt on record / no git verdict — the law is not locked yet
+      const baseBlock = extractFrontmatterBlock(base.text, 'consequences')
+      if (nowBlock === '' && baseBlock === '') continue
+      if (sha256(nowBlock) !== sha256(baseBlock)) {
+        out.push(finding('CONS-POSTEDIT', 'critical', basename(plan.path), `consequences block in ${basename(plan.path)} differs from ${anchorWords(base)} — consequences are immutable from the first execution attempt on (the law cannot be renegotiated after the bet is placed); revert the block, new terms go in a NEW plan`))
       }
     }
     return out
@@ -2971,6 +3106,7 @@ function sortFindings(findings) {
  * @param {string} [opts.claudeMdPath]  path to CLAUDE.md (for MEM-CLAUDEDUP)
  * @param {string} [opts.plansDir]  root of *-PLAN.md files (for the PRED family)
  * @param {(args:string[], o?:{cwd?:string})=>string} [opts.execGit]  read-only git runner (PRED-POSTEDIT)
+ * @param {string} [opts.execDir]  per-plan execution journals — what dates the POSTEDIT lock point
  * @param {number} [opts.budgetMs]  wall-clock budget; past it the run STOPS and says what it did not check
  * @param {(line:string)=>void} [opts.progress]  progress sink (default: stderr when it is a terminal)
  * @returns {{critical:number, warn:number, info:number, findings:Array, summary:string, exitCode:number,
