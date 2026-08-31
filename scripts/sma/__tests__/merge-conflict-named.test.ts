@@ -12,7 +12,8 @@
  *   2. механическое разводится без человека, и ритуал ИДЁТ ДАЛЬШЕ: тесты гоняются по уже
  *      разведённому дереву, слияние фиксируется;
  *   3. разведённое названо в квитанции — молчаливый автоматический развод неотличим от
- *      слияния, где спора не было;
+ *      слияния, где спора не было; вместе с ним едет и ОГОВОРКА развода: «прошло вопреки
+ *      отказу команды пересборки» — это не то же самое, что «прошло гладко»;
  *   4. осталось хоть что-то — слияние НЕ фиксируется, дерево откатывается, место отпущено;
  *   5. беда не про конфликт (грязное дерево, исчезнувшая ветка) отвечает ровно как раньше.
  */
@@ -113,6 +114,36 @@ describe('runMerge — конфликт называется по именам',
     expect(res.receipt.mechanicallyResolved).toEqual([{ file: 'README.md', how: 'union' }])
     expect(calls.some((c) => c[0] === 'commit')).toBe(true)
     expect(calls.some((c) => c.join(' ').includes('push'))).toBe(false)
+  })
+
+  // Развод, прошедший ВОПРЕКИ отказу команды пересборки, и развод гладкий — разные события.
+  // Квитанция, называющая их одинаково, врёт ровно тому читателю, ради которого пишется: у
+  // карты замера команда — аудитор, она пишет числа и тут же возвращает вердикт обо всём
+  // документе, и один посторонний упрёк делает её код возврата ненулевым.
+  it('оговорка развода едет в квитанцию, а не теряется по дороге к «слито»', async () => {
+    const { git } = fakeGit({
+      'merge --no-ff --no-commit': CONFLICT,
+      'diff --name-only': `docs/master-graph.html${NUL}`,
+      'rev-parse -q --verify MERGE_HEAD': 'abc\n',
+      'rev-parse HEAD': 'cafebabe\n',
+    })
+    const res: any = await runMerge({
+      branch: 'wt/T-1',
+      by: 'test',
+      execGit: git,
+      runTests: () => ({ passed: true }),
+      claimsDir: tmp,
+      journalDir: tmp,
+      cwd: tmp,
+      io: { readFileSync: () => '<p>5913 tests</p>', writeFileSync: () => {} },
+      run: () => {
+        throw new Error('doc-audit: 1 violation(s).')
+      },
+    })
+    expect(res.merged).toBe(true)
+    expect(res.mechanicallyResolved).toEqual([{ file: 'docs/master-graph.html', how: 'rederive' }])
+    expect(res.mechanicalNotes.join(' ')).toContain('по результату, а не по коду возврата')
+    expect(res.receipt.mechanicalNotes.join(' ')).toContain('1 violation')
   })
 
   it('красный прогон на разведённом дереве по-прежнему отказывает — гейт не ослаблен', async () => {

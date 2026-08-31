@@ -291,6 +291,13 @@ export async function runMerge(o = {}) {
   let conflictDetail = null
   /** Что развелось механически по дороге — едет в квитанцию, а не остаётся молчаливым. */
   let mechanicallyResolved = []
+  /**
+   * …И С КАКОЙ ОГОВОРКОЙ. Развод, прошедший вопреки отказу команды пересборки («аудитор вернул
+   * ненулевой код, но обе стороны пересобрались в одно»), и развод, прошедший гладко, — разные
+   * события. Квитанция, называющая их одинаково, врёт ровно тому читателю, ради которого она
+   * пишется; на пути отказа эти строки едут как `conflictNotes` — здесь у них та же цена.
+   */
+  let mechanicalNotes = []
   try {
     if (!branch || typeof branch !== 'string') return { ok: false, message: 'no-branch' }
 
@@ -340,6 +347,7 @@ export async function runMerge(o = {}) {
         throw err
       }
       mechanicallyResolved = fixed.resolved
+      mechanicalNotes = fixed.notes
     }
 
     // (3) was there anything to bring? An `--no-commit` merge of a branch that is already in
@@ -540,8 +548,10 @@ export async function runMerge(o = {}) {
       testsPassed,
       ...(testsPassed === null ? { testsNote } : {}),
       // ЧТО РАЗВЕЛОСЬ БЕЗ ЧЕЛОВЕКА — в квитанции, потому что автоматический развод, о котором
-      // никто не узнал, неотличим от слияния, где спора не было вовсе.
+      // никто не узнал, неотличим от слияния, где спора не было вовсе. Оговорка развода едет
+      // рядом: «прошло вопреки отказу команды» — это не то же самое, что «прошло гладко».
       ...(mechanicallyResolved.length ? { mechanicallyResolved } : {}),
+      ...(mechanicalNotes.length ? { mechanicalNotes } : {}),
     }
     try {
       appendEvent(
@@ -561,6 +571,7 @@ export async function runMerge(o = {}) {
       testsPassed,
       ...(testsPassed === null ? { testsNote } : {}),
       ...(mechanicallyResolved.length ? { mechanicallyResolved } : {}),
+      ...(mechanicalNotes.length ? { mechanicalNotes } : {}),
       branch,
       resultSha: resultSha || null,
       receipt,
