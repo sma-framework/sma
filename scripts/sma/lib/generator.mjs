@@ -47,6 +47,7 @@ import { join } from 'node:path'
 
 import { parseNote, loadTagsRegistry, resolveAlias } from './frontmatter.mjs'
 import { SENSITIVITY_CLASSES } from './schema-v2.mjs'
+import { ALWAYS_LOAD_BUDGET } from './constants.mjs'
 
 /** Importance at/above which a note is CORE (always loaded). Sparse by design (B9). */
 export const CORE_THRESHOLD = 9
@@ -797,6 +798,49 @@ function orderCore(coreNotes, cmp) {
   })
 }
 
+// ─────────────────── the always-load budget scale (in the inject) ────────────
+//
+// The byte budget existed in constants.mjs, in the size lint and in the economy
+// report long before it existed HERE — every one of those surfaces speaks to
+// someone who knew to ask. The reader of MEMORY.md is the one who never asks:
+// the index is injected into a session, spends the budget, and said nothing
+// about how much of it was left. The scale below puts the number on the line
+// that reader already reads.
+//
+// SHIPPED CONSTANT ONLY — never the `memoryAlwaysLoadBudget` config override
+// economy.alwaysLoadReport honours. The header is part of a byte-compared
+// artifact (lint MEM-REGEN regenerates and diffs), so a number that varied with
+// local config would turn a project's own override into a false 'hand-edited'
+// critical on every lint run.
+const SCALE_SLOT = '@@ALWAYS_LOAD_SCALE@@'
+
+/** The scale as it renders for a given artifact size. Same arithmetic as economy.alwaysLoadReport. */
+function scaleText(bytes) {
+  return `всегда-загружаемое: ${Math.round((bytes / ALWAYS_LOAD_BUDGET) * 100)}% бюджета (${bytes}/${ALWAYS_LOAD_BUDGET} байт)`
+}
+
+/**
+ * Resolve the self-referential scale: the number measures the very text it is
+ * printed in, so printing it can change what it should say (a byte count that
+ * crosses a digit boundary lengthens the line that carries it). Substituting
+ * once would ship a figure off by the width of its own digits.
+ *
+ * Fixed point, not arithmetic: substitute → measure → substitute again, until
+ * the text stops moving. Growth is monotone (more bytes → a same-or-longer
+ * number), so it converges — in practice on the second pass. The cap is a
+ * guard, never the exit taken, and the loop stays pure: same input, same bytes,
+ * no clock and no disk, which is what MEM-REGEN's byte-compare rests on.
+ */
+function resolveScale(text) {
+  let rendered = text.replace(SCALE_SLOT, scaleText(0))
+  for (let i = 0; i < 8; i++) {
+    const next = text.replace(SCALE_SLOT, scaleText(Buffer.byteLength(rendered, 'utf8')))
+    if (next === rendered) break
+    rendered = next
+  }
+  return rendered
+}
+
 /**
  * buildIndex(opts) — render the whole MEMORY.md artifact deterministically.
  *
@@ -837,7 +881,7 @@ export function buildIndex(opts) {
   out.push('')
   out.push('# MEMORY — сгенерированный индекс памяти (R3)')
   out.push('')
-  out.push(`> Построено из коммита \`${commitHash ?? EPOCH}\` · заметок: ${notes.length} · ядро: ${core.length} · индекс: ${periphery.length}.`)
+  out.push(`> Построено из коммита \`${commitHash ?? EPOCH}\` · заметок: ${notes.length} · ядро: ${core.length} · индекс: ${periphery.length} · ${SCALE_SLOT}.`)
   out.push('')
 
   // ── CORE (always loaded) ────────────────────────────────────────────────
@@ -869,8 +913,9 @@ export function buildIndex(opts) {
     out.push('')
   }
 
-  // LF endings, trailing newline, no BOM.
-  return out.join('\n')
+  // LF endings, trailing newline, no BOM. The budget scale resolves LAST, on the
+  // finished text, because the number it prints measures that very text.
+  return resolveScale(out.join('\n'))
 }
 
 // ─────────────────────────── per-area index files ────────────────────────────

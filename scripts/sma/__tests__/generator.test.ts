@@ -199,6 +199,22 @@ describe('generator.mjs — buildIndex (R3)', () => {
     // The status blocker precedes the procedural-rule inside CORE (status subsection first).
     expect(out.indexOf('(blocker.md)')).toBeLessThan(out.indexOf('(aaa.md)'))
   })
+
+  it('Test 6: the header carries the always-load budget scale — measured on the artifact itself', () => {
+    const out = buildIndex({ corpusDir, tagsPath, commitHash: HASH, dateMap, coreThreshold: 9 })
+    const head = out.split('\n').find((l) => l.startsWith('> Построено из коммита'))!
+    // The counts stay; the scale joins them on the SAME line the reader already reads.
+    expect(head).toContain('заметок: ')
+    const m = head.match(/всегда-загружаемое: (\d+)% бюджета \((\d+)\/(\d+) байт\)/)
+    expect(m).not.toBeNull()
+    const [, pct, bytes, budget] = m!
+    // Self-referential and exact: the number measures the very text it is printed in,
+    // so the reader of the inject sees the size of the inject, not of some earlier build.
+    expect(Number(bytes)).toBe(Buffer.byteLength(out, 'utf8'))
+    expect(Number(budget)).toBe(ALWAYS_LOAD_BUDGET)
+    // Same arithmetic as economy.alwaysLoadReport — surfaces cannot disagree.
+    expect(Number(pct)).toBe(Math.round((Number(bytes) / ALWAYS_LOAD_BUDGET) * 100))
+  })
 })
 
 // ── Index restructure — thin discovery + per-area files ─────────────────────
@@ -244,6 +260,24 @@ describe('index restructure', () => {
       }
       // No periphery note line leaks into the always-load payload.
       expect(out).not.toContain('(note000.md)')
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('Test 1b: the budget scale stays exact on a full corpus (the self-reference converges)', () => {
+    const { dir, tags } = bigCorpus()
+    try {
+      const opts = { corpusDir: dir, tagsPath: tags, commitHash: HASH, dateMap: {} }
+      const out = buildIndex(opts)
+      const m = out.match(/всегда-загружаемое: (\d+)% бюджета \((\d+)\/(\d+) байт\)/)!
+      expect(m).not.toBeNull()
+      // A four-digit byte count is where a naive one-pass substitution drifts: printing the
+      // number changes the length it reports. The rendered figure must still be the truth.
+      expect(Number(m[2])).toBe(Buffer.byteLength(out, 'utf8'))
+      expect(Number(m[1])).toBe(Math.round((Number(m[2]) / ALWAYS_LOAD_BUDGET) * 100))
+      // And the artifact stays byte-deterministic with the scale in it.
+      expect(buildIndex(opts)).toBe(out)
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
     }
