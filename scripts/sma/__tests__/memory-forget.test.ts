@@ -313,10 +313,14 @@ describe('memory forget — one command, and it says which state it applied', ()
     // verb — `/sma-start` now prints what SMA will do in this repository BEFORE its first
     // question, and a map that has to be rendered before anything is asked is a command a
     // person can run themselves, not a paragraph inside a workflow.
+    // It is 98 for the SEVENTH time in the same shape: the branch-sync door arrived as its own
+    // verb — a worker owes the trunk brought into its branch BEFORE it hands the work over, and
+    // the bare merge verb is refused to it by the launch arguments on purpose. A duty with
+    // nothing to perform it with is a paragraph, not a duty, so the duty got a verb.
     // The claim this case actually makes is the line below it: the deletion surface stayed a
     // SUBCOMMAND of the corpus namespace and never grew a top-level key, which is what a count
     // alone could never say.
-    expect(keys).toBe(97)
+    expect(keys).toBe(98)
     // and the handler that WOULD have been added is absent by name
     expect(block).not.toContain('forget')
   })
