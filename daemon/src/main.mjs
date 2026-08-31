@@ -121,6 +121,7 @@ import { createWorkerStats } from './front/worker-stats.mjs'
 import { createFrontServer, runChatTurn } from './front/server.mjs'
 import {
   deriveState,
+  warmDoneGit,
   parseReceiptSummary,
   derivePhaseIndex,
   derivePhaseCard,
@@ -749,6 +750,20 @@ export function createDaemon(o = {}) {
     o.execGit ??
     ((args, opts = {}) => execFileSync('git', args, { cwd: opts.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))
 
+  // …И ТОТ ЖЕ ВОПРОС, ЗАДАННЫЙ ТАК, ЧТОБЫ НЕ ДЕРЖАТЬ ДОМ. Синхронный бегун выше честен на
+  // пути одного запроса — один подпроцесс, один ответ, — но у демона ОДИН цикл событий, и
+  // работа, которой нужны сотни запусков подряд (досылка истории закрытых работ), обязана
+  // спрашивать иначе: иначе она отнимает дверь у человека ровно так же, как отнимала её
+  // сборка выдачи до того, как перестала спрашивать git на пути ответа.
+  const execGitAsync =
+    o.execGitAsync ??
+    ((args, opts = {}) =>
+      new Promise((resolve, reject) => {
+        execFile('git', args, { cwd: opts.cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }, (err, stdout) =>
+          err ? reject(err) : resolve(stdout),
+        )
+      }))
+
   // (2c) THE TICK'S VERB RUNNER — the third collaborator the loop declares and production
   // never wired. `invokeVerb` runs one SMA CLI verb (`worktree provision` above all) through
   // it; with nothing injected it called `undefined(...)`, its own catch turned that into
@@ -1021,6 +1036,22 @@ export function createDaemon(o = {}) {
     return flight.promise
   }
 
+  // ── ДОРОГОЕ ДОСЫЛАЕТСЯ, А НЕ ЗАДЕРЖИВАЕТ ОТВЕТ ───────────────────────────────────────────
+  //
+  // Дерайв больше не спрашивает git ни об одной закрытой работе на пути запроса (см.
+  // `doneGitFacts`), поэтому холодная дверь отвечает очередью и работниками сразу. Спросить
+  // всё-таки надо — иначе история закрытых работ не появится никогда, — и спрашивается это
+  // ЗДЕСЬ, после того как ответ уехал человеку, асинхронным бегуном и по четыре за раз.
+  //
+  // НЕ ЖДЁМ НАМЕРЕННО. Дождаться досылки значило бы вернуть в дверь ровно ту цену, ради
+  // ухода от которой всё и делалось; отказ досылки — это отсутствие истории на одной
+  // карточке, а не отказ двери, поэтому он проглатывается здесь и не всплывает наружу.
+  const deriveStateAndWarm = (sd) => {
+    const flight = sharedDeriveState(sd)
+    flight.then(() => warmDoneGit({ execGitAsync })).catch(() => {})
+    return flight
+  }
+
   // (5) the roster front — the wrapped adapter + the derive + the merge verb + CAS seam.
   const front =
     o.front ??
@@ -1087,8 +1118,9 @@ export function createDaemon(o = {}) {
         // module url and never from a process's current directory.
         ...(typeof o.staticDir === 'string' && o.staticDir.trim() !== '' ? { staticDir: o.staticDir } : {}),
         // the derive behind /api/state and /api/done — shared-flight wrapped (see above), so
-        // overlapping polls of a slow derive collapse into one instead of stacking the loop.
-        deriveState: sharedDeriveState,
+        // overlapping polls of a slow derive collapse into one instead of stacking the loop,
+        // and trailed by the git catch-up the answer itself no longer waits for.
+        deriveState: deriveStateAndWarm,
         parseReceiptSummary,
         // The phase cycle's two read models. Injected like every other derive, so the door
         // carries no build edge onto state.mjs.

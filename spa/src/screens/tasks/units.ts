@@ -525,13 +525,21 @@ function doneUnit(row: DoneRow, clock: (iso: string | null) => string, stillWait
   const segs: UnitState[] = Array.from({ length: attempts }, (_, i) =>
     i === attempts - 1 ? (failed ? 'fail' : 'ok') : 'fail',
   )
-  const commits = row.commits?.length ?? 0
+  // «БЕЗ КОММИТОВ» — ЭТО ИЗМЕРЕНИЕ, И ЕГО НЕ ВЫВОДЯТ ИЗ МОЛЧАНИЯ. Дверь состояния перестала
+  // спрашивать git на пути ответа (холодная сборка выдачи стоила 272 подпроцесса), поэтому
+  // лента коммитов приезжает досылкой — следующим опросом. Пока её нет, строка говорит, что
+  // она ещё считается: приговор «работа не оставила коммитов» до ответа git был бы обвинением.
+  // `== null` ловит и «дверь сказала null», и «строка про коммиты вообще молчит»: оба случая
+  // означают одно — ответа git нет, и оба обязаны звучать одинаково.
+  const commits = row.gitPending || row.commits == null ? null : row.commits.length
+  const commitsWord =
+    commits === null ? 'коммиты ещё считаются' : commits === 0 ? 'без коммитов' : `коммитов: ${commits}`
   return {
     id: row.id,
     kind: 'inline',
     title: row.title ?? 'Без названия',
     state: failed ? 'fail' : 'ok',
-    inner: `${attempts} ${attempts === 1 ? 'подход' : 'подхода'} · ${commits === 0 ? 'без коммитов' : `коммитов: ${commits}`}`,
+    inner: `${attempts} ${attempts === 1 ? 'подход' : 'подхода'} · ${commitsWord}`,
     next: failed
       ? (row.failed?.reasonLabel ?? 'Не получилось — причина не записана')
       : `Закрыта в ${clock(row.finishedAt)}`,

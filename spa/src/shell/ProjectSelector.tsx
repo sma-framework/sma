@@ -48,7 +48,19 @@ export function ProjectSelector() {
     поломка.
   */
   const switchingTo = select.isPending ? (projects.find((p) => p.id === select.variables?.id) ?? null) : null
-  const label = switchingTo ? `${switchingTo.name} — открываю…` : active ? active.name : 'Проект не выбран'
+  /*
+    «ПРОЕКТ НЕ ВЫБРАН» — ЭТО ОТВЕТ, А НЕ ЗАСТАВКА. Пока чтение состояния не вернулось,
+    `projects` пуст по построению, и переключатель печатал этот приговор о доме, который ещё
+    не спрашивали. Дверь состояния на холодную отвечала 33 465 мс (замер 31.08.2026), и всё
+    это время слева под маркой стояло «Проект не выбран» — при подключённом проекте.
+  */
+  const label = switchingTo
+    ? `${switchingTo.name} — открываю…`
+    : active
+      ? active.name
+      : state.data === undefined
+        ? 'Читаю…'
+        : 'Проект не выбран'
 
   const pick = (id: string) => {
     if (select.isPending) return

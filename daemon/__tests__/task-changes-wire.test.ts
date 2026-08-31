@@ -16,6 +16,13 @@
  * Второе дело — на НАСТОЯЩЕМ репозитории с несколькими коммитами: подделка отвечала бы здесь
  * из того самого допущения, которое проверяется («что показывает git на диапазоне»), а
  * дефект был виден именно в разнице между одним коммитом и веткой целиком.
+ *
+ * ШВОВ ЗАПУСКА СТАЛО ДВА, ВОПРОС ОСТАЛСЯ ОДИН. Панель ростера больше не спрашивает git на
+ * пути ответа двери состояния — холодная сборка выдачи стоила 272 подпроцесса, — и заходит в
+ * тот же шов на ДОСЫЛКЕ (`warmDoneGit`), забирая оттуда аргументы (`taskChangeArgs`) для
+ * асинхронного бегуна. Поэтому здесь записываются оба входа: дверь диффа читает шов целиком,
+ * панель берёт у него диапазон. Утверждение прежнее и единственное: ни одна из поверхностей
+ * не считает сама.
  */
 
 import { describe, it, expect, vi, afterAll } from 'vitest'
@@ -29,14 +36,16 @@ import { Readable } from 'node:stream'
 // дело ниже остаётся делом о поведении, а запись вызовов — доказательством провода.
 vi.mock('../src/front/task-changes.mjs', async (importOriginal) => {
   const real = await importOriginal<typeof import('../src/front/task-changes.mjs')>()
-  return { ...real, readTaskChanges: vi.fn(real.readTaskChanges) }
+  return { ...real, readTaskChanges: vi.fn(real.readTaskChanges), taskChangeArgs: vi.fn(real.taskChangeArgs) }
 })
 
-import { readTaskChanges, taskChangeRange } from '../src/front/task-changes.mjs'
+import { readTaskChanges, taskChangeArgs, taskChangeRange } from '../src/front/task-changes.mjs'
 import { createFrontServer } from '../src/front/server.mjs'
-import { deriveState } from '../src/front/state.mjs'
+import { deriveState, warmDoneGit } from '../src/front/state.mjs'
 
 const seam = vi.mocked(readTaskChanges)
+/** Вход панели ростера: она берёт у того же шва диапазон и запускает его сама, асинхронно. */
+const argsSeam = vi.mocked(taskChangeArgs)
 const TOKEN = 'a'.repeat(64)
 
 // ── the smallest fake req/res a door needs ──
@@ -108,6 +117,7 @@ describe('счёт изменений — обе поверхности беру
     // дело с тем же именем читало бы память, а не провод.
     const id = 'R-1787850459572'
     seam.mockClear()
+    argsSeam.mockClear()
     const argv: string[][] = []
     const execGit = (args: string[]) => {
       argv.push(args)
@@ -127,12 +137,23 @@ describe('счёт изменений — обе поверхности беру
       clock: () => 1_000_000_000_000,
     })
 
+    // ДВЕРЬ СОСТОЯНИЯ НЕ ПЛАТИТ ЗА ЭТО НИЧЕГО: на пути ответа панель git не спрашивает вовсе,
+    // поэтому и в шов ещё не заходила. Холодный ответ на 136 закрытых работах стоил 272
+    // подпроцесса — это и есть та цена, которой здесь быть не должно.
+    expect(argsSeam.mock.calls).toHaveLength(0)
+    expect(argv.filter((a) => a[0] === 'diff')).toHaveLength(1) // только дверь диффа
+
+    await warmDoneGit({ execGit, tasks: [id] })
+
     // ДВА ВХОДА В ОДИН ШОВ — по одному на поверхность. Поверхность, которая посчитает сама,
     // здесь не появится, и это единственное, что отличает провод от совпадения чисел.
-    expect(seam.mock.calls).toHaveLength(2)
-    expect(seam.mock.calls.map((c) => c[0])).toEqual([id, id])
+    expect(seam.mock.calls).toHaveLength(1) // дверь диффа — целиком через шов
+    expect(argsSeam.mock.calls).toHaveLength(1) // панель ростера — за диапазоном
+    expect(seam.mock.calls.map((c) => c[0])).toEqual([id])
+    expect(argsSeam.mock.calls.map((c) => c[0])).toEqual([id])
     // Формы ответа разные (двери нужен патч, панели — счёт), а спрошенный диапазон один.
-    expect(seam.mock.calls.map((c) => (c[2] as any)?.shape)).toEqual(['patch', 'count'])
+    expect(seam.mock.calls.map((c) => (c[2] as any)?.shape)).toEqual(['patch'])
+    expect(argsSeam.mock.calls.map((c) => c[1])).toEqual(['count'])
     expect(argv.filter((a) => a[0] === 'diff').map((a) => a[a.length - 1])).toEqual([
       taskChangeRange(id),
       taskChangeRange(id),
@@ -175,14 +196,21 @@ describe('счёт изменений — обе поверхности беру
     expect(res.body).toContain('two.txt')
     expect(res.body).toContain('three.txt')
 
-    const payload = await deriveState({
+    const ask = {
       adapter: mkAdapter([{ id, status: 'completed', lane: 'prod', title: 'ночная', completedAt: 1_000_000_000_000 }]),
       windows,
       execGit,
       repoDir: repo,
       config,
       clock: () => 1_000_000_000_000,
-    })
+    }
+    // Первый ответ двери историю ещё не знает и честно об этом говорит; досылка спрашивает
+    // git у настоящей ветки, и второй ответ её несёт.
+    const cold = await deriveState(ask)
+    expect(cold.done[0].diffStat).toBeNull()
+    expect(cold.done[0].gitPending).toBe(true)
+    await warmDoneGit({ execGit, tasks: [id] })
+    const payload = await deriveState(ask)
     // И раз вопрос один, ответы сходятся на настоящей задаче: панель насчитала те же три файла.
     expect(payload.done[0].diffStat).toContain('3 files changed')
   })
