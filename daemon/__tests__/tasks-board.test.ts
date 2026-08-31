@@ -194,6 +194,38 @@ describe('инлайн и батч стадий не имеют — их кла�
     expect(stopped[0].wait).toBeUndefined()
   })
 
+  it('поломка, за которую уже взялись, больше никого не ждёт — она в «Готово»', () => {
+    const broke = (over: Partial<DoneRow> = {}): DoneRow =>
+      ({
+        id: 'R-старая',
+        title: 'Ловушка активного проекта',
+        project: 'sma',
+        machine: 'm1',
+        finishedAt: null,
+        finishedDuration: null,
+        workerId: null,
+        attempts: 2,
+        failed: { reason: 'turns_exhausted', reasonLabel: 'Не поместилась в ходы' },
+        ...over,
+      }) as DoneRow
+
+    // Одна и та же работа: старая закрытая строка и та же работа, поставленная заново под
+    // НОВЫМ номером. Столбик ожидания зовёт к ней ровно один раз, а не дважды.
+    const again = units({ done: [broke()], queue: [queueRow({ id: 'R-новая', title: 'Ловушка активного проекта' })] })
+    const closed = again.find((u) => u.id === 'R-старая')
+    expect(closed?.wait, 'старая поломка всё ещё зовёт, хотя работа уже в очереди').toBeUndefined()
+    expect(columnOf(closed as (typeof again)[number])).toBe('done')
+
+    // А пока за неё никто не взялся — зовёт.
+    const alone = units({ done: [broke()] })
+    expect(alone[0].wait).toBeDefined()
+    expect(columnOf(alone[0])).toBe('you')
+
+    // Возврат сохраняет номер — узнаётся и по нему, не только по названию.
+    const byId = units({ done: [broke()], queue: [queueRow({ id: 'R-старая', title: 'другое название' })] })
+    expect(byId.find((u) => u.kind === 'inline' && u.state === 'fail')?.wait).toBeUndefined()
+  })
+
   it('сборка, вставшая на сломавшемся куске, — в «ЖДУТ ВАС»; идущая — в «Исполнении»', () => {
     const batch = (over: Partial<BatchRow>): BatchRow =>
       ({
