@@ -11,7 +11,7 @@
  * value that is not there stays a dash — an empty place is never dressed up as a zero.
  */
 
-import { isDeadline, isNotReady, isRaceLost } from '../api/client'
+import { ApiError, isDeadline, isNotReady, isRaceLost } from '../api/client'
 import type { PhaseStage, ReceiptProof, ReceiptSummary, TaskStatus, WindowFact } from '../api/types'
 
 /**
@@ -298,6 +298,32 @@ export function receiptProofLabel(proof: ReceiptProof | null | undefined): strin
   }
 }
 
+/**
+ * saidInWords(err) — то, что дверь сказала ПО-РУССКИ, или null.
+ *
+ * ═════════ ПОЧЕМУ ОТВЕТ ДВЕРИ ВООБЩЕ ДОХОДИТ ДО ГЛАЗ ═════════
+ * Отказ по потолку называет поле, фактическую длину и потолок («описание: 2103 знака при
+ * потолке 2000») — и до этой ветки всё это окно выбрасывало, показывая человеку своё
+ * «попробуйте ещё раз». Замерено 31.08: причину промаха пришлось искать чтением исходников
+ * очереди, потому что в окне её не было ни одним знаком.
+ *
+ * ═════════ ПОЧЕМУ ИМЕННО «ПО-РУССКИ», А НЕ «ЛЮБОЙ ОТВЕТ» ═════════
+ * Двери отвечают двумя разными родами строк: словами, написанными ДЛЯ человека, и служебными
+ * («invalid taskId», «unauthorized», «not found») — потрохами, которые человеку ничего не
+ * объясняют и читаются как поломка окна. Кириллица здесь и есть та граница: она отделяет
+ * фразу, которую кто-то написал человеку, от строки, которую машина сказала машине. Служебное
+ * остаётся за общими словами ниже — окно не пересказывает потроха и не сочиняет за дверь.
+ */
+const SAID_IN_WORDS = /[а-яё]/i
+
+export function saidInWords(err: unknown): string | null {
+  if (!(err instanceof ApiError)) return null
+  const said = (err.detail ?? '').trim()
+  if (said === '' || !SAID_IN_WORDS.test(said)) return null
+  // Длинная простыня в красной строке формы нечитаема; дверь и так отвечает одной фразой.
+  return said.length > 300 ? `${said.slice(0, 300)}…` : said
+}
+
 /** A refusal, said in the words of the person it happened to. */
 export function refusalWords(err: unknown): string {
   if (isNotReady(err)) return 'Это действие пока недоступно.'
@@ -307,6 +333,8 @@ export function refusalWords(err: unknown): string {
   // так и сломалась). Сначала — посмотреть, что стало с карточкой.
   if (isDeadline(err))
     return 'Демон не ответил вовремя. Нажатие могло дойти — обновите карточку и проверьте, прежде чем решать снова.'
+  const said = saidInWords(err)
+  if (said) return said
   return 'Не получилось отправить. Попробуйте ещё раз.'
 }
 
