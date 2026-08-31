@@ -41,6 +41,7 @@ import {
   statusTone,
   statusWord,
 } from '../../shell/format'
+import { CAP_ACCEPTANCE_ITEMS, CAP_TEXT } from '../../shell/caps'
 import { openSystemConsole, useTellConsoleContext } from '../../shell/console-context'
 import { openScreen, useOpenedWith } from '../../shell/navigation'
 import { useComposerDraft } from '../../shell/useComposerDraft'
@@ -974,15 +975,24 @@ export function Screen() {
     setEditingWords(true)
   }
 
+  /**
+   * СТЕНА ВИДНА ДО НАЖАТИЯ. Редактор слов повторяет форму постановки: обрезка браузером снята
+   * (молча урезанное описание уезжало бы правкой, которой человек не писал), счётчики стоят
+   * под обоими полями, а судит по-прежнему дверь — её отказ теперь называет поле, длину и
+   * потолок, и `refusalWords` доносит эти слова целиком.
+   */
+  const draftPromised = draftCriteria
+    .split('\n')
+    .map((s) => s.replace(/^[-•·]\s*/, '').trim())
+    .filter((s) => s.length > 0)
+  const draftOverText = draftDescription.length > CAP_TEXT
+  const draftOverItems = draftPromised.length > CAP_ACCEPTANCE_ITEMS
+
   const saveWords = () => {
     if (!taskId) return
     setProblem(null)
-    const criteria = draftCriteria
-      .split('\n')
-      .map((s) => s.replace(/^[-•·]\s*/, '').trim())
-      .filter((s) => s.length > 0)
     setWords.mutate(
-      { taskId, description: draftDescription.trim(), acceptance: criteria },
+      { taskId, description: draftDescription.trim(), acceptance: draftPromised },
       {
         onSuccess: () => setEditingWords(false),
         onError: (err) => setProblem(refusalWords(err)),
@@ -1146,11 +1156,15 @@ export function Screen() {
                   value={draftDescription}
                   onChange={(e) => setDraftDescription(e.target.value)}
                   rows={2}
-                  maxLength={2000}
                   placeholder="Что это за работа"
                   aria-label="Описание задачи"
                   className="w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2 text-[12px] text-tx outline-none focus:border-blue"
                 />
+                <div
+                  className={`-mt-1 text-right text-[10.5px] tabular-nums ${draftOverText ? 'text-err-tx' : 'text-tx3'}`}
+                >
+                  {draftDescription.length} / {CAP_TEXT}
+                </div>
                 <textarea
                   value={draftCriteria}
                   onChange={(e) => setDraftCriteria(e.target.value)}
@@ -1159,6 +1173,20 @@ export function Screen() {
                   aria-label="Признаки успеха"
                   className="w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2 text-[12px] text-tx outline-none focus:border-blue"
                 />
+                <div
+                  className={`-mt-1 text-right text-[10.5px] tabular-nums ${draftOverItems ? 'text-err-tx' : 'text-tx3'}`}
+                >
+                  признаков: {draftPromised.length} / {CAP_ACCEPTANCE_ITEMS}
+                </div>
+                {draftOverText || draftOverItems ? (
+                  <p className="m-0 rounded-[8px] bg-warn-s px-2.5 py-2 text-[11.5px] leading-[1.4] text-warn-tx">
+                    {draftOverText
+                      ? `Описание: ${draftDescription.length} ${plural(draftDescription.length, 'знак', 'знака', 'знаков')} при потолке ${CAP_TEXT}. `
+                      : ''}
+                    {draftOverItems ? `Признаков успеха: ${draftPromised.length} при потолке ${CAP_ACCEPTANCE_ITEMS}. ` : ''}
+                    Дверь столько не примет — сократите, иначе правка не сохранится.
+                  </p>
+                ) : null}
                 <div className="flex justify-end gap-2">
                   <button
                     type="button"

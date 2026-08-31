@@ -313,10 +313,15 @@ describe('memory forget — one command, and it says which state it applied', ()
     // verb — `/sma-start` now prints what SMA will do in this repository BEFORE its first
     // question, and a map that has to be rendered before anything is asked is a command a
     // person can run themselves, not a paragraph inside a workflow.
+    // It is 98 for the SEVENTH time in the same shape: the fleet window's front door arrived as
+    // its own verb. The window's auth was never the problem — the token on every route and the
+    // HttpOnly cookie stand untouched; what was missing was any command that performed the one
+    // sanctioned exchange, so opening your own window meant lifting a token out of a config file
+    // and assembling an address by hand after every daemon restart.
     // The claim this case actually makes is the line below it: the deletion surface stayed a
     // SUBCOMMAND of the corpus namespace and never grew a top-level key, which is what a count
     // alone could never say.
-    expect(keys).toBe(97)
+    expect(keys).toBe(98)
     // and the handler that WOULD have been added is absent by name
     expect(block).not.toContain('forget')
   })

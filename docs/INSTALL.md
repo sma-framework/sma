@@ -247,7 +247,7 @@ from your project root, with no package script and nothing on your `PATH`:
 
 ```bash
 node scripts/sma/cli.mjs status          # who is working on what, right now
-node scripts/sma/cli.mjs explain <verb>  # what any of the 97 verbs is for
+node scripts/sma/cli.mjs explain <verb>  # what any of the 98 verbs is for
 ```
 
 ## The daemon and the app (the optional V5 layer)
@@ -316,12 +316,29 @@ To bring the app up, from the SMA package or checkout directory:
 2. **Start it:** `node daemon/src/main.mjs`. The first boot writes
    `~/.sma-daemon/config.json` (machine-local, never committed) with a fresh
    front token, then prints the address it listens on — `127.0.0.1:7777` by
-   default. An unreachable queue is a loud boot failure, not a silent one:
-   point `queueUrl` in that file at your server and start it again.
-3. **Open it once with the token:**
-   `http://127.0.0.1:7777/?token=<the token in ~/.sma-daemon/config.json>`.
-   That visit exchanges the token for an HttpOnly session cookie; until then
-   every route answers `unauthorized`, deliberately.
+   default — and, right under it, how to get in. An unreachable queue is a loud
+   boot failure, not a silent one: point `queueUrl` in that file at your server
+   and start it again.
+3. **Open the window:**
+
+   ```bash
+   node scripts/sma/cli.mjs open
+   ```
+
+   That builds the one-shot `GET /?token=…` link from the daemon's own config
+   and hands it to your browser, which exchanges the token for an HttpOnly
+   session cookie. The bare address answers `unauthorized` until then, and that
+   is the design, not a fault: the token is required on every route, and the
+   query string counts as a credential exactly once, for this one exchange.
+
+   On a machine with no browser — over SSH, or on a server — add `--print` and
+   the ready link is written out as a single line for you to paste. Otherwise
+   the token stays out of your terminal on purpose: the browser receives it, and
+   the screen only names the address.
+
+   The cookie lasts until the daemon restarts, so this is the command you run
+   again after a restart. It never needs the token typed by hand, and nothing in
+   the front's authentication is relaxed to make it work.
 
 Always-on wiring, plus a smoke run that proves the queue → worker → receipt
 loop before you leave it running, is in [`supervisor/setup-macos.md`](../supervisor/setup-macos.md)
