@@ -54,7 +54,7 @@ function pkgVersion() {
 // ── user-facing command set (source of truth: sma-core/aliases/README.md table) ──
 
 const COMMANDS = [
-  { name: 'start',         workflow: 'sma-start.md',      description: 'First-run onboarding conversation: explains the system, seeds PROJECT/ROADMAP, the starter memory corpus, and the infra profile' },
+  { name: 'start',         workflow: 'sma-start.md',      description: 'First-run onboarding: maps what SMA will do in THIS repo before asking anything, then explains the system, seeds PROJECT/ROADMAP, the starter memory corpus, and the infra profile' },
   { name: 'plan-phase',    workflow: 'plan-phase.md',     description: 'Create detailed phase plan (PLAN.md) with verification loop' },
   { name: 'execute-phase', workflow: 'execute-phase.md',  description: 'Execute all plans in a phase with wave-based parallelization' },
   { name: 'discuss-phase', workflow: 'discuss-phase.md',  description: 'Gather phase context through adaptive questioning before planning' },
