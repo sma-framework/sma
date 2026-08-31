@@ -374,12 +374,18 @@ export interface ReceiptSummary {
  * until a receipt learns to carry a parsed result.
  */
 export interface ReceiptProof {
-  kind: 'reverify' | 'artifact' | 'answer' | 'preflight' | 'forge' | 'gate' | 'other' | string
+  kind: 'reverify' | 'artifact' | 'answer' | 'moot' | 'preflight' | 'forge' | 'gate' | 'other' | string
   /** The reference verbatim, as stored — never re-worded. */
   ref: string
   /** For a documentary stage: the file it committed, and that commit. */
   path?: string
   sha?: string
+  /**
+   * Для исхода «предмета нет» — ЧЕМ проверяли: коммит, закрывший жалобу, или файл, который
+   * смотрели. Демон подтвердил эту ссылку сам, до того как выдал квитанцию, поэтому её можно
+   * открыть и увидеть то же самое. Отсутствует у всех остальных видов доказательства.
+   */
+  evidence?: string
   /**
    * ═══════ «ГОТОВО» И «ГОТОВО, НО НИКТО НЕ ПЕРЕПРОВЕРЯЛ» — РАЗНЫЕ СЛОВА ═══════
    *

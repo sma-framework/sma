@@ -219,6 +219,26 @@ export const LESSON_MARKERS = Object.freeze({
 })
 
 /**
+ * The line markers that close an attempt WHOSE SUBJECT TURNED OUT NOT TO EXIST.
+ *
+ * ЧЕТВЁРТЫЙ ЧЕСТНЫЙ КОНЕЦ РАБОТЫ, и до 31.08.2026 у него не было ни слова, ни двери. Задача,
+ * чья жалоба уже закрыта, чей баг не воспроизводится, чьё требование устарело, — это
+ * НОРМАЛЬНЫЙ исход, а не провал. Но сказать это было нечем: «сделано, но коммитов нет»
+ * выглядит как провал, и работник, не нашедший предмета, оказывался перед выбором между
+ * красной строкой и файлом ради файла. Замерено на приёмке возвращённой пробы: выбран был
+ * файл — заметка и тест, проверяющий существование этой заметки.
+ *
+ * ДВА МАРКЕРА, А НЕ ОДИН, и второй — весь смысл. `MOOT:` называет ВЫВОД, `MOOT_EVIDENCE:` —
+ * ЧЕМ он проверен: коммит, закрывший жалобу, или файл, который смотрели. Вывод без улики —
+ * это слово, которым можно пройти гейт, ровно как «урока нет» без причины. Улику демон
+ * проверяет сам, у git и у диска, и никогда не верит на слово.
+ */
+export const MOOT_MARKERS = Object.freeze({
+  moot: 'MOOT:',
+  evidence: 'MOOT_EVIDENCE:',
+})
+
+/**
  * How long a stated «no lesson» reason may be. Short on purpose: this is one sentence for a
  * person to read on a card, not a place to paste a session. The text is DATA — stored capped,
  * fenced wherever a later prompt shows it.
@@ -984,6 +1004,44 @@ export function parseLessonMarker(lines) {
     }
   }
   return last
+}
+
+/**
+ * parseMootMarker(lines) → {reason, evidence:string[]} | null.
+ *
+ * The worker-side half of the «предмета нет» outcome, read off the same unwrapped lines and
+ * with the same posture as the lesson marker: PURE, zero-dep, never throws, judges nothing.
+ *
+ * THE FIRST CONCLUSION WINS, unlike the lesson's last-marker rule, and the difference is
+ * deliberate: a lesson may be reconsidered at the end of a run, but «предмета нет» is a
+ * finding about the world made once, when the worker looked. EVERY evidence line is kept —
+ * a finding usually rests on more than one, and it is the GATE that decides which of them
+ * git can confirm.
+ *
+ * What it refuses: an empty conclusion, an empty evidence line, and a conclusion with no
+ * evidence at all. The last one is the whole point — a bare `MOOT:` is a word a worker could
+ * type to get past a gate, and this outcome exists precisely to not be that.
+ *
+ * @param {string[]} lines
+ * @returns {{reason:string, evidence:string[]}|null}
+ */
+export function parseMootMarker(lines) {
+  if (!Array.isArray(lines)) return null
+  let reason = ''
+  const evidence = []
+  for (const raw of lines) {
+    const line = typeof raw === 'string' ? raw.trim() : ''
+    if (!line) continue
+    if (line.startsWith(MOOT_MARKERS.evidence)) {
+      const v = unwrapMarkerValue(line.slice(MOOT_MARKERS.evidence.length))
+      if (v && !evidence.includes(v)) evidence.push(v)
+    } else if (line.startsWith(MOOT_MARKERS.moot)) {
+      const v = unwrapMarkerValue(line.slice(MOOT_MARKERS.moot.length))
+      if (v && !reason) reason = v.length > LESSON_REASON_CAP ? v.slice(0, LESSON_REASON_CAP) : v
+    }
+  }
+  if (!reason || !evidence.length) return null
+  return { reason, evidence }
 }
 
 /**

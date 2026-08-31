@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.7.1-3B82F6" alt="version 5.7.1">
-  <img src="https://img.shields.io/badge/tests-5852%2F5852-3CC0A0" alt="tests 5852/5852">
+  <img src="https://img.shields.io/badge/tests-5881%2F5881-3CC0A0" alt="tests 5881/5881">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -60,6 +60,8 @@ The claim that makes SMA different is not a feature — it is that **you never h
 - A receipt's digest is derived from the exact check command, its exit code and its normalized output, so two different checks can never share a hash.
 - Live QA runs the product in a real browser and presses every visible control once; a run that did not happen exits 3 and says `NOT RUN` — **never** an empty findings list that reads as clean.
 - The calibration badge hides itself after a model change until enough new data exists, so it never quietly overstates.
+- A green suite is not accepted on its colour alone. The exit gate also reads the diff, and refuses a test whose every assertion is about files that same attempt added — such a test cannot go red from any breakage of the product, so its green certifies nothing. A new top-level directory is parked as a question to you rather than absorbed as a side effect.
+- **«There is no subject» is a first-class ending**, beside «done». A task whose complaint is already closed ends with `MOOT:` and `MOOT_EVIDENCE:` — the conclusion is the worker's, the evidence is re-checked by the daemon against git and the disk, and an unproven claim never becomes a receipt. Nobody has to invent a file to have something to hand in.
 
 ### Before SMA → After SMA
 

@@ -284,6 +284,10 @@ export function receiptProofLabel(proof: ReceiptProof | null | undefined): strin
     }
     case 'answer':
       return 'Ответ без правки кода'
+    case 'moot':
+      // СВОЁ СЛОВО, А НЕ ОТТЕНОК ОТВЕТА. «Разобрался и ответил» и «предмета нет» посылают
+      // человека в разные места, и только у второго есть улика, которую демон уже перепроверил.
+      return proof.evidence ? `Предмета нет — проверено: ${proof.evidence}` : 'Предмета нет'
     case 'preflight':
       return 'Уже было сделано — работник не запускался'
     case 'forge':
