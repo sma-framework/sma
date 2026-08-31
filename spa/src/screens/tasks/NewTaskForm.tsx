@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { isNotReady } from '../../api/client'
 import { useEnqueue, useStateQuery, useSuggestWords } from '../../api/queries'
+import { CAP_ACCEPTANCE_ITEMS, CAP_TEXT } from '../../shell/caps'
+import { plural, refusalWords } from '../../shell/format'
 
 /**
  * NewTaskForm — putting a task in the queue, in the four decisions the door actually takes.
@@ -226,6 +228,17 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
     askDoor(text, true)
   }
 
+  /**
+   * СТЕНА ВИДНА ДО НАЖАТИЯ, А НЕ ПОСЛЕ. Замерено 31.08: поле резало описание браузерным
+   * `maxLength` молча — вставленные 2103 знака превращались в 2000, и задача уезжала с
+   * обрезанной на середине мысли фразой, о чём не узнавал никто. Обрезка снята: текст
+   * остаётся целым, счётчик краснеет, а решает по-прежнему дверь — форма ничего не проверяет
+   * за неё и отправляет то, что человек написал.
+   */
+  const promisedNow = criteriaOf(criteria)
+  const overText = description.length > CAP_TEXT
+  const overItems = promisedNow.length > CAP_ACCEPTANCE_ITEMS
+
   const submit = () => {
     const text = title.trim()
     if (text.length === 0) {
@@ -234,7 +247,7 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
     }
     setProblem(null)
     const said = description.trim()
-    const promised = criteriaOf(criteria)
+    const promised = promisedNow
     enqueue.mutate(
       {
         title: text,
@@ -251,12 +264,10 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
       },
       {
         onSuccess: () => onClose(),
-        onError: (err) =>
-          setProblem(
-            isNotReady(err)
-              ? 'Очередь пока не принимает задачи.'
-              : 'Задача не поставлена. Проверьте название и попробуйте ещё раз.',
-          ),
+        // ЧТО ИМЕННО НЕ ПОДОШЛО — СЛОВАМИ ДВЕРИ. Прежняя строка отвечала «проверьте название»
+        // на любой отказ, в том числе на отказ по потолку описания, — и человек искал промах
+        // не там, где он был. Дверь называет поле, длину и потолок; окно это больше не глотает.
+        onError: (err) => setProblem(isNotReady(err) ? 'Очередь пока не принимает задачи.' : refusalWords(err)),
       },
     )
   }
@@ -362,11 +373,13 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={2}
-          maxLength={2000}
           placeholder="Что это за работа"
           aria-label="Описание задачи"
-          className="mb-1.5 w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2 text-[12px] text-tx outline-none focus:border-blue"
+          className="w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2 text-[12px] text-tx outline-none focus:border-blue"
         />
+        <div className={`mb-1.5 text-right text-[10.5px] tabular-nums ${overText ? 'text-err-tx' : 'text-tx3'}`}>
+          {description.length} / {CAP_TEXT}
+        </div>
         <textarea
           value={criteria}
           onChange={(e) => setCriteria(e.target.value)}
@@ -375,6 +388,19 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
           aria-label="Признаки успеха"
           className="w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2 text-[12px] text-tx outline-none focus:border-blue"
         />
+        {/* Признаки считаются СТРОКАМИ, а не знаками: потолок у них свой и он про число. */}
+        <div className={`mt-1 text-right text-[10.5px] tabular-nums ${overItems ? 'text-err-tx' : 'text-tx3'}`}>
+          признаков: {promisedNow.length} / {CAP_ACCEPTANCE_ITEMS}
+        </div>
+        {overText || overItems ? (
+          <p className="m-0 mt-1.5 rounded-[8px] bg-warn-s px-2.5 py-2 text-[11.5px] leading-[1.4] text-warn-tx">
+            {overText
+              ? `Описание: ${description.length} ${plural(description.length, 'знак', 'знака', 'знаков')} при потолке ${CAP_TEXT}. `
+              : ''}
+            {overItems ? `Признаков успеха: ${promisedNow.length} при потолке ${CAP_ACCEPTANCE_ITEMS}. ` : ''}
+            Дверь столько не примет — сократите, иначе задача не встанет.
+          </p>
+        ) : null}
       </div>
 
       {pipelineOff ? (

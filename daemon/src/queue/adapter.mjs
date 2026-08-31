@@ -1188,7 +1188,15 @@ export const DEFAULT_PROJECT_ID = 'default'
  * бэклоге с длинными строками вся постановка отвечала отказом (найдено живым прогоном).
  */
 export const CAP_TITLE = 200
-const CAP_TEXT = 2000
+
+/**
+ * Потолок текстовых полей задачи — описания, заметки, каждого пункта приёмки.
+ *
+ * Экспортирован по той же причине, что и потолок заголовка, и ещё по одной: счётчик в форме
+ * окна обязан показывать ЭТО число, а не своё. Форма, набравшая потолок руками, — это второй
+ * потолок, и разойдутся они молча (см. spa/src/shell/caps.ts и сьют, который их сверяет).
+ */
+export const CAP_TEXT = 2000
 
 /**
  * Потолок снимка контекста задачи — СВОЙ, и он крупнее потолка описания намеренно.
@@ -1207,6 +1215,53 @@ const CAP_TEXT = 2000
  * число: две копии капа — это два капа, и работает более слабый.
  */
 export const TASK_CONTEXT_CAP = 8000
+
+/**
+ * ═══════ ОТКАЗ ПО ПОТОЛКУ НАЗЫВАЕТ ПОЛЕ, ФАКТ И ПОТОЛОК ═══════
+ *
+ * Замерено 31.08 на живой постановке: дверь слов задачи ответила на описание в ~2100 знаков
+ * отказом, в котором не было НИ ОДНОГО из трёх чисел — ни поля, ни длины, ни потолка. Причину
+ * пришлось искать чтением исходников очереди, а человек у окна в этом месте слеп полностью:
+ * форма просто не отправляется, и сказать ему нечего.
+ *
+ * Поэтому у всех потолков этого гейта ОДНА фраза, и в ней ровно три вещи: КАКОЕ поле, СКОЛЬКО
+ * в нём на самом деле, СКОЛЬКО можно. Меньше любой из трёх — и человек снова идёт читать
+ * исходники: «слишком длинно» не говорит, что резать, а «потолок 2000» не говорит, насколько
+ * промахнулись. Фраза едет прямо в окно (двери отдают её телом отказа), поэтому она написана
+ * на языке человека, а не на языке поля в JSON.
+ *
+ * ИДЕНТИФИКАТОРА ЗАДАЧИ В НЕЙ НЕТ — намеренно. Дверь правки слов гоняет этот же гейт по
+ * ПОДСТАВНОЙ задаче с идентификатором «words» (см. validateWords), и номер, приехавший бы
+ * отсюда в окно, был бы выдуманным. Кто именно отказал, знает позвавшая дверь.
+ */
+const CAP_CHARS = Object.freeze(['знак', 'знака', 'знаков'])
+
+/** Русский счёт троится. Окно говорит это тем же правилом (spa/src/shell/format.ts). */
+function pluralRu(n, [one, few, many]) {
+  const m100 = n % 100
+  if (m100 >= 11 && m100 <= 14) return many
+  const m10 = n % 10
+  if (m10 === 1) return one
+  if (m10 >= 2 && m10 <= 4) return few
+  return many
+}
+
+/**
+ * capRefusal(what, actual, cap, forms) → «описание: 2103 знака при потолке 2000».
+ *
+ * `forms` — три формы единицы измерения; `null` означает, что единица уже названа полем
+ * («признаков успеха: 13 при потолке 12»), и повторять её вторым словом было бы косноязычием.
+ *
+ * @param {string} what поле в словах человека
+ * @param {number} actual сколько в нём НА САМОМ ДЕЛЕ
+ * @param {number} cap сколько можно
+ * @param {readonly string[]|null} [forms]
+ * @returns {string}
+ */
+export function capRefusal(what, actual, cap, forms = CAP_CHARS) {
+  const measured = forms ? `${actual} ${pluralRu(actual, forms)}` : String(actual)
+  return `${what}: ${measured} при потолке ${cap}`
+}
 
 // ── named errors ──
 
@@ -1324,7 +1379,7 @@ export function validateTask(task) {
   if (!task.id || typeof task.id !== 'string') throw new InvalidTaskError('task missing string "id"')
   if (!TASK_SOURCES.includes(task.source)) throw new InvalidTaskError(`task "${task.id}" has invalid source "${task.source}"`)
   if (typeof task.title !== 'string' || task.title.length === 0) throw new InvalidTaskError(`task "${task.id}" missing "title"`)
-  if (task.title.length > CAP_TITLE) throw new InvalidTaskError(`task "${task.id}" title exceeds ${CAP_TITLE} chars`)
+  if (task.title.length > CAP_TITLE) throw new InvalidTaskError(capRefusal('название', task.title.length, CAP_TITLE))
   if (!TASK_LANES.includes(task.lane)) throw new InvalidTaskError(`task "${task.id}" has invalid lane "${task.lane}"`)
   if (task.provider !== undefined && !PROVIDERS.includes(task.provider)) {
     throw new InvalidTaskError(`task "${task.id}" has invalid provider "${task.provider}"`)
@@ -1336,10 +1391,10 @@ export function validateTask(task) {
     throw new InvalidTaskError(`task "${task.id}" has an invalid role "${task.role}"`)
   }
   if (task.note !== undefined && String(task.note).length > CAP_TEXT) {
-    throw new InvalidTaskError(`task "${task.id}" note exceeds ${CAP_TEXT} chars`)
+    throw new InvalidTaskError(capRefusal('заметка', String(task.note).length, CAP_TEXT))
   }
   if (task.description !== undefined && String(task.description).length > CAP_TEXT) {
-    throw new InvalidTaskError(`task "${task.id}" description exceeds ${CAP_TEXT} chars`)
+    throw new InvalidTaskError(capRefusal('описание', String(task.description).length, CAP_TEXT))
   }
   // СНИМОК КОНТЕКСТА — ТЕКСТ И ТОЛЬКО ТЕКСТ, и слишком длинный снимок дверь ОТВЕРГАЕТ, а не
   // подрезает. Это слова человека: обрезанный на середине мысли абзац уехал бы работнику как
@@ -1350,7 +1405,7 @@ export function validateTask(task) {
       throw new InvalidTaskError(`task "${task.id}" taskContext must be a string`)
     }
     if (task.taskContext.length > TASK_CONTEXT_CAP) {
-      throw new InvalidTaskError(`task "${task.id}" taskContext exceeds ${TASK_CONTEXT_CAP} chars`)
+      throw new InvalidTaskError(capRefusal('снимок контекста', task.taskContext.length, TASK_CONTEXT_CAP))
     }
   }
   // ONE FIELD, TWO FORMATS (see the header). A string is what every row written before this
@@ -1360,18 +1415,20 @@ export function validateTask(task) {
   if (task.acceptance !== undefined) {
     if (Array.isArray(task.acceptance)) {
       if (task.acceptance.length > CAP_ACCEPTANCE_ITEMS) {
-        throw new InvalidTaskError(`task "${task.id}" acceptance carries more than ${CAP_ACCEPTANCE_ITEMS} criteria`)
+        throw new InvalidTaskError(capRefusal('признаков успеха', task.acceptance.length, CAP_ACCEPTANCE_ITEMS, null))
       }
-      for (const item of task.acceptance) {
+      // НОМЕР ПУНКТА — ЧАСТЬ ОТВЕТА: в списке из дюжины строк «признак длиннее потолка» не
+      // говорит, КАКУЮ строку резать, и человек перебирает их глазами по одной.
+      for (const [i, item] of task.acceptance.entries()) {
         if (typeof item !== 'string') {
           throw new InvalidTaskError(`task "${task.id}" acceptance must be a string or a list of strings`)
         }
         if (item.length > CAP_TEXT) {
-          throw new InvalidTaskError(`task "${task.id}" acceptance exceeds ${CAP_TEXT} chars`)
+          throw new InvalidTaskError(capRefusal(`признак успеха №${i + 1}`, item.length, CAP_TEXT))
         }
       }
     } else if (String(task.acceptance).length > CAP_TEXT) {
-      throw new InvalidTaskError(`task "${task.id}" acceptance exceeds ${CAP_TEXT} chars`)
+      throw new InvalidTaskError(capRefusal('признаки успеха', String(task.acceptance).length, CAP_TEXT))
     }
   }
   if (task.priority !== undefined && typeof task.priority !== 'number') {
@@ -1409,7 +1466,7 @@ export function validateTask(task) {
       throw new InvalidTaskError(`forge task "${task.id}" requires a non-empty forge.description`)
     }
     if (task.forge.description.length > CAP_TEXT) {
-      throw new InvalidTaskError(`forge task "${task.id}" description exceeds ${CAP_TEXT} chars`)
+      throw new InvalidTaskError(capRefusal('описание заявки в кузницу', task.forge.description.length, CAP_TEXT))
     }
   } else if (task.forge !== undefined) {
     throw new InvalidTaskError(`non-forge task "${task.id}" must not carry a forge object`)
@@ -2736,9 +2793,13 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       const base = { source: 'roster', title: 'работа', lane: 'prod' }
       await expect(
         q.enqueue({ ...base, id: 'R-many', acceptance: Array.from({ length: CAP_ACCEPTANCE_ITEMS + 1 }, (_, i) => `критерий ${i}`) }),
-      ).rejects.toThrow(/criteria/)
-      await expect(q.enqueue({ ...base, id: 'R-long', acceptance: ['x'.repeat(2001)] })).rejects.toThrow(/acceptance/)
-      await expect(q.enqueue({ ...base, id: 'R-desc', description: 'д'.repeat(2001) })).rejects.toThrow(/description/)
+      ).rejects.toThrow(/признаков успеха: 13 при потолке 12/)
+      await expect(q.enqueue({ ...base, id: 'R-long', acceptance: ['x'.repeat(2001)] })).rejects.toThrow(
+        /признак успеха №1: 2001 знак при потолке 2000/,
+      )
+      await expect(q.enqueue({ ...base, id: 'R-desc', description: 'д'.repeat(2001) })).rejects.toThrow(
+        /описание: 2001 знак при потолке 2000/,
+      )
       // a refusal writes nothing at all
       expect(await q.list({})).toHaveLength(0)
     })
@@ -2854,8 +2915,10 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       await q.enqueue({ id: 'R-cap', source: 'roster', title: 'работа', lane: 'prod' })
       await expect(
         q.setWords('R-cap', { acceptance: Array.from({ length: CAP_ACCEPTANCE_ITEMS + 1 }, (_, i) => `к ${i}`) }),
-      ).rejects.toThrow(/criteria/)
-      await expect(q.setWords('R-cap', { description: 'д'.repeat(2001) })).rejects.toThrow(/description/)
+      ).rejects.toThrow(/признаков успеха: 13 при потолке 12/)
+      await expect(q.setWords('R-cap', { description: 'д'.repeat(2001) })).rejects.toThrow(
+        /описание: 2001 знак при потолке 2000/,
+      )
       const [row] = await q.list({})
       expect(row.description).toBeUndefined()
     })
