@@ -275,6 +275,9 @@ describe('deriveState — the one-poll payload', () => {
       'projectMemory',
       'projects',
       'queue',
+      // КОГО МОЖНО НАЗВАТЬ ПРИ ПОСТАНОВКЕ — состав машины, свёрнутый по ролям (форма задачи
+      // спрашивает «кто возьмёт»). Ключ присутствует всегда, пустой список там, где работников нет.
+      'roles',
       'rules',
       'spend',
       'style',
@@ -1958,6 +1961,9 @@ describe('deriveState — the federation aggregator seam', () => {
       'projectMemory',
       'projects',
       'queue',
+      // КОГО МОЖНО НАЗВАТЬ ПРИ ПОСТАНОВКЕ — состав машины, свёрнутый по ролям (форма задачи
+      // спрашивает «кто возьмёт»). Ключ присутствует всегда, пустой список там, где работников нет.
+      'roles',
       'rules',
       'spend',
       'style',
@@ -2045,6 +2051,11 @@ describe('deriveRules — the «Правила» screen rides the config, never 
       model: 'opus',
       effort: 'high',
       enabled: true,
+      // РОЛЬ И «РАЗБИРАЕТ ЛИ ОЧЕРЕДЬ» — рядом с профилем, потому что таблица правил перечисляла
+      // включённого специалиста ровно так же, как включённого исполнителя, хотя задачу он не
+      // возьмёт ни при каком порядке строк. `max-1` описания агента не носит — значит исполнитель.
+      role: 'executor',
+      inQueue: true,
     })
     expect(byId['max-2'].enabled).toBe(false) // the roster toggle is visible, not guessed
     // a profile the config does not carry is OMITTED, never invented as null
@@ -2689,6 +2700,7 @@ describe('deriveState — projectMemory rides the SAME route, additively', () =>
         'projectMemory',
         'projects',
         'queue',
+        'roles',
         'rules',
         'spend',
         'style',

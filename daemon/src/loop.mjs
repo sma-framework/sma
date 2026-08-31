@@ -106,7 +106,7 @@ import { createHash } from 'node:crypto'
 import { existsSync as fsExistsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, mkdirSync as fsMkdirSync, writeFileSync as fsWriteFileSync, rmSync as fsRmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import { pipelineEnabled, pipelineMaxTurns } from './config.mjs'
+import { pipelineEnabled, pipelineMaxTurns, projectEntry, codeTreeOf, planningHomeOf } from './config.mjs'
 import { taskTurnCap, burnedTurnCapsOf, turnKindOf, emptyTurnKinds } from './policy/turn-budget.mjs'
 import { resolveExpireMs, batchWorkerOf, waveAddressOf, isBatchParent, batchItemsOf, batchDecisionsOf, brokenItemOf, FAIL_REASONS, failureAwaitsAPerson, ATTEMPTS_EXHAUSTED, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
@@ -147,7 +147,11 @@ import { WORKTREE_COPIES_DIR } from '../../scripts/sma/lib/constants.mjs'
 import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
-import { markWindowObserved, markWindowClosed, readingSaysExhausted } from './policy/windows.mjs'
+import { markWindowObserved, markWindowClosed, readingSaysExhausted, canonicalWindow } from './policy/windows.mjs'
+// РОЛИ ПУЛА — ЧИТАЮТСЯ ТЕМ ЖЕ ВЫРАЖЕНИЕМ, КАКИМ ИХ ЧИТАЕТ МАРШРУТИЗАТОР. Проба пригодности
+// полосы обязана спрашивать ровно то же, что спросят при захвате: разойдясь, они начнут
+// объявлять полосу пригодной для того, кого маршрут потом не выберет.
+import { EXECUTOR_ROLE, roleOf } from './policy/worker-role.mjs'
 import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage, claudeTokensFromResult, codexTokensFromFinal } from './runner/usage.mjs'
 import {
   readPendingRedirects,
@@ -284,11 +288,41 @@ function taskTreeDir(deps, config, task) {
   const fallback = (typeof deps.projectDir === 'function' && deps.projectDir()) || config.repoDir
   const id = task && typeof task.project === 'string' ? task.project.trim() : ''
   if (!id) return fallback
-  const list = Array.isArray(config && config.projects) ? config.projects : []
-  const hit = list.find((p) => p && p.id === id && typeof p.path === 'string' && p.path.trim() !== '')
-  if (hit) return hit.path
+  const hit = codeTreeOf(projectEntry(config, id))
+  if (hit) return hit
   writeLog(deps, { type: 'task.project_unresolved', taskId: task && task.id, project: id })
   return fallback
+}
+
+/**
+ * taskPlanningDir(deps, config, task) → ДОМ ПЛАНИРОВАНИЯ проекта этой задачи: каталог, в
+ * котором лежит её `.planning`.
+ *
+ * ВТОРОЙ АДРЕС ТОГО ЖЕ ПРОЕКТА, а не второй проект. Пока запись реестра знала один адрес,
+ * дом планирования приходилось заводить отдельным проектом — и ступень фазы, поставленная у
+ * продукта, получала копию ПРОДУКТА, где каталогов фаз нет. Замерено 31.08: ступень plan
+ * фазы 21 ушла искать фазу по машине, нашла чужую фазу 21 соседнего проекта и честно
+ * отказалась — восемнадцать ходов и около доллара за отказ. Второй адрес не задан — ответ
+ * буква в букву тот же, что у taskTreeDir выше.
+ */
+function taskPlanningDir(deps, config, task) {
+  const id = task && typeof task.project === 'string' ? task.project.trim() : ''
+  const hit = id ? planningHomeOf(projectEntry(config, id)) : null
+  if (hit) return hit
+  return (typeof deps.planningDir === 'function' && deps.planningDir()) || taskTreeDir(deps, config, task)
+}
+
+/**
+ * attemptTreeDir(deps, config, task) → дерево, ИЗ КОТОРОГО ЭТОЙ ЗАДАЧЕ РЕЖУТ КОПИЮ.
+ *
+ * Кодовая работа — из дерева кода. Документарная ступень фазы — из дома планирования: она
+ * правит `.planning`, и копия дерева, в котором его нет, для неё пустая комната. Правило
+ * названо ОДИН раз и здесь, потому что его же читает приёмка, когда ищет ветку (front/
+ * server.mjs, taskBranchTree): разойдись эти двое — и приёмка не нашла бы ровно ту работу,
+ * которую сама заказала.
+ */
+function attemptTreeDir(deps, config, task) {
+  return stageDataOf(task).kind === DOCUMENT_KIND ? taskPlanningDir(deps, config, task) : taskTreeDir(deps, config, task)
 }
 
 function gateSpawnOptions(deps, config, task) {
@@ -1630,8 +1664,30 @@ function recordWindowReading(deps, subscription, event) {
     // stream has never once carried, which arrives here as 0 — so the condition was false on
     // every real machine and the refusal this call exists to persist was never written down.
     // It now fires on what the stream really says: the reading's own status.
+    //
+    // BUT ONLY FOR A WINDOW THAT CAN BE NAMED ON A SCREEN. This fired on ANY name, while the
+    // read model draws only the two windows it knows — and on 31.08.2026 the two disagreed at
+    // the worst possible place. The provider refused `seven_day_overage_included`, the weekly
+    // window with the paid overage folded in, on an account whose paid channel is off and whose
+    // ceiling is zero. Nothing about that name could reach a screen, and it shut the whole
+    // account for five days: thirty tasks queued, no worker busy, while the window that really
+    // governs answered `allowed_warning` at 74 % half an hour later. `canonicalWindow` is now
+    // the single answer to «which windows exist», asked here and by the read model alike.
     if (readingSaysExhausted(event) && Number.isFinite(Number(event.resetsAt))) {
-      markWindowClosed({ dataDir, accountName, resetAt: event.resetsAt, clock, fsImpl: deps.fsImpl })
+      if (canonicalWindow(event.limitType)) {
+        markWindowClosed({ dataDir, accountName, resetAt: event.resetsAt, limitType: event.limitType, clock, fsImpl: deps.fsImpl })
+      } else {
+        // NOT SILENTLY. The reading is already filed above; what is withheld is the right to
+        // stop the account, and an operator has to be able to see a refusal we declined to obey
+        // — by name, so a window that turns out to matter can be added to the list on evidence.
+        writeLog(deps, {
+          type: 'window-refusal-unnamed',
+          account: accountName,
+          limitType: event.limitType ?? null,
+          resetsAt: event.resetsAt ?? null,
+          status: event.status ?? null,
+        })
+      }
     }
   } catch (err) {
     writeLog(deps, { type: 'window-reading-error', account: accountName, error: String((err && err.message) || err) })
@@ -3000,13 +3056,40 @@ function detectMarker(lines) {
  * live in routing.mjs, never re-encoded here). A lane is eligible when a lane-probe yields
  * a workerId or an explicit API fallback. Eligibility is derived BEFORE the claim on
  * purpose: the per-lane queues make a claimed task runnable by construction.
+ *
+ * ПРОБА ЗАДАЁТСЯ ПО КАЖДОЙ РОЛИ, КОТОРАЯ В ПУЛЕ ЕСТЬ, А НЕ ОДНА БЕЗРОЛЕВАЯ. Задача без слова о
+ * роли просит исполнителя, поэтому одна такая проба спрашивала бы ровно «свободен ли
+ * исполнитель» — и полоса, на которой ждёт работа, названная специалистом поимённо, оказалась
+ * бы непригодной в тот момент, когда исполнители заняты, а названный специалист свободен.
+ * Задача осталась бы в очереди, и сказать о ней было бы нечего: пригодность решается ДО
+ * захвата, то есть до того, как хоть кто-то посмотрел на строку. Проб столько, сколько в пуле
+ * РАЗНЫХ ролей (обычно одна-две), и полоса пригодна, если хоть одна из них нашла бегущего.
+ *
+ * ПУСТОЙ ПУЛ ПРОБУЕТСЯ ВСЁ РАВНО — ролью исполнителя: ответ на такой пробе даёт не работник, а
+ * денежное правило (платный канал), и потерять эту пробу значило бы потерять сам переход на
+ * платный канал на машине без работников.
  */
 function eligibleLanes(deps) {
   const { routing, config, windows, clock } = deps
+  const workers = Array.isArray(config.workers) ? config.workers : []
+  // РАЗНЫЕ РОЛИ СОБИРАЮТСЯ СПИСКОМ И `includes`, А НЕ МНОЖЕСТВОМ. Дисциплина этого файла —
+  // никаких ключевых коллекций в памяти процесса (журнал стережёт её grep-ом): состояние тика
+  // живёт в очереди и на диске, а не в структуре, которая переживает перезапуск только в
+  // головах. Ролей в пуле обычно одна-две, и цена линейного поиска здесь — ничто.
+  const roles = []
+  for (const w of workers) {
+    if (!w || w.enabled === false) continue
+    const role = roleOf(w)
+    if (!roles.includes(role)) roles.push(role)
+  }
+  if (roles.length === 0) roles.push(EXECUTOR_ROLE)
   const out = []
   for (const lane of LANES) {
-    const decision = routing.resolveRoute({ lane }, { workers: config.workers, windows, clock, config })
-    if (decision && (decision.workerId || decision.useApiFallback)) out.push(lane)
+    const runnable = roles.some((role) => {
+      const decision = routing.resolveRoute({ lane, role }, { workers, windows, clock, config })
+      return decision && (decision.workerId || decision.useApiFallback)
+    })
+    if (runnable) out.push(lane)
   }
   return out
 }
@@ -3906,7 +3989,12 @@ export async function tick(deps = {}) {
       // machine answer, in the connected project's tree — see askAlreadyBuilt for why each of
       // those four words is load-bearing. Work carrying no phase never reaches the verb, and
       // the log says so.
-      const doorDir = taskTreeDir(deps, config, task)
+      //
+      // ЭТО ЖЕ ДЕРЕВО ОТВЕДЁТ КОПИЮ НИЖЕ, и оно называется ОДИН раз: для кодовой работы это
+      // дерево кода проекта, для документарной ступени — его дом планирования (attemptTreeDir).
+      // Дверь «уже построено» документарной ступени не задаётся вовсе, так что для неё это
+      // выражение — только адрес копии.
+      const doorDir = attemptTreeDir(deps, config, task)
       const alreadyBuilt = isDocument ? false : await askAlreadyBuilt(deps, verbRunner, task, doorDir)
       if (alreadyBuilt) {
         // The receipt this completion stands on. Its shape is CONSTANT — the verb reports no
@@ -3986,7 +4074,12 @@ export async function tick(deps = {}) {
       // product is served from beside the workshop the phases live in — and then a card
       // reading one root while the stage writes into the other shows work as never started
       // while it is being completed.
-      let workDir = taskTreeDir(deps, config, task)
+      //
+      // И ИМЕННО В ЕГО ДОМЕ ПЛАНИРОВАНИЯ — во ВТОРОМ адресе того же проекта, а не в дереве
+      // кода. Ступень правит `.planning`; копия дерева, в котором его нет, для неё пустая
+      // комната, и цену этого уже заплатили (31.08, фаза 21: восемнадцать ходов и около
+      // доллара за честный отказ). Второй адрес не задан — это тот же каталог.
+      let workDir = attemptTreeDir(deps, config, task)
       /** The commit the worktree was cut from — the point any of this can be undone to. */
       let worktreeBase = null
       /**
