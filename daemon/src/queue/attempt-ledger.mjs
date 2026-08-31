@@ -163,9 +163,13 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   // The identifier the CLI minted for the session this attempt ran in, read off the result
   // frame. It is kept because it is the ONE thing that cannot be recovered afterwards: with
   // it a later attempt can resume the session instead of paying for the same context twice,
-  // and without it that option is gone the moment the process exits. It is an OPAQUE handle
-  // and it stays on the audit row — the task-card read model is an explicit pick and does not
-  // name it, so it never travels to a screen.
+  // and without it that option is gone the moment the process exits.
+  //
+  // ОНО ЖЕ — И ЧЕЛОВЕЧЕСКАЯ ПОЛОВИНА ТОЙ ЖЕ ДОРОГИ. Долгое время идентификатор оставался
+  // только машинным: дверь карточки его не называла, и «зайти в сессию работника и посмотреть
+  // самому» было возможностью, о которой знал один демон. Теперь дверь называет его явным
+  // выбором — и ТОЛЬКО пригодный к продолжению по форме, — а окно складывает из него готовую
+  // строку возврата. Ручка по-прежнему НЕПРОЗРАЧНАЯ: ни имени, ни секрета в ней нет.
   'sessionId',
   // ── the provenance flag ──
   // `true` ONLY on a row appended by `reconcile.mjs` AFTER the fact, from the queue's own
