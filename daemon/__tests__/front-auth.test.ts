@@ -261,8 +261,13 @@ describe('server.mjs — the closed SIXTY-FOUR-route table', () => {
   // one, phases and backlog in the other, and neither switchable off without losing what it
   // held. It moves no code tree: the product stays where it stands, and only where planning is
   // read from changes.
-  it('the frozen table has EXACTLY sixty-six routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(66)
+  // The sixty-seventh and sixty-eighth BREAK THE TRANSCRIPT INTO CONVERSATIONS: one lists
+  // them (freshest first, with a live mark on the one a turn is running in), the other lets a
+  // person NAME one by hand. Until they existed the window opened a NEW conversation almost
+  // every time it was opened — fifty replies had scattered across fifteen threads — showed
+  // every thread of a project as one unbroken feed, and offered no way back into an earlier one.
+  it('the frozen table has EXACTLY sixty-eight routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(68)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 

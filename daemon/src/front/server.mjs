@@ -6,7 +6,7 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-SIX routes
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-EIGHT routes
  *     (re-frozen 2026-08-28 — the growth past the V5.4 fifty-three is EXPLICIT, ELEVEN doors,
  *     each declared by the release that opened it: the chat stop button in v5.4.3, the
  *     running-task steering wheel in v5.5.0, SIX doors in v5.6.0 — the batch request,
@@ -33,10 +33,15 @@
  *     folder that holds its `.planning`, when the house keeps code and planning in two
  *     repositories. Until it existed such a house had to be registered as TWO projects — tasks
  *     visible in one, phases and backlog in the other, and neither switchable off without
- *     losing what it held. A path outside the table is 404 BEFORE
+ *     losing what it held. The SIXTY-SEVENTH AND SIXTY-EIGHTH BREAK THE TRANSCRIPT INTO
+ *     CONVERSATIONS: one lists them (freshest first, with a live mark on the one a turn is
+ *     running in), the other lets a person NAME one by hand. Until they existed the window
+ *     opened a NEW conversation almost every time — fifty replies had scattered across fifteen
+ *     threads — showed every thread of a project as one unbroken feed, and offered no way back
+ *     into any earlier one. A path outside the table is 404 BEFORE
  *     any auth-error detail (no route reflection). No command-exec endpoint exists or ever
  *     may — adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 66 is a test.
+ *     invariant that polices it. Object.keys(ROUTES).length === 68 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
@@ -266,17 +271,17 @@ const BUILD_INSTRUCTION_HTML =
  * is dead), the door that READS THE FOLDER OF ONE PHASE — its directory as a tree, and
  * one file of it as text, both bounded, neither able to leave that directory — and the door
  * that WRITES A SKILL into this machine's skill store).
- * Exactly SIXTY-SIX entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * Exactly SIXTY-EIGHT entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the five dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/phase/:id/files, /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic
  * asset segment (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 66) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 68) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
  * a time; the last twelve joined one release at a time, additively — nothing was
- * removed or renamed. ALL SIXTY-SIX ARE LIVE — the table carries no stub, and the shape
+ * removed or renamed. ALL SIXTY-EIGHT ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  *
  * THREE OF THE TEN PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
@@ -317,6 +322,9 @@ export const ROUTES = Object.freeze({
   'POST /api/chat/stop': 'handleChatStop',
   'POST /api/redirect': 'handleRedirect',
   'GET /api/chat/history': 'handleChatHistory',
+  // ── книга разложена по разговорам: список слева и имя, данное рукой ──
+  'GET /api/chat/conversations': 'handleChatConversations',
+  'POST /api/chat/rename': 'handleChatRename',
   'POST /api/import/scan': 'handleImportScan',
   'POST /api/import/enroll': 'handleImportEnroll',
   'GET /api/onboarding': 'handleOnboarding',
@@ -3433,16 +3441,35 @@ export async function runChatTurn({ config, deps, text, conversationId, turnId, 
   // Доска едет с КАЖДЫМ ходом, не только с открытым с карточки: вопрос «что у нас
   // происходит?» — это вопрос свободной ветки, и отвечать на него она должна по данным.
   const board = await chatBoardSnapshot(config, deps)
-  return deps.handleChatTurn({
-    text,
-    ...(conversationId ? { conversationId } : {}),
-    ...(turnId ? { turnId } : {}),
-    deps: chatDeps(config, deps, {
-      ...(snapshot ? { snapshot } : {}),
-      ...(board ? { board } : {}),
-      ...(tellStage ? { onStage: tellStage } : {}),
-    }),
-  })
+
+  // ЖИВАЯ ТОЧКА ЗАЖИГАЕТСЯ ЗДЕСЬ — в сборке, общей для окна и для моста телеграма, а не в
+  // одной из двух дверей. Иначе беседа, которую ведут с телефона, выглядела бы в списке
+  // законченной ровно тогда, когда в ней идёт работа. Гаснет точка в `finally`: ход, упавший
+  // с ошибкой, — это закончившийся ход, а не вечно активный разговор.
+  const live = deps.chatLive
+  let marked = null
+  const onConversation = live && typeof live.begin === 'function'
+    ? (id) => {
+        marked = id
+        live.begin(id)
+      }
+    : undefined
+
+  try {
+    return await deps.handleChatTurn({
+      text,
+      ...(conversationId ? { conversationId } : {}),
+      ...(turnId ? { turnId } : {}),
+      deps: chatDeps(config, deps, {
+        ...(snapshot ? { snapshot } : {}),
+        ...(board ? { board } : {}),
+        ...(tellStage ? { onStage: tellStage } : {}),
+        ...(onConversation ? { onConversation } : {}),
+      }),
+    })
+  } finally {
+    if (marked) live.end(marked)
+  }
 }
 
 /**
@@ -3782,6 +3809,91 @@ function handleChatHistory({ res, query, deps }) {
     turns = [] // an unreadable transcript is an EMPTY conversation, never a 500
   }
   return sendJson(res, 200, { turns: turns.map(pickTurn) })
+}
+
+/** Что строка списка бесед вывозит наружу — и ничего сверх того. */
+function pickConversation(c) {
+  const r = c && typeof c === 'object' ? c : {}
+  return {
+    id: typeof r.id === 'string' ? r.id : '',
+    title: typeof r.title === 'string' && r.title !== '' ? r.title : null,
+    lastTs: r.lastTs ?? null,
+    turns: Number.isFinite(r.turns) ? r.turns : 0,
+    project: typeof r.project === 'string' && r.project !== '' ? r.project : null,
+    active: r.active === true,
+  }
+}
+
+/**
+ * GET /api/chat/conversations — БЕСЕДЫ этой книги, свежая первой.
+ *
+ * Слово владельца 31.08: «может нам разбить разговор на разные чаты? И те которые в процессе
+ * условно выполняют что-то, тогда они активные». До этой двери у окна не было способа узнать,
+ * какие разговоры вообще были: оно читало ленту и продолжало последнюю нить, а всё остальное
+ * сказанное было не выбрать ничем. Дверь считает список ПО КНИГЕ при каждом чтении — второй
+ * правды о том, что было сказано, здесь не заводится.
+ *
+ * `active` — единственное поле не из книги: его приносит реестр живых бесед, общий для окна и
+ * для моста телеграма. Реестра нет — поле честно `false` у всех, а не выдуманная точка.
+ *
+ * `?project=` сужает список тем же разбором (`projectFilter`), что и чтение книги; `?limit=`
+ * зажат тем же потолком, так что ни один запрос не просит всю книгу разом.
+ */
+function handleChatConversations({ res, query, deps }) {
+  if (typeof deps.listChatConversations !== 'function') return send501(res)
+  const asked = Number(query && query.limit)
+  const limit = Number.isFinite(asked) && asked > 0 ? Math.min(Math.floor(asked), CHAT_HISTORY_MAX) : CHAT_HISTORY_LIMIT
+  const project = projectFilter(query)
+  let rows = []
+  try {
+    rows =
+      deps.listChatConversations({
+        dir: deps.chatDir,
+        ...(project ? { project } : {}),
+        limit,
+        live: deps.chatLive,
+        fsImpl: deps.fsImpl,
+      }) || []
+  } catch {
+    rows = [] // нечитаемая книга — это «бесед нет», никогда не 500
+  }
+  return sendJson(res, 200, { conversations: rows.map(pickConversation) })
+}
+
+/**
+ * POST /api/chat/rename — body {conversationId, title}. Имя беседы, данное РУКОЙ.
+ *
+ * Имя, выведенное из первых слов, — догадка, и она бывает неудачной: разговор часто начинают
+ * с «привет» и только потом переходят к делу. Поэтому имя правится рукой, ровно как у проекта
+ * (`/api/project/rename`), и хранится отдельно от стенограммы — переименование не является
+ * репликой и в промпт свободной ветки не попадает никогда.
+ *
+ * Пустое имя — это СНЯТЬ своё имя: список возвращается к первым словам разговора. Это не
+ * ошибка ввода, а обычное действие, поэтому оно и принимается дверью, а не отвергается.
+ */
+async function handleChatRename({ req, res, deps }) {
+  if (typeof deps.renameChatConversation !== 'function') return send501(res)
+  const body = await readJsonBody(req, { cap: CHAT_BODY_CAP })
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['conversationId', 'title']))) return undefined
+  if (typeof b.conversationId !== 'string' || !CONVERSATION_ID_RE.test(b.conversationId)) {
+    return send400(res, 'invalid conversationId')
+  }
+  if (b.title !== undefined && b.title !== null && typeof b.title !== 'string') return send400(res, 'invalid title')
+  if (typeof b.title === 'string' && b.title.length > CHAT_TEXT_CAP) return send400(res, `title exceeds ${CHAT_TEXT_CAP} chars`)
+  let named
+  try {
+    named = deps.renameChatConversation({
+      dir: deps.chatDir,
+      conversationId: b.conversationId,
+      title: b.title ?? '',
+      fsImpl: deps.fsImpl,
+    })
+  } catch (err) {
+    return send400(res, String((err && err.message) || 'rename refused'))
+  }
+  return sendJson(res, 200, { id: named.id, title: named.title ?? null })
 }
 
 // ── the import door: a foreign estate becomes DRAFTS, never a running worker ──
@@ -6798,6 +6910,8 @@ export const HANDLERS = Object.freeze({
   handleChatStop,
   handleRedirect,
   handleChatHistory,
+  handleChatConversations,
+  handleChatRename,
   handleImportScan,
   handleImportEnroll,
   handleOnboarding,
