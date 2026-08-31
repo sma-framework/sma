@@ -34,6 +34,13 @@
  *      go and build one. Only asked where `spa/` exists: an installed copy has no
  *      window source and is not held to a bundle it was never meant to produce
  *
+ * Asked by `--strict` only — the release question, deliberately kept out of the bare
+ * count so the scorer's total does not move when the gate gets stricter:
+ *  11. a `test-receipt.json` measured on a DIRTY worktree. The run covered files that
+ *      are in no commit, so the number in the shop window counts something nobody can
+ *      name or reproduce — measure a committed tree, then stamp. (`badge --check`
+ *      refuses the same receipt without being asked twice; see badge.mjs.)
+ *
  * Honest sentinel: run in a tree that is NOT the product package (no
  * capability.json next to the runtime — e.g. a consumer mirror of scripts/sma),
  * the check prints `-1` (not applicable), never a fake 0. The daemon-license
@@ -52,10 +59,14 @@ import { checkBadge } from './badge.mjs'
 import { checkDaemonLicenses, checkSpaLicenses } from './daemon-licenses.mjs'
 
 /**
- * checkPackage({pkgRoot, io}) — pure given an io; returns
+ * checkPackage({pkgRoot, io, strict}) — pure given an io; returns
  * {applicable:boolean, violations:Array<{code,detail}>}.
+ *
+ * `strict` is the RELEASE question rather than the count question: it adds the checks a
+ * publish must survive but a scorer's running total must not silently grow by (today:
+ * a receipt measured on a dirty worktree). Without it the count is what it always was.
  */
-export function checkPackage({ pkgRoot, io } = {}) {
+export function checkPackage({ pkgRoot, io, strict } = {}) {
   const read = io ?? { exists: existsSync, readFile: (p) => readFileSync(p, 'utf8'), readdir: (p) => readdirSync(p) }
   const violations = []
 
@@ -88,7 +99,11 @@ export function checkPackage({ pkgRoot, io } = {}) {
   // 6. the README test badge must equal the measured suite receipt (badge.mjs).
   // No `head` on purpose: whether the receipt is FRESH is a `badge --check` question
   // (it needs git), and publishability — this count — must stay a pure file check.
-  violations.push(...checkBadge({ pkgRoot, io: read }).violations)
+  // Under --strict one more thing is asked, and it needs no git either because the
+  // receipt says it itself: a measurement taken on a dirty worktree ran over files that
+  // are in no commit, so nobody can say what the published number counts. That is not a
+  // number a release may carry, so the gate refuses it (11).
+  violations.push(...checkBadge({ pkgRoot, io: read, strict }).violations)
 
   // 7-8. the vendored daemon tree must be described by the generated section it
   // ships with, and every license in it must be one we may vendor. Re-rendered
@@ -143,8 +158,8 @@ const invokedDirectly = (() => {
 
 if (invokedDirectly) {
   const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
-  const { applicable, violations } = checkPackage({ pkgRoot })
   const flags = new Set(process.argv.slice(2))
+  const { applicable, violations } = checkPackage({ pkgRoot, strict: flags.has('--strict') })
   if (flags.has('--json')) {
     process.stdout.write(JSON.stringify({ applicable, pkgRoot, violations }) + '\n')
   } else if (!flags.has('--count')) {

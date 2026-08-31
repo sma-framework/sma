@@ -67,7 +67,7 @@ import {
 } from '../src/loop.mjs'
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { createAgingMemory } from '../src/policy/aging-memory.mjs'
-import { createMemoryQueue, REASON_LABELS, failureAwaitsAPerson } from '../src/queue/adapter.mjs'
+import { createMemoryQueue, REASON_LABELS, failureAwaitsAPerson, AUTO_RETRY_LIMIT, AUTO_RETRY_BASE_MS } from '../src/queue/adapter.mjs'
 // Единый журнал срывов — читается и пишется здесь через те же две функции, что демон
 // подаёт тику швом `ledger`: тест о том, что срыв доезжает до журнала САМ, не имеет права
 // подсовывать проходу свой журнал в памяти.
@@ -3510,18 +3510,26 @@ describe('an urgent inline task wedges BETWEEN the pieces of a batch', () => {
 })
 
 /**
- * ═══════════ СЛОМАЛОСЬ — СТОП. НИЧЕГО НЕ ПРОИСХОДИТ САМО ═══════════════════════════
+ * ═══════════ СЛОМАЛОСЬ — ПОВТОРИ СЧИТАННОЕ ЧИСЛО РАЗ, ПОТОМ СТОП ═══════════════════
  *
  * This is the loop of 12.08.2026 written down as a test, at the level it actually happened:
  * the TICK. A piece broke, and the machine ran it again — and again — because nothing anywhere
- * said «stop and ask». Three live sessions on one task, a subscription burnt overnight, and a
- * board showing an empty queue and an idle worker.
+ * said «stop». Three live sessions on one task, a subscription burnt overnight, and a board
+ * showing an empty queue and an idle worker.
  *
- * So: after a piece of a batch fails, tick after tick after tick must do NOTHING with that
- * assembly — not repeat the broken piece, not move on to the next one — until its owner says
- * a word. And when he does, the very next tick carries on exactly as he asked.
+ * WHAT THE CURE TURNED OUT TO BE, and it is not «never repeat». Never repeating cost its own
+ * measured day: on 31.08 three assemblies stood broken since the day before, holding ten pieces
+ * of work behind them, all three on a cause whose own card said «the provider cut it, try
+ * again» — and all three went green on the first try when a person pressed repeat by hand. The
+ * loop was never the repetition; it was the repetition WITHOUT A CEILING and without a word.
+ *
+ * So the promise this block pins is the pair of them:
+ *   — a broken piece IS repeated by the tick itself, after a pause, and each repeat is counted;
+ *   — the counting ENDS: past the ceiling, tick after tick after tick does nothing with that
+ *     assembly — no repeat, no next piece — until its owner says a word, and when he does, the
+ *     very next tick carries on exactly as he asked.
  */
-describe('a broken piece stops its batch until the owner says a word — the tick repeats NOTHING', () => {
+describe('сорвавшийся кусок повторяется сам считанное число раз, а дальше ждёт владельца', () => {
   const RED_RESPONSES = {
     preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
     worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: '/wt/x', branch: 'wt/x' }) },
@@ -3533,7 +3541,12 @@ describe('a broken piece stops its batch until the owner says a word — the tic
     reverify: GREEN_REVERIFY,
   }
 
-  async function brokenBatch(c: any) {
+  /**
+   * Сборка, у которой первый кусок сорвался `redRuns` раз подряд. Каждый следующий прогон
+   * случается НЕ потому, что его завёл тест: между прогонами проходит пауза автоповтора, и тик
+   * сам возвращает кусок в очередь — тем же проходом, каким потом его и выдаёт.
+   */
+  async function brokenBatch(c: any, { redRuns = 1 } = {}) {
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
     await adapter.enqueue({
       id: 'B-F',
@@ -3549,14 +3562,31 @@ describe('a broken piece stops its batch until the owner says a word — the tic
 
     // the first piece runs and its tests come back red
     const { deps } = makeDeps({ adapter, clockObj: c, responses: RED_RESPONSES })
-    const res = await tick(deps)
-    expect(res.failed).toEqual({ taskId: 'B-F-1', reason: 'tests_red' })
+    for (let n = 0; n < redRuns; n += 1) {
+      if (n > 0) c.advance(AUTO_RETRY_BASE_MS * 2 ** (n - 1) + 1000)
+      const res = await tick(deps)
+      expect(res.failed).toEqual({ taskId: 'B-F-1', reason: 'tests_red' })
+    }
     return adapter
   }
 
-  it('tick after tick, the stopped assembly does nothing at all — no repeat, no next piece', async () => {
+  it('пауза прошла — тик возвращает кусок сам, и на повторе сборка едет дальше', async () => {
     const c = mkClock()
     const adapter = await brokenBatch(c)
+
+    // До конца паузы — ничего: свежий срыв не трогают.
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: GREEN_RESPONSES })
+    expect((await tick(deps)).idle).toBe(true)
+
+    c.advance(AUTO_RETRY_BASE_MS + 1000)
+    // Один и тот же проход возвращает кусок в очередь и выдаёт его — повтор не ждёт лишнего тика.
+    expect((await tick(deps)).completed).toBe('B-F-1')
+    expect((await tick(deps)).completed).toBe('B-F-2') // и сборка доехала до конца сама
+  })
+
+  it('потолок повторов исчерпан — дальше тик за тиком не происходит ничего', async () => {
+    const c = mkClock()
+    const adapter = await brokenBatch(c, { redRuns: AUTO_RETRY_LIMIT + 1 })
 
     const { deps, order } = makeDeps({ adapter, clockObj: c, responses: GREEN_RESPONSES })
     for (let i = 0; i < 5; i += 1) {
@@ -3567,8 +3597,9 @@ describe('a broken piece stops its batch until the owner says a word — the tic
 
     const rows = await adapter.list({})
     expect(rows.find((r: any) => r.id === 'B-F-1').status).toBe('failed')
-    expect(rows.find((r: any) => r.id === 'B-F-1').attempt).toBe(1) // it was never run again
-    expect(rows.find((r: any) => r.id === 'B-F-2').status).toBe('queued') // and never moved on
+    // Повторов было ровно столько, сколько отпущено, и ни одного сверх.
+    expect(rows.find((r: any) => r.id === 'B-F-1').attempt).toBe(AUTO_RETRY_LIMIT + 1)
+    expect(rows.find((r: any) => r.id === 'B-F-2').status).toBe('queued') // и дальше не пошло
   })
 
   it('«пропустить» → the very next tick carries the assembly on with the piece after it', async () => {

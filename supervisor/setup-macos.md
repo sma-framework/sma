@@ -200,6 +200,11 @@ must show the fleet's status bar, the queue and the worker cards. The first visi
 with `?token=` sets an HttpOnly cookie — after that the token is not needed in
 the address.
 
+The address is assembled by hand here only because the browser is on ANOTHER
+device. On the daemon's own machine you never assemble it: `node
+scripts/sma/cli.mjs open` builds that same one-shot link out of the config and
+opens it (`--print` writes it out instead, for a machine with no browser).
+
 > Deferred hardening (not required for a first run): over the LAN this is plain
 > HTTP today, which is acceptable because the roster carries task metadata only,
 > never code diffs without a token, never subscription tokens. Later: mkcert/TLS

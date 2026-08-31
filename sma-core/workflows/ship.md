@@ -208,10 +208,12 @@ commands implement them, never WHETHER they run:
 3. **Test badge from the measured receipt — never typed by hand.** If the project's
    README carries a test badge, it is a PUBLIC CLAIM about the suite, and a claim that
    drifts is a lie in the shop window (this badge once read `tests-876/876` while the
-   suite had grown far past it). The gate in invariant 1 just measured the real suite;
-   stamp the badge from THAT measurement, before the release commit:
+   suite had grown far past it). **Commit the release content FIRST, then measure a clean
+   tree** — a run over uncommitted files measures something nobody can name afterwards,
+   and both the check and the release gate refuse the receipt it writes:
 
    ```bash
+   git status --porcelain            # must be EMPTY before the measurement
    npx vitest run --reporter=json --outputFile=.vitest-report.json \
      && node scripts/sma/lib/badge.mjs --from-vitest .vitest-report.json \
      && node scripts/sma/lib/badge.mjs --check --strict
@@ -226,11 +228,17 @@ commands implement them, never WHETHER they run:
    silently vanish from the count), and it refuses a report that predates HEAD, which
    is how a leftover `.vitest-report.json` measures yesterday's tree.
 
-   The receipt records the commit it was measured at, so `--check --strict` can judge
-   the receipt itself and not just the READMEs against it: it fails when the receipt
-   carries no provenance or was measured at another commit. Plain `--check` reports the
-   same as warnings. When you need certainty rather than a warning — a release you did
-   not stamp yourself, a receipt from another machine — re-measure:
+   The receipt records the commit it was measured at AND whether that tree was clean, so
+   `--check` judges the receipt itself and not just the READMEs against it. Two verdicts
+   are failures on their own, with no `--strict` needed: a receipt measured on a dirty
+   worktree, and a receipt measured at a commit that code or tests have moved on from.
+   Both mean the number is about another tree, and a number about another tree in the shop
+   window is the exact lie this law exists to prevent. The commit that carries the
+   measurement itself — the receipt, the two READMEs, the map — is passed over, because
+   stamping always makes one more commit and a rule nobody can satisfy gets switched off.
+   Only the two UNVERIFIABLE cases stay warnings until `--strict`: no git to ask, and a
+   receipt carrying no provenance at all. When you need certainty rather than a warning —
+   a release you did not stamp yourself, a receipt from another machine — re-measure:
 
    ```bash
    node scripts/sma/lib/badge.mjs --verify-live          # runs the suite itself
@@ -240,10 +248,12 @@ commands implement them, never WHETHER they run:
    It compares the receipt AND both badges against a THIRD number from a live run, so a
    pair that is wrong together cannot stay quiet.
 
-   Commit the rewritten READMEs + `test-receipt.json` with the release. The gate side of
-   this law is `package-check --strict` (the `prepublishOnly` hook), which fails the
-   release when a README badge and the receipt disagree — so a hand-edited badge cannot
-   ship.
+   Commit the rewritten READMEs + `test-receipt.json` as their own landing commit — that
+   commit is exempt from the freshness rule, so the tree it lands on stays green. The gate
+   side of this law is `package-check --strict` (the `prepublishOnly` hook), which fails
+   the release when a README badge and the receipt disagree — so a hand-edited badge
+   cannot ship — and, since the receipt says so itself, when the number was measured on a
+   dirty worktree, which no git history is needed to see.
 
 4. **Origin-diff review.** Review every commit that would ride along with this ship —
    on a shared checkout your push carries other sessions' local commits too:

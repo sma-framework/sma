@@ -56,14 +56,20 @@
  * the whole reason the list lives INSIDE the existing field rather than beside it.
  *
  * The field therefore accepts BOTH shapes and means one thing:
- *   - a STRING  — one criterion. Every row written before this existed is exactly this, and
- *                 it stays valid, unrewritten and readable, for ever;
+ *   - a STRING  — the promise as prose. Every row written before this existed is exactly this,
+ *                 and it stays valid, unrewritten and readable, for ever;
  *   - a LIST of strings — several criteria, bounded by CAP_ACCEPTANCE_ITEMS and by the same
  *                 per-item ceiling one criterion always had.
  *
- * AND EVERY READER NORMALIZES: `acceptanceItems()` turns either shape into a list (a string
- * becomes a list of one), and that is the only way this field is ever read. Nobody branches
- * on «is it an array» twice, so nobody can branch on it differently.
+ * AND EVERY READER NORMALIZES: `acceptanceItems()` turns either shape into a list, and that is
+ * the only way this field is ever read. Nobody branches on «is it an array» twice, so nobody
+ * can branch on it differently.
+ *
+ * A STRING IS READ BY ITS OWN MARKUP, not counted as one criterion regardless of what is in
+ * it. A promise typed as five dashed lines IS five criteria — and while it read as one, the
+ * turn ceiling (which counts criteria) called every such task small and handed it the base
+ * number. Unmarked prose is still exactly one criterion: the boundaries are the author's to
+ * place, and inventing them by sentence would report against a criterion nobody wrote.
  *
  * `description` is the neighbouring free text — what the work IS, as opposed to what will
  * make it done. Both are DATA and reach a worker only inside a fence.
@@ -158,6 +164,13 @@
  *                                   Which causes take this ending is named ONCE, in
  *                                   AWAITS_A_PERSON below; the caller asks and never guesses.
  *                                   Returns true when a live attempt was found and parked.
+ *   reissue(taskId)               → THE SAME WORK, ONE APPROACH LATER: a row closed by a failure
+ *                                   goes back into the queue with its try count raised by one.
+ *                                   The door is mechanical — WHICH endings deserve a repeat is
+ *                                   named once, beside the taxonomy (`awaitsAutoRetry`), and the
+ *                                   tick asks it before knocking here. False on anything that is
+ *                                   not a failed row: what is running, waiting for a worker or
+ *                                   waiting for a person is not re-issued behind its own back.
  *   cancelTask(taskId)            → A PERSON STOPPED THIS WORK. The row is closed TERMINALLY
  *                                   with the reason `manual`, and no worker is ever handed it
  *                                   again — not on the next tick, not on any later one. Returns
@@ -462,6 +475,103 @@ export function failureAwaitsAPerson(reason) {
   return AWAITS_A_PERSON.includes(reason)
 }
 
+/**
+ * ═══════ И ТО ЖЕ ПРАВИЛО С ДРУГОЙ СТОРОНЫ: ЧТО ПОВТОРЯЕТСЯ САМО ══════════════════════════
+ *
+ * Список выше говорил правду и не имел провода. Измерено 31.08: три сборки простояли
+ * сорвавшимися со вчерашнего дня и держали за собой десять невыданных работ; у всех трёх
+ * упавших кусков причина была одна — `provider_error`, чья подпись прямо говорит «работник тут
+ * ни при чём, попробуйте ещё раз». Система написала «попробуйте ещё раз» и стала ждать
+ * человека. Повторили рукой — все три пошли с первой попытки.
+ *
+ * ПОЭТОМУ ПОВТОР ДЕЛАЕТ МАШИНА. Конец, за которым по таксономии стоит следующая попытка, эту
+ * попытку и получает: тик возвращает строку в очередь сам (`repeatBroken` в loop.mjs), не
+ * дожидаясь, пока человек нажмёт то, что и так предрешено.
+ *
+ * ТРИ ГРАНИЦЫ, И КАЖДАЯ — ПРОТИВ СВОЕЙ БЕДЫ. Прежний запрет на автоповтор родился из настоящей
+ * петли, которая стоила дня, и снимается он не отменой запрета, а границами:
+ *   — ПОТОЛОК (`AUTO_RETRY_LIMIT`): повторов конечное число, дальше зовут человека;
+ *   — РАСТУЩАЯ ПАУЗА (`AUTO_RETRY_BASE_MS`, удваивается): сломанный канал не долбят с частотой
+ *     тика — вторая попытка ждёт вдвое дольше первой;
+ *   — СЛОВА В ЖУРНАЛЕ: каждый повтор назван вслух («повторено само, попытка N из M»), потому
+ *     что молчаливое повторение и есть то, чего владелец запретил.
+ *
+ * СЧЁТ ИДЁТ ПО `attempt` — ПО СОБСТВЕННОМУ СЧЁТУ ВЫДАЧ ОЧЕРЕДИ, а не по второму счётчику рядом.
+ * Это ЕДИНСТВЕННОЕ число, которое обе очереди уже ведут об одной работе, и потому потолок
+ * получается общим: там, где долговременная очередь сама перевыдала строку своей библиотечной
+ * границей, счёт вырос — и автоповтор увидит, что часть попыток уже потрачена, вместо того
+ * чтобы добавить к ним свои. Плата за это названа честно: попытка, потерянная на молчании
+ * работника, тратит и автоповтор тоже.
+ */
+export const AUTO_RETRY_LIMIT = 2
+export const AUTO_RETRY_BASE_MS = 60_000
+
+/**
+ * failureRepeatsItself(reason) → перевыдаст ли очередь этот конец САМА.
+ *
+ * PURE. Три «нет», и каждое своё:
+ *   — конец из `AWAITS_A_PERSON`: повтор упрётся в ту же стену на том же шаге;
+ *   — `manual`: человек уже решил, и второй раз его решение не переигрывают;
+ *   — `attempts_exhausted`: это и есть слово очереди «я больше не перевыдаю», и повтор за ним
+ *     сделал бы её собственную подпись неправдой.
+ * Причина, которой на строке нет вовсе, тоже не повторяется: «повторено само» о срыве, чью
+ * причину никто не записал, — это догадка, а не решение по таксономии.
+ *
+ * @param {string|null|undefined} reason
+ * @returns {boolean}
+ */
+export function failureRepeatsItself(reason) {
+  if (typeof reason !== 'string' || reason === '') return false
+  if (reason === 'manual' || reason === ATTEMPTS_EXHAUSTED) return false
+  return !failureAwaitsAPerson(reason)
+}
+
+/**
+ * autoRetriesSpent(row) → сколько выдач этой работы уже состоялось сверх первой. PURE, тотальна:
+ * строка без счёта — строка первой выдачи (`attempt` 1-based, так его пишут оба бэкенда).
+ *
+ * @param {object|null} row
+ * @returns {number}
+ */
+export function autoRetriesSpent(row) {
+  const n = row && typeof row === 'object' ? Number(row.attempt) : NaN
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) - 1 : 0
+}
+
+/**
+ * awaitsAutoRetry(row) → стоит ли за этой сорвавшейся строкой МАШИНА, а не человек.
+ *
+ * БЕЗ ЧАСОВ — и это условие, а не удобство: тот же вопрос задают читающие пути (какой кусок
+ * держит сборку, что показать на красной карточке), а они обязаны отвечать одинаково в любую
+ * секунду. «Когда именно повторить» — отдельный вопрос, и у него своя функция ниже.
+ *
+ * @param {object|null} row строка очереди (read shape)
+ * @returns {boolean}
+ */
+export function awaitsAutoRetry(row) {
+  if (!row || typeof row !== 'object' || row.status !== 'failed') return false
+  if (!failureRepeatsItself(row.failure_reason)) return false
+  return autoRetriesSpent(row) < AUTO_RETRY_LIMIT
+}
+
+/**
+ * autoRetryDueAt(row) → момент, когда пауза этой строки истекает; NaN, когда повтора не будет.
+ *
+ * ПАУЗА РАСТЁТ ВДВОЕ НА КАЖДЫЙ ПОТРАЧЕННЫЙ ПОВТОР. Отсчёт — от отметки закрытия строки: её
+ * ставит КАЖДЫЙ конец в обеих очередях, и это единственный момент, от которого «сколько строка
+ * лежит» вообще измеримо. Строка, закрытая до появления этой отметки, созрела давно — её
+ * повтор не откладывается ещё раз (ноль), потому что выдуманный «час назад» был бы хуже.
+ *
+ * @param {object|null} row
+ * @returns {number} epoch ms, или NaN
+ */
+export function autoRetryDueAt(row) {
+  if (!awaitsAutoRetry(row)) return NaN
+  const stopped = msOf(row.completedAt)
+  if (!Number.isFinite(stopped)) return 0
+  return stopped + AUTO_RETRY_BASE_MS * 2 ** autoRetriesSpent(row)
+}
+
 /** RU подписи для красной карточки ростера — единственный источник: сервер передаёт, экран рендерит. */
 export const REASON_LABELS = Object.freeze({
   no_receipt: 'нет квитанции — работа не подтверждена',
@@ -758,9 +868,11 @@ export const CAP_ACCEPTANCE_ITEMS = 12
 /**
  * acceptanceItems(acceptance) → the promise as a LIST, whichever shape it was written in.
  *
- * THE ONE READING PATH for `acceptance` in the whole product: a string is a list of one, a
- * list is itself, anything else is nothing. Empty and blank entries are dropped, because a
- * blank criterion rendered as a bullet is a promise nobody made.
+ * THE ONE READING PATH for `acceptance` in the whole product: a list is itself, a string is
+ * read BY ITS OWN MARKUP (see markedPromiseItems — bullets and numbers the author typed make
+ * the boundaries; unmarked prose stays one criterion), anything else is nothing. Empty and
+ * blank entries are dropped, because a blank criterion rendered as a bullet is a promise
+ * nobody made.
  *
  * Exported so the prompt builder, the read model behind the screen and the doors all ask the
  * same function. Two of them branching on `Array.isArray` for themselves is two chances to
@@ -850,13 +962,65 @@ export function taskContextOf(taskOrRow) {
   return raw
 }
 
+const PROMISE_BULLET = /^[ \t]*(?:[-–—*•]|\d{1,2}[.)])[ \t]+(\S.*)$/
+
+/**
+ * markedPromiseItems(text) → пункты строки, разобранные ПО ЕЁ СОБСТВЕННОЙ РАЗМЕТКЕ.
+ *
+ * ПОЧЕМУ ЭТО ВООБЩЕ ЕСТЬ. Одно из трёх чисел, по которым считается потолок ходов, — сколько
+ * ПУНКТОВ обещано. Пока строка была «списком из одного», работа, чьё обещание человек написал
+ * строкой с тире в начале каждой строчки, читалась ОДНОПУНКТОВОЙ, то есть мелкой, и получала
+ * базовый потолок. Замерено на одном и том же тексте: строкой — «мелкая», 160; тем же текстом
+ * списком — «крупная», 480. Форма записи решала цену работы, и ошибку формы не было видно
+ * нигде.
+ *
+ * РЕЖЕТСЯ ТОЛЬКО РАЗМЕЧЕННОЕ, И ТОЛЬКО ПО НАЧАЛУ СТРОКИ. Границы пунктов ставит АВТОР — тире,
+ * звёздочкой, номером. Резать сплошной текст по точкам и запятым значило бы расставить
+ * границы, которых автор не ставил, и отчитаться потом по выдуманному пункту; поэтому текст
+ * без единого маркера возвращается ОДНИМ пунктом, со своими переносами, ровно как раньше.
+ * Тире в середине фразы («тест зелёный - и быстрый») пунктом не становится.
+ *
+ * НИ ОДНО СЛОВО НЕ ТЕРЯЕТСЯ. Текст перед первым маркером — обычно заголовок вроде «признаки
+ * успеха:» — становится своим пунктом, а не выбрасывается: молча выкинутый кусок обещания и
+ * есть тот самый класс, который здесь чинится. Строка без маркера следом за пунктом — его
+ * продолжение и остаётся при нём.
+ */
+function markedPromiseItems(text) {
+  const lines = text.split(/\r?\n/)
+  if (!lines.some((l) => PROMISE_BULLET.test(l))) return [text]
+
+  const items = []
+  let cur = null
+  const close = () => {
+    if (cur === null) return
+    const s = cur.trim()
+    if (s !== '') items.push(s)
+    cur = null
+  }
+  for (const line of lines) {
+    const marked = PROMISE_BULLET.exec(line)
+    if (marked) {
+      close()
+      cur = marked[1].trim()
+      continue
+    }
+    if (line.trim() === '') {
+      close()
+      continue
+    }
+    cur = cur === null ? line.trim() : `${cur} ${line.trim()}`
+  }
+  close()
+  return items.length > 0 ? items : [text]
+}
+
 export function acceptanceItems(acceptance) {
   if (Array.isArray(acceptance)) {
     return acceptance.filter((s) => typeof s === 'string').map((s) => s.trim()).filter((s) => s !== '')
   }
   if (typeof acceptance !== 'string') return []
   const one = acceptance.trim()
-  return one === '' ? [] : [one]
+  return one === '' ? [] : markedPromiseItems(one)
 }
 
 /**
@@ -995,19 +1159,43 @@ export function batchItemsOf(rows, batchId) {
 }
 
 /**
- * brokenItemOf(itemRows, skipped) → the piece that has STOPPED this assembly and is waiting for
- * the owner's word, or null when nothing is waiting for him.
- *
- * ONE SENTENCE, THREE READERS, and that is the whole reason it is a function. The queue withholds
- * the rest of the pieces behind it (`batchHeldOf`), the read model draws the question the card
- * asks, and the tick calls the person about it. Written out three times, the day any of them
- * learned a new word about «сорвался» would be the day two of them silently disagreed — and the
- * disagreement would show up as the batch asking a question nobody is being called about, which
- * is precisely the silence this rule exists to end.
+ * stoppedItemOf(itemRows, skipped) → the piece this assembly is STANDING ON, whoever it is
+ * waiting for — a person or its own repeat.
  *
  * The FIRST broken piece in the queue's own order: the assembly is worked one piece at a time,
  * so a second one can only be older news. A piece the owner has already SKIPPED is not broken
  * any more — that is what skipping it meant.
+ *
+ * THIS IS THE QUEUE'S HALF of the question and it is deliberately the BROADER one: a piece
+ * waiting for its own repeat still holds the rest of the assembly, because that repeat is the
+ * very next thing to run in it. Releasing the next piece meanwhile would run the assembly out of
+ * order behind the owner's back.
+ *
+ * @param {object[]} itemRows the pieces of ONE batch, in queue order (see batchItemsOf)
+ * @param {string[]} [skipped] the ids the owner has let go
+ * @returns {object|null}
+ */
+export function stoppedItemOf(itemRows, skipped = []) {
+  const letGo = Array.isArray(skipped) ? skipped : []
+  const all = Array.isArray(itemRows) ? itemRows : []
+  return all.find((r) => r && r.status === 'failed' && !letGo.includes(r.id)) ?? null
+}
+
+/**
+ * brokenItemOf(itemRows, skipped) → the piece that has stopped this assembly and is waiting for
+ * the OWNER'S WORD, or null when nothing is waiting for him.
+ *
+ * ONE SENTENCE, TWO READERS, and that is the whole reason it is a function. The read model draws
+ * the question the card asks and the tick calls the person about it. Written out twice, the day
+ * either of them learned a new word about «сорвался» would be the day the two silently
+ * disagreed — and the disagreement would show up as the batch asking a question nobody is being
+ * called about, which is precisely the silence this rule exists to end.
+ *
+ * A PIECE THAT WILL REPEAT ITSELF IS NOT WAITING FOR HIM. Until the repeats run out the assembly
+ * is waiting for a MACHINE, and asking a person about it — on the card, in the chat — is asking
+ * him to decide something that is already decided. Which is why this is `stoppedItemOf` narrowed
+ * by `awaitsAutoRetry` rather than a second reading of «сорвался»: the queue holds the rest of
+ * the pieces in either case, and only the QUESTION waits for the repeats to be spent.
  *
  * @param {object[]} itemRows the pieces of ONE batch, in queue order (see batchItemsOf)
  * @param {string[]} [skipped] the ids the owner has let go
@@ -1016,7 +1204,7 @@ export function batchItemsOf(rows, batchId) {
 export function brokenItemOf(itemRows, skipped = []) {
   const letGo = Array.isArray(skipped) ? skipped : []
   const all = Array.isArray(itemRows) ? itemRows : []
-  return all.find((r) => r && r.status === 'failed' && !letGo.includes(r.id)) ?? null
+  return all.find((r) => r && r.status === 'failed' && !letGo.includes(r.id) && !awaitsAutoRetry(r)) ?? null
 }
 
 /**
@@ -1048,15 +1236,49 @@ export function batchHeldOf(rows) {
     // AN ABANDONED ASSEMBLY HANDS OUT NOTHING, ever again. Its unstarted pieces are taken out
     // of the queue by the door that recorded the word; this is the belt to that braces.
     // A PIECE UNDER WAY holds the whole assembly — one worker, one piece at a time.
-    // A BROKEN PIECE STOPS IT and asks its owner: nothing is repeated by itself, so the rest
-    // stays withheld until he says skip, repeat or cancel.
+    // A BROKEN PIECE STOPS IT TOO, and it stops it whether the next move is its own repeat or
+    // the owner's word: the piece keeps its place in the assembly either way, and letting the
+    // one behind it out meanwhile would run the assembly out of order. Which is why the QUEUE
+    // asks the broader question here (`stoppedItemOf`) and only the card asks the narrower one.
     const stopped =
-      cancelled || items.some((r) => r.status === 'claimed') || brokenItemOf(items) !== null
+      cancelled || items.some((r) => r.status === 'claimed') || stoppedItemOf(items) !== null
     for (let i = 0; i < waiting.length; i += 1) {
       if (stopped || i > 0) held.push(waiting[i].id)
     }
   }
   return held
+}
+
+/**
+ * batchLetGoOf(rows) → the ids of the pieces their OWNER has let go: the ones he skipped, and
+ * every piece of an assembly he abandoned.
+ *
+ * ЭТО ЕГО СЛОВО, А НЕ СОСТОЯНИЕ СТРОКИ, и потому оно живёт здесь, рядом с остальными правилами
+ * сборки: слово записано на строке запроса и ниоткуда больше не выводится. Спрашивают его те,
+ * кто МОЖЕТ ПЕРЕЗАПУСТИТЬ работу, — сегодня это проход автоповтора в тике, — и спрашивают
+ * именно потому, что автомат, не знающий об отпущенном куске, воскресил бы его молча. Второе
+ * написание того же правила в тике было бы вторым ответом на вопрос «что владелец уже решил».
+ *
+ * PURE. A half-written batch (pieces without their request row) names nobody, exactly as it
+ * names nobody in `batchHeldOf`: silence there means «ordinary work», the safe reading.
+ *
+ * @param {object[]} rows every queue row, requests included
+ * @returns {string[]}
+ */
+export function batchLetGoOf(rows) {
+  const all = Array.isArray(rows) ? rows : []
+  const out = []
+  for (const req of all.filter(isBatchParent)) {
+    if (!req || !req.id) continue
+    const { skipped, cancelled } = batchDecisionsOf(req)
+    for (const id of skipped) if (!out.includes(id)) out.push(id)
+    if (cancelled) {
+      for (const item of batchItemsOf(all, req.batchId || req.id)) {
+        if (!out.includes(item.id)) out.push(item.id)
+      }
+    }
+  }
+  return out
 }
 
 /**
@@ -1209,7 +1431,15 @@ export const DEFAULT_PROJECT_ID = 'default'
  * бэклоге с длинными строками вся постановка отвечала отказом (найдено живым прогоном).
  */
 export const CAP_TITLE = 200
-const CAP_TEXT = 2000
+
+/**
+ * Потолок текстовых полей задачи — описания, заметки, каждого пункта приёмки.
+ *
+ * Экспортирован по той же причине, что и потолок заголовка, и ещё по одной: счётчик в форме
+ * окна обязан показывать ЭТО число, а не своё. Форма, набравшая потолок руками, — это второй
+ * потолок, и разойдутся они молча (см. spa/src/shell/caps.ts и сьют, который их сверяет).
+ */
+export const CAP_TEXT = 2000
 
 /**
  * Потолок снимка контекста задачи — СВОЙ, и он крупнее потолка описания намеренно.
@@ -1228,6 +1458,53 @@ const CAP_TEXT = 2000
  * число: две копии капа — это два капа, и работает более слабый.
  */
 export const TASK_CONTEXT_CAP = 8000
+
+/**
+ * ═══════ ОТКАЗ ПО ПОТОЛКУ НАЗЫВАЕТ ПОЛЕ, ФАКТ И ПОТОЛОК ═══════
+ *
+ * Замерено 31.08 на живой постановке: дверь слов задачи ответила на описание в ~2100 знаков
+ * отказом, в котором не было НИ ОДНОГО из трёх чисел — ни поля, ни длины, ни потолка. Причину
+ * пришлось искать чтением исходников очереди, а человек у окна в этом месте слеп полностью:
+ * форма просто не отправляется, и сказать ему нечего.
+ *
+ * Поэтому у всех потолков этого гейта ОДНА фраза, и в ней ровно три вещи: КАКОЕ поле, СКОЛЬКО
+ * в нём на самом деле, СКОЛЬКО можно. Меньше любой из трёх — и человек снова идёт читать
+ * исходники: «слишком длинно» не говорит, что резать, а «потолок 2000» не говорит, насколько
+ * промахнулись. Фраза едет прямо в окно (двери отдают её телом отказа), поэтому она написана
+ * на языке человека, а не на языке поля в JSON.
+ *
+ * ИДЕНТИФИКАТОРА ЗАДАЧИ В НЕЙ НЕТ — намеренно. Дверь правки слов гоняет этот же гейт по
+ * ПОДСТАВНОЙ задаче с идентификатором «words» (см. validateWords), и номер, приехавший бы
+ * отсюда в окно, был бы выдуманным. Кто именно отказал, знает позвавшая дверь.
+ */
+const CAP_CHARS = Object.freeze(['знак', 'знака', 'знаков'])
+
+/** Русский счёт троится. Окно говорит это тем же правилом (spa/src/shell/format.ts). */
+function pluralRu(n, [one, few, many]) {
+  const m100 = n % 100
+  if (m100 >= 11 && m100 <= 14) return many
+  const m10 = n % 10
+  if (m10 === 1) return one
+  if (m10 >= 2 && m10 <= 4) return few
+  return many
+}
+
+/**
+ * capRefusal(what, actual, cap, forms) → «описание: 2103 знака при потолке 2000».
+ *
+ * `forms` — три формы единицы измерения; `null` означает, что единица уже названа полем
+ * («признаков успеха: 13 при потолке 12»), и повторять её вторым словом было бы косноязычием.
+ *
+ * @param {string} what поле в словах человека
+ * @param {number} actual сколько в нём НА САМОМ ДЕЛЕ
+ * @param {number} cap сколько можно
+ * @param {readonly string[]|null} [forms]
+ * @returns {string}
+ */
+export function capRefusal(what, actual, cap, forms = CAP_CHARS) {
+  const measured = forms ? `${actual} ${pluralRu(actual, forms)}` : String(actual)
+  return `${what}: ${measured} при потолке ${cap}`
+}
 
 // ── named errors ──
 
@@ -1345,7 +1622,7 @@ export function validateTask(task) {
   if (!task.id || typeof task.id !== 'string') throw new InvalidTaskError('task missing string "id"')
   if (!TASK_SOURCES.includes(task.source)) throw new InvalidTaskError(`task "${task.id}" has invalid source "${task.source}"`)
   if (typeof task.title !== 'string' || task.title.length === 0) throw new InvalidTaskError(`task "${task.id}" missing "title"`)
-  if (task.title.length > CAP_TITLE) throw new InvalidTaskError(`task "${task.id}" title exceeds ${CAP_TITLE} chars`)
+  if (task.title.length > CAP_TITLE) throw new InvalidTaskError(capRefusal('название', task.title.length, CAP_TITLE))
   if (!TASK_LANES.includes(task.lane)) throw new InvalidTaskError(`task "${task.id}" has invalid lane "${task.lane}"`)
   if (task.provider !== undefined && !PROVIDERS.includes(task.provider)) {
     throw new InvalidTaskError(`task "${task.id}" has invalid provider "${task.provider}"`)
@@ -1357,10 +1634,10 @@ export function validateTask(task) {
     throw new InvalidTaskError(`task "${task.id}" has an invalid role "${task.role}"`)
   }
   if (task.note !== undefined && String(task.note).length > CAP_TEXT) {
-    throw new InvalidTaskError(`task "${task.id}" note exceeds ${CAP_TEXT} chars`)
+    throw new InvalidTaskError(capRefusal('заметка', String(task.note).length, CAP_TEXT))
   }
   if (task.description !== undefined && String(task.description).length > CAP_TEXT) {
-    throw new InvalidTaskError(`task "${task.id}" description exceeds ${CAP_TEXT} chars`)
+    throw new InvalidTaskError(capRefusal('описание', String(task.description).length, CAP_TEXT))
   }
   // СНИМОК КОНТЕКСТА — ТЕКСТ И ТОЛЬКО ТЕКСТ, и слишком длинный снимок дверь ОТВЕРГАЕТ, а не
   // подрезает. Это слова человека: обрезанный на середине мысли абзац уехал бы работнику как
@@ -1371,7 +1648,7 @@ export function validateTask(task) {
       throw new InvalidTaskError(`task "${task.id}" taskContext must be a string`)
     }
     if (task.taskContext.length > TASK_CONTEXT_CAP) {
-      throw new InvalidTaskError(`task "${task.id}" taskContext exceeds ${TASK_CONTEXT_CAP} chars`)
+      throw new InvalidTaskError(capRefusal('снимок контекста', task.taskContext.length, TASK_CONTEXT_CAP))
     }
   }
   // ONE FIELD, TWO FORMATS (see the header). A string is what every row written before this
@@ -1381,18 +1658,20 @@ export function validateTask(task) {
   if (task.acceptance !== undefined) {
     if (Array.isArray(task.acceptance)) {
       if (task.acceptance.length > CAP_ACCEPTANCE_ITEMS) {
-        throw new InvalidTaskError(`task "${task.id}" acceptance carries more than ${CAP_ACCEPTANCE_ITEMS} criteria`)
+        throw new InvalidTaskError(capRefusal('признаков успеха', task.acceptance.length, CAP_ACCEPTANCE_ITEMS, null))
       }
-      for (const item of task.acceptance) {
+      // НОМЕР ПУНКТА — ЧАСТЬ ОТВЕТА: в списке из дюжины строк «признак длиннее потолка» не
+      // говорит, КАКУЮ строку резать, и человек перебирает их глазами по одной.
+      for (const [i, item] of task.acceptance.entries()) {
         if (typeof item !== 'string') {
           throw new InvalidTaskError(`task "${task.id}" acceptance must be a string or a list of strings`)
         }
         if (item.length > CAP_TEXT) {
-          throw new InvalidTaskError(`task "${task.id}" acceptance exceeds ${CAP_TEXT} chars`)
+          throw new InvalidTaskError(capRefusal(`признак успеха №${i + 1}`, item.length, CAP_TEXT))
         }
       }
     } else if (String(task.acceptance).length > CAP_TEXT) {
-      throw new InvalidTaskError(`task "${task.id}" acceptance exceeds ${CAP_TEXT} chars`)
+      throw new InvalidTaskError(capRefusal('признаки успеха', String(task.acceptance).length, CAP_TEXT))
     }
   }
   if (task.priority !== undefined && typeof task.priority !== 'number') {
@@ -1430,7 +1709,7 @@ export function validateTask(task) {
       throw new InvalidTaskError(`forge task "${task.id}" requires a non-empty forge.description`)
     }
     if (task.forge.description.length > CAP_TEXT) {
-      throw new InvalidTaskError(`forge task "${task.id}" description exceeds ${CAP_TEXT} chars`)
+      throw new InvalidTaskError(capRefusal('описание заявки в кузницу', task.forge.description.length, CAP_TEXT))
     }
   } else if (task.forge !== undefined) {
     throw new InvalidTaskError(`non-forge task "${task.id}" must not carry a forge object`)
@@ -1925,6 +2204,48 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
   }
 
   /**
+   * reissue(taskId) — ТА ЖЕ РАБОТА, СЛЕДУЮЩИЙ ПОДХОД: сорвавшаяся строка возвращается в
+   * очередь со счётом попыток на единицу больше.
+   *
+   * ДВЕРЬ МЕХАНИЧЕСКАЯ, И ЭТО НАМЕРЕННО. Она не спрашивает, ЗАСЛУЖИВАЕТ ли этот конец повтора —
+   * ровно как `fail` не спрашивает, заслуживает ли причина своей двери. Правило живёт в одном
+   * месте, рядом со словами, которыми оно объясняется человеку (`awaitsAutoRetry`), и спрашивает
+   * его вызывающий. Второе написание правила здесь разошлось бы с первым молча — и разошлось бы
+   * именно в ту сторону, куда дороже: повтор конца, за которым стоит человек.
+   *
+   * ТОЛЬКО СОРВАВШУЮСЯ СТРОКУ, по тому же «что закрыто, то закрыто», которого держатся соседние
+   * двери — с одной поправкой: сорвавшаяся строка как раз НЕ закрыта окончательно, за ней стоит
+   * следующая попытка. Работа, которая идёт, ждёт работника или ждёт слова человека, повтором не
+   * трогается: `false` говорит об этом вместо того, чтобы переписать живое состояние.
+   *
+   * ОТМЕТКА ПОСТАНОВКИ НЕ ДВИГАЕТСЯ. `enqueuedAt` — это «когда работу попросили», а её не
+   * просили заново; по нему считается старение, и переставленная отметка обнулила бы возраст
+   * работы, которая на самом деле ждёт со вчера. Отметка ЗАКРЫТИЯ, наоборот, снимается: строка
+   * снова живая, и «когда остановилась» о ней больше не правда.
+   *
+   * @param {string} taskId
+   * @returns {Promise<boolean>} true, когда сорвавшаяся строка найдена и перевыдана
+   */
+  async function reissue(taskId) {
+    const rec = records.get(taskId)
+    if (!rec) return false
+    if (rec.status !== 'failed') return false
+    rec.status = 'queued'
+    rec.attempt += 1
+    rec.task = { ...rec.task, attempt: rec.attempt }
+    rec.workerId = null
+    rec.claimedAt = null
+    rec.lastTouch = null
+    rec.completedAt = null
+    rec.failure_reason = null
+    // МЕТКА ПОПЫТКИ НЕ СБРАСЫВАЕТСЯ — тем же соображением, что и в подметании выше: долговечная
+    // очередь переносит payload прежней попытки на перевыданную строку, и метка живёт там до
+    // следующего взятия. Бэкенд опрятнее любого настоящего заверял бы обещание, которого никто
+    // не держит.
+    return true
+  }
+
+  /**
    * cancelTask(taskId) — A PERSON STOPPED THIS WORK, and stopped means stopped.
    *
    * The body says exactly what the owner's word about an abandoned assembly already says
@@ -2000,7 +2321,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return s
   }
 
-  return { enqueue, claimNext, touch, assignWorker, resolveBatch, setWords, complete, fail, parkForPerson, cancelTask, list, stats }
+  return { enqueue, claimNext, touch, assignWorker, resolveBatch, setWords, complete, fail, parkForPerson, reissue, cancelTask, list, stats }
 }
 
 // ── the reusable contract suite (executable spec any backend must pass) ──
@@ -2293,6 +2614,78 @@ export function queueAdapterContractSuite(name, makeAdapter) {
 
       const r = (await q.list({})).find((x) => x.id === 'BL-98')
       expect(r.status).toBe('awaiting_approval')
+    })
+
+    /**
+     * ═══════ ПОВТОР СОРВАВШЕЙСЯ РАБОТЫ — ОБЕЩАНИЕ ОБОИХ ХРАНИЛИЩ, А НЕ ОДНОГО ═══════
+     *
+     * ПОЧЕМУ ЭТИ ДЕЛА ЖИВУТ ЗДЕСЬ. «Строка снова выдаётся» — утверждение о ХРАНИЛИЩЕ, а хранилищ
+     * у контракта два, и повторяют они по-разному: памятное поднимает свою же запись, долговечное
+     * ставит задачу заново её payload'ом, потому что закрытую строку его библиотеки нельзя
+     * переписать своим оператором. Дело, написанное против одного, доказывало бы ровно тот
+     * механизм, которого у второго нет.
+     *
+     * ЧТО ИМЕННО ОБЕЩАНО: та же работа целиком (слова и снимок контекста человека переживают
+     * повтор), счёт попыток на единицу больше — по нему считается потолок автоповторов, — и
+     * живая работа, которую повтор не трогает вовсе.
+     */
+    it('сорвавшаяся строка перевыдаётся: снова в очереди, счёт попыток на единицу больше', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-86' }))
+      const taken = await q.claimNext('w1', {})
+      await q.fail('BL-86', 'provider_error', { attemptToken: taken.attemptToken })
+
+      expect(await q.reissue('BL-86')).toBe(true)
+
+      // ПОСЛЕДНЕЕ СЛОВО О ЗАДАЧЕ, а не первая попавшаяся строка о ней: долговечная очередь
+      // держит закрытую строку рядом с перевыданной (её собственный план строки не переписывает),
+      // и «какая из них считается» — правило самой очереди, которым читает и экран.
+      const back = latestRowPerId(await q.list({})).find((r) => r.id === 'BL-86')
+      expect(back.status).toBe('queued')
+      expect(back.attempt).toBe(2)
+      // …и работа действительно выдаётся снова: перевыдача — это выдача, а не вид строки.
+      expect((await q.claimNext('w2', {})).id).toBe('BL-86')
+    })
+
+    it('повтор несёт ТУ ЖЕ работу целиком — слова и снимок контекста человека переживают его', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      const snapshot = 'счета лежат в /invoices, доступ у Ольги'
+      await q.enqueue(backlog({ id: 'BL-85', description: 'починить дверь', taskContext: snapshot }))
+      const taken = await q.claimNext('w1', {})
+      await q.fail('BL-85', 'provider_error', { attemptToken: taken.attemptToken })
+      expect(await q.reissue('BL-85')).toBe(true)
+
+      const again = await q.claimNext('w2', {})
+      expect(again.id).toBe('BL-85')
+      expect(again.description).toBe('починить дверь')
+      // Снимок не едет в читающей форме строки НАМЕРЕННО, поэтому спрашивают его у выдачи: работа,
+      // повторённая без него, — это уже другая работа, и работник узнал бы об этом последним.
+      expect(taskContextOf(again)).toBe(snapshot)
+    })
+
+    it('живую работу повтор не трогает: ни ждущую работника, ни идущую, ни ждущую человека', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+
+      await q.enqueue(backlog({ id: 'BL-84' }))
+      expect(await q.reissue('BL-84')).toBe(false) // ждёт работника — повторять нечего
+
+      await q.claimNext('w1', {})
+      expect(await q.reissue('BL-84')).toBe(false) // идёт прямо сейчас
+
+      await q.complete('BL-84', { receiptRef: 'reverify:green' })
+      expect(await q.reissue('BL-84')).toBe(false) // сделана и ждёт слова человека
+
+      const r = (await q.list({})).find((x) => x.id === 'BL-84')
+      expect(r.status).toBe('awaiting_approval') // и ни одно из трёх «нет» ничего не переписало
+    })
+
+    it('повтор незнакомой задачи — «нет», а не выдуманная строка', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      expect(await q.reissue('BL-does-not-exist')).toBe(false)
     })
 
     /**
@@ -2757,9 +3150,13 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       const base = { source: 'roster', title: 'работа', lane: 'prod' }
       await expect(
         q.enqueue({ ...base, id: 'R-many', acceptance: Array.from({ length: CAP_ACCEPTANCE_ITEMS + 1 }, (_, i) => `критерий ${i}`) }),
-      ).rejects.toThrow(/criteria/)
-      await expect(q.enqueue({ ...base, id: 'R-long', acceptance: ['x'.repeat(2001)] })).rejects.toThrow(/acceptance/)
-      await expect(q.enqueue({ ...base, id: 'R-desc', description: 'д'.repeat(2001) })).rejects.toThrow(/description/)
+      ).rejects.toThrow(/признаков успеха: 13 при потолке 12/)
+      await expect(q.enqueue({ ...base, id: 'R-long', acceptance: ['x'.repeat(2001)] })).rejects.toThrow(
+        /признак успеха №1: 2001 знак при потолке 2000/,
+      )
+      await expect(q.enqueue({ ...base, id: 'R-desc', description: 'д'.repeat(2001) })).rejects.toThrow(
+        /описание: 2001 знак при потолке 2000/,
+      )
       // a refusal writes nothing at all
       expect(await q.list({})).toHaveLength(0)
     })
@@ -2875,8 +3272,10 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       await q.enqueue({ id: 'R-cap', source: 'roster', title: 'работа', lane: 'prod' })
       await expect(
         q.setWords('R-cap', { acceptance: Array.from({ length: CAP_ACCEPTANCE_ITEMS + 1 }, (_, i) => `к ${i}`) }),
-      ).rejects.toThrow(/criteria/)
-      await expect(q.setWords('R-cap', { description: 'д'.repeat(2001) })).rejects.toThrow(/description/)
+      ).rejects.toThrow(/признаков успеха: 13 при потолке 12/)
+      await expect(q.setWords('R-cap', { description: 'д'.repeat(2001) })).rejects.toThrow(
+        /описание: 2001 знак при потолке 2000/,
+      )
       const [row] = await q.list({})
       expect(row.description).toBeUndefined()
     })

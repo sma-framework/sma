@@ -37,7 +37,7 @@ page; direct-CLI subcommands return meaningful exit codes.
 
 ## Every verb at a glance
 
-All 97, grouped by what they are for. The sections after this table go deeper
+All 98, grouped by what they are for. The sections after this table go deeper
 on the ones with real surface area; `sma explain <verb>` answers for any of
 them in plain language, in English or Russian.
 
@@ -187,6 +187,12 @@ them in plain language, in English or Russian.
 | `snapshot` | Push a bounded, allowlisted view of local state to an external cockpit |
 | `deleteme` | The one-action off-ramp: reverse every installer artifact, PRESERVING `.claude/memory/**` |
 | `update` | Compare the installed version against npm and a detected local checkout, then re-run the one standard installer |
+
+### The fleet window
+
+| Verb | One line |
+|---|---|
+| `open` | Open the daemon's window: build the one sanctioned `?token=` exchange from the daemon's own config and hand it to the browser (`--print` for a machine with no browser). The bare address answers `401` by design and stays that way — this types the exchange for you, it does not relax it, and on the ordinary path the token goes to the browser rather than onto your screen |
 
 ---
 

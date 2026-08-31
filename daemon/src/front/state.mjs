@@ -111,6 +111,9 @@ import {
   waveAddressOf,
   REASON_LABELS,
   failureAwaitsAPerson,
+  awaitsAutoRetry,
+  autoRetriesSpent,
+  AUTO_RETRY_LIMIT,
   turnCapOffer,
 } from '../queue/adapter.mjs'
 import { readWaveHolds } from '../queue/wave-holds.mjs'
@@ -2472,9 +2475,12 @@ const BATCH_ITEM_SKIPPED = 'skipped'
  * the card a person presses and the door that accepts what he pressed have to be the same
  * three, or a screen would show a button nothing answers.
  *
- * WHY THERE IS NO FOURTH, «повторить автоматически»: the whole rule this question exists to
- * enforce is that nothing happens by itself. The loop of 12.08.2026 was exactly that fourth
- * option, taken without asking.
+ * WHY THERE IS NO FOURTH, «повторить автоматически»: by the time this question is asked at all,
+ * the automatic repeat has already been spent. The queue repeats a broken piece by itself —
+ * with a ceiling, a growing pause and a line in the log for each try (`awaitsAutoRetry`) — and
+ * only what those repeats could not fix ever reaches a person. So a fourth button would offer
+ * him the very thing that has just been tried and failed. The loop of 12.08.2026 was that same
+ * repetition WITHOUT the ceiling, the pause and the words; those three are what make it safe.
  */
 export const BATCH_DECISIONS = Object.freeze([
   Object.freeze({ id: 'skip', label: 'Пропустить элемент' }),
@@ -2488,10 +2494,14 @@ export const BATCH_DECISIONS = Object.freeze([
  *
  * A failure comes before a decision, and both come before anything that is merely under way:
  * the founder's rule for a batch is that a failed piece STOPS it and asks its owner what to do
- * (skip / retry / abandon), with nothing ever retried by itself. Which is also why a failed
- * item does not close: it is terminal for the QUEUE and unfinished for the ASSEMBLY, and a
- * batch reading «готово» with a failed piece in it would be the plainest lie this screen could
- * tell. Only work that actually produced counts as closed.
+ * (skip / retry / abandon). Which is also why a failed item does not close: it is terminal for
+ * the QUEUE and unfinished for the ASSEMBLY, and a batch reading «готово» with a failed piece in
+ * it would be the plainest lie this screen could tell. Only work that actually produced counts
+ * as closed.
+ *
+ * «СОРВАЛАСЬ» ЗДЕСЬ ЗНАЧИТ «СОРВАЛАСЬ ОКОНЧАТЕЛЬНО». Кусок, у которого остались автоповторы,
+ * этого слова не носит вовсе (см. состояние элемента выше): за ним стоит очередь, а не человек,
+ * и самое громкое слово сборки о нём было бы просьбой решить уже решённое.
  */
 const BATCH_STATE_ORDER = Object.freeze(['failed', 'awaiting_decision', 'running', 'waiting', 'done'])
 
@@ -2579,7 +2589,17 @@ function deriveBatches(requests, rows, { machineId, taskTokens, now = Date.now()
         id: r.id,
         title: r.title ?? null,
         status: r.status,
-        state: skipped.includes(r.id) ? BATCH_ITEM_SKIPPED : (BATCH_ITEM_STATE[r.status] ?? 'waiting'),
+        // СОРВАВШИЙСЯ КУСОК, У КОТОРОГО ОСТАЛИСЬ АВТОПОВТОРЫ, ЖДЁТ МАШИНУ, А НЕ ЧЕЛОВЕКА — и
+        // читается он поэтому как ждущий своей выдачи, а не как «сорвался». Слово тут не
+        // косметика: «сорвалась» — самое громкое состояние сборки (см. BATCH_STATE_ORDER), и
+        // сборка, которой очередь через минуту сама вернёт кусок, называлась бы сорванной, стояла
+        // бы красной в «ЖДУТ ВАС» и звала бы человека выбирать за уже принятое решение. Правило
+        // спрашивается у очереди — тем же вызовом, каким она решает, кого держать.
+        state: skipped.includes(r.id)
+          ? BATCH_ITEM_SKIPPED
+          : awaitsAutoRetry(r)
+            ? 'waiting'
+            : (BATCH_ITEM_STATE[r.status] ?? 'waiting'),
       }))
 
       const loudest = BATCH_STATE_ORDER.find((s) => items.some((i) => i.state === s))
@@ -3579,6 +3599,14 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machi
               kinds: spent ? spent.kinds : null,
             }),
           }
+        : {}),
+      // …А ЗДЕСЬ — ОБРАТНАЯ СТОРОНА ТОГО ЖЕ ПРЕДЛОЖЕНИЯ: строка, которую очередь перевыдаст сама,
+      // говорит об этом номером. Без него красная карточка зовёт человека к работе, которая
+      // поедет и без него, — тот самый шум, из-за которого столбик ожидания перестают читать.
+      // Поле ЕСТЬ, только пока повторы остались; кончились — сказать больше нечего, и молчание
+      // здесь и есть «дальше решаете вы». Правило спрашивается у очереди, а не выводится заново.
+      ...(awaitsAutoRetry(r)
+        ? { repeats: { attempt: autoRetriesSpent(r) + 1, of: AUTO_RETRY_LIMIT } }
         : {}),
     }
   }
