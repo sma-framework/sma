@@ -694,6 +694,36 @@ describe('гейт слияния: непригодная среда назыв�
     expect(failOpen.envBroken).toBeFalsy()
   })
 
+  /**
+   * ═══ ТРИ ИСХОДА, И У КАЖДОГО СВОЁ ИМЯ ══════════════════════════════════════════════
+   *
+   * Один прогон — три разных мира: он состоялся и зелёный, состоялся и красный, НЕ СОСТОЯЛСЯ.
+   * 31.08.2026 гейт знал два: всё, что не зелёное, называлось красным, и «не на чем
+   * запуститься» приехало человеку как «работник сломал код». Замок проверяет не по одному
+   * случаю, а ВСЕ ТРИ рядом: третий обязан отличаться от второго ПОЛЕМ, а не оттенком слов.
+   */
+  it('три исхода различимы: зелёный / красный / прогона не было — и третий не выдаётся за красноту', async () => {
+    const run = async (by: string, o: any) =>
+      (await runMerge({ branch: `wt/${by}`, by, execGit: makeExecGit(), claimsDir, journalDir, cwd: '/repo', ...o })) as any
+
+    const green = await run('T-3a', { runTests: () => ({ passed: true }) })
+    releaseMergeClaim({ by: 'T-3a', claimsDir, journalDir })
+    const red = await run('T-3b', { runTests: () => ({ passed: false, failedTest: 'a.test.ts > набор > падает' }) })
+    releaseMergeClaim({ by: 'T-3b', claimsDir, journalDir })
+    const absent = await run('T-3c', {
+      runTests: () => ({ passed: true }),
+      checkEnv: () => ({ fit: false, reason: 'среда сломана: . — движок тестов vitest не запускается', broken: [] }),
+    })
+
+    expect([green.merged, green.testsPassed]).toEqual([true, true])
+    expect([red.merged, red.testsPassed, red.refused]).toEqual([false, false, true])
+    // ТРЕТИЙ: тоже отказ, но НИКОГДА не `testsPassed:false` — утверждать о прогоне, которого
+    // не было, нечего, и человек читает про среду, а не про свою ветку.
+    expect([absent.merged, absent.testsPassed, absent.envBroken]).toEqual([false, null, true])
+    expect(absent.testsPassed, 'несостоявшийся прогон, названный красным, — это тот самый дефект').not.toBe(false)
+    expect(String(absent.reason)).toMatch(/среда|движок/i)
+  })
+
   it('без прогонятеля среда не спрашивается вовсе — защищать нечего', async () => {
     let asked = false
     const res: any = await runMerge({
@@ -712,5 +742,66 @@ describe('гейт слияния: непригодная среда назыв�
     expect(res.merged).toBe(true)
     expect(res.testsPassed).toBe(null)
     expect(res.testsNote).toBe(NO_RUNNER_NOTE)
+  })
+})
+
+/**
+ * ═══ ОТКАЗ НЕСЁТ ИМЯ УПАВШЕГО ТЕСТА, ИНАЧЕ ЭТО НЕ ОТКАЗ, А ЗАГАДКА ═════════════════════
+ *
+ * Замерено 31.08.2026: приёмка вернула «тесты на сведённом рабочем дереве красные» и НИ ОДНОГО
+ * слова о том, какой тест и почему. Приёмщик пошёл искать руками — и нашёл не регрессию, а
+ * пустой склад зависимостей. Цена безымянного отказа — час чужого времени и возвращённая
+ * работнику здоровая работа.
+ *
+ * Гейт ничего не выясняет сам: прогонятель уже читает вывод и называет тест — ритуал лишь
+ * ДОНОСИТ это до квитанции и до ответа. Прогонятель, который имени не дал, тоже назван
+ * своими словами: «имя не названо» — это факт, а правдоподобная выдумка отправила бы чинить
+ * не тот тест.
+ */
+describe('красный отказ несёт имя упавшего теста и первые строки причины', () => {
+  it('имя и причина от прогонятеля доезжают и в ответ, и в квитанцию журнала', async () => {
+    const execGit = makeExecGit()
+    const res: any = await runMerge({
+      branch: 'wt/SB-181',
+      by: 'T-red',
+      execGit,
+      runTests: () => ({
+        passed: false,
+        ran: true,
+        exitCode: 1,
+        failedTest: 'daemon/__tests__/merge-wire.test.ts > дверь приёмки > отказ назван',
+        failureDetail: 'AssertionError: expected false to be true\n  at merge-wire.test.ts:118:24',
+      }),
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })
+
+    expect(res.refused).toBe(true)
+    expect(res.failedTest).toContain('merge-wire.test.ts')
+    expect(res.failureDetail).toContain('AssertionError')
+    expect(String(res.receipt.reason), 'причина отказа обязана НАЗЫВАТЬ тест').toContain('merge-wire.test.ts')
+    expect(res.receipt.failedTest).toContain('отказ назван')
+    expect(res.receipt.failureDetail).toContain('AssertionError')
+
+    // журнал читают через месяцы: имя обязано лежать в нём, а не только в ответе двери
+    const j = readJournal({ journalDir })
+    const receipt = j.events.find((e: any) => e.type === 'merge') as any
+    expect(String(receipt.detail.failedTest)).toContain('merge-wire.test.ts')
+  })
+
+  it('прогонятель, не назвавший теста, честно назван неназвавшим — имя не выдумывается', async () => {
+    const res: any = await runMerge({
+      branch: 'wt/nameless',
+      by: 'T-red-2',
+      execGit: makeExecGit(),
+      runTests: () => ({ passed: false }),
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })
+    expect(res.refused).toBe(true)
+    expect(res.failedTest ?? null, 'выдуманное имя хуже отсутствующего').toBe(null)
+    expect(String(res.receipt.reason)).toMatch(/имя.*не назв/i)
   })
 })
