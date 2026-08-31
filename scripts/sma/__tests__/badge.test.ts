@@ -15,6 +15,13 @@
  * (one provisional number written into both), and a check that only compares them is
  * silent. Tests 10-21 cover the two ways out — the cheap provenance guard (the receipt
  * knows WHICH commit it measured) and the conclusive one (--verify-live re-measures).
+ *
+ * Tests 17 and 26-30 pin what that guard is WORTH. A guard that only warns is a guard
+ * nobody acts on: a receipt measured on a dirty tree, at a commit the product had moved
+ * far past, sat behind a green `npm test` and put its number in the shop window. So the
+ * two verdicts that are WRONG rather than merely unverified — measured elsewhere,
+ * measured dirty — fail the plain check, while the commit that carries the measurement
+ * itself is passed over, because otherwise the rule could not be satisfied by anyone.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -25,6 +32,8 @@ import {
   checkBadge,
   buildReceipt,
   checkReceiptFreshness,
+  checkReceiptCleanliness,
+  readChangedSince,
   resolveMeasurement,
   verifyLive,
   defaultRunSuite,
@@ -196,15 +205,20 @@ describe('badge.mjs — the consistent-but-wrong pair (the blind spot)', () => {
     expect(checkBadge({ pkgRoot: '/pkg', io: agreeingPair(1880, { commit: SHA_A }) }).ok).toBe(true)
   })
 
-  it('Test 17: the cheap guard catches it — the receipt knows WHICH commit it measured', () => {
+  it('Test 17: a receipt measured at another commit FAILS the plain check — no warning', () => {
+    // The incident this test was written from: badge and receipt agreed, the receipt had
+    // been measured on a commit the product had long moved past, and drift was only a
+    // WARNING outside the release gate — so `npm test` stayed green over a number that
+    // described nothing standing in the tree.
     const io = agreeingPair(1880, { commit: SHA_A })
     const head = { sha: SHA_B, dirty: false, committedAt: 3_000_000 } // the tree moved on
-    const warned = checkBadge({ pkgRoot: '/pkg', io, head })
-    expect(warned.ok).toBe(true) // a warning, not a failure, outside the gate
-    expect(warned.warnings.map((w: { code: string }) => w.code)).toContain('badge-receipt-drifted')
-    const strict = checkBadge({ pkgRoot: '/pkg', io, head, strict: true })
-    expect(strict.ok).toBe(false)
-    expect(strict.violations.map((v: { code: string }) => v.code)).toContain('badge-receipt-drifted')
+    const res = checkBadge({ pkgRoot: '/pkg', io, head, changedSince: ['daemon/src/queue/lease.mjs'] })
+    expect(res.ok).toBe(false)
+    expect(res.violations.map((v: { code: string }) => v.code)).toContain('badge-receipt-drifted')
+    expect(res.warnings).toEqual([]) // it is not filed as advice any more
+    expect(res.violations[0].detail).toContain('daemon/src/queue/lease.mjs')
+    // and --strict can only be as strict, never softer
+    expect(checkBadge({ pkgRoot: '/pkg', io, head, changedSince: ['a.ts'], strict: true }).ok).toBe(false)
   })
 
   it('Test 18: a receipt with no provenance cannot be judged fresh — and says so', () => {
@@ -214,13 +228,15 @@ describe('badge.mjs — the consistent-but-wrong pair (the blind spot)', () => {
     expect(checkBadge({ pkgRoot: '/pkg', io, head, strict: true }).ok).toBe(false)
   })
 
-  it('Test 19: a matching HEAD measured on a dirty tree is reported, not blessed', () => {
-    const fresh = checkReceiptFreshness({
-      receipt: { tests: 1866, commit: SHA_A, dirty: true },
-      head: { sha: SHA_A, dirty: true, committedAt: 1 },
-    })
-    expect(fresh.map((f: { code: string }) => f.code)).toEqual(['badge-receipt-dirty'])
-    // and a clean, matching pair is silent
+  it('Test 19: a dirty measurement is a verdict of its own — no git needed to reach it', () => {
+    // The receipt says it itself: the run covered files that are in no commit. Nothing
+    // can name WHAT was measured, so the number may not be published — and the check
+    // does not need a repository to know that.
+    const dirty = checkReceiptCleanliness({ receipt: { tests: 1866, commit: SHA_A, dirty: true } })
+    expect(dirty.map((f: { code: string }) => f.code)).toEqual(['badge-receipt-dirty'])
+    expect(dirty[0].hard).toBe(true)
+    expect(checkReceiptCleanliness({ receipt: { tests: 1866, commit: SHA_A, dirty: false } })).toEqual([])
+    // freshness answers the OTHER question and stays quiet about a clean, matching pair
     expect(checkReceiptFreshness({ receipt: { tests: 1866, commit: SHA_A, dirty: false }, head: { sha: SHA_A, dirty: false, committedAt: 1 } })).toEqual([])
     // no git answer -> unverified, never "fresh"
     expect(checkReceiptFreshness({ receipt: { commit: SHA_A }, head: null }).map((f: { code: string }) => f.code)).toEqual(['badge-head-unknown'])
@@ -231,6 +247,72 @@ describe('badge.mjs — the consistent-but-wrong pair (the blind spot)', () => {
     // git, and its violation count (the scorer contract) must not grow behind its back.
     const res = checkBadge({ pkgRoot: '/pkg', io: agreeingPair(1880, { commit: SHA_A }) })
     expect(res).toEqual({ ok: true, violations: [], warnings: [] })
+  })
+})
+
+describe('badge.mjs — a number measured somewhere else is not a number about this tree', () => {
+  it('Test 26: a receipt measured on a DIRTY worktree fails the plain check', () => {
+    // Even with HEAD matching to the letter: the run ran over uncommitted files, so the
+    // published number counts something nobody can name, reproduce, or review.
+    const io = agreeingPair(1880, { commit: SHA_A, dirty: true })
+    const head = { sha: SHA_A, dirty: true, committedAt: 3_000_000 }
+    const res = checkBadge({ pkgRoot: '/pkg', io, head, changedSince: [] })
+    expect(res.ok).toBe(false)
+    expect(res.violations.map((v: { code: string }) => v.code)).toEqual(['badge-receipt-dirty'])
+    expect(res.violations[0].detail).toMatch(/commit first/)
+  })
+
+  it('Test 27: the release gate refuses a dirty receipt WITHOUT git — and the bare count does not move', () => {
+    // package-check passes no head (publishability is a pure file check) but does pass
+    // --strict. The dirty flag is in the receipt, so the gate can refuse it in a tree with
+    // no history at all — while the plain count stays exactly what the scorer knew.
+    const io = agreeingPair(1880, { commit: SHA_A, dirty: true })
+    const counted = checkBadge({ pkgRoot: '/pkg', io })
+    expect(counted.violations).toEqual([])
+    expect(counted.warnings.map((w: { code: string }) => w.code)).toEqual(['badge-receipt-dirty'])
+    const gated = checkBadge({ pkgRoot: '/pkg', io, strict: true })
+    expect(gated.ok).toBe(false)
+    expect(gated.violations.map((v: { code: string }) => v.code)).toEqual(['badge-receipt-dirty'])
+  })
+
+  it('Test 28: the measurement LANDING is not drift — a stamp always makes one more commit', () => {
+    // Stamping writes the receipt and both READMEs, and that commit moves HEAD past the
+    // commit the receipt names. If that counted as drift the rule could never be
+    // satisfied by anyone, and a rule nobody can satisfy is turned off within a week.
+    const io = agreeingPair(1880, { commit: SHA_A, dirty: false })
+    const head = { sha: SHA_B, dirty: false, committedAt: 3_000_000 }
+    const landing = ['test-receipt.json', 'README.md', 'README.ru.md', 'docs/master-graph.html']
+    expect(checkBadge({ pkgRoot: '/pkg', io, head, changedSince: landing }).ok).toBe(true)
+    // prose landing with it is still not code
+    expect(checkBadge({ pkgRoot: '/pkg', io, head, changedSince: [...landing, 'docs/DETAILS.md'] }).ok).toBe(true)
+    // one code file among them and the number is about another tree again
+    expect(checkBadge({ pkgRoot: '/pkg', io, head, changedSince: [...landing, 'scripts/sma/cli.mjs'] }).ok).toBe(false)
+  })
+
+  it('Test 29: when git cannot say what moved, the differing commit is the verdict — fail closed', () => {
+    const io = agreeingPair(1880, { commit: SHA_A })
+    const head = { sha: SHA_B, dirty: false, committedAt: 3_000_000 }
+    for (const changedSince of [undefined, null]) {
+      const res = checkBadge({ pkgRoot: '/pkg', io, head, changedSince })
+      expect(res.ok).toBe(false)
+      expect(res.violations.map((v: { code: string }) => v.code)).toEqual(['badge-receipt-drifted'])
+    }
+  })
+
+  it('Test 30: readChangedSince asks git for the paths, and answers null when it cannot', () => {
+    const calls: string[][] = []
+    const changed = readChangedSince({
+      commit: SHA_A,
+      exec: (args: string[]) => {
+        calls.push(args)
+        return 'daemon/src/queue/lease.mjs\ntest-receipt.json\n\n'
+      },
+    })
+    expect(calls).toEqual([['diff', '--name-only', SHA_A, 'HEAD']])
+    expect(changed).toEqual(['daemon/src/queue/lease.mjs', 'test-receipt.json'])
+    // an unknown commit, no repository, no git — never read as "nothing changed"
+    expect(readChangedSince({ commit: SHA_A, exec: () => { throw new Error('bad revision') } })).toBe(null)
+    expect(readChangedSince({ commit: null, exec: () => 'x' })).toBe(null)
   })
 })
 

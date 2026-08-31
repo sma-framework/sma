@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-5.7.1-3B82F6" alt="version 5.7.1">
-  <img src="https://img.shields.io/badge/tests-5671%2F5671-3CC0A0" alt="tests 5671/5671">
+  <img src="https://img.shields.io/badge/tests-5819%2F5819-3CC0A0" alt="tests 5819/5819">
 <!-- sma:passport:begin -->
   <a href="PASSPORT.md"><img src="https://img.shields.io/badge/calibration-badge%20hidden%20%C2%B7%20no%20model%20recorded%20yet-E5B567" alt="calibration: badge hidden — no Claude model recorded yet" title="derived from PASSPORT.md, rebuilt each release, reproducible via `sma passport --verify`"></a>
 <!-- sma:passport:end -->
@@ -56,7 +56,7 @@ The deep version of all five, with the mechanisms named: **[docs/WHAT-IS-SMA.md]
 The claim that makes SMA different is not a feature — it is that **you never have to take SMA's word for anything**:
 
 - The counts of commands, CLI verbs, daemon routes and tests quoted in this documentation are checked against the code on every `npm test` — a document that disagrees turns the suite red. Check it yourself: `node scripts/sma/cli.mjs doc-audit --target numbers`.
-- The tests badge at the top is written by a script from the JSON report of an actual run — never edited by hand.
+- The tests badge at the top is written by a script from the JSON report of an actual run — never edited by hand, and never accepted from a run over uncommitted files or from a commit the code has since moved past: `npm test` goes red on a receipt that measured another tree, so the number in the shop window is about the tree you are looking at.
 - A receipt's digest is derived from the exact check command, its exit code and its normalized output, so two different checks can never share a hash.
 - Live QA runs the product in a real browser and presses every visible control once; a run that did not happen exits 3 and says `NOT RUN` — **never** an empty findings list that reads as clean.
 - The calibration badge hides itself after a model change until enough new data exists, so it never quietly overstates.
