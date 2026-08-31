@@ -32,6 +32,14 @@
  * untested work. A non-zero exit from a run that HAPPENED is red. A missing target, a suite
  * runner that will not resolve, or a run that outlived its ceiling is NOT red — it is the
  * absence of a run, and it says so in its own words, which the ritual carries into the receipt.
+ *
+ * ПОЧЕМУ ВЫВОД ТЕПЕРЬ ЛОВИТСЯ, А НЕ ВЫБРАСЫВАЕТСЯ. Обе ветви запускались с `stdio:'ignore'`
+ * под честной мыслью «сьют говорит кодом выхода». Код выхода говорит ЧТО случилось и молчит
+ * ГДЕ: 31.08.2026 приёмка вернула «тесты на сведённом дереве красные» и ни одного слова о том,
+ * какой тест и почему — а причиной оказались вовсе не тесты. Имя упавшего теста и первые
+ * строки утверждения живут ТОЛЬКО в выводе, поэтому вывод перехватывается, обрезается до
+ * первых строк (`summarizeRedRun`) и едет вместе с приговором. Ловится он в память ребёнка,
+ * а не в файл: прогон идёт в ЧУЖОМ дереве, и писать туда — не наше право.
  */
 
 import { createRequire } from 'node:module'
@@ -54,6 +62,95 @@ export const MERGE_SMOKE_TIMEOUT_MS = 120000
 export const NO_TARGET_NOTE = `в дереве нет ${MERGE_SMOKE_TARGET} — прогонять было нечего`
 export const NO_SUITE_RUNNER_NOTE = 'сьютер не нашёлся рядом с этой установкой — прогона не было'
 export const TIMED_OUT_NOTE = `прогон не уложился в ${Math.round(MERGE_SMOKE_TIMEOUT_MS / 1000)} с — прогона не было`
+
+/**
+ * Четвёртая — и самая редкая — форма отсутствия прогона: вывод перерос буфер, ребёнок убит
+ * посреди работы. Приговора у такого прогона нет, и назвать его красным значило бы обвинить
+ * ветку в том, чего никто не видел.
+ */
+export const OUTPUT_OVERFLOW_NOTE = 'вывод прогона перерос буфер — ребёнок убит, приговора нет'
+
+/** Сколько байт вывода удерживается. Красный вывод одного файла — единицы килобайт. */
+export const CAPTURE_CAP_BYTES = 4 * 1024 * 1024
+
+/** Сколько строк причины едет в отказ и какой длины каждая — отказ, а не протокол. */
+const DETAIL_LINES = 3
+const LINE_CAP = 200
+const NAME_CAP = 200
+
+/** Краска терминала: имя теста не обязано носить на себе управляющих последовательностей. */
+const ANSI_RE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g
+
+/** Рамка отчёта сьютера — это оформление, а не причина падения. */
+const FRAME_RE = /^[⎯─━=_-]{3,}$/
+
+/** Строка блока «Failed Tests»: полное имя — файл, набор и тест. */
+const FAIL_LINE_RE = /^\s*FAIL\s+(\S.*)$/
+/** Строка сводки по файлу: имя без файла, зато с первой причиной следом. */
+const CROSS_LINE_RE = /^\s*[×✕✗]\s+(\S.*)$/
+/** Строка, похожая на причину, когда упавшего теста в выводе нет вовсе. */
+const ERRORISH_RE = /^\s*(?:[A-Za-z]*Error\b|Ошибка\b|→)/
+
+/**
+ * summarizeRedRun(output) -> {failedTest, failureDetail} — ЧТО ИМЕННО УПАЛО, из вывода того
+ * же прогона.
+ *
+ * ЗАКОН ЗДЕСЬ ОДИН: НИЧЕГО НЕ ВЫДУМЫВАТЬ. Вывод, в котором упавшего теста нет (сьютер умер на
+ * сборке файла, а не на утверждении), отдаёт `failedTest: null` — и это честный ответ. Ложное
+ * имя хуже отсутствующего: по нему человек пойдёт чинить чужой тест, а настоящая причина
+ * останется нетронутой. Причина при этом всё равно едет: строка «Error: …» говорит больше,
+ * чем молчание.
+ *
+ * Имя ищется сперва в блоке «Failed Tests» (там оно полное — файл, набор, тест) и только
+ * потом в сводке по файлу. Причина — первые строки ПОСЛЕ найденного имени, без рамок отчёта;
+ * обе величины обрезаны, потому что отказ читают глазами, а не грепом.
+ *
+ * @param {string} output — то, что прогон напечатал (оба потока)
+ * @returns {{failedTest: (string|null), failureDetail: (string|null)}}
+ */
+export function summarizeRedRun(output) {
+  const text = String(output ?? '').replace(ANSI_RE, '')
+  if (!text.trim()) return { failedTest: null, failureDetail: null }
+  const lines = text.split(/\r?\n/)
+
+  let failedTest = null
+  let at = -1
+  for (const re of [FAIL_LINE_RE, CROSS_LINE_RE]) {
+    for (let i = 0; i < lines.length; i += 1) {
+      const m = re.exec(lines[i])
+      if (!m) continue
+      // Хвост со временем прогона печатает сам сьютер; частью имени теста он не является.
+      const name = m[1].trim().replace(/\s+\d+(?:\.\d+)?m?s$/, '').trim()
+      if (!name) continue
+      failedTest = name.slice(0, NAME_CAP)
+      at = i
+      break
+    }
+    if (failedTest) break
+  }
+
+  // Откуда читать причину: сразу за именем, а без имени — с первой строки, похожей на неё.
+  let from = at + 1
+  if (at < 0) {
+    from = lines.findIndex((l) => ERRORISH_RE.test(l))
+    if (from < 0) return { failedTest: null, failureDetail: null }
+  }
+
+  const detail = []
+  for (let i = from; i < lines.length && detail.length < DETAIL_LINES; i += 1) {
+    const line = lines[i].trim()
+    if (!line || FRAME_RE.test(line)) continue
+    detail.push(line.slice(0, LINE_CAP))
+  }
+  return { failedTest, failureDetail: detail.length ? detail.join('\n') : null }
+}
+
+/** Вывод, приехавший с упавшего ребёнка: оба потока, в порядке «сперва обычный». */
+function saidBy(err) {
+  const out = err && err.stdout != null ? String(err.stdout) : ''
+  const errText = err && err.stderr != null ? String(err.stderr) : ''
+  return `${out}${out && errText ? '\n' : ''}${errText}`
+}
 
 /**
  * resolveSuiteEntry() — the ABSOLUTE path to the suite runner's entry point, resolved from
@@ -107,11 +204,14 @@ export function runMergeSmoke(o = {}) {
   }
 
   // (3) THE RUN. The interpreter this process already runs under, an absolute entry, an args
-  //     array and no shell — the same discipline the git runner of this ritual keeps.
+  //     array and no shell — the same discipline the git runner of this ritual keeps. Вывод
+  //     ЛОВИТСЯ: приговор живёт в коде выхода, а имя упавшего теста — только в тексте.
   try {
     exec(process.execPath, [entry, 'run', target], {
       cwd: tree,
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      maxBuffer: CAPTURE_CAP_BYTES,
       timeout: MERGE_SMOKE_TIMEOUT_MS,
     })
     return { passed: true, ran: true }
@@ -121,11 +221,23 @@ export function runMergeSmoke(o = {}) {
     if (err && (err.killed === true || (err.signal && err.status == null))) {
       return { passed: null, ran: false, note: TIMED_OUT_NOTE }
     }
+    // ПЕРЕПОЛНЕННЫЙ БУФЕР — ТОЖЕ НЕ ПРИГОВОР, и он приходит в той же форме, что и несостоявшийся
+    // запуск (кода выхода нет). Разделены они по системному коду: ребёнка убили посреди работы,
+    // и назвать это «сьютер не нашёлся» значило бы сказать неправду о починке.
+    if (err && err.code === 'ENOBUFS') return { passed: null, ran: false, note: OUTPUT_OVERFLOW_NOTE }
     // A SPAWN THAT NEVER STARTED IS NOT A VERDICT EITHER. It carries a system error code and
     // no exit status — the exact shape that used to be read as «tests are red».
     if (err && err.status == null) return { passed: null, ran: false, note: NO_SUITE_RUNNER_NOTE }
-    // Anything else IS a verdict: the child ran and left with a non-zero code.
-    return { passed: false, ran: true, exitCode: err.status }
+    // Anything else IS a verdict: the child ran and left with a non-zero code — и приговор
+    // называет, ЧТО именно упало, потому что вывод того же прогона у нас на руках.
+    const { failedTest, failureDetail } = summarizeRedRun(saidBy(err))
+    return {
+      passed: false,
+      ran: true,
+      exitCode: err.status,
+      ...(failedTest ? { failedTest } : {}),
+      ...(failureDetail ? { failureDetail } : {}),
+    }
   }
 }
 
@@ -171,9 +283,26 @@ export function runMergeSmokeAsync(o = {}) {
     // still arrives here as an 'exit' with a signal, which is the deadline branch below.
     const child = spawnImpl(process.execPath, [entry, 'run', target], {
       cwd: tree,
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
+    // ВЫВОД КОПИТСЯ ДО ПОТОЛКА И НИ БАЙТОМ БОЛЬШЕ. Дверь приёмки живёт в памяти демона; прогон,
+    // ушедший в бесконечную печать, не имеет права утащить её за собой. Имя упавшего теста
+    // стоит в первых сотнях байт вывода, поэтому потолок ничего не отрезает по существу.
+    let said = ''
+    const keep = (chunk) => {
+      if (said.length >= CAPTURE_CAP_BYTES) return
+      said += String(chunk)
+      if (said.length > CAPTURE_CAP_BYTES) said = said.slice(0, CAPTURE_CAP_BYTES)
+    }
+    for (const stream of [child.stdout, child.stderr]) {
+      if (!stream || typeof stream.on !== 'function') continue
+      // ТЕКСТ, А НЕ БАЙТЫ, И ЭТО НЕ УКРАШЕНИЕ. Куски приходят по границе трубы, а имена
+      // тестов в этом дереве написаны по-русски: буква, разорванная надвое между двумя
+      // кусками, склеится в мусор — и отказ назовёт тест, которого нет.
+      if (typeof stream.setEncoding === 'function') stream.setEncoding('utf8')
+      stream.on('data', keep)
+    }
     let deadline = false
     const timer = setTimeout(() => {
       deadline = true
@@ -196,7 +325,14 @@ export function runMergeSmokeAsync(o = {}) {
         return resolve({ passed: null, ran: false, note: TIMED_OUT_NOTE })
       }
       if (code === 0) return resolve({ passed: true, ran: true })
-      resolve({ passed: false, ran: true, exitCode: code })
+      const { failedTest, failureDetail } = summarizeRedRun(said)
+      resolve({
+        passed: false,
+        ran: true,
+        exitCode: code,
+        ...(failedTest ? { failedTest } : {}),
+        ...(failureDetail ? { failureDetail } : {}),
+      })
     })
   })
 }
