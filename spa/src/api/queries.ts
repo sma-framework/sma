@@ -8,6 +8,7 @@ import type {
   AttemptLog,
   Backlog,
   ChatHistory,
+  ChatConversations,
   CoordinationSnapshot,
   Diagnostics,
   DraftKind,
@@ -200,6 +201,75 @@ export function useChatHistoryQuery(enabled = true) {
     queryFn: chatHistoryQueryFn,
     enabled,
     staleTime: STATE_STALE_MS,
+  })
+}
+
+/**
+ * ═══════════ СПИСОК РАЗГОВОРОВ И ОДНА ИЗ НИХ НА ЛЕНТЕ ═══════════
+ *
+ * Слово владельца 31.08: «почему разговор когда открываю у него нет истории? через раз
+ * появляется, может нам разбить разговор на разные чаты?». Причина «через раз» была в том,
+ * что окно читало книгу ЦЕЛИКОМ и показывало её одной лентой, а продолжало — последнюю нить;
+ * всё остальное сказанное было не выбрать ничем, потому что выбирать было не из чего.
+ *
+ * Отсюда два чтения вместо одного, и граница между ними ровно та же, что в любом привычном
+ * чате: СПИСОК бесед (кто есть) и ХОДЫ одной беседы (что в ней сказано). Ни то, ни другое
+ * окно не считает само — иначе у списка и у ленты завелись бы две правды о том, какая беседа
+ * последняя, и разошлись бы они молча.
+ */
+export const CHAT_LIST_KEY = ['chat', 'conversations'] as const
+
+/**
+ * Как часто список перечитывается сам. Живая точка обязана зажигаться и от хода, начатого НЕ
+ * в этом окне — с телефона или во втором окне, — а колокола «беседа занялась» у демона нет и
+ * заводить его ради точки не стоит. Свой ход красит точку мгновенно и без сети (экран знает
+ * его сам), так что этот срок отвечает только за чужие ходы, и потому он неспешный.
+ */
+export const CHAT_LIST_POLL_MS = 10_000
+
+/** Сколько ходов беседы окно поднимает, открывая её. Потолок двери — тот же. */
+export const CHAT_THREAD_TURNS = 200
+
+export async function chatConversationsQueryFn(): Promise<ChatConversations> {
+  const project = selectedProject()
+  return api.getChatConversations(project ? { project } : {})
+}
+
+/** КАКИЕ РАЗГОВОРЫ БЫЛИ — свежий первым, с живой точкой у занятых. */
+export function useChatConversationsQuery(enabled = true) {
+  return useQuery<ChatConversations>({
+    queryKey: CHAT_LIST_KEY,
+    queryFn: chatConversationsQueryFn,
+    enabled,
+    staleTime: STATE_STALE_MS,
+    refetchInterval: CHAT_LIST_POLL_MS,
+  })
+}
+
+/**
+ * Ходы ОДНОЙ беседы. Сужает дверь по имени нити — то самое сужение, которого экрану не
+ * хватало: без него на ленту приезжали вперемешку все разговоры проекта.
+ */
+export function useConversationTurnsQuery(conversationId: string | undefined) {
+  return useQuery<ChatHistory>({
+    queryKey: [...CHAT_KEY, 'thread', conversationId ?? 'none'],
+    queryFn: () => api.getChatHistory({ conversationId: conversationId as string, limit: CHAT_THREAD_TURNS }),
+    enabled: Boolean(conversationId),
+    staleTime: STATE_STALE_MS,
+  })
+}
+
+/**
+ * Имя беседы, данное рукой. Список перечитывается ПОСЛЕ удачи, а не оптимистично: имя
+ * подрезается дверью по своему потолку, и показать нужно то, что легло, а не то, что набрали.
+ */
+export function useRenameConversation() {
+  const queryClient = useQueryClient()
+  return useMutation<{ id: string; title: string | null }, Error, { conversationId: string; title: string }>({
+    mutationFn: (input) => api.renameConversation(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: CHAT_LIST_KEY })
+    },
   })
 }
 
@@ -412,7 +482,9 @@ export async function selectProjectAndRefresh(
   id: string,
 ): Promise<Awaited<ReturnType<typeof api.selectProject>>> {
   const result = await api.selectProject(id)
-  refreshAfterAction(queryClient, [CHAT_KEY])
+  // Книга И её оглавление: у другого проекта другие беседы, и список слева обязан смениться
+  // вместе с лентой — иначе окно предложило бы вернуться в разговор, которого здесь нет.
+  refreshAfterAction(queryClient, [CHAT_KEY, CHAT_LIST_KEY])
   return result
 }
 
@@ -502,6 +574,10 @@ export function useSendChat() {
     onSuccess: () => {
       // The book has grown by two turns; a screen opened later reads them from it.
       void queryClient.invalidateQueries({ queryKey: CHAT_KEY, refetchType: 'none' })
+      // СПИСОК — другое дело, и он перечитывается СЕЙЧАС: ход, начавший новую беседу, обязан
+      // появиться слева строкой немедленно, а у продолженной — сдвинуться время последней
+      // реплики. Это не «обновить картину парка»: разговор по-прежнему ничего в нём не меняет.
+      void queryClient.invalidateQueries({ queryKey: CHAT_LIST_KEY })
     },
   })
 }

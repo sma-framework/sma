@@ -2028,6 +2028,29 @@ export interface ChatHistory {
   turns: ChatTurn[]
 }
 
+/**
+ * Одна БЕСЕДА книги — строка списка слева.
+ *
+ * Список собирается дверью из той же книги, поэтому здесь нет ни одного поля, которое окно
+ * могло бы посчитать иначе, чем дверь. `title` — `null` значит «без имени», а не «имя ещё не
+ * приехало»: показывать надо именно это, а не выдуманный порядковый номер.
+ */
+export interface ChatConversation {
+  id: string
+  /** Имя, данное рукой; нет такого — первые слова разговора; нет и их — `null`. */
+  title: string | null
+  /** Когда в беседе говорили в последний раз. По нему же — порядок списка. */
+  lastTs: string | null
+  turns: number
+  project: string | null
+  /** В беседе ПРЯМО СЕЙЧАС идёт ход — из реестра демона, а не из книги. */
+  active: boolean
+}
+
+export interface ChatConversations {
+  conversations: ChatConversation[]
+}
+
 // ── bringing your own helpers in (declared routes, filled by their own work) ────────
 
 /**
