@@ -49,6 +49,7 @@ export const COMMAND_TOPICS = {
   tia: 'coordination',
   worktree: 'coordination',
   merge: 'merge', // the serialized merge ritual has its own topic
+  'sync-branch': 'merge', // the same ritual read from the OTHER end: the trunk INTO the branch, before handing in
 
   // hooks — the session lifecycle hook points (eight entries across seven events)
   'session-start': 'hooks',

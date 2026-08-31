@@ -37,7 +37,7 @@ page; direct-CLI subcommands return meaningful exit codes.
 
 ## Every verb at a glance
 
-All 97, grouped by what they are for. The sections after this table go deeper
+All 98, grouped by what they are for. The sections after this table go deeper
 on the ones with real surface area; `sma explain <verb>` answers for any of
 them in plain language, in English or Russian.
 
@@ -58,6 +58,7 @@ them in plain language, in English or Russian.
 | `ask` | Print another terminal's fingerprint and journal the unanswered question, so demand is measured rather than assumed |
 | `worktree` | Provision, list and remove this terminal's own git worktree |
 | `merge` | The serialized local-only merge of a worktree branch into `main` — never a push |
+| `sync-branch` | The other direction: bring the trunk INTO this copy's branch before handing in, settling the mechanical conflicts and naming the rest |
 
 ### Hook streams and guards
 

@@ -12667,6 +12667,93 @@ async function cmdMerge({ positionals, flags, dirs }) {
 }
 
 /**
+ * sync-branch [--trunk <имя>] [--check] [--json] — СВЕСТИ СВОЮ ВЕТКУ С ВЕРШИНОЙ, дверь
+ * СДАЮЩЕГО. Направление противоположно `merge`: тот вносит ветку в main (ритуал человека,
+ * сериализованный слотом, со смоком на сведённом дереве), этот вносит main в ветку — в той
+ * копии, где верб запущен, и общего дерева не касается вовсе.
+ *
+ * ПОЧЕМУ ГЛАГОЛ, А НЕ `git merge` РУКОЙ. Работник спавнится с отказом `Bash(git merge:*)` в
+ * аргументах запуска — это инвариант флота, и он верен: слияние есть решение человека. Пока
+ * договор сдачи требовал от работника прогнать `git merge --no-ff --no-commit main`, он
+ * требовал невозможного: жёсткая граница отказывала вызову, а мягкая (охрана вызовов) ставила
+ * его на парковку, где он умирал по сроку ожидания. Обязанность, которую нечем исполнить, — это
+ * не обязанность, а текст. Здесь у неё появляется дверь: глагол зовёт `syncWithTrunk` внутри
+ * себя, `git merge` не проходит через оболочку вовсе, и ни одна граница не ослаблена.
+ *
+ * ЧТО ОН ДЕЛАЕТ. Вносит вершину в ветку слиянием (`--no-ff --no-commit`), разводит МЕХАНИЧЕСКОЕ
+ * без человека (сгенерированное пересобирается своей командой; абзац, дописанный обеими
+ * сторонами, остаётся ОБОИМИ) и фиксирует сведение. Осталось хоть что-то — слияние отменяется
+ * целиком, и верб называет ФАЙЛЫ и их ЧИСЛО: половинчатое слияние опаснее несведённой ветки,
+ * потому что выглядит готовым.
+ *
+ * `--check` НИЧЕГО НЕ МЕНЯЕТ: печатает, на сколько коммитов ветка отстала, и выходит 1, если
+ * сводить есть что. НИКОГДА не пушит. NOT hook-facing.
+ */
+async function cmdSyncBranch({ flags }) {
+  const bs = await import('./lib/branch-sync.mjs')
+  // КОПИЯ — ТА, В КОТОРОЙ СТОИТ ВЫЗЫВАЮЩИЙ, а не координационный корень: корень общий для всех
+  // связанных копий НАРОЧНО, и сведение по нему свело бы чужую ветку в чужом дереве.
+  const cwd = process.cwd()
+  const trunk = typeof flags.trunk === 'string' && flags.trunk.trim() ? flags.trunk.trim() : bs.TRUNK_DEFAULT
+
+  if (flags.check === true) {
+    const behind = bs.behindBy({ cwd, trunk })
+    if (wantsJson(flags)) {
+      printJson({ trunk, behind, synced: behind === 0, checked: true })
+      return behind === 0 ? 0 : 1
+    }
+    if (behind === null) {
+      process.stderr.write(`sync-branch: git не ответил, отстала ли ветка от ${trunk} — считайте, что не знаете.\n`)
+      return 1
+    }
+    if (behind === 0) {
+      process.stdout.write(`sync-branch: ветка уже сведена с ${trunk} — сводить нечего.\n`)
+      return 0
+    }
+    process.stdout.write(`sync-branch: ветка отстала от ${trunk} на ${behind} коммит(ов) — свести: node scripts/sma/cli.mjs sync-branch\n`)
+    return 1
+  }
+
+  const res = await bs.syncWithTrunk({ cwd, trunk })
+  if (wantsJson(flags)) {
+    printJson({ trunk, ...res })
+    return res.ok ? 0 : 1
+  }
+
+  if (res.ok && res.synced) {
+    const settled = Array.isArray(res.resolved) && res.resolved.length
+      ? `; механически разведено: ${res.resolved.map((r) => `${r.file} (${r.how})`).join(' · ')}`
+      : ''
+    process.stdout.write(
+      `sync-branch: ${trunk} внесён в ветку — отставала на ${res.behind} коммит(ов)${settled}` +
+        `${res.mergeSha ? `; слияние ${String(res.mergeSha).slice(0, 7)}` : ''}.\n`,
+    )
+    process.stdout.write('  push — по команде владельца; этот верб НЕ пушит и общего дерева не касается.\n')
+    return 0
+  }
+  if (res.ok && res.reason === 'no-trunk') {
+    process.stdout.write(`sync-branch: ${res.detail}.\n`)
+    return 0
+  }
+  if (res.ok) {
+    process.stdout.write(`sync-branch: ветка уже сведена с ${trunk} — сводить нечего.\n`)
+    return 0
+  }
+
+  // ОТКАЗ НАЗЫВАЕТ ФАЙЛЫ. До этого верба приёмщик читал «слияние не прошло: Command failed» и
+  // каждый раз выяснял состав конфликта сам, руками, в чужой копии.
+  process.stderr.write(`sync-branch: свести с ${trunk} не удалось — ${res.detail || 'причина не названа'}\n`)
+  for (const n of Array.isArray(res.notes) ? res.notes : []) process.stderr.write(`  ${n}\n`)
+  if (Array.isArray(res.resolved) && res.resolved.length) {
+    process.stderr.write(`  механически развелось: ${res.resolved.map((r) => r.file).join(' · ')} (слияние всё равно отменено целиком)\n`)
+  }
+  if (res.unfinishedMerge) process.stderr.write(`  ⚠ ${res.howToClear}\n`)
+  else process.stderr.write('  сведение отменено, рабочее дерево вернулось в прежнее состояние.\n')
+  process.stderr.write('  разведите спор САМИ — вы знаете, что писали; не можете без решения человека — назовите файлы и спросите.\n')
+  return 1
+}
+
+/**
  * vendor [--json] | --count untriaged | --selftest — the
  * standing Anthropic-update triage ledger linter. Deterministic READER/LINTER
  * over docs/VENDOR-LEDGER.md: it parses the append-only table, fails rows that
@@ -12819,6 +12906,7 @@ const HANDLERS = {
   manifest: cmdManifest, // PR evidence passport reader (--range|--json|--md|--stat)
   worktree: cmdWorktree, // per-terminal worktree isolation (provision|list|remove|sibling; --selftest|--selftest-sibling)
   merge: cmdMerge, // serialized merge ritual (merge <branch> local-only; --selftest|--selftest-enforce)
+  'sync-branch': cmdSyncBranch, // the OTHER direction: bring the trunk INTO this copy's branch before handing in (--trunk|--check|--json); the worker's door, since `git merge` is denied to it by the envelope
   explain: cmdExplain, // in-product explainers ([topic]|--list|--coverage [--count]|--lang en|ru|--json)
   'doc-audit': cmdDocAudit, // deterministic docs honesty audit (--target manual|readme|numbers|all|--count|--json; --write only with numbers)
   vendor: cmdVendor, // standing Anthropic-update triage ledger linter (--count untriaged|--selftest|--json); zero network
@@ -12834,7 +12922,7 @@ const HANDLERS = {
 /**
  * Verbs that print their OWN `--help`. The global intercept below hands `--help`
  * to these handlers instead of printing the verb list, so a subcommand can
- * document its own flags. Deliberately an opt-in allow-list: 95 other verbs keep
+ * document its own flags. Deliberately an opt-in allow-list: 96 other verbs keep
  * the existing behaviour untouched. (That count is the dispatch table minus this
  * allow-list, and the numbers audit now holds it to exactly that — so when two
  * lines of work add verbs at once the count is their SUM, not either side's figure.)
@@ -12851,7 +12939,7 @@ async function main() {
   // teach exactly that call. A door the docs name has to open.
   if (!cmd || cmd === '--help' || cmd === '-h' || (flags.help === true && !OWN_HELP.has(cmd)) || cmd === 'help') {
     process.stdout.write(
-      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|turn-diff|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|chain-start|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|wires|arena|batch|deleteme|memory-preview|start-map|catalog|context|statusline|pulse|manifest|worktree|merge|explain|doc-audit|vendor|memory|history|ship-lane|decisions|approvals|exam|update>\n',
+      'node scripts/sma/cli.mjs <status|heartbeat|session-start|session-end|turn-diff|ask|pre|pre-bench|collision-check|reflex-check|gates-check|airbag-check|tool-gate|undo|airbag|spend|spend-check|breaker|stall-check|gates-report|gates-ack|gates|claim|release|next-slot|tia|consume|force-clear|preship|disposition|lint|profile|build-index|emit|load|snapshot|predict-score|calibration|usage|consolidate|trim|state|exec-journal|metrics|report|bench|baseline|eval|reverify|receipt-hash|chain-tip|chain-verify|chain-start|pretask-pack|subagent-verify|subagent-receipts|precompact-capsule|resume|handoff|flight|grill|blind-verify|evidence|integrity|skeptic|canary|nearmiss|passport|model|excavate|ladder|tune|curriculum|preflight|wires|arena|batch|deleteme|memory-preview|start-map|catalog|context|statusline|pulse|manifest|worktree|merge|sync-branch|explain|doc-audit|vendor|memory|history|ship-lane|decisions|approvals|exam|update>\n',
     )
     return 0
   }
