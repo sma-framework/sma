@@ -193,7 +193,7 @@ const IDLE_WORDS: Record<string, string> = {
  * ОТСУТСТВИИ отметки. Поэтому отрицательная и нечисловая разница тоже дают прочерк, а не
  * подогнанный ноль.
  */
-function spanLabel(ms: number | null | undefined): string {
+export function spanLabel(ms: number | null | undefined): string {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '—'
   const totalMinutes = Math.floor(ms / 60000)
   const whole = Math.floor(totalMinutes / 60)
@@ -513,7 +513,7 @@ function runningUnit(worker: WorkerRow, now: number): WorkUnit {
 }
 
 /** A finished task: its attempts are the only steps this engine really kept. */
-function doneUnit(row: DoneRow, clock: (iso: string | null) => string): WorkUnit {
+function doneUnit(row: DoneRow, clock: (iso: string | null) => string, stillWaits = true): WorkUnit {
   const failed = !!row.failed
   // ЧЕЛОВЕК УЖЕ СКАЗАЛ СВОЁ СЛОВО — и второй раз его не спрашивают. Работа, остановленная
   // рукой, закрыта решением, а не поломкой: звать за ней обратно значило бы наполнить столбик
@@ -546,7 +546,7 @@ function doneUnit(row: DoneRow, clock: (iso: string | null) => string): WorkUnit
     // решает, попадёт ли строка в него вообще: поломка без слов осталась бы немым красным
     // прямоугольником, за которым человек всё равно идёт разбирать леджер руками.
     wait:
-      failed && !stoppedByHand
+      failed && !stoppedByHand && stillWaits
         ? {
             age: '',
             what: row.failed?.reasonLabel ?? 'Не получилось — причина не записана',
@@ -620,6 +620,29 @@ export function buildUnits(input: UnitsInput): WorkUnit[] {
     )
     .map((w) => runningUnit(w, input.now))
 
+  // ПОЛОМКА, ЗА КОТОРУЮ УЖЕ ВЗЯЛИСЬ, БОЛЬШЕ НИКОГО НЕ ЖДЁТ.
+  //
+  // Закрытая строка живёт вечно, а работа продолжается под своим или новым номером — и до этой
+  // строки столбик ожидания звал человека к каждой такой поломке ещё раз, хотя решение по ней
+  // уже принято. Живой замер 31.08: пятнадцать карточек в «ЖДУТ ВАС», из которых настоящей
+  // была ОДНА; остальные — вчерашние срывы, чью работу в тот же день переставили обратно в
+  // очередь. Столбик, зовущий туда, где идти некуда, перестают читать целиком.
+  //
+  // «Уже взялись» — это не догадка: та же работа стоит в очереди, идёт у работника, ждёт
+  // приёмки, или закрылась удачей позже. Сравнение по номеру И по названию нарочно: возврат
+  // сохраняет номер, а поставленная заново работа приходит с новым, неся прежнее название.
+  const takenUp = new Set<string>()
+  for (const r of [...input.queue, ...input.awaiting]) {
+    takenUp.add(r.id)
+    if (r.title) takenUp.add(r.title)
+  }
+  for (const w of input.workers) {
+    if (w.taskId) takenUp.add(w.taskId)
+    if (w.taskTitle) takenUp.add(w.taskTitle)
+  }
+  for (const d of input.done) if (!d.failed && d.title) takenUp.add(d.title)
+  const stillWaits = (r: DoneRow): boolean => !takenUp.has(r.id) && !(r.title ? takenUp.has(r.title) : false)
+
   const units: WorkUnit[] = [
     // Phases are not filtered by machine: a phase belongs to the project, not to a machine.
     ...input.phases.map(phaseUnit),
@@ -627,7 +650,7 @@ export function buildUnits(input: UnitsInput): WorkUnit[] {
     ...loose(mine(input.awaiting)).map((r) => queueUnit(r, true)),
     ...running,
     ...loose(mine(input.queue)).map((r) => queueUnit(r, false)),
-    ...loose(mine(input.done)).map((r) => doneUnit(r, input.clock)),
+    ...loose(mine(input.done)).map((r) => doneUnit(r, input.clock, stillWaits(r))),
   ]
 
   return units.sort((a, b) => RANK[a.state] - RANK[b.state])

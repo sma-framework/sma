@@ -90,7 +90,7 @@
 import { readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, statSync as fsStatSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { apiCapUsd, pipelineEnabled } from '../config.mjs'
+import { activeProjectEntry, apiCapUsd, codeTreeOf, pipelineEnabled, planningHomeOf } from '../config.mjs'
 import { isOpen } from '../policy/windows.mjs'
 import {
   accountNameOf,
@@ -98,7 +98,10 @@ import {
   monthToDateApiSpendUsd,
   spendAccountNames,
 } from '../policy/spend.mjs'
-import { orchestratorView } from '../policy/orchestrator.mjs'
+import { isOrchestrator, orchestratorView } from '../policy/orchestrator.mjs'
+// РОЛЬ РАБОТНИКА ЧИТАЕТСЯ ОДНИМ ВЫРАЖЕНИЕМ НА ВЕСЬ ПРОДУКТ — тем же, каким её читает
+// маршрутизатор. Иначе «кто здесь исполнитель» стало бы вопросом с двумя ответами.
+import { isExecutor, roleOf } from '../policy/worker-role.mjs'
 import {
   isBatchParent,
   batchItemsOf,
@@ -799,6 +802,11 @@ export function deriveRules(config = {}, { switchMode, configOnDisk = null } = {
       ...(w.model !== undefined ? { model: w.model } : {}),
       ...(w.effort !== undefined ? { effort: w.effort } : {}),
       enabled: w.enabled === undefined ? true : Boolean(w.enabled),
+      // РОЛЬ — И ТУТ ЖЕ ОТВЕТ, РАЗБИРАЕТ ЛИ ЭТА СТРОКА ОЧЕРЕДЬ. Таблица «Кто что делает»
+      // перечисляла сорок пять строк подряд, и включённый специалист выглядел в ней ровно как
+      // включённый исполнитель — при том, что задачу он не возьмёт ни при каком порядке.
+      role: roleOf(w),
+      inQueue: isExecutor(w) && w.enabled !== false && !isOrchestrator(w),
     }
   })
 
@@ -833,6 +841,59 @@ export function deriveRules(config = {}, { switchMode, configOnDisk = null } = {
       budgeted: capUsd > 0, // no cap → there is no API fallback to switch TO
     },
   }
+}
+
+/**
+ * deriveRoles(config) → КОГО ВООБЩЕ МОЖНО НАЗВАТЬ, СТАВЯ ЗАДАЧУ. Одна строка на РОЛЬ, а не на
+ * работника: форма постановки спрашивает «кто это сделает», и ответом на этот вопрос является
+ * роль, а не конкретный счёт.
+ *
+ * ЗАЧЕМ ЭТО ЕСТЬ. Разведение работников и агентов оставляло человеку половину: окно говорило
+ * «чтобы отдать инлайн-задачу специалисту, назовите его роль при постановке» — а назвать её
+ * было негде, поле `role` существовало только для того, кто пишет запросы руками. Обещание,
+ * которое окно даёт и само же не держит, хуже отсутствия обещания.
+ *
+ * ЧТО В СТРОКЕ:
+ *   • `role` — каноническое имя, ровно то, которое поедет на задаче и которое сравнит
+ *     маршрутизатор (одна нормализация на обе стороны, policy/worker-role.mjs);
+ *   • `title` — имя, под которым человек видит этого работника в окне (идентификатор первой
+ *     строки конфига с такой ролью): в списке агентов он читает `sma-ai-researcher`, и форма
+ *     обязана называть его так же;
+ *   • `executor` — ИСПОЛНИТЕЛЬ ли это, приезжает СЧИТАННЫМ. Экран, сравнивающий имя роли со
+ *     словом «executor» у себя, завёл бы второй словарь ролей в другом языке;
+ *   • `ready` — сколько таких работников включено ПРЯМО СЕЙЧАС. Ноль означает «есть, но
+ *     выключен»: маршрут на названную роль ответит `role_unavailable`, и форма не должна
+ *     предлагать выбор, который заведомо вернётся человеку;
+ *   • `total` — сколько их всего, включая выключенных, чтобы окно могло сказать, скольких
+ *     человек не видит в списке и почему.
+ *
+ * ВЕРХУШКА СЮДА НЕ ПОПАДАЕТ ВОВСЕ — она не берёт инлайн-задач ни при какой роли, и предложить
+ * её значило бы предложить выбор, который маршрутизатор отвергает первой же строкой фильтра.
+ *
+ * ПОРЯДОК: исполнитель первым (это выбор по умолчанию), остальные по алфавиту. Порядок строк
+ * конфига здесь не сохраняется намеренно: именно он и был той «случайностью», из-за которой
+ * задача заведена.
+ *
+ * @param {object} config
+ * @returns {{role:string, title:string, executor:boolean, ready:number, total:number}[]}
+ */
+export function deriveRoles(config = {}) {
+  const workersCfg = Array.isArray(config.workers) ? config.workers : []
+  const byRole = new Map()
+  for (const w of workersCfg) {
+    if (!w || isOrchestrator(w)) continue
+    const role = roleOf(w)
+    let entry = byRole.get(role)
+    if (!entry) {
+      entry = { role, title: w.id ?? role, executor: isExecutor(w), ready: 0, total: 0 }
+      byRole.set(role, entry)
+    }
+    entry.total += 1
+    if (w.enabled !== false) entry.ready += 1
+  }
+  return [...byRole.values()].sort((a, b) =>
+    a.executor === b.executor ? a.role.localeCompare(b.role) : a.executor ? -1 : 1,
+  )
 }
 
 /**
@@ -1241,14 +1302,17 @@ function terminalBar(read) {
  * The connected project: the ACTIVE registry entry, and only when it names a folder on disk.
  * A registry entry with no `path` is a label for grouping tasks, not a connection — reading
  * it as one would be how the screen ends up showing a corpus that belongs to nobody.
+ *
+ * ДВА КАТАЛОГА, ПОТОМУ ЧТО У ПРОЕКТА ДВА АДРЕСА. `dir` — дерево кода: репозиторий, коммиты,
+ * каталоги прогонов, корпус памяти. `planningDir` — дом планирования: `.planning` этого же
+ * продукта, который в двухрепном доме лежит в другом каталоге. Второй адрес не задан — оба
+ * поля называют одну папку, и каждый читатель ниже ведёт себя ровно как раньше.
  */
 function connectedProject(config = {}) {
-  const list = Array.isArray(config.projects) ? config.projects : []
-  if (list.length === 0) return null
-  const activeId = config.activeProject ?? (list[0] && list[0].id)
-  const entry = list.find((p) => p && p.id === activeId) || null
-  if (!entry || typeof entry.path !== 'string' || entry.path.trim() === '') return null
-  return { id: entry.id, name: entry.name ?? entry.id, dir: entry.path }
+  const entry = activeProjectEntry(config)
+  const dir = codeTreeOf(entry)
+  if (!dir) return null
+  return { id: entry.id, name: entry.name ?? entry.id, dir, planningDir: planningHomeOf(entry) }
 }
 
 /** The watcher's own word on whether it is watching or merely polling. Fail-modest. */
@@ -1544,6 +1608,12 @@ export async function deriveCoordination({ config, readLedger, clock } = {}) {
 /**
  * deriveBacklog({config, fsImpl}) → {rows:[{id, title, ageLine}]}.
  *
+ * ЧИТАЕТСЯ ИЗ ДОМА ПЛАНИРОВАНИЯ, А НЕ ИЗ ДЕРЕВА КОДА. Беклог — планирование, и в доме, где
+ * код и планирование разведены по репозиториям, он лежит в другом каталоге. Пока адрес был
+ * один, этот читатель честно смотрел в дерево кода и честно отвечал «пусто» о файле, который
+ * существует; беклог показывался только если завести дом планирования вторым проектом. Второй
+ * адрес не задан — это тот же самый каталог, и ответ не меняется.
+ *
  * The project's own `.planning/BACKLOG.md`, read as rows. NO FILE IS AN EMPTY LIST, honestly:
  * a project that keeps no backlog is not a broken project, and a 404 here would make the panel
  * look like a fault instead of an absence.
@@ -1562,7 +1632,7 @@ export function deriveBacklog({ config, fsImpl } = {}) {
   const io = fsSeam(fsImpl)
   let text = ''
   try {
-    text = String(io.readFileSync(join(project.dir, '.planning', 'BACKLOG.md'), 'utf8'))
+    text = String(io.readFileSync(join(project.planningDir, '.planning', 'BACKLOG.md'), 'utf8'))
   } catch {
     return { rows: [] }
   }
@@ -2920,6 +2990,17 @@ export async function deriveState(deps = {}) {
     return {
       id: w.id,
       lane: w.lane,
+      // КТО ЭТО ПО РОЛИ И БЕРЁТ ЛИ ОН ЗАДАЧИ ИЗ ОЧЕРЕДИ. Экран «Команда» рисовал одну сетку из
+      // сорока пяти карточек и называл её работниками, хотя тридцать восемь из них — специалисты,
+      // которых поднимает фаза, а не очередь. Оба поля СЧИТАНЫ здесь и тем же выражением, каким
+      // их читает маршрутизатор: экран, выводящий «исполнитель ли это» сам, стал бы вторым
+      // мнением о том же — а два мнения об одном работнике и есть способ перестать верить обоим.
+      role: roleOf(w),
+      // «В ОЧЕРЕДИ» — ЭТО ТРИ УСЛОВИЯ СРАЗУ, и ни одного из них не видно на карточке по
+      // отдельности: он исполнитель, он включён, и он не верхушка. Именно это число человек
+      // читает как «работников», и именно оно расходилось с составом пула на порядок.
+      inQueue: isExecutor(w) && w.enabled !== false && !isOrchestrator(w),
+      enabled: w.enabled !== false,
       account: accountName,
       ...(active
         ? {
@@ -3019,9 +3100,25 @@ export async function deriveState(deps = {}) {
   const seatsTotal = concurrencyCap(config)
   const seatsBusy =
     deps.inFlight && typeof deps.inFlight.size === 'function' ? deps.inFlight.size() : null
+  // ── «РАБОТНИКОВ N» — ЭТО ПУЛ ОЧЕРЕДИ, А НЕ ДЛИНА СПИСКА В КОНФИГЕ ──
+  //
+  // Доска говорила «работников 44», когда задачи разбирали шестеро: `workersCfg.length` считал
+  // ВСЕХ — вместе с тридцатью восемью выключенными и вместе со специалистами, которых очередь
+  // не раздаёт вовсе. Человек читает это число как «столько народу разбирает мою очередь» и
+  // верит ему; ошибиться в нём в семь раз — значит соврать о пропускной способности машины.
+  //
+  // ПУЛ — ЭТО ТРИ УСЛОВИЯ, И ВСЕ ТРИ ОБЯЗАТЕЛЬНЫ: он исполнитель (специалиста берут поимённо,
+  // а не в порядке очереди), он включён, и он не верхушка. То же самое, что спрашивает фильтр
+  // маршрутизатора, — и спрошено тем же выражением, чтобы «сколько их» и «кого выберут» не
+  // могли разойтись.
+  //
+  // ЗАНЯТЫЕ СЧИТАЮТСЯ ПО ТОМУ ЖЕ НАБОРУ. Пара «занято X из N» обязана быть парой об одном и том
+  // же множестве: занятые по всем сорока пяти против общего по шести давали бы «занято 3 из 6»
+  // сегодня и «занято 8 из 6» в тот день, когда человек позовёт специалистов поимённо.
+  const queuePool = workers.filter((w) => w.inQueue)
   const kpis = {
-    workersBusy: workers.filter((w) => !!w.taskId).length,
-    workersTotal: workersCfg.length,
+    workersBusy: queuePool.filter((w) => !!w.taskId).length,
+    workersTotal: queuePool.length,
     queued: queuedRows.length,
     awaitingApproval: awaitingRows.length,
     // ── СБОРКИ, КОТОРЫЕ ЖДУТ РЕШЕНИЯ ЧЕЛОВЕКА — СВОЁ ЧИСЛО, А НЕ СПРЯТАННОЕ СОСТОЯНИЕ ──
@@ -3116,6 +3213,10 @@ export async function deriveState(deps = {}) {
     waves,
     awaiting,
     workers,
+    // КОГО МОЖНО НАЗВАТЬ ПРИ ПОСТАНОВКЕ — рядом с ростером, потому что это тот же состав,
+    // свёрнутый по ролям. Ключ присутствует ВСЕГДА: пустой список на машине без работников —
+    // это факт, а отсутствующий ключ форма прочла бы как «выбирать тут нечего никогда».
+    roles: deriveRoles(config),
     orchestrator,
     done,
     spend,

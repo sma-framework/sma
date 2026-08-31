@@ -113,6 +113,10 @@ import { atomicWriteJson, atomicWriteRaw } from '../../../scripts/sma/lib/fs-ato
 // left with the twin: the writer applies that rule itself, and calling it here again would be
 // the same second opinion in a smaller disguise.
 import { resolveConfigPath, writeConfig } from '../config.mjs'
+// КТО ИЗ НИХ ИСПОЛНИТЕЛЬ — спрашивается у того, кто по этому же признаку выбирает маршрут.
+// Экран и маршрутизатор обязаны читать роль ОДНИМ выражением: разойдясь, они начнут по-разному
+// отвечать на один вопрос, и человек перестанет верить обоим.
+import { isExecutor, roleOf } from '../policy/worker-role.mjs'
 import { telegramLinkView } from '../telegram/pairing.mjs'
 
 // ── named errors ──
@@ -289,6 +293,13 @@ function agentEntry(worker, repoDir, fsImpl) {
     ...(worker.effort !== undefined ? { effort: worker.effort } : {}),
     enabled: worker.enabled !== false,
     ...(worker.roleFile !== undefined ? { roleFile: worker.roleFile } : {}),
+    // РОЛЬ — И ОНА ЖЕ ОТВЕТ НА ВОПРОС «А ЭТОТ ЧТО, ТОЖЕ БЕРЁТ ЗАДАЧИ?». Экран рисовал один
+    // список и называл его «Работники», хотя половина строк в нём — специалисты, которых зовут
+    // внутри фазы. Роль приезжает СЧИТАННОЙ тем же выражением, каким её читает маршрутизатор:
+    // экран, выводящий её сам по `roleFile`, был бы вторым мнением о том, кто здесь исполнитель,
+    // и разошёлся бы с маршрутом в первый же день.
+    role: roleOf(worker),
+    executor: isExecutor(worker),
     can,
     cannot,
   }
@@ -787,6 +798,13 @@ function profileFromDefinition(id, enabled, config, repoDir, fsImpl, source, env
     ...(fm.effort ? { effort: fm.effort } : {}),
     account: donor.account,
     ...(src.roleFile ? { roleFile: src.roleFile } : {}),
+    // РОЛЬ ЗАПИСЫВАЕТСЯ ЗДЕСЬ, У ИСТОЧНИКА, И ТОЛЬКО КОГДА ЕЁ НЕОТКУДА ВЫВЕСТИ. Маршрутизатор
+    // читает роль из `roleFile` — имени файла описания; профиль, чьё описание лежит в хранилище
+    // МАШИНЫ, этого поля не носит (путь репо-относителен), и без явной записи такой профиль
+    // прочёлся бы как обычный исполнитель и стал бы разбирать инлайн-задачи. Догадываться по
+    // идентификатору маршрутизатор не вправе — идентификатор работника не обязан быть именем
+    // агента (`max-1` тому пример), — поэтому дыра закрывается там, где знание ЕСТЬ: здесь.
+    ...(src.roleFile ? {} : { role: id }),
     skills: [],
     enabled: !!enabled,
   }

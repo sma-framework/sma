@@ -6,7 +6,7 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-FIVE routes
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-SIX routes
  *     (re-frozen 2026-08-28 — the growth past the V5.4 fifty-three is EXPLICIT, ELEVEN doors,
  *     each declared by the release that opened it: the chat stop button in v5.4.3, the
  *     running-task steering wheel in v5.5.0, SIX doors in v5.6.0 — the batch request,
@@ -29,10 +29,14 @@
  *     person describes an ability in the window and it lands in this machine's skill store as
  *     a file, ready to be given to a worker. Until it existed the screen could only ASK the
  *     forge for a draft and wait for an approval, which is not what «создать навык из окна»
- *     means to the person doing it. A path outside the table is 404 BEFORE
+ *     means to the person doing it. The SIXTY-SIXTH NAMES THE SECOND ADDRESS OF A PROJECT: the
+ *     folder that holds its `.planning`, when the house keeps code and planning in two
+ *     repositories. Until it existed such a house had to be registered as TWO projects — tasks
+ *     visible in one, phases and backlog in the other, and neither switchable off without
+ *     losing what it held. A path outside the table is 404 BEFORE
  *     any auth-error detail (no route reflection). No command-exec endpoint exists or ever
  *     may — adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 65 is a test.
+ *     invariant that polices it. Object.keys(ROUTES).length === 66 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
@@ -129,6 +133,7 @@ import { scanEstate, enrollSelections } from './import-scanner.mjs'
 import { createOnboarding } from './onboarding.mjs'
 import { namedPaths, missingPaths } from './tree-probe.mjs'
 import { collectDiagnostics } from './diagnostics.mjs'
+import { projectEntry, codeTreeOf, planningHomeOf } from '../config.mjs'
 // NOTE: diagnostics.mjs is STATICALLY imported for the same reason as the two below: it is
 // pure over an injected os/process/fs, it writes nothing, it reaches no model and no spawn,
 // and its whole job is to REFUSE to carry anything — there is no capability here to gate.
@@ -260,17 +265,17 @@ const BUILD_INSTRUCTION_HTML =
  * is dead), the door that READS THE FOLDER OF ONE PHASE — its directory as a tree, and
  * one file of it as text, both bounded, neither able to leave that directory — and the door
  * that WRITES A SKILL into this machine's skill store).
- * Exactly SIXTY-FIVE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * Exactly SIXTY-SIX entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the five dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/phase/:id/files, /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic
  * asset segment (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 65) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 66) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
  * a time; the last twelve joined one release at a time, additively — nothing was
- * removed or renamed. ALL SIXTY-FIVE ARE LIVE — the table carries no stub, and the shape
+ * removed or renamed. ALL SIXTY-SIX ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  *
  * THREE OF THE TEN PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
@@ -302,6 +307,7 @@ export const ROUTES = Object.freeze({
   'POST /api/project/add': 'handleProjectAdd',
   'POST /api/project/rename': 'handleProjectRename',
   'POST /api/project/select': 'handleProjectSelect',
+  'POST /api/project/planning': 'handleProjectPlanning',
   'GET /api/machines': 'handleMachines',
   'POST /api/machine/pair': 'handleMachinePair',
   'POST /api/machine/add': 'handleMachineAdd',
@@ -885,7 +891,7 @@ async function handleTask({ res, params, config, deps }) {
     const n = Number.isFinite(Number(attempt)) ? Number(attempt) : null
     if (n === null || n < 1) return null
     const dir = attemptRunDir({
-      runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+      runsDir: runsDirOf(taskTreeDir({ config, deps, row }) ?? config.repoDir),
       attemptId: attemptIdFor(id, n),
     })
     return readContinuation({ dir, fsImpl: deps.fsImpl })
@@ -908,7 +914,7 @@ async function handleTask({ res, params, config, deps }) {
     const n = Number.isFinite(Number(attempt)) ? Number(attempt) : null
     if (n === null || n < 1) return null
     const dir = attemptRunDir({
-      runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+      runsDir: runsDirOf(taskTreeDir({ config, deps, row }) ?? config.repoDir),
       attemptId: attemptIdFor(id, n),
     })
     return readTaskContext({ dir, fsImpl: deps.fsImpl })
@@ -928,7 +934,7 @@ async function handleTask({ res, params, config, deps }) {
     const n = Number.isFinite(Number(attempt)) ? Number(attempt) : null
     if (n === null || n < 1) return null
     const dir = attemptRunDir({
-      runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+      runsDir: runsDirOf(taskTreeDir({ config, deps, row }) ?? config.repoDir),
       attemptId: attemptIdFor(id, n),
     })
     return readRunTokens({ dir, fsImpl: deps.fsImpl })
@@ -1097,7 +1103,7 @@ async function handleTask({ res, params, config, deps }) {
     // двое: билет и то, что уехало в процесс вместе с ним. Выражение то же, каким каталог
     // собрал спавн; второго написания этого пути в продукте нет.
     const runDir = attemptRunDir({
-      runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+      runsDir: runsDirOf(taskTreeDir({ config, deps, row }) ?? config.repoDir),
       attemptId: attemptIdFor(row.id, Number.isFinite(row.attempt) ? row.attempt : 1),
     })
     const ticket = readWaitingTicket({ runDir, fsImpl: deps.fsImpl })
@@ -1200,7 +1206,7 @@ async function handleTask({ res, params, config, deps }) {
       // an empty list. And it named `main` outright, so a project whose trunk is called
       // anything else threw on the range itself; `HEAD..` asks the tree where it stands.
       const out = deps.execGit(['log', '--oneline', `-${COMMIT_CAP}`, `HEAD..${branch}`], {
-        cwd: phaseCycleDir(deps) ?? config.repoDir,
+        cwd: taskBranchTree({ config, deps, row }) ?? config.repoDir,
       })
       commits = String(out || '')
         .split(/\r?\n/)
@@ -1210,11 +1216,46 @@ async function handleTask({ res, params, config, deps }) {
     } catch {
       commits = []
     }
+    // ═══ ЧТО БЫЛО СДЕЛАНО, КОГДА ВЕТКИ БОЛЬШЕ НЕТ ══════════════════════════════════
+    //
+    // Диапазон выше существует ровно до приёмки. Приёмка сливает ветку и СНОСИТ её вместе с
+    // копией — и с этой секунды `HEAD..wt/<id>` не разрешается вовсе, а список коммитов у
+    // ПРИНЯТОЙ работы приходил пустым. То есть пустым он был именно у той работы, историю
+    // которой человек и хочет читать: у непринятой ветка на месте и вопрос отвечался сам.
+    //
+    // Оба конца сохранённого диапазона записаны строкой попытки заранее и переживают уборку:
+    // `base` — коммит, с которого копию отрезали, `cleanup.branchTip` — вершина, которую
+    // уборка записала перед удалением ветки. Тот же диапазон, теми же двумя именами, каким
+    // дверь диффа показывает изменения убранной копии: два вычисления одного диапазона — это
+    // ровно тот разрыв, из-за которого две поверхности рассказывают о работе разное.
+    if (commits.length === 0) {
+      const kept = keptCommitRange(rawAttempts)
+      if (kept) {
+        try {
+          const out = deps.execGit(['log', '--oneline', `-${COMMIT_CAP}`, `${kept.base}..${kept.tip}`], {
+            cwd: phaseCycleDir(deps) ?? config.repoDir,
+          })
+          commits = String(out || '')
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .slice(0, COMMIT_CAP)
+        } catch {
+          commits = []
+        }
+      }
+    }
   }
 
   const returnedNotes = rawAttempts
     .filter((a) => a.outcome === 'returned' && typeof a.note === 'string')
     .map((a) => String(a.note).slice(0, 2000))
+
+  // КТО ПРИНЯЛ ЭТУ РАБОТУ И КОГДА — спрошено у обеих книг приёмки, потому что приёмщиков два.
+  // Читается ОДИН раз на дверь: обе книги отвечают с диска, и второе чтение ниже по телу
+  // выглядело бы как ещё одно поле, а стоило бы как ещё один заход.
+  const accepted = await acceptanceOf({ row, branch, attempts: rawAttempts, config, deps })
+  const returns = returnRoundsOf(rawAttempts, row)
 
   sendJson(res, 200, {
     task: {
@@ -1239,7 +1280,7 @@ async function handleTask({ res, params, config, deps }) {
       // не перестают быть измеренными. А `null` здесь — «мерить негде»: каталога прогонов нет
       // вовсе (проект не подключён, задача чужой машины), и это честное отсутствие, не ноль.
       tokens: sumRunTokens({
-        runsDir: runsDirOf(phaseCycleDir(deps) ?? config.repoDir),
+        runsDir: runsDirOf(taskTreeDir({ config, deps, row }) ?? config.repoDir),
         attemptIds: rawAttempts
           .map((a) => (Number.isFinite(Number(a.attempt)) ? attemptIdFor(id, Number(a.attempt)) : null))
           .filter(Boolean),
@@ -1262,6 +1303,17 @@ async function handleTask({ res, params, config, deps }) {
     branch,
     commits,
     returnedNotes,
+    // ═══ ЧЕМ «ПРИНЯТО» ПЕРЕСТАЁТ БЫТЬ СЛОВОМ ═══════════════════════════════════════
+    //
+    // Приёмщик здесь — не всегда человек: терминал проводит ритуал слияния сам, по стоящему
+    // добро. Пока раскрытия не было, основателю нечем было проверить приёмщика: «принято»
+    // держалось на честном слове экрана. Эти два ключа — единственное, что превращает его
+    // в доказательство: КТО принял, КОГДА, и что сказала квитанция слияния.
+    //
+    // `null` — «записи об этом нет», и окно обязано сказать это словами. Приёмщик по
+    // умолчанию был бы худшим из возможных ответов: он выглядит как знание.
+    accepted,
+    returns,
     journal: { dispatcher: journal.dispatcher, memoryTrace: journal.memoryTrace, redirects: journal.redirects },
   })
 }
@@ -1315,6 +1367,156 @@ function mergeRollbackFields(raw) {
 }
 
 /**
+ * mergeReceiptWords(raw) → `{branch, sha, testsPassed, testsNote}`, или `null`.
+ *
+ * ТА ЖЕ КВИТАНЦИЯ, ДРУГОЙ ВОПРОС. `mergeRollbackFields` выше — граница КОМАНДЫ: из неё
+ * выходит только то, что человек скопирует и запустит, и потому оттуда не выходит ничего,
+ * кроме имени коммита и каталога. Здесь вопрос читательский: «что вообще сказала приёмка» —
+ * ветка, итоговый коммит, гонялись ли тесты и с каким исходом. Разводить их по двум функциям
+ * важнее, чем сэкономить разбор: стоит один раз пустить в командную выдачу поле, добавленное
+ * ради глаз, и граница перестанет быть границей.
+ *
+ * ТЕСТЫ — ТРИ СОСТОЯНИЯ, А НЕ ДВА. `true` — прогон был и зелёный, `false` — был и красный,
+ * `null` — прогонщика не нашлось вовсе, и тогда квитанция несёт словесную приписку почему.
+ * «Не гонялись» и «не прошли» — разные предложения, и слить их в одно `false` значило бы
+ * подписать зелёным то, чего никто не проверял.
+ *
+ * Отпечаток проверен той же формой, что и в командной границе: короткий, из семи знаков,
+ * лежит в квитанциях, написанных до того, как их стали писать целиком, и эти записи —
+ * журнал, а не витрина: их не переписывают, чтобы выглядели опрятнее.
+ */
+function mergeReceiptWords(raw) {
+  let receipt = raw
+  if (typeof raw === 'string') {
+    try {
+      receipt = JSON.parse(raw)
+    } catch {
+      return null
+    }
+  }
+  if (!receipt || typeof receipt !== 'object') return null
+  const sha = typeof receipt.resultSha === 'string' ? receipt.resultSha.trim() : ''
+  const branchName = typeof receipt.branch === 'string' ? receipt.branch.trim() : ''
+  const note = typeof receipt.testsNote === 'string' ? receipt.testsNote.trim() : ''
+  const out = {
+    branch: branchName || null,
+    sha: sha && OBJECT_NAME_RE.test(sha) ? sha : null,
+    testsPassed: typeof receipt.testsPassed === 'boolean' ? receipt.testsPassed : null,
+    testsNote: note || null,
+  }
+  // Квитанция, не сказавшая НИЧЕГО из четырёх, — это не квитанция, а разобравшийся объект.
+  return out.branch || out.sha || out.testsPassed !== null || out.testsNote ? out : null
+}
+
+/**
+ * acceptanceOf({row, branch, attempts, config, deps}) → `{by, at, terminal, merge}`, или `null`.
+ *
+ * ДВЕ КНИГИ, ПОТОМУ ЧТО ПРИЁМЩИКОВ ДВА.
+ *
+ * Человек нажимает дверь окна — она человеческая по построению, единственная, и своей
+ * квитанцией она заполняет колонку решения рядом со строкой задачи. Терминал проводит тот же
+ * ритуал сам и кладёт квитанцию в СВОЙ журнал — тот, что скреплён хеш-цепочкой, — и в колонке
+ * очереди после него не остаётся ничего.
+ *
+ * ПОРЯДОК ЗДЕСЬ — СОДЕРЖАНИЕ ОТВЕТА, А НЕ ВКУС. Дверь окна, проводя слияние, вызывает тот же
+ * ритуал, поэтому её приёмка ТОЖЕ отмечается в журнале терминала. Спроси мы журнал первым —
+ * всякое человеческое нажатие вернулось бы как «принял терминал», и поле, заведённое ради
+ * проверки приёмщика, врало бы именно про того, кого проверяют. Колонка решения есть только
+ * у нажатия — значит, она и отвечает первой.
+ *
+ * КОГДА. У человеческой приёмки минуту называет след уборки: копия сносится этой же дверью
+ * сразу после слияния, `by:'approve'` отличает её от суточного обхода (`by:'sweep'`), который
+ * приёмкой не является. Молчит след — берётся отметка журнала; молчат оба — `null`, и окно
+ * скажет «когда — не записано» вместо правдоподобной даты.
+ *
+ * ЖУРНАЛ ТЕРМИНАЛА — НЕОБЯЗАТЕЛЬНЫЙ ШОВ и читается FAIL-OPEN, как всё в этой двери: демон,
+ * поднятый без него, отвечает про человеческую приёмку ровно так же, а про терминальную —
+ * молчанием. Отказ этого чтения не имеет права уронить карточку.
+ */
+async function acceptanceOf({ row, branch, attempts, config, deps }) {
+  const door = mergeReceiptWords(row && row.mergeReceipt)
+  if (door) {
+    return { by: 'human', at: approvalCleanupAt(attempts), terminal: null, merge: door }
+  }
+  if (typeof deps.mergeJournal !== 'function') return null
+  let hit = null
+  try {
+    hit = await deps.mergeJournal({ branch, projectDir: phaseCycleDir(deps) ?? config.repoDir })
+  } catch {
+    hit = null
+  }
+  if (!hit || typeof hit !== 'object') return null
+  const merge = mergeReceiptWords(hit.receipt)
+  if (!merge) return null
+  return {
+    by: 'terminal',
+    at: typeof hit.at === 'string' && hit.at.trim() !== '' ? hit.at.trim() : approvalCleanupAt(attempts),
+    terminal: typeof hit.terminal === 'string' && hit.terminal.trim() !== '' ? hit.terminal.trim() : null,
+    merge,
+  }
+}
+
+/**
+ * Минута приёмки со следа уборки — и ТОЛЬКО со следа, который оставила приёмка. Суточный
+ * обход закрытых копий пишет строку той же формы (`by:'sweep'`), и принять её за приёмку
+ * значило бы датировать решение человека днём, когда до копии дошёл дворник.
+ */
+function approvalCleanupAt(attempts) {
+  return lastValue(
+    attempts,
+    (a) => a && a.cleanup && typeof a.cleanup === 'object' && a.cleanup.by === 'approve' && a.cleanup.at,
+  )
+}
+
+/**
+ * returnRoundsOf(attempts, row) → `{rounds, notes}` — сколько раз работу отправляли обратно и
+ * какими словами.
+ *
+ * КРУГ ВОЗВРАТА НИКТО НЕ ЗАПИСЫВАЕТ ОТДЕЛЬНОЙ СТРОКОЙ, и заводить её здесь поздно: у леджера
+ * терминальных исхода два — «готово» и «не вышло», и «возвращено» среди них нет. Но след
+ * решения человека есть, и он однозначен: попытка, закончившаяся ГОТОВО, после которой была
+ * ещё одна попытка, — это работа, которую сдали и которую вернули. Своего решения очередь так
+ * принять не может: сама она переставляет только упавшие. Это то же правило, по которому
+ * `sma approvals suggest` отличает возврат от повтора, — второго правила для одного вопроса
+ * здесь не заводится.
+ *
+ * СЛОВА. Колонка решения помнит ровно последнюю записку возврата: она перезаписывается на
+ * каждом круге. Отдавать её как «все слова возвратов» было бы ложью о числе, поэтому число
+ * приходит из леджера, а слова — те, что уцелели, и их может быть меньше, чем кругов.
+ */
+function returnRoundsOf(attempts, row) {
+  const rows = Array.isArray(attempts) ? attempts : []
+  let rounds = 0
+  for (let i = 0; i < rows.length - 1; i += 1) {
+    if (rows[i] && rows[i].outcome === 'completed') rounds += 1
+  }
+  const note = row && typeof row.returnedNote === 'string' ? row.returnedNote.trim() : ''
+  return { rounds, notes: note ? [note.slice(0, 2000)] : [] }
+}
+
+/**
+ * keptCommitRange(attempts) → `{base, tip, at}` — что осталось от убранной копии, или `null`.
+ *
+ * ОДИН ДИАПАЗОН НА ВСЕХ, КТО СПРАШИВАЕТ ПРО УБРАННУЮ КОПИЮ. Оба конца записаны заранее и
+ * переживают уборку: `base` — коммит, с которого копию отрезали, `cleanup.branchTip` —
+ * вершина, записанная перед удалением ветки. Пока это выражение стояло в двух местах, дверь
+ * диффа и дверь карточки могли начать отвечать про разные диапазоны одной и той же работы,
+ * и заметить это было бы некому.
+ *
+ * ОБА ИМЕНИ ПРОВЕРЕНЫ ПО ФОРМЕ ЗДЕСЬ, до того как уедут в argv: строка леджера — данные,
+ * написанные другим процессом, а данные, становящиеся командой, проверяются в тот момент,
+ * когда перестают быть данными.
+ */
+function keptCommitRange(attempts) {
+  const rows = Array.isArray(attempts) ? attempts : []
+  const base = lastValue(rows, (a) => a && a.base)
+  const tip = lastValue(rows, (a) => a && a.cleanup && typeof a.cleanup === 'object' && a.cleanup.branchTip)
+  const at = lastValue(rows, (a) => a && a.cleanup && typeof a.cleanup === 'object' && a.cleanup.at)
+  if (!base || !tip || !OBJECT_NAME_RE.test(base) || !OBJECT_NAME_RE.test(tip)) return null
+  return { base, tip, at: at ?? null }
+}
+
+/**
  * The last non-empty value of a field across an attempt's rows — the rows are folded the same
  * way the card folds them, so this reads what the card would show.
  */
@@ -1352,7 +1554,9 @@ function lastValue(rows, pick) {
 async function handleDiff({ res, params, config, deps }) {
   const id = params.id
   if (typeof deps.execGit !== 'function') return send501(res)
-  const cwd = phaseCycleDir(deps) ?? config.repoDir
+  // В ДЕРЕВЕ ЭТОЙ ЗАДАЧИ, а не в том, что выбрано в окне: различия ищутся там же, где лежит
+  // ветка, и по тому же правилу, что у приёмки. Строку не удалось прочесть — прежний ответ.
+  const cwd = taskBranchTree({ config, deps, row: await rowById(deps, id) }) ?? config.repoDir
   let text = ''
   try {
     // IN THE TREE THAT HOLDS THE BRANCH — the connected project, not the daemon's launch
@@ -1385,10 +1589,12 @@ function diffOfKeptCommits(id, cwd, deps) {
     rows = []
   }
   const attempts = foldAttemptRows(Array.isArray(rows) ? rows : [])
-  const base = lastValue(attempts, (a) => a && a.base)
-  const tip = lastValue(attempts, (a) => a && a.cleanup && typeof a.cleanup === 'object' && a.cleanup.branchTip)
-  const at = lastValue(attempts, (a) => a && a.cleanup && typeof a.cleanup === 'object' && a.cleanup.at)
-  if (!base || !tip || !OBJECT_NAME_RE.test(base) || !OBJECT_NAME_RE.test(tip)) return gone
+  // ОДНО ВЫРАЖЕНИЕ ДИАПАЗОНА НА ОБЕ ДВЕРИ — см. `keptCommitRange`. Дверь карточки берёт по
+  // нему список коммитов принятой работы, эта — их диф; посчитай они его каждая по-своему,
+  // и человек увидел бы коммиты одного диапазона рядом с изменениями другого.
+  const kept = keptCommitRange(attempts)
+  if (!kept) return gone
+  const { base, tip, at } = kept
   let body = ''
   try {
     body = String(deps.execGit(['diff', '--stat', '-p', `${base}..${tip}`], { cwd }) || '')
@@ -1518,6 +1724,11 @@ async function handleEnqueue({ req, res, config, deps }) {
         'provider',
         'model',
         'effort',
+        // КОГО ЧЕЛОВЕК ПРОСИТ НА ЭТУ РАБОТУ. Поле необязательное, и его отсутствие означает
+        // «исполнителя», а не «кого угодно»: редкий случай, когда владельцу нужен на инлайн-
+        // задаче исследователь, становится тут ЯВНЫМ выбором. Стоит рядом с провайдером,
+        // моделью и усилием, потому что это переопределение маршрута того же рода.
+        'role',
         'priority',
         'description',
         'acceptance',
@@ -1540,6 +1751,7 @@ async function handleEnqueue({ req, res, config, deps }) {
     ...(b.provider !== undefined ? { provider: b.provider } : {}),
     ...(b.model !== undefined ? { model: b.model } : {}),
     ...(b.effort !== undefined ? { effort: b.effort } : {}),
+    ...(b.role !== undefined ? { role: b.role } : {}),
     ...(b.priority !== undefined ? { priority: b.priority } : {}),
     ...(b.description !== undefined ? { description: b.description } : {}),
     ...(b.acceptance !== undefined ? { acceptance: b.acceptance } : {}),
@@ -1700,6 +1912,11 @@ async function handleApprove({ req, res, config, deps }) {
   if (!claim.won) return send409(res, 'approve race lost (already handled)')
 
   const branch = `wt/${taskId}`
+  // ГДЕ ЭТУ ВЕТКУ ИСКАТЬ — прочитано ОДИН раз, до слияния, из адресов ЗАДАЧИ и ЕЁ проекта.
+  // Строка читается здесь, а не берётся из CAS выше: CAS двигает состояние и о проекте не
+  // знает ничего.
+  const approvedRow = await rowById(deps, taskId)
+  const approvedTree = taskBranchTree({ config, deps, row: approvedRow })
   // ЕСТЬ ЛИ ВООБЩЕ ЧТО СЛИВАТЬ. Строка, ни одна попытка которой не назвала ветки, работала
   // без копии — слияние `wt/<id>` для неё не «не удалось», а бессмысленно: git отвечает «did
   // not match any», карточка возвращается в «ждут решения», и нажатие не может сработать НИ
@@ -1743,7 +1960,13 @@ async function handleApprove({ req, res, config, deps }) {
     // ok:false with no merge at all — the worker's branch simply did not resolve there — while
     // the identical press on a checkout where the two happened to coincide merged fine. A person
     // saw a button that «нажалась и ничего не сделала».
-      merge = await deps.verbRunner({ branch, by: 'roster', cwd: phaseCycleDir(deps) ?? deps.repoDir })
+    //
+    // И ЭТО ТОЖЕ ОКАЗАЛОСЬ НЕ ТЕМ ДЕРЕВОМ. «Подключённый проект» — это то, на что человек
+    // СМОТРИТ, а ветка лежит там, где работа ШЛА. Замерено 31.08: приёмка готовой работы
+    // продукта при подключённой мастерской вернула `branch_missing` о ветке, которая была на
+    // месте. Теперь дерево называют адреса задачи и её проекта; выбранное в окне остаётся
+    // ответом только для строки, которая своего проекта не назвала.
+      merge = await deps.verbRunner({ branch, by: 'roster', cwd: approvedTree ?? deps.repoDir })
     } catch (err) {
       merge = { merged: false, message: String((err && err.message) || 'merge failed') }
     }
@@ -1815,7 +2038,9 @@ async function handleApprove({ req, res, config, deps }) {
     cleanup = { removed: false, removedPath: null, removedBranch: null, reason: `сбор памяти не удался — копия сохранена: ${harvest.reason ?? 'причина не названа'}` }
   } else if (green && typeof deps.worktreeCleanup === 'function') {
     try {
-      const r = (await deps.worktreeCleanup({ taskId, by: 'approve' })) || {}
+      // В ТОМ ЖЕ ДЕРЕВЕ, где только что искали ветку: копия лежит рядом с ней, и уборка,
+      // спросившая другой проект, честно не нашла бы её и оставила бы каталог на диске.
+      const r = (await deps.worktreeCleanup({ taskId, by: 'approve', cwd: approvedTree })) || {}
       cleanup = {
         removed: r.removed === true,
         removedPath: r.removedPath ?? null,
@@ -2462,9 +2687,18 @@ function nameFromPath(path) {
   return parts.length ? parts[parts.length - 1] : ''
 }
 
-/** A registry entry as it leaves the process: the two fields a human sees, nothing else. */
+/**
+ * A registry entry as it leaves the process: the two fields a human sees, plus WHETHER the
+ * project keeps its planning in a second folder. The path itself never travels — an absolute
+ * path on the wire is a disclosure, and a boolean is the whole of what a screen needs to say
+ * «этот проект двухрепный».
+ */
 function pickProject(entry) {
-  return { id: entry.id, name: entry.name }
+  return {
+    id: entry.id,
+    name: entry.name,
+    ...(typeof entry.planningPath === 'string' && entry.planningPath.trim() !== '' ? { planningHome: true } : {}),
+  }
 }
 
 /**
@@ -2483,22 +2717,32 @@ async function handleProjects({ res, config, deps }) {
 }
 
 /**
- * POST /api/project/add — take a folder into the register. Body {path, name?}: the folder
- * the founder picked, and optionally what to call it (absent → the folder's own name). The
- * id is minted BY THE DOOR from that name; the path is stored as opaque data.
+ * POST /api/project/add — take a folder into the register. Body {path, name?, planningPath?}:
+ * the folder the founder picked, optionally what to call it (absent → the folder's own name),
+ * and optionally its SECOND address — the folder holding this product's `.planning`. The id is
+ * minted BY THE DOOR from that name; both paths are stored as opaque data.
+ *
+ * ДВУХРЕПНЫЙ ДОМ ЗАВОДИТСЯ ОДНИМ ПРОЕКТОМ. Дерево кода — продукт, дом планирования — мастерская
+ * рядом. Второй проект для планирования не нужен и в окне не появляется.
  */
 async function handleProjectAdd({ req, res, config, deps }) {
   if (typeof deps.addProject !== 'function') return send501(res)
   const body = await readJsonBody(req)
   if (!body.ok) return send400(res, body.error)
   const b = body.value || {}
-  if (rejectUnknownKeys(res, b, new Set(['path', 'name']))) return undefined
+  if (rejectUnknownKeys(res, b, new Set(['path', 'name', 'planningPath']))) return undefined
   const path = b.path === undefined || b.path === null ? '' : String(b.path)
   if (path.length > 4096 || path.includes('\0')) return send400(res, 'invalid path')
+  const planningPath = b.planningPath === undefined || b.planningPath === null ? '' : String(b.planningPath)
+  if (planningPath.length > 4096 || planningPath.includes('\0')) return send400(res, 'invalid planningPath')
   const name = b.name === undefined || b.name === null || String(b.name).trim() === '' ? nameFromPath(path) : String(b.name).trim()
   if (!name) return send400(res, 'a project needs a name or a path')
   try {
-    const next = deps.addProject(config, { name, ...(path ? { path } : {}) }, configIo(deps))
+    const next = deps.addProject(
+      config,
+      { name, ...(path ? { path } : {}), ...(planningPath.trim() ? { planningPath } : {}) },
+      configIo(deps),
+    )
     refreshRegistry(config, next)
     const entry = next.projects[next.projects.length - 1]
     emitSafe(deps, { event: 'project.updated', projectId: entry.id })
@@ -2521,6 +2765,35 @@ async function handleProjectRename({ req, res, config, deps }) {
   if (typeof b.id !== 'string' || !b.id) return send400(res, 'invalid id')
   try {
     const next = deps.renameProject(config, { id: b.id, name: b.name }, configIo(deps))
+    refreshRegistry(config, next)
+    const entry = next.projects.find((p) => p && p.id === b.id)
+    emitSafe(deps, { event: 'project.updated', projectId: b.id })
+    return sendJson(res, 200, { ok: true, project: pickProject(entry) })
+  } catch (err) {
+    return applierError(res, err)
+  }
+}
+
+/**
+ * POST /api/project/planning — body {id, planningPath}. ВТОРОЙ АДРЕС проекта: каталог, где
+ * лежит его `.planning`. Пустая строка или `null` — снять второй адрес: проект возвращается к
+ * одному, и фазы с беклогом снова читаются из дерева кода.
+ *
+ * ЭТО НЕ ПЕРЕЕЗД ПРОЕКТА. Дерево кода не трогается: продукт остаётся там, где стоял, — меняется
+ * только то, откуда читается планирование. Ровно поэтому дом с двумя репозиториями настраивается
+ * ОДНИМ проектом, а не двумя, из которых один нельзя выключить, не потеряв фазы и беклог.
+ */
+async function handleProjectPlanning({ req, res, config, deps }) {
+  if (typeof deps.setProjectPlanning !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['id', 'planningPath']))) return undefined
+  if (typeof b.id !== 'string' || !b.id) return send400(res, 'invalid id')
+  const planningPath = b.planningPath === undefined || b.planningPath === null ? '' : String(b.planningPath)
+  if (planningPath.length > 4096 || planningPath.includes('\0')) return send400(res, 'invalid planningPath')
+  try {
+    const next = deps.setProjectPlanning(config, { id: b.id, planningPath }, configIo(deps))
     refreshRegistry(config, next)
     const entry = next.projects.find((p) => p && p.id === b.id)
     emitSafe(deps, { event: 'project.updated', projectId: b.id })
@@ -4043,7 +4316,8 @@ function handleAttempt({ res, params, query, config, deps }) {
     // `null` — «попытка об этом молчит» (кадра не было, каталог подмели, попытка старше поля);
     // выдуманные нули на этом месте назвали бы бесплатной работу, которую никто не измерял.
     tokens: readRunTokens({
-      dir: attemptRunDir({ runsDir: runsDirOf(phaseCycleDir(deps) ?? (config || {}).repoDir), attemptId }),
+      // ИЗ ДЕРЕВА КОДА: каталоги прогонов лежат там, а не в доме планирования — см. taskTreeDir.
+      dir: attemptRunDir({ runsDir: runsDirOf(codeTreeDir(deps) ?? (config || {}).repoDir), attemptId }),
       fsImpl: deps.fsImpl,
     }),
   })
@@ -4271,6 +4545,128 @@ function phaseCycleDir(deps) {
 }
 
 /**
+ * ДЕРЕВО КОДА ПОДКЛЮЧЁННОГО ПРОЕКТА — второй половине окна.
+ *
+ * `phaseCycleDir` выше отвечает домом планирования: там лежат фазы, беклог и дорожная карта.
+ * Но ветки задач, их коммиты, различия и каталоги прогонов живут ТАМ, ГДЕ РАБОТАЕТ РАБОТНИК —
+ * в дереве кода, и в двухрепном доме это другой каталог. Одно выражение на оба вопроса было бы
+ * ровно тем дефектом, который этот файл уже дважды чинил: «карточка читает одно дерево, а
+ * работа идёт в другом».
+ *
+ * Композиция без второго выражения (старый корень, тест, впрыснувший только фазовый каталог)
+ * получает ПРЕЖНИЙ ответ: один адрес на всё. Поэтому запасной путь — `phaseCycleDir`, а не
+ * `repoDir`: он уже несёт всю прежнюю логику падения к обслуживаемому дереву.
+ */
+function codeTreeDir(deps) {
+  if (typeof deps.codeTreeDir === 'function') {
+    const chosen = deps.codeTreeDir()
+    if (typeof chosen === 'string' && chosen.trim() !== '') return chosen
+  }
+  return phaseCycleDir(deps)
+}
+
+/**
+ * taskTreeDir({config, deps, row}) → ДЕРЕВО КОДА проекта этой строки.
+ *
+ * АДРЕС БЕРЁТСЯ У ЗАДАЧИ И ЕЁ ПРОЕКТА, А НЕ У ВЫБРАННОГО В ОКНЕ. Строка знает свой проект
+ * (штамп ставит дверь постановки), проект знает свои адреса — и этого достаточно, чтобы
+ * карточка перестала зависеть от того, на что человек в этот момент смотрит. Здесь живут
+ * каталоги прогонов задачи: у проекта ОДИН журнал прогонов, а не по одному на адрес.
+ *
+ * Строки нет, штампа нет, проект неизвестен — прежний ответ: подключённое дерево кода.
+ */
+function taskTreeDir({ config, deps, row }) {
+  return codeTreeOf(projectEntry(config || {}, row && row.project)) ?? codeTreeDir(deps)
+}
+
+/**
+ * taskBranchTree({config, deps, row}) → дерево, в котором лежит ВЕТКА этой строки.
+ *
+ * Замерено 31.08: приёмка готовой работы продукта при подключённой мастерской вернула
+ * `branch_missing` — ветка была на месте, но git спрашивали не в том дереве. «Подключённый
+ * проект» это то, на что человек СМОТРИТ; ветка лежит там, где работа ШЛА.
+ *
+ * КАКОЙ ИЗ ДВУХ АДРЕСОВ — по роду работы, и правило это то же самое, каким копию отводил тик
+ * (loop.mjs, attemptTreeDir). Кодовая работа режется из дерева кода; документарная ступень
+ * фазы — из дома планирования, потому что там лежит `.planning`, который она правит. Два
+ * разных правила на «где завели» и «где искать» означали бы, что приёмка не находит ровно ту
+ * работу, которую сама же и заказала.
+ */
+function taskBranchTree({ config, deps, row }) {
+  const entry = projectEntry(config || {}, row && row.project)
+  if (entry) {
+    const dir = isDocumentaryRow(row) ? planningHomeOf(entry) : codeTreeOf(entry)
+    if (dir) return dir
+  }
+  return codeTreeDir(deps)
+}
+
+/** Строка ДОКУМЕНТАРНОЙ ступени фазы: её работа — документ в `.planning`, а не код. */
+function isDocumentaryRow(row) {
+  const data = row && row.data
+  const stage = data && typeof data === 'object' ? data.stage : null
+  return typeof stage === 'string' && stage !== '' && stageKind(stage) === 'document'
+}
+
+/** Одна строка очереди по идентификатору, свёрнутая тем же правилом, что и карточка. */
+async function rowById(deps, taskId) {
+  const adapter = deps && deps.adapter
+  if (!taskId || !adapter || typeof adapter.list !== 'function') return null
+  try {
+    const rows = (await adapter.list({})) || []
+    return latestRowPerId(rows.filter((r) => r && r.id === taskId))[0] || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * stageHomeRefusal({config, deps, phase}) → предложение, которым дверь ОТКАЗЫВАЕТ поставить
+ * ступень, или null, если ставить есть куда.
+ *
+ * ОТКАЗ ДО РАСХОДА, А НЕ ПОСЛЕ. Ступень фазы работает в ДОМЕ ПЛАНИРОВАНИЯ своего проекта —
+ * во втором его адресе. Когда адреса нет или названной фазы в нём нет, работник узнавал об
+ * этом изнутри копии: замерено 31.08 — ступень plan фазы 21 получила копию продукта, где
+ * каталогов фаз нет, ушла искать фазу по машине, нашла ЧУЖУЮ фазу 21 соседнего проекта и
+ * честно отказалась. Восемнадцать ходов и около доллара за предложение, которое можно
+ * составить здесь бесплатно.
+ *
+ * ОТКАЗ НАЗЫВАЕТ, КАКОГО АДРЕСА НЕ ХВАТАЕТ, — иначе он не отличается от поломки.
+ *
+ * НИЧЕГО НЕ ВЫДУМЫВАЕТСЯ. Проверять нечем (нет проекции фаз) или негде (проект не назвал ни
+ * одного каталога, а демон обслуживает дерево) — молчание и прежнее поведение: «я не смотрел»
+ * и «этого нет» разные предложения, и отказывать по первому значило бы закрыть дверь на
+ * установке, где фазы просто лежат в обслуживаемом дереве.
+ */
+function stageHomeRefusal({ config, deps, phase }) {
+  const stamped = doorProjectEntry(config)
+  const entry = stamped ? projectEntry(config, stamped.id) : null
+  const dir = (entry ? planningHomeOf(entry) : null) ?? phaseCycleDir(deps)
+  // НАЗВАН ЛИ ВТОРОЙ АДРЕС — читается с записи, а не выводится из `dir`: дом планирования без
+  // второго адреса ОТВЕЧАЕТ деревом кода, и отказ, спутавший эти два случая, послал бы человека
+  // искать фазу не там, где её нет.
+  const named = !!(entry && typeof entry.planningPath === 'string' && entry.planningPath.trim() !== '')
+  const who = stamped ? `«${stamped.name}»` : 'проекта'
+  // СМОТРЕТЬ НЕГДЕ ИЛИ НЕЧЕМ — значит НЕ СМОТРЕЛИ, и отказывать не на что: «я не заглядывал» и
+  // «этого там нет» разные предложения, а отказ по первому закрыл бы дверь на всякой установке,
+  // где проекции фаз просто не подключено.
+  if (!dir || typeof deps.derivePhaseCard !== 'function') return null
+  let card = null
+  try {
+    card = deps.derivePhaseCard({ projectDir: dir, phaseId: phase, fsImpl: deps.fsImpl })
+  } catch {
+    return null // проекция не ответила — это не доказательство отсутствия фазы
+  }
+  if (card) return null
+  if (named) return `фазы "${phase}" нет в доме планирования ${who}: каталога .planning/phases с этой фазой там нет`
+  const looked = codeTreeOf(entry) ? 'дерево кода' : 'обслуживаемое демоном дерево'
+  return (
+    `фазы "${phase}" нет у ${who}, а ВТОРОЙ АДРЕС — дом планирования — не задан: смотрели в ${looked}. ` +
+    `Назовите каталог, в котором лежит .planning этого продукта`
+  )
+}
+
+/**
  * POST /api/phase/stage — body {phase, stage}. Start one stage of one phase.
  *
  * The row is minted like any other: `S-<epochMs>`, source `roster` (a person pressed it, so it
@@ -4300,6 +4696,10 @@ async function handlePhaseStage({ req, res, config, deps }) {
   if (liveStageRow(rows, stage, phase)) {
     return send409(res, `stage "${stage}" of phase "${phase}" is already running`)
   }
+
+  // ЕСТЬ ЛИ У ЭТОЙ ФАЗЫ ДОМ — спрошено ДО постановки, потому что цена ошибки платится ПОСЛЕ.
+  const homeless = stageHomeRefusal({ config, deps, phase })
+  if (homeless) return send409(res, homeless)
 
   // И ТОЛЬКО ПОТОМ — ВОРОТА ЧЕРТЕЖА. Ровно одна ступень их проходит, и ровно поэтому они
   // стоят здесь, в двери диспатча: другого пути поставить исполнение фазы у продукта нет,
@@ -6332,6 +6732,7 @@ export const HANDLERS = Object.freeze({
   handleProjectAdd,
   handleProjectRename,
   handleProjectSelect,
+  handleProjectPlanning,
   handleMachines,
   handleMachinePair,
   handleMachineAdd,

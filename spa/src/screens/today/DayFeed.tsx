@@ -15,6 +15,7 @@ import {
 import { actOf, actableActions, spentLine, spentOf } from './offer'
 import type { OfferAct } from './offer'
 import { approveWord, canApprove, refusalFor } from './approve'
+import { DoneUnfold } from './DoneUnfold'
 
 /**
  * DayFeed — what happened while nobody was watching, in the order a person needs it.
@@ -371,28 +372,60 @@ function Promised({ acceptance }: { acceptance: string | string[] | null | undef
   )
 }
 
+/**
+ * ГОТОВАЯ РАБОТА, КОТОРУЮ МОЖНО РАСКРЫТЬ И УВИДЕТЬ, ЧТО БЫЛО СДЕЛАНО.
+ *
+ * Строка показывала только заголовок и время закрытия; вся история — обещание, коммиты,
+ * квитанция слияния, кто принял, во что обошлось — лежала в леджере и в git, куда из окна
+ * хода не было. Худшее следствие не в неудобстве: приёмщиком стал терминал, принимающий сам,
+ * и без раскрытия «принято» остаётся словом, а не доказательством.
+ *
+ * КАРТОЧКА ПЕРЕСТАЛА БЫТЬ ОДНОЙ КНОПКОЙ — по той же причине, по какой перестала ею быть
+ * красная: кнопка внутри кнопки разметкой не разрешена, а раскрытие обязано нажиматься
+ * отдельно от «открыть карточку». Открывает панель та часть, что про строку; раскрывает
+ * историю — своя кнопка под ней.
+ *
+ * ОБЕЩАНИЕ ПЕЧАТАЕТСЯ ОДИН РАЗ. Свёрнутая строка называет его сама; раскрытая отдаёт эту
+ * работу панели, где обещание стоит первым, — иначе один и тот же список висел бы дважды в
+ * трёх сантиметрах друг от друга.
+ */
 function DoneCard({ row, selected, onOpen }: { row: DoneRow; selected: boolean; onOpen: (id: string) => void }) {
+  const [open, setOpen] = useState(false)
   return (
-    <button type="button" onClick={() => onOpen(row.id)} className={cardClass(selected)}>
-      <div className="flex items-center gap-2.5">
-        <span aria-hidden className="flex-none text-[12px] text-ok-tx">
-          ✓
+    <div className={cardClass(selected)}>
+      <button type="button" onClick={() => onOpen(row.id)} className="w-full text-left">
+        <div className="flex items-center gap-2.5">
+          <span aria-hidden className="flex-none text-[12px] text-ok-tx">
+            ✓
+          </span>
+          <LaneBadge lane={row.workerId} title={row.title} />
+          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-tx">
+            {row.title ?? 'Без названия'}
+          </span>
+          <span className="flex-none text-[11.5px] text-tx3 tabular-nums">{clockLabel(row.finishedAt)}</span>
+        </div>
+        {open ? null : <Promised acceptance={row.acceptance} />}
+        <div className="mt-2.5">
+          <CheckPills receipt={row.receipt} />
+        </div>
+        <div className="mt-2.5 text-[11.5px] text-tx3">
+          {attemptsLabel(row.attempts)}
+          {row.diffStat ? ` · ${row.diffStat}` : ''}
+        </div>
+      </button>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="mt-2.5 flex items-center gap-1.5 text-[11.5px] text-tx2 hover:text-tx"
+      >
+        <span aria-hidden className="text-tx3">
+          {open ? '▾' : '▸'}
         </span>
-        <LaneBadge lane={row.workerId} title={row.title} />
-        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-tx">
-          {row.title ?? 'Без названия'}
-        </span>
-        <span className="flex-none text-[11.5px] text-tx3 tabular-nums">{clockLabel(row.finishedAt)}</span>
-      </div>
-      <Promised acceptance={row.acceptance} />
-      <div className="mt-2.5">
-        <CheckPills receipt={row.receipt} />
-      </div>
-      <div className="mt-2.5 text-[11.5px] text-tx3">
-        {attemptsLabel(row.attempts)}
-        {row.diffStat ? ` · ${row.diffStat}` : ''}
-      </div>
-    </button>
+        {open ? 'свернуть историю' : 'что было сделано'}
+      </button>
+      {open ? <DoneUnfold row={row} /> : null}
+    </div>
   )
 }
 

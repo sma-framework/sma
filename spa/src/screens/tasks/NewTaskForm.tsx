@@ -45,6 +45,21 @@ import { useEnqueue, useStateQuery, useSuggestWords } from '../../api/queries'
  * том, чего в этом дереве нет. Оба факта живут по ту сторону двери: имя приходит с картиной,
  * список ненайденного — с той же двери, что выводит слова. Форма НЕ УГАДЫВАЕТ проект по
  * тексту: догадка, ошибающаяся раз в двадцать, хуже честного вопроса.
+ *
+ * ═══════════ «КТО ВОЗЬМЁТ» — ВЫБОР ЧЕЛОВЕКА, А НЕ ПОРЯДОК СТРОК В КОНФИГЕ ═══════════
+ *
+ * Работники и агенты — разное (решение владельца 28.08): работник это ИСПОЛНИТЕЛЬ, он пишет
+ * код и правит баги; агент это специалист, которого поднимает фаза. Задача, о роли которой не
+ * сказано, едет исполнителю — и это происходит без всякого поля, ПО УМОЛЧАНИЮ маршрута.
+ * Поэтому выбор здесь необязателен и по умолчанию пуст: форма ничего не отправляет, пока
+ * человек не назвал специалиста сам.
+ *
+ * НО НАЗВАТЬ ЕГО ДОЛЖНО БЫТЬ ГДЕ. Владелец: «иногда я могу делать исследования, тогда
+ * включается исследователь, но это достаточно редко». Редкий случай — не повод отсутствия
+ * выбора: до этого поля специалист доставался задаче САМ, по алфавиту, и ни выбрать его, ни
+ * отменить было нечем. Список ролей приезжает от демона тем же составом, по которому
+ * маршрутизатор выбирает работника; выключенных в нём нет, потому что выбор, заведомо
+ * возвращающийся к человеку со словами «некому взять», — это не выбор, а ловушка.
  */
 
 /**
@@ -60,8 +75,15 @@ export const LANES: readonly { value: string; label: string }[] = [
   { value: 'paperwork', label: 'бумага' },
 ] as const
 
-/** Who does it. «Авто» sends no provider at all — the routing decides, as it does by default. */
-const EXECUTORS: readonly { value: string | null; label: string }[] = [
+/**
+ * КАКОЙ СЕРВИС ВЫПОЛНИТ РАБОТУ. «Авто» sends no provider at all — the routing decides, as it
+ * does by default.
+ *
+ * Называется это ПОСТАВЩИКОМ, а не «исполнителем», и слово тут не вкусовщина: исполнитель —
+ * это роль работника (тот, кто пишет код), и одно слово на два разных выбора в одной форме
+ * читалось бы как один выбор, сделанный дважды.
+ */
+const PROVIDERS: readonly { value: string | null; label: string }[] = [
   { value: null, label: 'Авто' },
   { value: 'claude', label: 'Клод' },
   { value: 'codex', label: 'Кодекс' },
@@ -126,9 +148,24 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
   const state = useStateQuery()
   const pipelineOff = state.data?.rules?.pipeline?.enabled === false
 
+  /**
+   * КОГО МОЖНО ПОЗВАТЬ ПОИМЁННО. Список приезжает свёрнутым по ролям и уже считанным: кто
+   * исполнитель и сколько таких включено, решает демон — тем же выражением, каким выбирает
+   * работника маршрутизатор. Исполнителя в списке нет: он и есть «не выбрали».
+   *
+   * ВЫКЛЮЧЕННЫХ В ВЫБОРЕ НЕТ, но об их числе сказано вслух: молчание о них читалось бы как
+   * «других агентов не существует», а человек их только что видел на «Агентах».
+   */
+  const roles = state.data?.roles ?? []
+  const specialists = roles.filter((r) => !r.executor)
+  const callable = specialists.filter((r) => r.ready > 0)
+  const switchedOff = specialists.length - callable.length
+
   const [title, setTitle] = useState('')
   const [lane, setLane] = useState<string>(LANES[0].value)
   const [provider, setProvider] = useState<string | null>(null)
+  /** Пусто — «роль не названа», и это НЕ «кто угодно»: маршрут прочтёт это как исполнителя. */
+  const [role, setRole] = useState<string>('')
   const [priority, setPriority] = useState<number>(0)
   const [description, setDescription] = useState('')
   const [criteria, setCriteria] = useState('')
@@ -203,6 +240,11 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
         title: text,
         lane,
         ...(provider ? { provider } : {}),
+        // РОЛЬ ЕДЕТ ТОЛЬКО НАЗВАННАЯ. Пустая строка не отправляется вовсе: «executor» в поле и
+        // отсутствие поля — это одно и то же для маршрута, но разное для человека, читающего
+        // потом карточку, и разное для того, чей специалист выключен (названную роль маршрут
+        // не подменяет молча, безымянную — ведёт как всегда).
+        ...(role ? { role } : {}),
         ...(priority > 0 ? { priority } : {}),
         ...(said ? { description: said } : {}),
         ...(promised.length > 0 ? { acceptance: promised } : {}),
@@ -255,8 +297,38 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
       ) : null}
 
       <Segmented label="Направление" options={LANES} current={lane} onPick={setLane} />
-      <Segmented label="Исполнитель" options={EXECUTORS} current={provider} onPick={setProvider} />
+      <Segmented label="Поставщик" options={PROVIDERS} current={provider} onPick={setProvider} />
       <Segmented label="Очередь" options={ORDERS} current={priority} onPick={setPriority} />
+
+      {/*
+        КТО ВОЗЬМЁТ. Поле показывается только там, где есть КОГО называть: машина, у которой
+        одни исполнители, вопроса о роли не имеет, и пустой список читался бы как поломка.
+      */}
+      {callable.length > 0 ? (
+        <div>
+          <div className="mb-1.5 text-[10px] font-semibold tracking-[0.08em] text-tx3 uppercase">Кто возьмёт</div>
+          <select
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
+            aria-label="Кто возьмёт задачу"
+            className="w-full rounded-[9px] border border-bd bg-input px-[9px] py-2 text-[12px] text-tx outline-none focus:border-blue"
+          >
+            <option value="">Работник — пишет код и правит баги</option>
+            <optgroup label="Агенты — только по имени">
+              {callable.map((r) => (
+                <option key={r.role} value={r.role}>
+                  {r.title}
+                </option>
+              ))}
+            </optgroup>
+          </select>
+          <p className="m-0 mt-1.5 text-[10.5px] leading-[1.35] text-tx3">
+            {switchedOff > 0
+              ? `Не выбрали — возьмёт работник. Агента зовут по имени, и это редкий случай. Выключенных в списке нет: ещё ${switchedOff} — включите нужного на «Агентах».`
+              : 'Не выбрали — возьмёт работник. Агента зовут по имени, и это редкий случай: обычную работу он не берёт.'}
+          </p>
+        </div>
+      ) : null}
 
       <div>
         <div className="mb-1.5 flex items-center justify-between">

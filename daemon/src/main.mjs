@@ -50,6 +50,10 @@ import {
   addProject,
   renameProject,
   selectProject,
+  setProjectPlanning,
+  activeProjectEntry,
+  codeTreeOf,
+  planningHomeOf,
   addPeer,
   removePeer,
   addAccount,
@@ -396,6 +400,43 @@ export async function readCoordinationLedger({ projectDir, now = Date.now() }) {
     /* fail-open */
   }
   return out
+}
+
+/**
+ * Квитанция слияния ОДНОЙ ветки из журнала терминалов — то есть доказательство приёмки,
+ * когда принимал не человек.
+ *
+ * ПОЧЕМУ ЭТУ КНИГУ ВООБЩЕ ЧИТАЮТ. Приёмщиком стал терминал: он проводит ритуал слияния сам,
+ * по стоящему добро, и в колонке решения после него не остаётся ничего — колонку заполняет
+ * только нажатие двери окна. Пока эта книга не читалась, всякая терминальная приёмка
+ * выглядела на экране как приёмка без приёмщика, а «принято» держалось на честном слове.
+ *
+ * ЧИТАЮТ ЕЁ ЕЁ ЖЕ ЧИТАТЕЛЕМ — тем самым, каким её читает `status`, и по тому же пути, каким
+ * её пишет ритуал. Второй разборщик `.sma/` — ровно то, чего этому демону расти нельзя: в
+ * день, когда журнал переедет, второй разборщик продолжит показывать вчерашний.
+ *
+ * ПОСЛЕДНЕЕ СЛИЯНИЕ, А НЕ ПЕРВОЕ: ветку задачи можно слить дважды (возврат, второй круг,
+ * второе слияние), и действующая приёмка — последняя. Fail-open во всём: нечитаемый журнал,
+ * отсутствующий каталог, битая строка — это `null`, «записи нет», и карточка скажет об этом
+ * словами. Ни одно чтение здесь не имеет права уронить дверь.
+ */
+export async function readMergeJournal({ branch, projectDir } = {}) {
+  if (typeof branch !== 'string' || branch.trim() === '') return null
+  if (typeof projectDir !== 'string' || projectDir.trim() === '') return null
+  try {
+    const journal = await import('../../scripts/sma/lib/journal.mjs')
+    const { events } = journal.readJournal({ journalDir: join(projectDir, '.sma', 'journal') })
+    let hit = null
+    for (const e of events || []) {
+      if (!e || e.type !== 'merge') continue
+      const detail = e.detail && typeof e.detail === 'object' ? e.detail : null
+      if (!detail || detail.branch !== branch) continue
+      hit = { terminal: typeof e.terminal === 'string' ? e.terminal : null, at: e.ts ?? null, receipt: detail }
+    }
+    return hit
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -794,12 +835,13 @@ export function createDaemon(o = {}) {
   //     degraded, AND is watching the project the screen is currently showing. Anything else
   //     answers «polling», so a stale screen can never present itself as a live one.
   const migrationStagingDir = o.migrationStagingDir ?? join(dataDir ?? '.', 'migration-staging')
-  const connectedProjectDir = () => {
-    const list = Array.isArray(config.projects) ? config.projects : []
-    if (list.length === 0) return null
-    const active = list.find((p) => p && p.id === (config.activeProject ?? list[0].id)) || null
-    return active && typeof active.path === 'string' && active.path.trim() !== '' ? active.path : null
-  }
+  const connectedProjectDir = () => codeTreeOf(activeProjectEntry(config))
+  /**
+   * ВТОРОЙ АДРЕС ТОГО ЖЕ ПРОЕКТА — дом планирования: каталог, где лежит его `.planning`.
+   * Не задан — это тот же каталог, что и дерево кода, и всё ниже отвечает как раньше. Задан —
+   * фазы, беклог и дорожная карта читаются оттуда, а код по-прежнему строится в дереве кода.
+   */
+  const connectedPlanningDir = () => planningHomeOf(activeProjectEntry(config))
   const connectedProjectId = () => {
     const list = Array.isArray(config.projects) ? config.projects : []
     return (config.activeProject ?? (list[0] && list[0].id)) || null
@@ -830,11 +872,15 @@ export function createDaemon(o = {}) {
   // A SEPARATE NAME FOR THE DOOR'S COLLABORATOR, exactly like `updateRunner` further down:
   // the approve handler receives a function that can only remove the copy of the task it was
   // given, never a runner it could ask to run something else.
-  const worktreeCleanup = ({ taskId, by }) =>
+  //
+  // `cwd` — ДЕРЕВО, В КОТОРОМ КОПИЯ РЕАЛЬНО ЛЕЖИТ, названное дверью по адресам задачи и её
+  // проекта: то же выражение, каким та же дверь только что искала ветку. Без него уборка
+  // спрашивала бы про копию задачи проекта A у проекта B — и честно не находила бы её.
+  const worktreeCleanup = ({ taskId, by, cwd }) =>
     cleanupTaskWorktree({
       taskId,
       by,
-      projectDir: connectedProjectDir() ?? repoDir,
+      projectDir: (typeof cwd === 'string' && cwd.trim() !== '' ? cwd : null) ?? connectedProjectDir() ?? repoDir,
       ledger,
       verbRunner: cliVerbRunner,
       clock,
@@ -857,8 +903,19 @@ export function createDaemon(o = {}) {
   // …and the tick's half: every OTHER closed task, swept once a day. Both the connected
   // project and every project the roster knows — a copy left in a project the founder
   // switched away from is exactly the one nobody would ever come back for.
+  //
+  // ОБА АДРЕСА КАЖДОГО ПРОЕКТА. Копия документарной ступени режется из ДОМА ПЛАНИРОВАНИЯ, и
+  // обход, знающий только деревья кода, оставлял бы её лежать вечно.
   const worktreeSweeper = createWorktreeSweeper({
-    projectsOf: () => [...new Set([connectedProjectDir(), ...(Array.isArray(config.projects) ? config.projects.map((p) => p && p.path) : [])].filter(Boolean))],
+    projectsOf: () => [
+      ...new Set(
+        [
+          connectedProjectDir(),
+          connectedPlanningDir(),
+          ...(Array.isArray(config.projects) ? config.projects.flatMap((p) => [codeTreeOf(p), planningHomeOf(p)]) : []),
+        ].filter(Boolean),
+      ),
+    ],
     adapter,
     ledger,
     verbRunner: cliVerbRunner,
@@ -989,6 +1046,11 @@ export function createDaemon(o = {}) {
         unknownDispatchCodes: () => unknownDispatchCodes.codes(),
         ledger, // the attempt ledger AND the decision journal ride the same seam
         ledgerDir,
+        // ВТОРАЯ КНИГА ПРИЁМКИ. Человеческое нажатие оставляет квитанцию в колонке решения;
+        // терминал, принимающий сам, — в журнале терминалов. Дверь карточки спрашивает
+        // колонку первой и эту книгу второй, и потому умеет назвать обоих приёмщиков
+        // словом. Шов необязательный: демон без него отвечает про человека ровно так же.
+        mergeJournal: readMergeJournal,
         // …and the read model that counts a worker's concluded attempts over the last 30 days
         // out of that same ledger. It is built ONCE here (it holds a TTL cache) and injected,
         // so the derive keeps no static edge onto it and the numbers ride the existing read.
@@ -1048,7 +1110,17 @@ export function createDaemon(o = {}) {
         //
         // The workbench below has always followed the connected project. Now the whole window
         // speaks about one project — the one the person selected.
-        phaseCycleDir: () => connectedProjectDir() ?? repoDir,
+        //
+        // И ЭТО ЕГО ВТОРОЙ АДРЕС, А НЕ ПЕРВЫЙ. Фазы живут в `.planning`, а `.planning` живёт в
+        // ДОМЕ ПЛАНИРОВАНИЯ — том же проекте, но, в двухрепном доме, в другом каталоге. Пока
+        // проект знал один адрес, «подключить мастерскую» значило завести её ВТОРЫМ ПРОЕКТОМ:
+        // в одном видны задачи, в другом фазы. Второй адрес не задан — выражение отвечает тем
+        // же каталогом, что и раньше, буква в букву.
+        phaseCycleDir: () => connectedPlanningDir() ?? repoDir,
+        // ДЕРЕВО КОДА ТОГО ЖЕ ПРОЕКТА — второй половине окна. Каталоги прогонов, коммиты ветки
+        // и её различия живут там, где работает работник, а не там, где лежат фазы; одно
+        // выражение на оба вопроса было бы ровно тем самым «читаем одно дерево, пишем другое».
+        codeTreeDir: () => connectedProjectDir() ?? repoDir,
         // ── the workbench: three read models and four acts, all over the CONNECTED project ──
         // Unlike the phase cycle above, these follow the project the founder SELECTED, because
         // that is the corpus, the checkout and the backlog the window is already showing him.
@@ -1131,6 +1203,9 @@ export function createDaemon(o = {}) {
         addProject,
         renameProject,
         selectProject,
+        // ВТОРОЙ АДРЕС ПРОЕКТА — той же дорогой и тем же правилом: запрос доходит до записи
+        // настроек только через дверь модуля настроек, и эта дверь умеет ровно одно.
+        setProjectPlanning,
         // the PEER registry doors — same posture: the introduction wizard reaches the
         // config only through these, and only after a one-shot invitation was consumed.
         addPeer,
@@ -1383,7 +1458,10 @@ export function createDaemon(o = {}) {
    * process happens to stand, which is not the tree whose backlog it is about to read.
    */
   const createBacklogIntake = () => {
-    const backlogRoot = () => connectedProjectDir() ?? config.repoDir
+    // ИЗ ДОМА ПЛАНИРОВАНИЯ. `BACKLOG.md` лежит в `.planning`, и сканер, читавший дерево кода,
+    // на двухрепном доме молчал совершенно честно: файла по этому адресу нет. Второй адрес не
+    // задан — тот же каталог, что и раньше.
+    const backlogRoot = () => connectedPlanningDir() ?? config.repoDir
     const intake = {
       lastScanAt: 0,
       async scan() {
@@ -1459,10 +1537,15 @@ export function createDaemon(o = {}) {
     // than reached through the config block: the file is an artefact of a SPAWN, and an
     // install that keeps its spawn scratch elsewhere may say so without moving the data dir.
     dataDir,
-    // The tree a DOCUMENTARY stage stands in. The same answer the front's phaseCycleDir
-    // gives, and deliberately the same expression: a card that reads one directory while the
-    // stage writes into another shows work as never started while it is being completed.
+    // ЗАПАСНОЕ ДЕРЕВО КОДА — для строки, которая не назвала своего проекта. Штампованная
+    // строка отвечает на этот вопрос сама (loop.mjs, taskTreeDir), и это выражение до неё не
+    // доходит.
     projectDir: o.tickProjectDir ?? (() => connectedProjectDir() ?? config.repoDir),
+    // ЗАПАСНОЙ ДОМ ПЛАНИРОВАНИЯ — тем же правилом, для документарной ступени без штампа. Тот
+    // же ответ, что даёт окну phaseCycleDir выше, и НАМЕРЕННО то же выражение: карточка,
+    // читающая один каталог, пока ступень пишет в другой, показывает работу неначатой ровно в
+    // тот момент, когда её завершают.
+    planningDir: o.tickPlanningDir ?? (() => connectedPlanningDir() ?? config.repoDir),
     // WHAT AN ATTEMPT COST, into the same book the «Расходы» screen reads. The parser and the
     // writer both lived in runner/usage.mjs and only the chat door called them, so every task
     // the tick ran booked nothing and the screen answered zero. Same family as buildArgs above:

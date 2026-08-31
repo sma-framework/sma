@@ -40,6 +40,7 @@ import {
   addProject,
   renameProject,
   selectProject,
+  setProjectPlanning,
   applyPipelineToggle,
   applyBudgetStop,
   addAccount,
@@ -154,6 +155,13 @@ const DOORS: Door[] = [
     name: 'selectProject',
     press: (stale) => selectProject(stale, { id: 'beta' }, io()),
     landed: (d) => expect(d.activeProject).toBe('beta'),
+  },
+  {
+    // ВТОРОЙ АДРЕС ПРОЕКТА — дом планирования. Пишет тот же ключ `projects`, что и три двери
+    // выше, и подчиняется тому же закону: чужое поле файла переживает нажатие.
+    name: 'setProjectPlanning',
+    press: (stale) => setProjectPlanning(stale, { id: 'alpha', planningPath: '/trees/workshop' }, io()),
+    landed: (d) => expect(d.projects.find((p: any) => p.id === 'alpha').planningPath).toBe('/trees/workshop'),
   },
   {
     name: 'applyPipelineToggle',

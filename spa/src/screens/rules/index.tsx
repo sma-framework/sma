@@ -159,14 +159,20 @@ export function Screen() {
   const workers = rules?.workers ?? []
   const budgetStops = rules?.budgetStops
   const subApiSwitch: SubApiSwitch = rules?.subApiSwitch ?? { mode: 'subscription', capUsd: 0, budgeted: false }
-  const enabled = workers.filter((w) => w.enabled).length
+  /**
+   * «РАБОТНИКОВ N» — ЭТО ПУЛ ОЧЕРЕДИ, А НЕ ДЛИНА СПИСКА. Здесь стояло `workers.length`, и полоса
+   * говорила «работников 44» в дни, когда задачи разбирали шестеро: остальные — либо выключены,
+   * либо специалисты, которых очередь не раздаёт вовсе. Признак приезжает считанным (`inQueue`),
+   * тем же выражением, каким его считает маршрутизатор.
+   */
+  const inQueue = workers.filter((w) => w.inQueue).length
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">
       <header className="sticky top-0 z-30 flex h-[58px] flex-none items-center gap-2.5 border-b border-bd bg-head px-7 backdrop-blur-[10px]">
         <h1 className="m-0 mr-2 flex-none text-[15px] font-semibold tracking-[-0.01em] text-tx">Правила</h1>
         <Pill value={String(lanes.length)} label={lanes.length === 1 ? 'полоса' : 'полос'} />
-        <Pill value={`${enabled} из ${workers.length}`} label="работников включено" />
+        <Pill value={`${inQueue} из ${workers.length}`} label="работников разбирают очередь" />
         <Pill value={String(HUMAN_ONLY.length)} label="принципа защищены" />
       </header>
 
@@ -213,14 +219,15 @@ export function Screen() {
           <div className="overflow-hidden rounded-[14px] border border-bd bg-card shadow-panel">
             <CardHead
               title="Кто что делает"
-              note={`${workers.length} ${workers.length === 1 ? 'работник' : 'работников'}`}
+              note={`${inQueue} ${inQueue === 1 ? 'разбирает очередь' : 'разбирают очередь'} из ${workers.length}`}
             />
             <div className="pt-2.5">
               <LaneTable lanes={lanes} workers={workers} />
             </div>
             <div className="border-t border-bd bg-surf px-5 py-2.5 text-[11.5px] leading-[1.5] text-tx3">
-              Полоса решает, кому достанется задача; исполнителя можно назвать вручную при постановке.
-              Полосы и профили заданы в конфигурации демона.
+              Задачу берёт ИСПОЛНИТЕЛЬ: специалист (исследователь, ревьюер) из очереди сам не берёт ничего — его
+              зовут поимённо при постановке или поднимает фаза. Полоса решает поставщика и модель. Полосы и профили
+              заданы в конфигурации демона.
             </div>
           </div>
 
