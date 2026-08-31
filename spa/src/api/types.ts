@@ -1437,6 +1437,41 @@ export interface WaitingTicket {
   deadlineAt?: string | null
 }
 
+/**
+ * КВИТАНЦИЯ СЛИЯНИЯ СЛОВАМИ: ветка → итоговый коммит, гонялись ли тесты и с каким исходом.
+ *
+ * `testsPassed` — ТРИ состояния, а не два: `true` — прогон был и зелёный, `false` — был и
+ * красный, `null` — прогонщика не нашлось вовсе, и тогда рядом стоит `testsNote` с
+ * объяснением. «Не гонялись» и «не прошли» — разные предложения, и экран обязан их
+ * различать: слить их в одно значило бы подписать зелёным то, чего никто не проверял.
+ */
+export interface MergeReceiptWords {
+  branch: string | null
+  sha: string | null
+  testsPassed: boolean | null
+  testsNote: string | null
+}
+
+/**
+ * СЛЕД ПРИЁМКИ. Приёмщиков два: человек нажимает дверь окна, терминал проводит ритуал сам по
+ * стоящему добро. Различать их — весь смысл записи: без имени приёмщика «принято» остаётся
+ * словом, а проверить приёмщика человеку нечем.
+ */
+export interface AcceptanceRecord {
+  by: 'human' | 'terminal'
+  /** Минута приёмки. `null` — «когда, не записано»; экран говорит это словами. */
+  at: string | null
+  /** Какое окно приняло, когда приёмщик — терминал. У человеческой приёмки `null`. */
+  terminal: string | null
+  merge: MergeReceiptWords
+}
+
+/** Сколько было кругов возврата и какие слова от них уцелели. */
+export interface ReturnRounds {
+  rounds: number
+  notes: string[]
+}
+
 export interface TaskDetail {
   task: {
     id: string
@@ -1480,6 +1515,19 @@ export interface TaskDetail {
   branch: string
   commits: string[]
   returnedNotes: string[]
+  /**
+   * КЕМ И КОГДА РАБОТА ПРИНЯТА — и что при этом сказала квитанция слияния.
+   *
+   * `null` (или отсутствие поля у демона постарше) значит «записи об этом нет», и окно
+   * обязано сказать это словами. Приёмщик по умолчанию был бы худшим из ответов: он
+   * выглядит как знание, а проверять по нему нечего.
+   */
+  accepted?: AcceptanceRecord | null
+  /**
+   * Круги возврата: сколько раз работу отправляли обратно и какими словами. Слов может быть
+   * меньше, чем кругов, — колонка решения помнит только последнюю записку.
+   */
+  returns?: ReturnRounds
   /**
    * The decision journal: why the work was routed as it was, and which lessons were
    * loaded. The per-attempt note lives on the attempt itself. Declared now so the card

@@ -111,7 +111,8 @@ import {
   deriveState,
 } from '../../daemon/src/front/state.mjs'
 import { recordAttempt } from '../../daemon/src/queue/attempt-ledger.mjs'
-import { readCoordinationLedger } from '../../daemon/src/main.mjs'
+import { readCoordinationLedger, readMergeJournal } from '../../daemon/src/main.mjs'
+import { MERGE_SLOT_NAME } from './lib/constants.mjs'
 import { scopeClaimSlug } from './lib/collision.mjs'
 import { claimSlot } from './lib/claims.mjs'
 import { appendEvent } from './lib/journal.mjs'
@@ -123,6 +124,7 @@ import {
   STAGE_ACTIVE_PROJECT,
   STAGE_CHAT_TURNS,
   STAGE_DIR_PREFIX,
+  STAGE_DONE_BRANCH,
   STAGE_LEDGER,
   STAGE_PARKED_ATTEMPT,
   STAGE_RECEIPTS_DIR,
@@ -134,6 +136,9 @@ import {
   stageCommandArgs,
   stageConfig,
   stageDiskConfig,
+  stageDoneAttempts,
+  stageDoneMergeReceipt,
+  stageGit,
   stageProjectFiles,
   stageProjects,
   stageRows,
@@ -219,6 +224,14 @@ function writeTree(project, { pid }) {
     { type: 'collision', actors: [STAGE_LEDGER.holderIdentity, STAGE_LEDGER.otherActor], scope: STAGE_LEDGER.collisionScope },
     { journalDir: join(smaRoot, 'journal'), terminalId: STAGE_LEDGER.terminalId },
   )
+  // КВИТАНЦИЯ СЛИЯНИЯ ТЕРМИНАЛА — второй книгой приёмки, той же рукой, что её пишет ритуал.
+  // У работы, принятой терминалом, колонка решения пуста, и эта строка — единственное
+  // доказательство того, кто и когда принял; без неё раскрытие готовой строки на сцене
+  // показывало бы «кто принял — не записано» и проверяло бы не тот провод.
+  appendEvent(
+    { type: 'merge', scope: MERGE_SLOT_NAME, detail: stageDoneMergeReceipt(project.path) },
+    { journalDir: join(smaRoot, 'journal'), terminalId: STAGE_LEDGER.terminalId },
+  )
 }
 
 async function main() {
@@ -300,6 +313,9 @@ async function main() {
   // потратила, окно читает с этой строки — и читает настоящим читателем реестра, поэтому
   // фикстура кладётся настоящим `recordAttempt`, а не файлом, сложенным здесь руками.
   recordAttempt(home, { ...STAGE_PARKED_ATTEMPT, turnKinds: { ...STAGE_PARKED_ATTEMPT.turnKinds } })
+  // …и подходы ПРИНЯТОЙ работы: два, потому что первый вернули, и второй со следом уборки —
+  // именно с него раскрытие берёт минуту приёмки и сохранённую вершину снесённой ветки.
+  for (const attempt of stageDoneAttempts({ now: Date.now() })) recordAttempt(home, attempt)
 
   const config = stageConfig({ port: 0, token, projects, activeProject: STAGE_ACTIVE_PROJECT })
   // ФАЙЛ НАСТРОЕК СЦЕНЫ — во временном каталоге сцены и НАМЕРЕННО не такой, как копия выше.
@@ -336,6 +352,15 @@ async function main() {
       // difference: nothing here waits for a worker, so the queue is as empty as it was.
       adapter: { list: async () => stageRows({ now: Date.now() }) },
       deriveState,
+      // ЧТО GIT ГОВОРИТ О СДЕЛАННОМ. Дерево кита — не репозиторий, и без этого шва раскрытие
+      // принятой работы показывало бы пустой список коммитов: не дефект окна, а отсутствие
+      // git под сценой, — то есть проверялся бы не тот провод. Отвечает только на сохранённый
+      // диапазон принятой строки, всё прочее — отказ, как у настоящего git по снесённой ветке.
+      execGit: stageGit,
+      // ВТОРАЯ КНИГА ПРИЁМКИ, читаемая читателем демона: квитанцию терминального слияния
+      // сцена положила в журнал проекта настоящим писателем, и окно достаёт её оттуда ровно
+      // так же, как в бою.
+      mergeJournal: readMergeJournal,
       // ЧТО СТОИТ В ФАЙЛЕ НАСТРОЕК СЦЕНЫ — тем же чтением, каким его читает настоящий демон,
       // и по пути из окружения сцены, а не из дома оператора.
       configOnDisk: () => readConfigOnDisk({ env: { SMA_DAEMON_CONFIG: configPath } }),
