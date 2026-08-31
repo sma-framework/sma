@@ -233,7 +233,7 @@ A daemon on your machine runs worker sessions around the clock, and serves its o
 
 - **«Alive» and «answering» are not the same fact.** A process can hold its port and stop serving it, and from outside that reads exactly like a quiet afternoon. The watchdog knocks at the cheapest door with patience measured against that door's own latency under load, and calls it a death only after a **series** of silences — never one. A process that is alive and no longer answering is then treated as the death it is: stopped first, lifted second, because a lift over a hung process only loses the race for its port. The first minutes after a lift are the daemon's own start-up cleanup, and they are never mistaken for a jam.
 
-The daemon needs a local PostgreSQL for its queue (or the bundled sandbox for a machine with no PostgreSQL and no admin rights) and one visit with a token to open the app. Setup, supervision, autostart, the watchdog, Telegram pairing, machine sizing — measured, not guessed: [docs/DETAILS.md](docs/DETAILS.md) and [docs/INSTALL.md](docs/INSTALL.md).
+The daemon needs a local PostgreSQL for its queue (or the bundled sandbox for a machine with no PostgreSQL and no admin rights), and **one command to open the app** — `node scripts/sma/cli.mjs open`. It builds the single sanctioned `?token=` exchange out of the daemon's own config and hands it to your browser, so the address bar is never assembled by hand: the bare address answers `401` on purpose, and nothing in that posture is relaxed to make the door usable. On a machine with no browser, `--print` writes the ready link out as one line. Setup, supervision, autostart, the watchdog, Telegram pairing, machine sizing — measured, not guessed: [docs/DETAILS.md](docs/DETAILS.md) and [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Commands
 
@@ -258,7 +258,7 @@ The `/sma-*` workflow family (run inside a Claude Code session):
 | `/sma-deleteme` | Remove SMA in one action; your memory corpus stays |
 | `/sma-update` | Check installed vs available versions and update via the standard installer; everything local stays |
 
-Underneath runs the coordination + accountability CLI — 97 verbs, each with an in-product explainer. Call it from your project root, the way the hooks do:
+Underneath runs the coordination + accountability CLI — 98 verbs, each with an in-product explainer. Call it from your project root, the way the hooks do:
 
 ```bash
 node scripts/sma/cli.mjs status            # who is working on what, right now

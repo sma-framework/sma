@@ -20,6 +20,10 @@
  *    posture, not a preference.
  *  - Test 5 (openInBrowser): the launcher argv carries the tokenized link, and a platform
  *    with no known launcher is a NAMED refusal rather than a silent success.
+ *  - Test 5b (shouldPrintLink): the rule about when the link may cross onto the SCREEN, as a
+ *    function that can be pointed at. The token stays out of the terminal on the ordinary
+ *    path, where the browser already has it, so a scrollback or a session transcript keeps
+ *    a token-free address and the existing credential screens are never leaned on.
  *  - Test 6 (the daemon's wire): the boot path builds its address through this module, so
  *    the two cannot drift into two different answers.
  *  - Test 7 (the verb): `open --print` prints the ready link and launches nothing; a
@@ -42,6 +46,7 @@ import {
   openInBrowser,
   readWindowEntry,
   resolveDaemonConfigPath,
+  shouldPrintLink,
   windowAddress,
 } from '../lib/window.mjs'
 
@@ -175,6 +180,16 @@ describe('window.mjs — the entry link is assembled in one place', () => {
     expect(failed.reason).toBe('launch-failed')
   })
 
+  it('Test 5b: the link reaches the screen only when asked for or when nothing else can carry it', () => {
+    // The ordinary path: the browser took the link, so the terminal keeps a token-free address.
+    expect(shouldPrintLink({ printOnly: false, opened: true })).toBe(false)
+    // No browser, or a launcher that refused: printing is the only way in that is left.
+    expect(shouldPrintLink({ printOnly: false, opened: false })).toBe(true)
+    // Asked for: the person wants the string, on a machine with a browser or without one.
+    expect(shouldPrintLink({ printOnly: true, opened: true })).toBe(true)
+    expect(shouldPrintLink({ printOnly: true, opened: false })).toBe(true)
+  })
+
   it('Test 6: the daemon boot path builds its address through this module, not by hand', () => {
     const main = readFileSync(join(REPO_ROOT, 'daemon', 'src', 'main.mjs'), 'utf8')
     expect(main).toMatch(/from '\.\.\/\.\.\/scripts\/sma\/lib\/window\.mjs'/)
@@ -207,7 +222,17 @@ describe('the verb that opens the window', () => {
     const absent = join(scratch, 'nowhere', 'config.json')
     const { stdout, stderr, status } = runCli(['open', '--json'], { SMA_DAEMON_CONFIG: absent })
     expect(status).toBe(1)
-    expect(`${stdout}${stderr}`).toContain(absent)
+    const parsed = JSON.parse(stdout)
+    expect(parsed).toMatchObject({ ok: false, reason: 'config-missing', configPath: absent })
+    expect(`${stdout}${stderr}`).not.toContain('?token=')
+  })
+
+  it('Test 7d: the human refusal names the file and the next step, in words', () => {
+    const absent = join(scratch, 'nowhere', 'config.json')
+    const { stdout, stderr, status } = runCli(['open'], { SMA_DAEMON_CONFIG: absent })
+    expect(status).toBe(1)
+    expect(stderr).toContain(absent)
+    expect(stderr).toMatch(/daemon\/src\/main\.mjs/)
     expect(`${stdout}${stderr}`).not.toContain('?token=')
   })
 })
