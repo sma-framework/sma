@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { MaterializedEntry, MemoryTrace, TaskAttempt } from '../../api/types'
 import { AttemptLog } from '../../shell/AttemptLog'
 import { clockLabel, receiptChecks, receiptProofLabel } from '../../shell/format'
+import { syncLine } from './branch-sync'
 
 /**
  * AttemptTimeline — the whole history of one task, in the order it happened.
@@ -536,6 +537,7 @@ function Row({
   const layer = layerLines(attempt)
   const lesson = lessonLines(attempt, trace)
   const parity = parityLine(attempt)
+  const sync = syncLine(attempt)
   const rollback = rollbackLines(attempt)
   const undo = rollbackCommand(attempt, merge)
 
@@ -647,6 +649,20 @@ function Row({
             {parity.length > 0 ? (
               <div className="mb-2 flex flex-col gap-0.5 text-[11px] leading-[1.45] text-tx3">
                 {parity.map((line) => (
+                  <span key={line} className="break-words">
+                    {line}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {/* СВЕДЕНИЕ С ВЕРШИНОЙ: тем же блоком и по тому же закону, что копия, слой, урок и
+                паритет. Стоит ПОСЛЕ паритета и ПЕРЕД кодом причины намеренно: это последнее,
+                что человек читает перед решением «принять», и первое, что объясняет отказ
+                слияния, если он всё же случится. Имена файлов приходят из данных и остаются
+                текстовыми узлами. */}
+            {sync.length > 0 ? (
+              <div className="mb-2 flex flex-col gap-0.5 text-[11px] leading-[1.45] text-tx3">
+                {sync.map((line) => (
                   <span key={line} className="break-words">
                     {line}
                   </span>

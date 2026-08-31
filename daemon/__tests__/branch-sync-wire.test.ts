@@ -20,6 +20,12 @@
  *       месте, ветка сведена;
  *   (3) настоящий спор о содержании → ветка НЕ сведена, работа всё равно доезжает до человека,
  *       а строка называет ИМЯ файла. Готовую работу не выбрасывают за то, что вершина уехала.
+ *
+ * …И ЧЕТВЁРТЫЙ, ДОСТРОЕННЫЙ ПОЗЖЕ, ПРО ПОСЛЕДНИЙ МЕТР ЭТОГО ПРОВОДА: строка попытки несла ответ
+ * ЧЕСТНО, и на этом провод кончался — дверь карточки его не называла. Приёмщик узнавал о споре
+ * ПОСЛЕ нажатия «принять», из отказа слияния, и шёл выяснять состав руками в копии, которую
+ * вот-вот выметут. Поэтому (4) гоняет НАСТОЯЩУЮ дверь карточки и проверяет слова, которые из
+ * поля получится прочесть, — вычислено и записано не то же самое, что предъявлено.
  */
 
 import { describe, it, expect, afterAll } from 'vitest'
@@ -27,8 +33,11 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 
 import { tick } from '../src/loop.mjs'
+import { createFrontServer } from '../src/front/server.mjs'
+import { syncLine } from '../../spa/src/screens/task-card/branch-sync'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { recordAttempt, readAttempts, createAttemptLogWriter } from '../src/queue/attempt-ledger.mjs'
@@ -293,5 +302,131 @@ describe('договор сдачи — дверь, которую работн�
     const cli = readFileSync(join(import.meta.dirname, '..', '..', 'scripts', 'sma', 'cli.mjs'), 'utf8')
     // Промпт, называющий несуществующий верб, — та же невыполнимая обязанность другой формы.
     expect(cli).toContain("'sync-branch': cmdSyncBranch")
+  })
+})
+
+/**
+ * ПОСЛЕДНИЙ МЕТР ПРОВОДА: ОТ ДОЛГОВЕЧНОЙ СТРОКИ ДО ГЛАЗ ПРИЁМЩИКА.
+ *
+ * Три случая выше доказывают, что ответ о сведении ЕСТЬ на строке попытки. Этого мало, и мало
+ * ровно так же, как было мало паритета, посчитанного идеально и не доехавшего ни до кого: копию
+ * работника после приёмки выметают, а вопрос «почему приёмка не прошла» задают именно ПОСЛЕ.
+ * Поле, которое дверь карточки не называет, для человека не существует.
+ *
+ * Здесь гоняется НАСТОЯЩАЯ дверь (`createFrontServer`, тот же `handle`, что и в production) над
+ * подделанным реестром — а слова, которые из поля прочтёт глаз, проверяются тем же модулем,
+ * который зовёт разметка. Между полем на строке и строкой на экране стоят три файла
+ * (`front/server.mjs`, `api/types.ts`, `task-card/branch-sync.ts`); связывает их только этот
+ * случай.
+ */
+
+const CARD_TOKEN = 'tkn-sync-wire'
+
+function mkReq(url: string) {
+  const req: any = Readable.from([])
+  req.method = 'GET'
+  req.url = url
+  req.headers = { authorization: `Bearer ${CARD_TOKEN}` }
+  req.socket = { remoteAddress: '10.0.0.9' }
+  return req
+}
+
+function mkRes() {
+  const res: any = {
+    statusCode: 0,
+    headers: {} as Record<string, any>,
+    body: '',
+    headersSent: false,
+    writeHead(code: number, h?: any) {
+      res.statusCode = code
+      res.headersSent = true
+      if (h) for (const [k, v] of Object.entries(h)) res.headers[k.toLowerCase()] = v
+      return res
+    },
+    end(c?: any) {
+      if (c != null) res.body += String(c)
+      res.ended = true
+      return res
+    },
+  }
+  return res
+}
+
+async function cardOf({ rows, attempts }: { rows: any[]; attempts: any[] }) {
+  const projectDir = mkDir('sma-sync-card-')
+  const front = createFrontServer({
+    config: { token: CARD_TOKEN, repoDir: projectDir },
+    deps: {
+      repoDir: projectDir,
+      clock: () => 1_770_000_000_000,
+      adapter: { list: async () => rows },
+      ledger: {
+        readAttempts: () => attempts,
+        readAttemptLog: () => ({ entries: [], truncated: false, roles: [], rolesMore: 0, digest: null }),
+        readJournalEntries: () => [],
+      },
+    },
+  })
+  const res = mkRes()
+  await front.handle(mkReq(`/api/task/${rows[0].id}`), res)
+  return { status: res.statusCode, body: JSON.parse(res.body) }
+}
+
+/** Ровно та форма, которую кладёт на строку `syncBeforeHandoff` при неразведённом споре. */
+const UNMERGED = {
+  trunk: 'main',
+  behind: 29,
+  synced: false,
+  resolved: [{ file: 'README.md', how: 'union' }],
+  unmerged: { count: 2, files: ['daemon/src/loop.mjs', 'docs/master-graph.html'], detail: 'конфликт в 2 файл(ах)' },
+}
+
+describe('сведение ветки доезжает до человека, а не только до реестра', () => {
+  it('дверь карточки НАЗЫВАЕТ состав спора — до того, как человек нажмёт «принять»', async () => {
+    const { status, body } = await cardOf({
+      rows: [{ id: 'BL-7', status: 'awaiting_approval', lane: 'prod', title: 'дело', attempt: 1, priority: 0 }],
+      attempts: [{ attempt: 1, outcome: 'completed', workerId: 'max-1', sync: UNMERGED }],
+    })
+    expect(status).toBe(200)
+    expect(body.attempts[0].sync).toEqual(UNMERGED)
+  })
+
+  it('попытка, молчащая о сведении, приезжает нулём — а не «сведена»', async () => {
+    const { body } = await cardOf({
+      rows: [{ id: 'BL-8', status: 'awaiting_approval', lane: 'prod', title: 'дело', attempt: 1, priority: 0 }],
+      attempts: [{ attempt: 1, outcome: 'completed', workerId: 'max-1' }],
+    })
+    expect(body.attempts[0].sync).toBe(null)
+  })
+
+  it('у ИДУЩЕЙ попытки сведения ещё не было — ключ есть и он нулевой', async () => {
+    const { body } = await cardOf({
+      rows: [{ id: 'BL-9', status: 'claimed', lane: 'prod', title: 'дело', attempt: 1, priority: 0, workerId: 'max-1' }],
+      attempts: [],
+    })
+    const running = body.attempts.find((a: any) => a.outcome === 'running')
+    expect(running).toBeTruthy()
+    expect('sync' in running).toBe(true)
+    expect(running.sync).toBe(null)
+  })
+
+  it('слова называют ЧИСЛО и ИМЕНА — та самая строка, которую приёмщик выяснял руками', () => {
+    const said = syncLine({ sync: UNMERGED } as any)
+    expect(said).toHaveLength(1)
+    expect(said[0]).toContain('НЕ сведена')
+    expect(said[0]).toContain('2 файл(ах)')
+    expect(said[0]).toContain('daemon/src/loop.mjs')
+    expect(said[0]).toContain('docs/master-graph.html')
+    // …и механический развод НЕ молчит: развод, о котором никто не узнал, неотличим от
+    // слияния, где спора не было вовсе.
+    expect(said[0]).toContain('README.md (union)')
+  })
+
+  it('сведённая ветка говорит об этом, а молчащая попытка не говорит ничего', () => {
+    expect(syncLine({ sync: { trunk: 'main', behind: 4, synced: true } } as any)).toEqual([
+      'Ветка сведена с main — отставала на 4 коммит(ов)',
+    ])
+    expect(syncLine({ sync: null } as any)).toEqual([])
+    expect(syncLine({} as any)).toEqual([])
   })
 })
