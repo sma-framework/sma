@@ -91,6 +91,10 @@
  * первое из них). Проход, а не поле у двери: причину `attempts_exhausted` не пишет ни одна
  * дверь — она выводится при чтении строки задания, — и журнал, собранный по дверям, молчал
  * бы именно о ней. Дописывает только то, чего в журнале ещё нет; fail-open, как соседи.
+ * ОДНО ИСКЛЮЧЕНИЕ, И ОНО ЖЕ ГРАНИЦА: обрыв поставщика пишет ДВЕРЬ (`failTask`), потому что
+ * конец этот перевыдаваемый — строка уходит обратно в очередь ожидающей и метле не видна
+ * вовсе, пока не кончатся перевыдачи. Ключ и слово реестра у двери те же, что у метлы, так
+ * что второй строки об одном срыве не бывает.
  *
  * ═══════════════════════ FAIL-OPEN HONESTY (merge-gate posture) ═══════════════════
  * The whole tick is wrapped fail-open: any thrown error is journaled and the affected
@@ -112,7 +116,9 @@ import { resolveExpireMs, batchWorkerOf, waveAddressOf, isBatchParent, batchItem
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
-import { sweepBugJournal } from './queue/bug-journal.mjs'
+// Метла журнала срывов — и `causeOf` рядом с ней: дверь, пишущая об обрыве поставщика в момент
+// события, берёт слово реестра ТОЙ ЖЕ функцией, что и метла, а не вторым его вычислением.
+import { sweepBugJournal, causeOf } from './queue/bug-journal.mjs'
 // Потолок мест читает ДОМ ИДУЩИХ ПОПЫТОК, а не тик: одно чтение настройки на весь демон —
 // его же спрашивает дверь состояния, чтобы назвать человеку «занято X из N».
 import { concurrencyCap } from './queue/in-flight.mjs'
@@ -4849,7 +4855,24 @@ export async function tick(deps = {}) {
             : ''),
       })
 
-      if (!exit.spawnError && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten && lessonOk) {
+      // ═══ ЧТО ОБОРВАЛ ПОСТАВЩИК, ТО НЕ «СДЕЛАНО», ЕСЛИ НИЧЕГО НЕ ЗАВЕРЕНО ═══════════════
+      //
+      // Дверь ниже осталась открытой для оборванного прогона намеренно: ветка, которую
+      // перепроверка ДЕЙСТВИТЕЛЬНО прогнала зелёной и выдала на неё свою квитанцию, —
+      // законченная работа, кто бы ни закрыл сессию следом, и отказать ей значило бы выбросить
+      // подтверждённое и оплатить его заново. Но у ВЫВЕДЕННОЙ квитанции (`unverified`)
+      // подтверждения нет вовсе: она посчитана из числа коммитов на ветке — там, где в дереве
+      // нет рецептов или все расхождения исторические. У прогона, оборванного на лимите
+      // сессии, это число легко оказывается чужим (база отсчёта устарела, и в счёт попадают
+      // коммиты вершины), и тогда «сделано» удостоверяет ровно ничего.
+      //
+      // ЗАМЕР 30.08.2026: две задачи подряд, обе оборваны поставщиком (`429: You've hit your
+      // session limit`), обе ушли в `done` с выведенной квитанцией — и с доски исчезли совсем,
+      // потому что «сделано» не ждёт приёмки так, как ждёт её красная строка. Ложное «сделано»
+      // без квитанции запрещено хребтом доверия: такая попытка теперь называется обрывом и
+      // возвращается в очередь (`provider_error` — конец перевыдаваемый).
+      const unprovenAbort = Boolean(providerAbort) && Boolean(receipt && receipt.ref && receipt.ref.unverified === true)
+      if (!exit.spawnError && !unprovenAbort && receipt && receipt.verdict === 'green' && receipt.ref && noteWritten && lessonOk) {
         await completeTask(deps, task, { receiptRef: receipt.ref, branch, diffStat: rv.diffStat, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
         result.completed = task.id
       } else {
@@ -5612,6 +5635,49 @@ async function failTask(deps, task, { reason, failureDetail, receiptRef, branch,
       })
     } catch (err) {
       writeLog(deps, { type: 'ledger-error', taskId: task.id, reason, error: String((err && err.message) || err) })
+    }
+  }
+  // ═══ СРЫВ ПОСТАВЩИКА ПОПАДАЕТ В ЖУРНАЛ В МОМЕНТ СОБЫТИЯ, А НЕ КОГДА ДОЙДЁТ МЕТЛА ═══════
+  //
+  // Метла (шаг 1c тика) спрашивает очередь, какие строки она САМА называет сорвавшимися, и
+  // видит все концы разом — но только те, что уже закрыты. Обрыв поставщика закрытым концом не
+  // является: он перевыдаваемый, строка возвращается в очередь ожидающей (`retry` → `queued` в
+  // словаре очереди), и метле она не видна ВООБЩЕ, пока не кончатся перевыдачи. Замерено
+  // 30.08.2026: строки о двух обрывах не было в журнале и через сорок минут после события, а
+  // наблюдающий всё это время не знал, что работа умерла.
+  //
+  // ПОЧЕМУ ТОЛЬКО ЭТА ПРИЧИНА, А НЕ ВСЯКИЙ ПРОВАЛ. Дверь пишет о том, чего метла не увидит
+  // вовремя, и ни о чём больше: журнал, собираемый и дверью, и метлой по одному и тому же
+  // поводу, — это две строки об одном срыве. Ключ у обеих один (`bugKey`: задача, подход,
+  // причина), так что метла, дошедшая до той же строки позже, узнаёт её и пропускает.
+  //
+  // FAIL-OPEN ЦЕЛИКОМ, как весь журнал: наблюдение за работой не бывает условием работы, и
+  // реестр без этой двери (или отказавший на записи) стоит человеку строки, а не задачи.
+  if (reason === 'provider_error' && ledger && typeof ledger.appendBug === 'function') {
+    try {
+      // СЛОВО МАШИНЫ БЕРЁТСЯ ОТТУДА ЖЕ, ОТКУДА ЕГО БЕРЁТ МЕТЛА — из реестра попыток, уже
+      // дописанного строкой выше. Так строка двери и строка метлы об одном срыве совпадают
+      // до поля, а не оказываются двумя правдами с разными числами.
+      const led = typeof ledger.readAttempts === 'function' ? causeOf(ledger.readAttempts(task.id) || []) : {}
+      ledger.appendBug({
+        taskId: task.id,
+        project: task.project,
+        title: task.title,
+        attempt: task.attempt,
+        // Слово ОЧЕРЕДИ и слово РЕЕСТРА, как и требует строка журнала: у обрыва они совпадают,
+        // потому что закрывает строку та же дверь, что записала попытку.
+        reason,
+        cause: led.cause ?? reason,
+        causeAttempt: led.causeAttempt ?? task.attempt,
+        attemptsRecorded: led.attemptsRecorded,
+        workerId: (route && route.workerId) || undefined,
+        endedAt: new Date(now).toISOString(),
+        // КТО ДОПИСАЛ СТРОКУ — сказано полем, а не выводится из её формы: `sweep` — проход по
+        // очереди, `live` — эта дверь, в момент события.
+        source: 'live',
+      })
+    } catch (err) {
+      writeLog(deps, { type: 'bug-journal-error', taskId: task.id, error: String((err && err.message) || err) })
     }
   }
   // A REFUSED ATTEMPT OWES THE SAME RECORD A FINISHED ONE DOES — it is the try somebody will
