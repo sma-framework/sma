@@ -157,6 +157,7 @@ export const COMMAND_TOPICS = {
   // v3.6 — the off-ramp and the onboarding preview
   deleteme: 'deleteme',
   'memory-preview': 'memory-preview',
+  'start-map': 'start-map', // the value map /sma-start prints before its first question
 
   // v5 — the decision corpus, the replay exam and the acceptance-rule suggester
   decisions: 'decisions',

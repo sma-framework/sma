@@ -127,7 +127,7 @@ Open a Claude Code session in your project and type:
 
 | Type this | What happens |
 |---|---|
-| `/sma-start` | A guided conversation, run once. It asks what your project is and how you ship it, writes the answers down, and starts your notes file. |
+| `/sma-start` | Run once. It opens with a map of what this system will do in YOUR repository, counted from your own files and history — then asks what your project is and how you ship it, writes the answers down, and starts your notes file. |
 | `/sma-help` | The list of commands, one line each. |
 | `/sma-progress` | "Where are we?" — what is done, what comes next, and an offer to run it. |
 
@@ -239,7 +239,7 @@ The `/sma-*` workflow family (run inside a Claude Code session):
 
 | Command | What it does |
 |---|---|
-| `/sma-start` | First-run onboarding: explains the system, seeds the memory corpus and the infra profile |
+| `/sma-start` | First-run onboarding: maps what SMA will do in this repo BEFORE its first question, then explains the system, seeds the memory corpus and the infra profile |
 | `/sma-discuss-phase` | Gather phase context through adaptive questioning before planning |
 | `/sma-plan-phase` | Create a detailed phase plan with a verification loop |
 | `/sma-design-phase` | Draw the phase and write the contract beside the drawing; execution waits for your confirmation |
@@ -256,7 +256,7 @@ The `/sma-*` workflow family (run inside a Claude Code session):
 | `/sma-deleteme` | Remove SMA in one action; your memory corpus stays |
 | `/sma-update` | Check installed vs available versions and update via the standard installer; everything local stays |
 
-Underneath runs the coordination + accountability CLI — 96 verbs, each with an in-product explainer. Call it from your project root, the way the hooks do:
+Underneath runs the coordination + accountability CLI — 97 verbs, each with an in-product explainer. Call it from your project root, the way the hooks do:
 
 ```bash
 node scripts/sma/cli.mjs status            # who is working on what, right now
