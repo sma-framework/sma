@@ -20,7 +20,7 @@ import { mkdtempSync, cpSync, rmSync, appendFileSync, writeFileSync, readFileSyn
 import { tmpdir } from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
 
-import { LINT_CHECKS, runLint, computeTreeHash, plansHouseCalibrationDir } from '../lib/lint.mjs'
+import { LINT_CHECKS, runLint, computeTreeHash, plansHouseCalibrationDir, plansHouseExecDir } from '../lib/lint.mjs'
 import { parseNote, serializeNote } from '../lib/frontmatter.mjs'
 // LINK-PROSE обязано различать форму ТЕМ ЖЕ разбором, что сборщик описи — паритет
 // утверждается прогоном обоих на одном плане, а не чтением кода.
@@ -33,6 +33,9 @@ import { GRACE_HORIZON } from '../lib/schema-v2.mjs'
 // are written through the journal's OWN appender so the shape can never drift
 // from what the pipeline actually writes.
 import { appendEvent } from '../lib/journal.mjs'
+// Точка отсчёта неизменности — первая попытка исполнения; след пишет САМ ритуал
+// исполнения, поэтому фикстуры кладутся его же аппендером, а не руками.
+import { append as appendExec } from '../lib/exec-journal.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIX = join(__dirname, 'fixtures', 'lint')
@@ -399,26 +402,32 @@ describe('PRED lint family', () => {
     }
   })
 
-  it('Test 2 (PRED-POSTEDIT): block edited after first commit → CRITICAL; unrelated frontmatter edit with UNCHANGED block → no finding', () => {
+  it('Test 2 (PRED-POSTEDIT): block edited after the first attempt → CRITICAL; unrelated frontmatter edit with UNCHANGED block → no finding', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-pred-postedit-'))
+    const exec = mkdtempSync(join(tmpdir(), 'sma-pred-postedit-exec-'))
     try {
       execGit(['init', '-q'], { cwd: tmp })
       const edited = join(tmp, '9.1-01-PLAN.md')
       const untouched = join(tmp, '9.1-02-PLAN.md')
       writeFileSync(edited, planWithPredictions(GOOD_ENTRY))
       writeFileSync(untouched, planWithPredictions(GOOD_ENTRY))
-      gitCommit(tmp, 'first commit locks the predictions')
-      // HARKing: raise the threshold AFTER the plan's first commit.
+      gitCommit(tmp, 'first commit')
+      // The lock closes with execution, not with the commit: both plans have been attempted.
+      const attempt = new Date().toISOString()
+      execAttemptAt(exec, '9.1', '01', attempt)
+      execAttemptAt(exec, '9.1', '02', attempt)
+      // HARKing: raise the threshold AFTER the plan's first execution attempt.
       writeFileSync(edited, planWithPredictions(GOOD_ENTRY.replace('threshold: 0', 'threshold: 5')))
       // Unrelated frontmatter edit; the predictions block itself is byte-unchanged.
       writeFileSync(untouched, planWithPredictions(GOOD_ENTRY).replace('plan: 01', 'plan: 02'))
-      const res = runPredLint(tmp, { execGit })
+      const res = runPredLint(tmp, { execGit, execDir: exec })
       const f = findingsOf(res, 'PRED-POSTEDIT')
       expect(f.some((x) => x.tier === 'critical' && x.file.includes('9.1-01-PLAN.md'))).toBe(true)
       // The no-false-positive case (Pitfall 3): unrelated edit is NOT flagged.
       expect(f.some((x) => x.file.includes('9.1-02-PLAN.md'))).toBe(false)
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(exec, { recursive: true, force: true, maxRetries: 3 })
     }
   })
 
@@ -502,16 +511,19 @@ describe('CONS lint family', () => {
     }
   })
 
-  it('Test 2 (CONS-POSTEDIT): block edited after first commit → CRITICAL; no execGit → info degrade', () => {
+  it('Test 2 (CONS-POSTEDIT): block edited after the first attempt → CRITICAL; no execGit → info degrade', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-cons-postedit-'))
+    const exec = mkdtempSync(join(tmpdir(), 'sma-cons-postedit-exec-'))
     try {
       execGit(['init', '-q'], { cwd: tmp })
       const edited = join(tmp, '9.2-08-PLAN.md')
       writeFileSync(edited, planWith({ consequences: CONS_ENTRY }))
-      gitCommit(tmp, 'first commit locks the consequences')
-      // Renegotiate the law AFTER the first commit.
+      gitCommit(tmp, 'first commit')
+      // The bet is placed the moment execution starts — that is what locks the law.
+      execAttemptAt(exec, '9.2', '08', new Date().toISOString())
+      // Renegotiate the law AFTER the first attempt.
       writeFileSync(edited, planWith({ consequences: CONS_ENTRY.replace('founder disposition recorded', 'anyone can clear it') }))
-      const res = runPredLint(tmp, { execGit })
+      const res = runPredLint(tmp, { execGit, execDir: exec })
       const f = findingsOf(res, 'CONS-POSTEDIT')
       expect(f.some((x) => x.tier === 'critical' && x.file.includes('9.2-08-PLAN.md'))).toBe(true)
 
@@ -522,6 +534,7 @@ describe('CONS lint family', () => {
       expect(info.every((x) => x.tier === 'info')).toBe(true)
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(exec, { recursive: true, force: true, maxRetries: 3 })
     }
   })
 
@@ -1643,13 +1656,15 @@ describe('lint cost + progress + budget', () => {
 
   it('Test 2: a plan edited and RE-COMMITTED still fails both POSTEDIT checks (the batch never swallows a verdict)', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'sma-lint-recommit-'))
+    const exec = mkdtempSync(join(tmpdir(), 'sma-lint-recommit-exec-'))
     try {
       execGit(['init', '-q'], { cwd: tmp })
       const p = join(tmp, '9.2-01-PLAN.md')
       writeFileSync(p, planWith({ predictions: GOOD_ENTRY, consequences: CONS_ENTRY }))
-      gitCommit(tmp, 'first commit locks both blocks')
+      gitCommitAt(tmp, 'first commit', '2026-08-28T10:00:00+00:00')
+      execAttemptAt(exec, '9.2', '01', '2026-08-28T11:00:00.000Z')
       // Both laws renegotiated after the fact — and the edit is COMMITTED, so the
-      // worktree is clean against HEAD. Only the first commit can say it moved.
+      // worktree is clean against HEAD. Only the pre-attempt commit can say it moved.
       writeFileSync(
         p,
         planWith({
@@ -1657,15 +1672,16 @@ describe('lint cost + progress + budget', () => {
           consequences: CONS_ENTRY.replace('founder disposition recorded', 'anyone can clear it'),
         }),
       )
-      gitCommit(tmp, 'HARKing, committed')
+      gitCommitAt(tmp, 'HARKing, committed', '2026-08-28T12:00:00+00:00')
       const git = countingGit()
-      const res = runPredLint(tmp, { execGit: git.run })
+      const res = runPredLint(tmp, { execGit: git.run, execDir: exec })
       expect(findingsOf(res, 'PRED-POSTEDIT').some((x) => x.tier === 'critical')).toBe(true)
       expect(findingsOf(res, 'CONS-POSTEDIT').some((x) => x.tier === 'critical')).toBe(true)
       // Exactly one `show` — fetched once, answered twice.
       expect(git.calls.filter((a) => a[0] === 'show')).toHaveLength(1)
     } finally {
       rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(exec, { recursive: true, force: true, maxRetries: 3 })
     }
   })
 
@@ -1974,6 +1990,137 @@ describe('plansHouseCalibrationDir — вердикты дома судят ег
   it('без plansDir резолвер молчит — остаётся леджер вызывающего', () => {
     expect(plansHouseCalibrationDir(undefined, 'FALLBACK')).toBe('FALLBACK')
     expect(plansHouseCalibrationDir('', 'FALLBACK')).toBe('FALLBACK')
+  })
+})
+
+// ── POSTEDIT: замок щёлкает на ПЕРВОЙ ПОПЫТКЕ ИСПОЛНЕНИЯ, а не на первом коммите ──
+//
+// Пред-регистрация защищает от подгонки предсказаний ПОД РЕЗУЛЬТАТ, а результат
+// становится возможным только с началом исполнения. Ритуал планирования по
+// построению идёт «планировщик пишет → чекер проверяет → планировщик правит», и
+// правка чекера ЗАКОННО трогает блок предсказаний — замер 31.08.2026: шесть
+// критикалов на каждой свежеспланированной фазе за работу, которую сам ритуал и
+// предписывает. Точка отсчёта — след первой попытки в exec-журнале плана.
+
+/** Первая попытка исполнения на записи — строка, которую пишет сам ритуал исполнения. */
+function execAttemptAt(execDir: string, phase: string, plan: string, iso: string) {
+  appendExec({ event: 'task_start', wave: 1, task: 1 }, { phase, plan, execDir, now: iso })
+}
+
+/** План с обоими пред-регистрируемыми блоками — оба судятся одним замком. */
+function planBothBlocks(threshold: string, until: string): string {
+  return planWith({
+    predictions: GOOD_ENTRY.replace('threshold: 0', `threshold: ${threshold}`),
+    consequences: CONS_ENTRY.replace('founder disposition recorded', until),
+  })
+}
+
+describe('POSTEDIT — неизменность считается от первой попытки исполнения', () => {
+  it('правка блоков ДО первой попытки (правка чекера) не флагуется — ни PRED, ни CONS', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-postedit-preattempt-'))
+    const exec = mkdtempSync(join(tmpdir(), 'sma-postedit-exec-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      const p = join(tmp, '21-01-PLAN.md')
+      writeFileSync(p, planBothBlocks('0', 'founder disposition recorded'))
+      gitCommitAt(tmp, 'create phase plan', '2026-08-28T10:00:00+00:00')
+      // Ровно живой случай: чекер нашёл неизмеримую метрику, планировщик правит.
+      writeFileSync(p, planBothBlocks('5', 'anyone can clear it'))
+      gitCommitAt(tmp, 'revise plans per checker', '2026-08-28T12:00:00+00:00')
+      // Исполнение началось ПОСЛЕ правки — план до этого момента был черновиком.
+      execAttemptAt(exec, '21', '01', '2026-08-28T14:00:00.000Z')
+      const res = runPredLint(tmp, { execGit, execDir: exec })
+      expect(findingsOf(res, 'PRED-POSTEDIT').filter((x) => x.tier !== 'info')).toHaveLength(0)
+      expect(findingsOf(res, 'CONS-POSTEDIT').filter((x) => x.tier !== 'info')).toHaveLength(0)
+      // И то же самое для плана, который вообще ещё не исполняли: попытки нет — замок не щёлкнул.
+      const none = runPredLint(tmp, { execGit, execDir: join(exec, 'empty') })
+      expect(findingsOf(none, 'PRED-POSTEDIT').filter((x) => x.tier !== 'info')).toHaveLength(0)
+      expect(findingsOf(none, 'CONS-POSTEDIT').filter((x) => x.tier !== 'info')).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(exec, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('правка блоков ПОСЛЕ первой попытки — критикал на обоих, без послаблений', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-postedit-postattempt-'))
+    const exec = mkdtempSync(join(tmpdir(), 'sma-postedit-exec2-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      const p = join(tmp, '21-01-PLAN.md')
+      writeFileSync(p, planBothBlocks('0', 'founder disposition recorded'))
+      gitCommitAt(tmp, 'create phase plan', '2026-08-28T10:00:00+00:00')
+      execAttemptAt(exec, '21', '01', '2026-08-28T12:00:00.000Z')
+      // Результат уже возможен — теперь правка блока это подгонка под него.
+      writeFileSync(p, planBothBlocks('5', 'anyone can clear it'))
+      gitCommitAt(tmp, 'HARKing after the first attempt', '2026-08-28T14:00:00+00:00')
+      const res = runPredLint(tmp, { execGit, execDir: exec })
+      const pred = findingsOf(res, 'PRED-POSTEDIT')
+      expect(pred.some((x) => x.tier === 'critical' && x.file.includes('21-01-PLAN.md'))).toBe(true)
+      expect(pred.some((x) => x.message.includes('first execution attempt'))).toBe(true)
+      expect(findingsOf(res, 'CONS-POSTEDIT').some((x) => x.tier === 'critical')).toBe(true)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+      rmSync(exec, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('ЗАКРЫТЫЙ план без exec-журнала: якорь — первый коммит (сводка доказывает, что план исполнялся)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sma-postedit-closed-'))
+    try {
+      execGit(['init', '-q'], { cwd: tmp })
+      const p = join(tmp, 'beta-01-PLAN.md')
+      writeFileSync(p, planBothBlocks('0', 'founder disposition recorded'))
+      gitCommitAt(tmp, 'first commit', '2026-08-26T10:00:00+00:00')
+      writeFileSync(p, planBothBlocks('5', 'anyone can clear it'))
+      writeFileSync(join(tmp, 'beta-01-SUMMARY.md'), SUMMARY_FIXTURE)
+      gitCommitAt(tmp, 'edited and closed', '2026-08-27T10:00:00+00:00')
+      const res = runPredLint(tmp, { execGit })
+      const pred = findingsOf(res, 'PRED-POSTEDIT')
+      expect(pred.some((x) => x.tier === 'critical')).toBe(true)
+      expect(pred.some((x) => x.message.includes('first commit'))).toBe(true)
+      expect(findingsOf(res, 'CONS-POSTEDIT').some((x) => x.tier === 'critical')).toBe(true)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('провод: журналы дома, чьи планы линтуются, — вердикт CLI, а не только вычисление', () => {
+    const house = mkdtempSync(join(tmpdir(), 'sma-postedit-house-'))
+    try {
+      const phases = join(house, '.planning', 'phases')
+      mkdirSync(phases, { recursive: true })
+      execGit(['init', '-q'], { cwd: house })
+      const p = join(phases, '21-01-PLAN.md')
+      writeFileSync(p, planBothBlocks('0', 'founder disposition recorded'))
+      gitCommitAt(house, 'create phase plan', '2026-08-28T10:00:00+00:00')
+      // Попытка лежит в .sma/exec ДОМА дерева планов, а не вызывающего верба.
+      execAttemptAt(join(house, '.sma', 'exec'), '21', '01', '2026-08-28T12:00:00.000Z')
+      writeFileSync(p, planBothBlocks('5', 'founder disposition recorded'))
+      const cli = join(__dirname, '..', 'cli.mjs')
+      const res = spawnSync(process.execPath, [cli, 'lint', '--plans', phases, '--corpus', join(FIX, 'clean'), '--json'], {
+        encoding: 'utf8',
+      })
+      const report = JSON.parse(res.stdout) as { findings: Array<{ checkId: string; tier: string }> }
+      // Критикал возможен ТОЛЬКО если верб нашёл журнал дома: без него план открыт
+      // и без единой попытки — то есть свободно правится.
+      expect(report.findings.some((f) => f.checkId === 'PRED-POSTEDIT' && f.tier === 'critical')).toBe(true)
+    } finally {
+      rmSync(house, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+
+  it('plansHouseExecDir: журналы дома дерева планов; без них — откат на журналы вызывающего', () => {
+    const house = mkdtempSync(join(tmpdir(), 'sma-house-exec-'))
+    try {
+      mkdirSync(join(house, '.planning', 'phases'), { recursive: true })
+      expect(plansHouseExecDir(join(house, '.planning', 'phases'), 'FALLBACK')).toBe('FALLBACK')
+      mkdirSync(join(house, '.sma', 'exec'), { recursive: true })
+      expect(plansHouseExecDir(join(house, '.planning', 'phases'), 'FALLBACK')).toBe(join(house, '.sma', 'exec'))
+      expect(plansHouseExecDir(undefined, 'FALLBACK')).toBe('FALLBACK')
+    } finally {
+      rmSync(house, { recursive: true, force: true, maxRetries: 3 })
+    }
   })
 })
 
