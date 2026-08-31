@@ -71,6 +71,41 @@ export const SEVEN_DAY_LIMIT = 'seven_day'
 const FIVE_HOUR_KEYS = [FIVE_HOUR_LIMIT, 'five_hours', 'fiveHour']
 const WEEK_KEYS = [SEVEN_DAY_LIMIT, 'week', 'weekly', 'seven_days']
 
+/** The two windows this module can name, each with every spelling it answers to. */
+const WINDOW_KEYS = Object.freeze({ fiveHour: FIVE_HOUR_KEYS, week: WEEK_KEYS })
+
+/**
+ * canonicalWindow(limitType) → `'fiveHour'`, `'week'`, or null for a name we cannot place.
+ *
+ * THE ONE PLACE THAT DECIDES WHICH WINDOWS EXIST, and the reason it is exported. There used to
+ * be two answers to that question and they disagreed: the screen drew only the names on the two
+ * lists above, while the close that stops a whole account fired on ANY name the provider put on
+ * the stream. On 31.08.2026 the provider refused `seven_day_overage_included` — the weekly
+ * window with the paid overage folded in, on an account whose paid channel is off and whose
+ * overage ceiling is zero — and that name is on neither list. Nothing about it could reach a
+ * screen, and it shut the subscription for five days with thirty tasks queued; half an hour
+ * later the window that actually governs answered `allowed_warning` at 74 %.
+ *
+ * So a refusal now has to name a window we can SHOW before it is allowed to stop anything. A
+ * window we cannot draw has no right to stop the conveyor: an operator who cannot see why the
+ * work stopped cannot decide whether it should have.
+ *
+ * The match is exact bar the trim — deliberately the same comparison `factOf` makes when it
+ * looks a reading up, so «can this be closed on» and «can this be shown» can never again be
+ * two different questions.
+ *
+ * @param {string|null|undefined} limitType
+ * @returns {'fiveHour'|'week'|null}
+ */
+export function canonicalWindow(limitType) {
+  const name = typeof limitType === 'string' ? limitType.trim() : ''
+  if (!name) return null
+  for (const [canonical, keys] of Object.entries(WINDOW_KEYS)) {
+    if (keys.includes(name)) return canonical
+  }
+  return null
+}
+
 /** Nothing has been heard about this window. NOT «empty» — unheard. */
 const UNKNOWN = Object.freeze({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
 
@@ -245,11 +280,13 @@ export function windowState({ account, clock = Date.now, dataDir, fsImpl } = {})
     ? readJsonSafe(join(dataDir, 'windows', `${accountName}.json`), { readFn: fsImpl?.readFileSync })
     : null
 
-  const state = {
-    accountName,
+  // The account's OWN readings, kept apart from what the terminal may lend below: only its own
+  // word about a window may lift a close that was written about that window.
+  const own = {
     fiveHour: factOf(rec, FIVE_HOUR_KEYS, clock),
     week: factOf(rec, WEEK_KEYS, clock),
   }
+  const state = { accountName, ...own }
 
   // The terminal snapshot fills what this account has not heard about — but only when it is a
   // reading of THIS account's subscription, and only into a window that is otherwise silent.
@@ -261,13 +298,71 @@ export function windowState({ account, clock = Date.now, dataDir, fsImpl } = {})
     }
   }
 
-  // Ground-truth close: a persisted refusal whose reset time is still in the future overrides.
-  if (rec && rec.resetAt != null) {
-    const resetMs = toMs(rec.resetAt)
-    if (Number.isFinite(resetMs) && resetMs > clock()) state.closedUntil = rec.resetAt
+  const closed = standingClose(rec, own, clock)
+  if (closed) {
+    state.closedUntil = rec.resetAt
+    // A CLOSE IS SAID ON THE ROW OF THE WINDOW IT CLOSED. It used to be said nowhere: the close
+    // sat above both windows with no window on it, so a worker could read «ждёт окно» beside two
+    // rows both saying the subscription was taking work, and the card pinned the words to the
+    // five-hour line whatever had really been refused. Now the window that was shut carries the
+    // refusal itself, and every screen names it without being told twice.
+    state[closed.window] = exhaustedBy(state[closed.window], closed.resetMs)
   }
 
   return state
+}
+
+/**
+ * The persisted refusal that is still standing over this account, or null.
+ *
+ * THREE THINGS MAKE A CLOSE STAND, and the account is open unless all three hold.
+ *
+ *   1. IT IS STILL IN ITS OWN WINDOW. Past the reset it carries, the window it described has
+ *      turned over and the refusal is about a window that no longer exists.
+ *   2. IT NAMES A WINDOW WE CAN SHOW. A close written on a name `canonicalWindow` cannot place
+ *      is not honoured — nor is one that names no window at all, which is what the code that
+ *      closed on any name at all left behind. An account stopped for a reason no screen can
+ *      state is an account nobody can decide about; see canonicalWindow.
+ *   3. THE PROVIDER HAS NOT SINCE SAID OTHERWISE. A reading of THAT SAME window, taken after
+ *      the close and saying the window is allowing work, lifts it. The refusal and the later
+ *      permission are both the vendor's own word about one window, and the later one is the
+ *      current one — a stale refusal outliving it is how a healthy account stays shut. Only the
+ *      account's own reading counts here: a borrowed terminal snapshot fills silence, it does
+ *      not overrule a refusal this account was handed.
+ */
+function standingClose(rec, own, clock) {
+  if (!rec || rec.resetAt == null) return null
+  const resetMs = toMs(rec.resetAt)
+  if (!Number.isFinite(resetMs) || resetMs <= clock()) return null
+
+  const window = canonicalWindow(rec.closedWindow)
+  if (!window) return null
+
+  const fact = own[window]
+  const seenMs = fact && fact.observedAt ? Date.parse(fact.observedAt) : NaN
+  const closedMs = typeof rec.closedAt === 'string' ? Date.parse(rec.closedAt) : NaN
+  const lifted = fact && fact.status === 'open' && Number.isFinite(seenMs) && Number.isFinite(closedMs) && seenMs > closedMs
+  return lifted ? null : { window, resetMs }
+}
+
+/**
+ * A window fact restated as exhausted by a close that names it. A fact the account already
+ * carries keeps everything it knows — its own reset, its percentage — and only changes the word
+ * for its health; a window nothing was heard about gains the close's reset, because «исчерпано»
+ * with no hour beside it is half an answer.
+ *
+ * `source` goes, and only `source`: a borrowed terminal reading may fill a silence, but the
+ * refusal now written over it is this account's own, and a fact must not be labelled as somebody
+ * else's word about the very thing that came from ours.
+ */
+function exhaustedBy(fact, resetMs) {
+  const known = fact && fact.status !== 'unknown'
+  const { source: _borrowed, ...rest } = fact || UNKNOWN
+  return {
+    ...rest,
+    status: 'exhausted',
+    resetsAt: known && fact.resetsAt != null ? fact.resetsAt : resetMs,
+  }
 }
 
 /**
@@ -335,14 +430,22 @@ function lastSeenAt(rec) {
 }
 
 /**
- * markWindowClosed({dataDir, accountName, resetAt, clock, fsImpl}) — persist a ground-truth
- * window close (a refused window carries the reset time). Written atomically under
+ * markWindowClosed({dataDir, accountName, resetAt, limitType, clock, fsImpl}) — persist a
+ * ground-truth window close (a refused window carries the reset time). Written atomically under
  * `<dataDir>/windows/<account>.json` so it survives a daemon restart. Returns the record.
  *
- * @param {{dataDir:string, accountName:string, resetAt:(number|string), clock?:()=>number, fsImpl?:object}} opts
- * @returns {{accountName:string, resetAt:(number|string), closedAt:string}}
+ * A CLOSE NAMES THE WINDOW IT CLOSED, OR IT IS NOT WRITTEN. `limitType` must be a window
+ * `canonicalWindow` can place; anything else returns null and changes nothing on disk. The
+ * refusal is still FILED as a reading by markWindowObserved either way — what is refused is the
+ * right to stop the account on a name no screen can show. The caller logs that refusal; see
+ * canonicalWindow for the five days of stopped conveyor that bought this rule.
+ *
+ * @param {{dataDir:string, accountName:string, resetAt:(number|string), limitType:string, clock?:()=>number, fsImpl?:object}} opts
+ * @returns {{accountName:string, resetAt:(number|string), closedWindow:string, closedAt:string}|null}
  */
-export function markWindowClosed({ dataDir, accountName, resetAt, clock = Date.now, fsImpl } = {}) {
+export function markWindowClosed({ dataDir, accountName, resetAt, limitType, clock = Date.now, fsImpl } = {}) {
+  const closedWindow = canonicalWindow(limitType)
+  if (!closedWindow) return null
   const path = join(dataDir, 'windows', `${accountName}.json`)
   // MERGE, for the same reason markWindowObserved does: this file holds the window READINGS as
   // well as the close, and a whole-file write here would delete them — leaving the screen with
@@ -353,6 +456,7 @@ export function markWindowClosed({ dataDir, accountName, resetAt, clock = Date.n
     ...previous,
     accountName,
     resetAt,
+    closedWindow,
     closedAt: new Date(clock()).toISOString(),
   }
   atomicWriteJson(path, record, {
