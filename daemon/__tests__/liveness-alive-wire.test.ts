@@ -26,6 +26,11 @@
  *                            ребёнок ДЕЙСТВИТЕЛЬНО остановлен — молчание не становится вечным;
  *   (4) ручка НЕИЗВЕСТНА (чужая машина, переживший рестарт демон) → `liveness_killed`: слово,
  *                            которым этот случай назывался и раньше, за ним и остаётся.
+ *
+ * И ДВА СЛУЧАЯ, ДОБАВЛЕННЫЕ ПОСЛЕ 31.08, — оба про то, как живой процесс переживал вердикт:
+ *   (5) ЖИВ, но ПРОБА СЛОМАНА (хелпер не запустился) → приговора нет вовсе, процесс не тронут;
+ *   (6) ЖИВ и ОСТАНОВКА ЕГО НЕ УБИЛА → строка не закрывается, место остаётся занятым — учёт и
+ *                            машина не расходятся.
  */
 
 import { describe, it, expect, afterAll } from 'vitest'
@@ -33,8 +38,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { livenessSweep, MAX_ATTEMPT_LIFETIME_MS } from '../src/queue/liveness.mjs'
+import { livenessSweep, MAX_ATTEMPT_LIFETIME_MS, PROBE_BROKEN } from '../src/queue/liveness.mjs'
 import { spawnWorker } from '../src/runner/spawn.mjs'
+import { createInFlight } from '../src/queue/in-flight.mjs'
 import { createTurnRegistry } from '../src/front/chat.mjs'
 import { steeredSpawn } from '../src/loop.mjs'
 import { FAIL_REASONS, REASON_LABELS } from '../src/queue/adapter.mjs'
@@ -277,6 +283,108 @@ describe('сторож живости не убивает честное мол�
 
     expect(res.requeued).toBe(1)
     expect(adapter._failCalls).toEqual([{ id: 'BL-orphan', reason: 'liveness_killed' }])
+  })
+
+  it('(5) СЛОМАННАЯ ПРОБА при ЖИВОМ процессе — попытка не объявляется мёртвой, и процесс остаётся жив', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ id: 'BL-probe' }))
+
+    // Настоящий живой ребёнок — и НАСТОЯЩИЙ реестр, в котором пробник БРОСАЕТ. Ровно то, что
+    // случилось 31.08: под хелпером исчез склад модулей, проба перестала состояться, а процесс
+    // работал. Ручка остановки при этом рабочая: сторож МОГ БЫ убить — и не должен.
+    const registry = createTurnRegistry()
+    const child = spawnWorker({
+      bin: process.execPath,
+      args: ['-e', 'setTimeout(() => {}, 60000)'],
+      cwd: mkDir(),
+      env: { ...process.env },
+    })
+    kids.push(child)
+    registry.register(
+      'BL-probe',
+      () => child.kill(),
+      () => {
+        throw new Error('пробник не запустился: нет модулей склада')
+      },
+    )
+    // ПЕРВАЯ ПОЛОВИНА ПРОВОДА: реестр называет поломку пробы своим словом, а не «не знаю».
+    expect(registry.alive('BL-probe'), 'сломанная проба снова выдаёт себя за «сказать нечего»').toBe(PROBE_BROKEN)
+
+    c.advance(500000) // молчит дольше срока аренды
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      attemptTurns: registry,
+      sleep: async () => {},
+    })
+
+    // ВТОРАЯ ПОЛОВИНА: приговора нет вовсе — ни перевыдачи, ни строки попытки.
+    expect(res.probeBroken).toBe(1)
+    expect(res.requeued, 'живую попытку снова похоронили по часам, потому что сломался пробник').toBe(0)
+    expect(adapter._failCalls).toEqual([])
+    expect(ledger.readAttempts('BL-probe')).toHaveLength(0)
+    // И ПРОЦЕСС ЖИВ: сторож его не тронул. Проверяется у ОС через ту же ручку, что и везде.
+    expect(child.alive(), 'процесс убит по несостоявшейся пробе — это и есть сожжённое окно').toBe(true)
+    child.kill()
+  })
+
+  it('(6) остановка НЕ убила — строка остаётся своей, место и доска не расходятся', async () => {
+    const c = mkClock(1000)
+    const ledger = makeFakeLedger()
+    const adapter = makeFakeAdapter({ clock: c.clock, ledger })
+    adapter._seed(claimed({ id: 'BL-stubborn' }))
+
+    // Дом мест — НАСТОЯЩИЙ, и место занято этой самой задачей: «занято 1 из 1».
+    const house = createInFlight()
+    const seat = house.reserve(1)
+    house.name(seat, 'BL-stubborn', 'max-1')
+
+    // Живой ребёнок, настоящая проба — и ОСТАНОВКА, КОТОРАЯ НЕ УБИВАЕТ. Ровно та форма, что
+    // видел человек: дверь ответила «killed», а процесс на машине остался.
+    const registry = createTurnRegistry()
+    const child = spawnWorker({
+      bin: process.execPath,
+      args: ['-e', 'setTimeout(() => {}, 60000)'],
+      cwd: mkDir(),
+      env: { ...process.env },
+    })
+    kids.push(child)
+    registry.register(
+      'BL-stubborn',
+      () => {
+        /* остановка, которая не доходит до процесса */
+      },
+      () => child.alive() === true,
+    )
+
+    c.advance(MAX_ATTEMPT_LIFETIME_MS + 60000) // за потолком: приговор законен, гашение — нет
+
+    const res = await livenessSweep({
+      adapter,
+      ledger,
+      clock: c.clock,
+      expireMs: 120000,
+      attemptTurns: registry,
+      sleep: async () => {},
+    })
+
+    expect(res.killUnconfirmed).toBe(1)
+    expect(res.requeued).toBe(0)
+    expect(adapter._failCalls).toEqual([])
+    expect(child.alive()).toBe(true) // процесс правда пережил остановку — иначе дело не про это
+    // МЕСТО И СТРОКА ГОВОРЯТ ОДНО И ТО ЖЕ. Освобождение места — дело конца процесса (тик отдаёт
+    // его в своём `finally`), и вердикт сторожа его не трогает: разошлись бы они ровно тогда,
+    // когда строка закрыта, а процесс жив, — то есть в единственном случае, где это дорого.
+    const [row] = await adapter.list()
+    expect(row.status).toBe('claimed')
+    expect(house.size(), 'место отдано по вердикту, а не по смерти процесса').toBe(1)
+    expect(house.workers().has('max-1')).toBe(true)
+    child.kill()
   })
 
   it('потолок жизни попытки — ОДНО число в ОДНОМ месте, и все три слова признаны словарём', () => {
