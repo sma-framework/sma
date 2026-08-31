@@ -1021,6 +1021,186 @@ export function readHistory({ dir, conversationId, project, limit = 50, fsImpl }
   return out.slice(Math.max(0, out.length - limit))
 }
 
+// ── книга — это НЕ одна лента: она разложена по разговорам ─────────────────────
+//
+// ═══════ ПОЧЕМУ У РАЗГОВОРА ПОЯВИЛСЯ СПИСОК ═══════
+//
+// Слово владельца 31.08: «почему разговор когда открываю у него нет истории? через раз
+// появляется, может нам разбить разговор на разные чаты?». Замер объяснил «через раз»: в
+// книге лежало 50 реплик, разложенных по ПЯТНАДЦАТИ беседам, — окно заводило новую почти при
+// каждом открытии, а показывало ходы вперемешку, одной сплошной лентой. Выбрать прошлую
+// беседу было нечем: списка не существовало, и всё, что не попало в последнюю нить, было
+// написано в никуда.
+//
+// Список не хранится второй правдой. Он СОБИРАЕТСЯ из той же книги при каждом чтении —
+// сгруппированные по `conversationId` ходы дают беседе всё, что о ней можно сказать честно:
+// когда в ней говорили в последний раз, сколько в ней ходов и какими словами она началась.
+// Второй файл появился ровно для одного факта, которого в книге нет и быть не может, — ИМЕНИ,
+// данного рукой человека (см. `renameConversation`).
+
+/** Имя беседы — фраза, а не документ: длиннее этого его не показать одной строкой списка. */
+export const CONVERSATION_TITLE_CAP = 60
+
+/** Сколько бесед отдаёт список по умолчанию. Больше одного экрана списка человек не читает. */
+export const CONVERSATION_LIST_LIMIT = 50
+
+/** Имена, данные рукой, живут ОТДЕЛЬНО от книги — см. `renameConversation`. */
+function titlesFile(dir) {
+  return join(dir, 'chat', 'titles.json')
+}
+
+/**
+ * conversationTitle(text) → имя беседы, выведенное из её первых слов, или `null`.
+ *
+ * Выводится, а не выдумывается: это ровно то, с чего человек начал разговор, урезанное до
+ * строки списка по границе слова. Пусто на входе — `null`, и список честно скажет «без имени»,
+ * вместо того чтобы подставить «Разговор 7».
+ */
+export function conversationTitle(text) {
+  const said = String(text ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!said) return null
+  if (said.length <= CONVERSATION_TITLE_CAP) return said
+  const cut = said.slice(0, CONVERSATION_TITLE_CAP)
+  const space = cut.lastIndexOf(' ')
+  return `${(space > CONVERSATION_TITLE_CAP / 2 ? cut.slice(0, space) : cut).trimEnd()}…`
+}
+
+/**
+ * readTitles({dir, fsImpl}) → карта `id → имя`, данное рукой. Нечитаемый файл — это «имён
+ * никто не давал», а не ошибка: список бесед не должен падать из-за порванного украшения.
+ */
+export function readTitles({ dir, fsImpl } = {}) {
+  const readFileSync = fsImpl?.readFileSync ?? fsReadFileSync
+  try {
+    const parsed = JSON.parse(readFileSync(titlesFile(dir), 'utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out = {}
+    for (const [id, name] of Object.entries(parsed)) {
+      if (typeof name === 'string' && name.trim() !== '') out[id] = name
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * renameConversation({dir, conversationId, title}) → `{id, title}` — имя, данное РУКОЙ.
+ *
+ * ПОЧЕМУ ОТДЕЛЬНЫМ ФАЙЛОМ, А НЕ СТРОКОЙ В КНИГЕ. Книга — стенограмма: в неё попадает только
+ * сказанное, и её читает не одно окно, а ещё и промпт свободной ветки (`conversationMemory`).
+ * Переименование, положенное туда, приехало бы в контекст модели репликой, которой никто не
+ * говорил. Вдобавок книга поворачивается по числу ходов — имя, данное вчера, однажды уехало бы
+ * за край вместе со старыми строками. Имя же должно пережить всю беседу.
+ *
+ * Пустое имя — это СНЯТЬ своё имя, а не назвать беседу пустой строкой: запись удаляется, и
+ * список снова показывает первые слова разговора.
+ */
+export function renameConversation({ dir, conversationId, title, fsImpl } = {}) {
+  if (!dir) throw new Error('renameConversation: dir is required')
+  if (!conversationId) throw new Error('renameConversation: conversationId is required')
+  const mkdirSync = fsImpl?.mkdirSync ?? fsMkdirSync
+  const writeFileSync = fsImpl?.writeFileSync ?? fsWriteFileSync
+
+  const named = String(title ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, CONVERSATION_TITLE_CAP)
+  const titles = readTitles({ dir, fsImpl })
+  if (named) titles[conversationId] = named
+  else delete titles[conversationId]
+
+  mkdirSync(join(dir, 'chat'), { recursive: true })
+  writeFileSync(titlesFile(dir), `${JSON.stringify(titles, null, 2)}\n`, 'utf8')
+  return { id: conversationId, title: named || null }
+}
+
+/**
+ * listConversations({dir, project, limit, live, fsImpl}) → беседы книги, СВЕЖАЯ ПЕРВОЙ.
+ *
+ * Каждая строка — то, что о беседе можно сказать по самой книге, и ничего сверх того:
+ *   id       — имя нити, каким её знает дверь;
+ *   title    — имя, данное рукой; нет такого — первые слова первой реплики человека; нет и их —
+ *              `null`, то есть «без имени», а не выдуманный порядковый номер;
+ *   lastTs   — когда в ней говорили в последний раз (по нему и порядок списка);
+ *   turns    — сколько ходов в ней записано;
+ *   project  — проект, при котором она шла (`null` — беседа без проекта);
+ *   active   — в ней ПРЯМО СЕЙЧАС идёт ход. Это единственное поле, которого в книге нет:
+ *              его приносит реестр живых бесед (`live`), и без реестра оно честно `false`.
+ *
+ * `project` сужает список тем же равенством, каким сужает чтение (`readHistory`): экран,
+ * открытый на проекте, видит его беседы и только их; беседа без проекта в проектный список не
+ * подмешивается, но видна там, где сужать нечем.
+ */
+export function listConversations({ dir, project, limit = CONVERSATION_LIST_LIMIT, live, fsImpl } = {}) {
+  const turns = readHistory({ dir, ...(project ? { project } : {}), limit: HISTORY_TURN_CAP, fsImpl })
+  const titles = readTitles({ dir, fsImpl })
+  const liveIds = live && typeof live.ids === 'function' ? new Set(live.ids()) : new Set()
+
+  const byId = new Map()
+  for (const t of turns) {
+    const id = t && t.conversationId
+    if (!id) continue // ход без нити ничьим разговором не является — он и не был им записан
+    let row = byId.get(id)
+    if (!row) {
+      row = { id, title: null, said: null, lastTs: null, turns: 0, project: null }
+      byId.set(id, row)
+    }
+    row.turns += 1
+    if (t.ts) row.lastTs = t.ts // книга читается по порядку, значит последний `ts` и есть свежий
+    if (row.project === null && typeof t.project === 'string' && t.project !== '') row.project = t.project
+    // имя выводится из ПЕРВЫХ слов человека: ответ машины описывает не разговор, а свой ход
+    if (row.said === null && t.role !== 'assistant') row.said = conversationTitle(t.text)
+  }
+
+  const rows = [...byId.values()].map((r) => ({
+    id: r.id,
+    title: titles[r.id] ?? r.said ?? null,
+    lastTs: r.lastTs,
+    turns: r.turns,
+    project: r.project,
+    active: liveIds.has(r.id),
+  }))
+  // свежая беседа — первой: список открывают, чтобы вернуться к последнему, а не к первому
+  rows.sort((a, b) => String(b.lastTs ?? '').localeCompare(String(a.lastTs ?? '')))
+  const cap = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : CONVERSATION_LIST_LIMIT
+  return rows.slice(0, cap)
+}
+
+/**
+ * createLiveConversations() → { begin, end, ids } — какие беседы ЗАНЯТЫ прямо сейчас.
+ *
+ * Слово владельца: «те которые в процессе условно выполняют что-то, тогда они активные как и
+ * в chatgpt». Живая точка в списке — это факт о ПРОЦЕССЕ, а не о книге, поэтому он и живёт
+ * здесь, рядом с реестром живых ходов, а не в стенограмме: перезапуск демона обязан стирать
+ * его начисто. Иначе беседа, чей ход умер вместе с демоном, осталась бы «активной» навсегда.
+ *
+ * Счётчик, а не флаг: у одной беседы может идти ход из окна и ход с телефона, и погасить
+ * точку вправе только последний из них.
+ */
+export function createLiveConversations() {
+  const busy = new Map() // conversationId -> сколько ходов идёт; НИКОГДА не правда о книге
+  return {
+    begin(conversationId) {
+      if (!conversationId) return
+      const id = String(conversationId)
+      busy.set(id, (busy.get(id) ?? 0) + 1)
+    },
+    end(conversationId) {
+      if (!conversationId) return
+      const id = String(conversationId)
+      const left = (busy.get(id) ?? 0) - 1
+      if (left > 0) busy.set(id, left)
+      else busy.delete(id)
+    },
+    ids() {
+      return [...busy.keys()]
+    },
+  }
+}
+
 // ── согласие ставит задачу: единственное действие этой полосы ──────────────────
 //
 // ═══════ «ДА» — ЭТО ДВЕРЬ, И ОНА ОДНА НА ОКНО И НА ТЕЛЕФОН ═══════
@@ -1117,9 +1297,18 @@ async function putPendingDraft({ conversationId, deps = {}, project } = {}) {
 
 // ── the single door ────────────────────────────────────────────────────────────
 
-/** A conversation id is minted from the clock — readable, sortable, no dependency. */
+/**
+ * A conversation id is minted from the clock — readable, sortable, no dependency.
+ *
+ * И С ХВОСТОМ, потому что часов на это не хватает. Голого `conv-<мс>` было довольно ровно до
+ * того дня, когда новую беседу стало можно завести РУКОЙ: два «Новых разговора», начатых в
+ * одну миллисекунду — двойным нажатием или из двух окон сразу, — получали ОДНО имя и молча
+ * сливались в одну нить. Это ровно тот дефект, от которого затевался список: беседы должны
+ * делиться там, где их разделил человек. Хвост случайный, порядок по времени он не портит —
+ * миллисекунды стоят впереди.
+ */
 function newConversationId(clock) {
-  return `conv-${clock()}`
+  return `conv-${clock()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
 /**
@@ -1147,6 +1336,18 @@ function newConversationId(clock) {
 export async function handleChatTurn({ text, conversationId, turnId, deps = {} } = {}) {
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   const convId = conversationId || newConversationId(clock)
+  // ИМЯ БЕСЕДЫ НАЗЫВАЕТСЯ ДО РАБОТЫ, а не вместе с ответом: дверь помечает беседу активной на
+  // всё время хода, а не после него, — иначе живая точка загоралась бы ровно тогда, когда
+  // гаснуть. Ход, начавший НОВУЮ беседу, узнаётся отсюда же: снаружи её имени ещё нет.
+  // Шов ничего не решает и не вправе уронить ход: сорвавшийся слушатель — это отсутствующая
+  // точка в списке, а не потерянный ответ.
+  if (typeof deps.onConversation === 'function') {
+    try {
+      deps.onConversation(convId)
+    } catch {
+      /* пометка — украшение списка; ход идёт дальше */
+    }
+  }
   const kind = classifyTurn(text)
   // Проект хода — один на обе записи и на нить: читается один раз, чтобы обе половины хода
   // не смогли разойтись, если выбор сменится посреди ответа.

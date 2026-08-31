@@ -517,6 +517,35 @@ function samePathOs(a, b, fs = nodeFs, platform = process.platform) {
 export function unlinkLinksIn(opts = {}) {
   const fs = opts.fsImpl ?? nodeFs
   const unlinked = []
+  walkLinks(fs, opts.copyPath, ({ abs, path, target }) => {
+    try {
+      try {
+        fs.rmdirSync(abs) // a directory link (junction on Windows)
+      } catch {
+        fs.unlinkSync(abs) // a file link
+      }
+      unlinked.push({ path, target })
+    } catch (err) {
+      unlinked.push({ path, target, error: String((err && err.message) || err) })
+    }
+  })
+  return unlinked
+}
+
+/**
+ * walkLinks(fs, root, visit) — every link inside a copy, and NEVER a step through one.
+ *
+ * `isSymbolicLink()` is tested BEFORE `isDirectory()`, which is the whole safety of the
+ * walk: a junction reports as a directory to anything that asks the second question
+ * first, and the walk would then be inside the MAIN checkout, deleting its files while
+ * believing it is inside a copy. `.git` is never entered. An unreadable directory ends
+ * that branch and nothing else — one bad corner must not hide the remaining links from
+ * the caller, because the caller is about to decide whether git may have the copy.
+ * @param {object} fs
+ * @param {string} root
+ * @param {(link:{abs:string, path:string, target:(string|null)}) => void} visit
+ */
+function walkLinks(fs, root, visit) {
   const walk = (dir, rel) => {
     let items
     try {
@@ -533,25 +562,90 @@ export function unlinkLinksIn(opts = {}) {
         try {
           target = String(fs.readlinkSync(abs))
         } catch {
-          /* an unreadable target still has to come off */
+          /* an unreadable target does not make it any less of a link */
         }
-        try {
-          try {
-            fs.rmdirSync(abs) // a directory link (junction on Windows)
-          } catch {
-            fs.unlinkSync(abs) // a file link
-          }
-          unlinked.push({ path: relPath, target })
-        } catch (err) {
-          unlinked.push({ path: relPath, target, error: String((err && err.message) || err) })
-        }
+        visit({ abs, path: relPath, target })
       } else if (it.isDirectory()) {
         walk(abs, relPath)
       }
     }
   }
-  walk(opts.copyPath, '')
-  return unlinked
+  walk(root, '')
+}
+
+/**
+ * linksRemainingIn({copyPath, fsImpl}) -> [{path, target}] — what is STILL attached by
+ * reference inside a copy. Asked AFTER the unhooking, and the answer decides whether the
+ * copy may be handed on: one link that refused to come off is enough for git to walk into
+ * the main checkout and empty the directory the founder is working in (measured 31.08.2026
+ * — a raw `git worktree remove --force` on a copy with three live junctions).
+ * @param {{copyPath:string, fsImpl?:object}} opts
+ * @returns {Array<{path:string, target:string|null}>}
+ */
+export function linksRemainingIn(opts = {}) {
+  const fs = opts.fsImpl ?? nodeFs
+  const remaining = []
+  walkLinks(fs, opts.copyPath, ({ path, target }) => remaining.push({ path, target }))
+  return remaining
+}
+
+/**
+ * rmInsideOnly({root, fsImpl}) -> {files, dirs, links} — recursive removal with a STRICT
+ * BOUNDARY at its own directory.
+ *
+ * Every entry is `lstat`ed and a link is UNLINKED, never entered: the deletion therefore
+ * cannot leave `root`, whatever is attached inside it. `fs.rmSync(…, {recursive:true})`
+ * behaves the same way today — this exists because that is a promise of somebody else's
+ * implementation on a platform where a junction answers `isDirectory()` with `true`, and
+ * the thing it protects is the founder's dependency tree. Throws on failure: the caller
+ * (removeWorktreeSafely) already treats an impossible removal as an honest answer.
+ * @param {{root:string, fsImpl?:object}} opts
+ * @returns {{files:number, dirs:number, links:number}}
+ */
+export function rmInsideOnly(opts = {}) {
+  const fs = opts.fsImpl ?? nodeFs
+  const counts = { files: 0, dirs: 0, links: 0 }
+  const remove = (dir) => {
+    let items
+    try {
+      items = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      items = []
+    }
+    for (const it of items) {
+      const abs = joinPath(dir, it.name)
+      if (it.isSymbolicLink()) {
+        try {
+          fs.rmdirSync(abs) // a directory link (junction on Windows)
+        } catch {
+          fs.unlinkSync(abs) // a file link
+        }
+        counts.links += 1
+        continue
+      }
+      if (it.isDirectory()) {
+        remove(abs)
+        continue
+      }
+      try {
+        fs.unlinkSync(abs)
+      } catch {
+        // A read-only or momentarily locked file — git's own objects are both. The entry
+        // has already been proven NOT to be a link, so the retrying removal cannot leave
+        // this directory either.
+        fs.rmSync(abs, { force: true, maxRetries: 3 })
+      }
+      counts.files += 1
+    }
+    try {
+      fs.rmdirSync(dir)
+    } catch {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+    }
+    counts.dirs += 1
+  }
+  remove(opts.root)
+  return counts
 }
 
 /**
@@ -586,21 +680,24 @@ export function dirtyFilesOf(opts = {}) {
  *      the developer's working tree, and the previous step (unhooking links) is itself
  *      destructive — so it may not run before the refusal.
  *   1. Unhook every link inside the copy. git walks into them; Node does not.
+ *   1a. LOOK AGAIN. A link that refused to come off is a refusal to continue, not a note
+ *      in the answer: git meeting it empties the target in the main checkout.
  *   2. Read what is about to be lost (`git status --porcelain`) into the answer.
  *   3. `git worktree remove <path> [--force]`.
- *   4. If git refused and the caller asked for force, finish by hand: `rmSync` the copy
- *      and `git worktree prune` so the list of trees stays honest — reported as
- *      `fallback:'rm+prune'` rather than passed off as a clean git removal.
+ *   4. If git refused and the caller asked for force, finish by hand with the
+ *      strict-boundary removal (rmInsideOnly) and `git worktree prune` so the list of
+ *      trees stays honest — reported as `fallback:'rm+prune'` rather than passed off as
+ *      a clean git removal.
  *   5. Optionally delete the branch the copy stood on, recording its tip FIRST, so the
  *      work remains reachable through the reflog and the record says where it was.
  * A failed branch deletion does not turn a successful removal into a failure; it is
  * reported as `branchDeleted:false` with the reason.
  * @param {{path:string, cwd:string, execGit?:Function, fsImpl?:object, platform?:string,
  *          force?:boolean, deleteBranch?:boolean}} opts
- * @returns {{ok:boolean, removed?:string, unlinked?:Array, dirtyFiles?:string[],
- *            forced?:boolean, fallback?:string|null, branch?:string|null,
- *            branchDeleted?:boolean, branchTip?:string|null, branchError?:string,
- *            message?:string}}
+ * @returns {{ok:boolean, removed?:string, unlinked?:Array, linksRemaining?:Array,
+ *            dirtyFiles?:string[], forced?:boolean, fallback?:string|null,
+ *            branch?:string|null, branchDeleted?:boolean, branchTip?:string|null,
+ *            branchError?:string, message?:string}}
  */
 export function removeWorktreeSafely(opts = {}) {
   const execGit = opts.execGit ?? defaultExecGit
@@ -622,8 +719,28 @@ export function removeWorktreeSafely(opts = {}) {
   }
   const branch = String(entry.branch || '').replace(/^refs\/heads\//, '') || null
 
-  // ── (1) links off, (2) losses written down ─────────────────────────────────
+  // ── (1) links off, (1a) PROVEN off, (2) losses written down ────────────────
   const unlinked = unlinkLinksIn({ copyPath: path, fsImpl: fs })
+
+  // The unhooking used to be trusted on its word: a link that refused to come off was
+  // written into the answer and the copy was handed to git anyway — and git, meeting the
+  // survivor, walks INTO it and empties the target in the main checkout. So the copy is
+  // LOOKED AT again, and one surviving link is a refusal: a copy left on disk costs a
+  // directory, a copy handed on costs the founder's dependency tree (measured 31.08.2026).
+  const remaining = linksRemainingIn({ copyPath: path, fsImpl: fs })
+  if (remaining.length) {
+    const named = remaining.map((l) => `${l.path}${l.target ? ` → ${l.target}` : ''}`).join(', ')
+    return {
+      ok: false,
+      message:
+        `уборка отменена: в копии остались ссылки (${named}) — снять их не удалось. ` +
+        'Отдать копию git с живой ссылкой значит опустошить каталог-цель в основном дереве: ' +
+        'снимите ссылки вручную (`rm <ссылка>` снимает саму ссылку, цель не трогает) и повторите.',
+      unlinked,
+      linksRemaining: remaining,
+    }
+  }
+
   const dirtyFiles = dirtyFilesOf({ path, execGit })
 
   // ── (3) git removes the copy; (4) or we finish by hand ─────────────────────
@@ -642,7 +759,10 @@ export function removeWorktreeSafely(opts = {}) {
       }
     }
     try {
-      fs.rmSync(path, { recursive: true, force: true, maxRetries: 3 })
+      // The hand finish uses the STRICT-BOUNDARY removal, not a plain recursive one: at
+      // this point git has already refused, and the last thing this path may do is follow
+      // something out of the copy. rmInsideOnly unlinks a link and never enters it.
+      rmInsideOnly({ root: path, fsImpl: fs })
       try {
         execGit(['worktree', 'prune'], { cwd })
       } catch {

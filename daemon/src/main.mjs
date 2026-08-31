@@ -93,7 +93,14 @@ import { collectDiagnostics } from './front/diagnostics.mjs'
 import { createSearch } from './front/search.mjs'
 import { createEventHub, wrapAdapterWithEvents } from './front/events.mjs'
 import { createFederation } from './front/federation.mjs'
-import { handleChatTurn, readHistory, createTurnRegistry } from './front/chat.mjs'
+import {
+  handleChatTurn,
+  readHistory,
+  createTurnRegistry,
+  listConversations,
+  renameConversation,
+  createLiveConversations,
+} from './front/chat.mjs'
 import {
   readHarness,
   loadMcpRegistry,
@@ -1273,6 +1280,13 @@ export function createDaemon(o = {}) {
         // capability like that reaches a request path only through deliberate wiring.
         handleChatTurn,
         readChatHistory: readHistory,
+        // СПИСОК РАЗГОВОРОВ и имя, данное рукой: книга та же, читается она по-другому —
+        // сгруппированной по нити, а не одной сплошной лентой (слово владельца 31.08).
+        listChatConversations: listConversations,
+        renameChatConversation: renameConversation,
+        // Какие беседы ЗАНЯТЫ прямо сейчас — живая точка списка. Реестр, а не запись: он
+        // общий для окна и для моста телеграма и обязан обнуляться перезапуском демона.
+        chatLive: createLiveConversations(),
         // the Стоп button's registry: live chat-turn kill-handles, minted per client turn id.
         // Hint plumbing (a restart loses only the ability to stop turns that died with it).
         chatTurns: createTurnRegistry(),
