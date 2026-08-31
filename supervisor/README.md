@@ -17,6 +17,14 @@ host-agnostic by design; the OS binding is a thin supervisor layer only).
   and prints a JSON verdict naming both day files, so the rotation is confirmed by a run
   rather than by reading the source:
   `powershell -NoProfile -ExecutionPolicy Bypass -File supervisor/log-rotation-drill.ps1`.
+  **That midnight is the LOCAL one, and all three day logs turn on it.** `daemon-lift-<day>.log`
+  and `daemon-watch-<day>.log` are named by `dayLogPath()` in `lift-log.mjs`, which stamped the
+  day in UTC and so rotated at 02:00 local east of Greenwich: the lift of the night of 30→31.08
+  was filed under the 30th while the wrapper it started wrote into the 31st — one event, two
+  days, and the operator opening the night's files found the lift in none of them. The day is
+  now read off the same wall clock the wrapper's `Get-Date` reads, and a case in
+  `scripts/sma/__tests__/daemon-log-rotation.test.ts` asks both implementations about the same
+  instant and requires the same answer. Timestamps INSIDE a line stay UTC, as everywhere else.
 - **Linux (deferred):** systemd unit — the daemon core is already host-neutral, so
   this is add-only.
 - **Host-neutral, both ways:** `daemon-control.mjs` — the STOP and the RESTART that

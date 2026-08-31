@@ -399,7 +399,9 @@ fast failures in a row are a cause the sixth start will not change: the circle s
 it in the log), and **one watchdog per machine** (the lock at
 `~/.sma-daemon/daemon-watch.lock.json`; two would declare one fall twice and lift twice). The
 circle's own lines and the watchdog's output go to
-`~/.sma-daemon/logs/daemon-watch-<day>.log`, and which day a line belongs to is decided per line.
+`~/.sma-daemon/logs/daemon-watch-<day>.log`, and which day a line belongs to is decided per line —
+by the LOCAL clock, the same one the daemon's own log turns on, so a line written after midnight
+does not land in yesterday's file.
 
 **If you had already started a watchdog by hand** — an old shortcut with the loop written
 inside its argument string — the install rewrites that shortcut, but the ALREADY RUNNING old
