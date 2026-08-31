@@ -185,8 +185,8 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
   // are two different guarantees, and only the second one survives a restart, a log rotation
   // or a month. The row is the durable record of the try, so it must carry the point of
   // return itself — for a FAILED attempt exactly as much as for a finished one, because a
-  // failure is the case where somebody actually needs to roll something back. A stage that
-  // ran with no copy at all (a documentary one) simply carries none of these keys.
+  // failure is the case where somebody actually needs to roll something back. An attempt that
+  // never got a copy (refused before provisioning) simply carries none of these keys.
   //
   // `cleanup` is written by a SEPARATE row of the same attempt — `{at, by, removedPath,
   // removedBranch, …}` and deliberately NO `endedAt`/`outcome`, so that folding the rows of

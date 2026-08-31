@@ -1720,8 +1720,8 @@ function classifyMemoryRead(rawPath, scope) {
     return { kind: 'auto', id: noteIdOfPath(path) }
   }
   // The copy is NAMED when we know it, so a read of some other tree's corpus is not counted as
-  // this attempt's. Without a copy — a documentary stage runs in none — the segment alone is
-  // the best honest answer.
+  // this attempt's. Without a copy — a refusal that came before provisioning has none — the
+  // segment alone is the best honest answer.
   const workDir = slashed(scope.workDir).toLowerCase().replace(/\/+$/, '')
   const inCorpus = workDir ? low.startsWith(`${workDir}${MEMORY_CORPUS_SEGMENT}`) : low.includes(MEMORY_CORPUS_SEGMENT)
   if (!inCorpus) return null
@@ -3860,13 +3860,23 @@ export async function tick(deps = {}) {
         return result
       }
 
-      // (5) WHERE THE WORKER STANDS. Code work gets a per-task worktree on its own
-      // branch (`wt/<taskId>`, EXPECTED_BASE guard on) so two tasks can never edit one tree.
-      // A DOCUMENTARY stage stands in the project checkout itself — its whole product is the
-      // phase directory, the next stage reads it there, and a worktree would put every
-      // document one merge away from the person who asked for it. The isolation a worktree
-      // buys is worth its price for parallel code and is a pure cost for a document.
-      let branch = null
+      // (5) WHERE THE WORKER STANDS — IN ITS OWN COPY, ON ITS OWN BRANCH, WHATEVER IT WRITES.
+      // Every attempt gets a per-task worktree on `wt/<taskId>` (EXPECTED_BASE guard on), so two
+      // tasks can never edit one tree and nothing an attempt produces reaches the main tree until
+      // a person accepts it.
+      //
+      // THIS USED TO EXEMPT DOCUMENTARY WORK, and the exemption is what this line now refuses.
+      // The old reason was convenience, stated plainly: a stage's whole product is the phase
+      // directory, the next stage reads it there, and a copy «would put every document one merge
+      // away from the person who asked for it». That merge IS the acceptance, and without it the
+      // stage was writing into the founder's own checkout: измерено 31.08.2026 — ступень plan
+      // фазы 21 положила семь планов ДВУМЯ КОММИТАМИ ПРЯМО В main, авторством основателя, без
+      // ветки, и та же попытка срывалась дважды — оставляя правки в дереве и после срыва.
+      // Три вещи ломались разом: работа шла в дереве, где в этот момент работает человек;
+      // коммит был неотличим в истории от собственной работы основателя; откатывать приходилось
+      // руками по хэшам, найденным задним числом. Копия чинит все три одним правилом, общим для
+      // кода и для прозы — «работник пишет только в свою копию, дерево меняет приёмка».
+      const branch = `wt/${task.id}`
       // A DOCUMENTARY stage stands in the project THE TASK IS STAMPED WITH (the window's
       // selection only when the stamp is absent), not in the tree this daemon serves. The two
       // are the same directory on a single-project install and are NOT the same when the
@@ -3882,137 +3892,140 @@ export async function tick(deps = {}) {
        * says so out loud instead of quietly treating an unknown as a clean slate.
        */
       let preexistingRed = null
-      if (!isDocument) {
-        branch = `wt/${task.id}`
-        // `--json` is not decoration. Without it the verb prints prose for a person —
-        // «SMA worktree: создано -> …» — and parseVerbResult, which looks for the last line
-        // that is a JSON object, finds nothing at all. Asked properly, the verb answers
-        // {ok, path, branch, reused}: `path` is the directory it actually made, and it is not
-        // the directory this code used to guess.
-        // WHICH REPOSITORY DOES THE WORK HAPPEN IN? The one the TASK'S OWN STAMP names —
-        // taskTreeDir, with the screen's selection only for an unstamped task, and the
-        // launch cwd only when no project is connected at all. Both older readings cost a
-        // day each: `config.repoDir` is literally the launch cwd, so provisioning against
-        // it meant every task ran in one tree no matter what the founder selected
-        // (12.08.2026 — two tasks died in a sibling workspace where the product's files do
-        // not exist); reading the SCREEN at claim time meant a project switch between
-        // enqueue and claim carried the attempt into whichever tree happened to be shown
-        // (25.08.2026 — a stamped task provisioned from the wrong repo, proved by the
-        // worker itself with git rev-parse). The already-built door above resolved this
-        // very directory to put its question in; reusing the value rather than re-deriving
-        // it is what keeps the pair from ever drifting apart.
-        const provisionDir = doorDir
-        // HOW LONG THE COPY TOOK TO PREPARE, measured HERE rather than read off the answer:
-        // the verb reports its own inside time, and what a person asks about is the wait the
-        // task actually paid — process start, argument parsing and all. It is also the only
-        // number available when an older install answers without one at all.
-        const provisionStartedAt = Date.now()
-        // WHERE THE COPY GOES — SAID OUT LOUD, and by the one expression the other door uses
-        // too. Left unsaid, the verb names the directory after the CALLER, and this caller is
-        // one daemon for every task it will ever run: N branches claiming one directory.
-        // Null (a task with no name, which cannot happen through the queue's own gate) simply
-        // says nothing and lets the verb decide, exactly as before.
-        const copyPath = taskWorktreePath({ taskId: task.id, projectDir: provisionDir, execGit: deps.execGit })
-        const wt = await invokeVerb(
-          verbRunner,
-          'worktree',
-          ['provision', '--branch', branch, ...(copyPath ? ['--path', copyPath] : []), '--json'],
-          provisionDir,
+      // `--json` is not decoration. Without it the verb prints prose for a person —
+      // «SMA worktree: создано -> …» — and parseVerbResult, which looks for the last line
+      // that is a JSON object, finds nothing at all. Asked properly, the verb answers
+      // {ok, path, branch, reused}: `path` is the directory it actually made, and it is not
+      // the directory this code used to guess.
+      // WHICH REPOSITORY DOES THE WORK HAPPEN IN? The one the TASK'S OWN STAMP names —
+      // taskTreeDir, with the screen's selection only for an unstamped task, and the
+      // launch cwd only when no project is connected at all. Both older readings cost a
+      // day each: `config.repoDir` is literally the launch cwd, so provisioning against
+      // it meant every task ran in one tree no matter what the founder selected
+      // (12.08.2026 — two tasks died in a sibling workspace where the product's files do
+      // not exist); reading the SCREEN at claim time meant a project switch between
+      // enqueue and claim carried the attempt into whichever tree happened to be shown
+      // (25.08.2026 — a stamped task provisioned from the wrong repo, proved by the
+      // worker itself with git rev-parse). The already-built door above resolved this
+      // very directory to put its question in; reusing the value rather than re-deriving
+      // it is what keeps the pair from ever drifting apart.
+      const provisionDir = doorDir
+      // HOW LONG THE COPY TOOK TO PREPARE, measured HERE rather than read off the answer:
+      // the verb reports its own inside time, and what a person asks about is the wait the
+      // task actually paid — process start, argument parsing and all. It is also the only
+      // number available when an older install answers without one at all.
+      const provisionStartedAt = Date.now()
+      // WHERE THE COPY GOES — SAID OUT LOUD, and by the one expression the other door uses
+      // too. Left unsaid, the verb names the directory after the CALLER, and this caller is
+      // one daemon for every task it will ever run: N branches claiming one directory.
+      // Null (a task with no name, which cannot happen through the queue's own gate) simply
+      // says nothing and lets the verb decide, exactly as before.
+      const copyPath = taskWorktreePath({ taskId: task.id, projectDir: provisionDir, execGit: deps.execGit })
+      const wt = await invokeVerb(
+        verbRunner,
+        'worktree',
+        ['provision', '--branch', branch, ...(copyPath ? ['--path', copyPath] : []), '--json'],
+        provisionDir,
+      )
+      const provisionMs = Date.now() - provisionStartedAt
+      // A GUESS IS WORSE THAN A REFUSAL, and this is the line that proved it: the old
+      // fallback pointed at a sibling of repoDir that no verb has ever created, so a task
+      // whose worktree was sitting on disk under a different name died on a missing cwd and
+      // reported «среда исполнения недоступна» — a true sentence about an invented place.
+      if (!wt || wt.ok === false || typeof wt.path !== 'string' || wt.path.trim() === '') {
+        throw new Error(
+          `worktree provision answered no path for ${branch}` +
+            `${wt && wt.error ? ` (${wt.error})` : ''} — refusing to spawn a session into a directory nobody made`,
         )
-        const provisionMs = Date.now() - provisionStartedAt
-        // A GUESS IS WORSE THAN A REFUSAL, and this is the line that proved it: the old
-        // fallback pointed at a sibling of repoDir that no verb has ever created, so a task
-        // whose worktree was sitting on disk under a different name died on a missing cwd and
-        // reported «среда исполнения недоступна» — a true sentence about an invented place.
-        if (!wt || wt.ok === false || typeof wt.path !== 'string' || wt.path.trim() === '') {
-          throw new Error(
-            `worktree provision answered no path for ${branch}` +
-              `${wt && wt.error ? ` (${wt.error})` : ''} — refusing to spawn a session into a directory nobody made`,
-          )
+      }
+      workDir = wt.path
+      // ЧТО РАБОТНИК НАЙДЁТ В КОПИИ — кладётся СРАЗУ, из пути, который ответил верб, и до
+      // спавна: снимок контекста задачи и встроенные навыки. Одна функция на обе двери;
+      // падение записи снимка — падение провизии, а не тихий пропуск.
+      materializeTaskContext(deps, task, workDir)
+      // THE POINT TO ROLL BACK TO, written down before a single line is spawned.
+      // The isolation itself was always real — a worker only ever writes into its own
+      // worktree on its own branch — but «can be rolled back» and «you can SEE what to
+      // roll back to» are different things, and only the first was true until now: the
+      // attempt row carried hashes and a session id, never the commit the work started
+      // from. Journalled for every attempt, failed ones included, because the attempt a
+      // person wants to undo is precisely the one that went wrong.
+      // EXPECTED FIRST, and that order is the whole point: `expectedBase` is where the
+      // project's own branch stood when this worktree was cut, while `actualBase` on a
+      // REUSED worktree is the tip of the task branch — which already carries the previous
+      // attempt's commit. Counting from the latter made a second attempt see zero new work
+      // and discard a finished, committed fix (12.08.2026: attempt 1 committed without a
+      // note, attempt 2 wrote the note and was told it had produced nothing).
+      worktreeBase = wt.expectedBase || wt.actualBase || null
+      // A REUSED WORKTREE ANSWERS NO BASE AT ALL — measured 12.08.2026, in the journal line
+      // right below: `base=нет reused=true expected=нет actual=нет`. The first attempt of a
+      // task therefore had a base and its work was accepted, while every RETRY lost the one
+      // number the gate needs and threw away a commit that was sitting right there. When the
+      // verb declines to say, ask the project's own tree where it stands — that is exactly
+      // what `expectedBase` means on the first pass, so a retry reads the same point.
+      // ASK WHERE THE BRANCH WAS CUT, NOT WHERE THE PROJECT STANDS NOW. The tip is the right
+      // answer only on a FIRST attempt, when the copy was just cut from it. On a RETRY the
+      // project has usually moved on, and then the tip names a point the task branch never
+      // sat on: the count walks somebody else's history and certifies work this attempt did
+      // not do. Measured 12.08.2026 — an attempt that touched no file at all came back with
+      // a receipt for three commits and one deleted file.
+      //
+      // The merge point answers both cases with one question: on a first attempt it IS the
+      // tip (nothing has diverged yet), and on a retry it is still the place the branch was
+      // cut. The tip stays as the last resort, because a missing base cannot certify at all
+      // and an unanswerable git must never crash the tick.
+      if (!worktreeBase && typeof deps.execGit === 'function' && branch) {
+        try {
+          worktreeBase = String(deps.execGit(['merge-base', 'HEAD', branch], { cwd: provisionDir }) || '').trim() || null
+        } catch {
+          /* the branch may be unknown to this tree — fall through to the tip */
         }
-        workDir = wt.path
-        // ЧТО РАБОТНИК НАЙДЁТ В КОПИИ — кладётся СРАЗУ, из пути, который ответил верб, и до
-        // спавна: снимок контекста задачи и встроенные навыки. Одна функция на обе двери;
-        // падение записи снимка — падение провизии, а не тихий пропуск.
-        materializeTaskContext(deps, task, workDir)
-        // THE POINT TO ROLL BACK TO, written down before a single line is spawned.
-        // The isolation itself was always real — a worker only ever writes into its own
-        // worktree on its own branch — but «can be rolled back» and «you can SEE what to
-        // roll back to» are different things, and only the first was true until now: the
-        // attempt row carried hashes and a session id, never the commit the work started
-        // from. Journalled for every attempt, failed ones included, because the attempt a
-        // person wants to undo is precisely the one that went wrong.
-        // EXPECTED FIRST, and that order is the whole point: `expectedBase` is where the
-        // project's own branch stood when this worktree was cut, while `actualBase` on a
-        // REUSED worktree is the tip of the task branch — which already carries the previous
-        // attempt's commit. Counting from the latter made a second attempt see zero new work
-        // and discard a finished, committed fix (12.08.2026: attempt 1 committed without a
-        // note, attempt 2 wrote the note and was told it had produced nothing).
-        worktreeBase = wt.expectedBase || wt.actualBase || null
-        // A REUSED WORKTREE ANSWERS NO BASE AT ALL — measured 12.08.2026, in the journal line
-        // right below: `base=нет reused=true expected=нет actual=нет`. The first attempt of a
-        // task therefore had a base and its work was accepted, while every RETRY lost the one
-        // number the gate needs and threw away a commit that was sitting right there. When the
-        // verb declines to say, ask the project's own tree where it stands — that is exactly
-        // what `expectedBase` means on the first pass, so a retry reads the same point.
-        // ASK WHERE THE BRANCH WAS CUT, NOT WHERE THE PROJECT STANDS NOW. The tip is the right
-        // answer only on a FIRST attempt, when the copy was just cut from it. On a RETRY the
-        // project has usually moved on, and then the tip names a point the task branch never
-        // sat on: the count walks somebody else's history and certifies work this attempt did
-        // not do. Measured 12.08.2026 — an attempt that touched no file at all came back with
-        // a receipt for three commits and one deleted file.
-        //
-        // The merge point answers both cases with one question: on a first attempt it IS the
-        // tip (nothing has diverged yet), and on a retry it is still the place the branch was
-        // cut. The tip stays as the last resort, because a missing base cannot certify at all
-        // and an unanswerable git must never crash the tick.
-        if (!worktreeBase && typeof deps.execGit === 'function' && branch) {
-          try {
-            worktreeBase = String(deps.execGit(['merge-base', 'HEAD', branch], { cwd: provisionDir }) || '').trim() || null
-          } catch {
-            /* the branch may be unknown to this tree — fall through to the tip */
-          }
+      }
+      if (!worktreeBase && typeof deps.execGit === 'function') {
+        try {
+          worktreeBase = String(deps.execGit(['rev-parse', 'HEAD'], { cwd: provisionDir }) || '').trim() || null
+        } catch {
+          /* fail-open: no base means the receiptless path simply cannot certify — never a crash */
         }
-        if (!worktreeBase && typeof deps.execGit === 'function') {
-          try {
-            worktreeBase = String(deps.execGit(['rev-parse', 'HEAD'], { cwd: provisionDir }) || '').trim() || null
-          } catch {
-            /* fail-open: no base means the receiptless path simply cannot certify — never a crash */
-          }
-        }
-        // The line a person reads only ever carries type/task/worker/reason/detail, so the
-        // VALUES go into `detail` — a base recorded under a key the formatter drops is a
-        // record nobody can read, which is how the 12.08 gate stayed unexplainable.
+      }
+      // The line a person reads only ever carries type/task/worker/reason/detail, so the
+      // VALUES go into `detail` — a base recorded under a key the formatter drops is a
+      // record nobody can read, which is how the 12.08 gate stayed unexplainable.
+      writeLog(deps, {
+        type: 'task.worktree_base',
+        taskId: task.id,
+        branch,
+        base: worktreeBase,
+        baseFixed: wt.baseFixed === true,
+        path: wt.path,
+        detail: `base=${worktreeBase || 'нет'} reused=${wt.reused === true} expected=${wt.expectedBase || 'нет'} actual=${wt.actualBase || 'нет'} провизия=${provisionMs}мс`,
+      })
+      // ── WHAT WAS PUT INTO THE COPY, straight from the verb that put it there ──
+      // One entry per manifest item: copied, linked, already tracked, or skipped as a
+      // secret. `Array.isArray` and nothing else — the answer comes from the PROJECT's own
+      // CLI, so it is data to be checked, never a shape to be trusted; anything that is not
+      // a list becomes an absence rather than a row nobody can read.
+      const materialized = Array.isArray(wt.materialized) ? wt.materialized : undefined
+      if (materialized === undefined) {
+        // An install whose CLI predates the materializing verb answers no list at all. That
+        // is not a failure — the copy still exists and the attempt still runs — but it must
+        // be SAID, because an empty spot on a card otherwise reads as «nothing was put in».
         writeLog(deps, {
-          type: 'task.worktree_base',
+          type: 'task.worktree_materialized_missing',
           taskId: task.id,
           branch,
-          base: worktreeBase,
-          baseFixed: wt.baseFixed === true,
-          path: wt.path,
-          detail: `base=${worktreeBase || 'нет'} reused=${wt.reused === true} expected=${wt.expectedBase || 'нет'} actual=${wt.actualBase || 'нет'} провизия=${provisionMs}мс`,
+          detail: 'верб провизии не сообщил список материализованного — старая установка CLI проекта или ошибка манифеста',
         })
-        // ── WHAT WAS PUT INTO THE COPY, straight from the verb that put it there ──
-        // One entry per manifest item: copied, linked, already tracked, or skipped as a
-        // secret. `Array.isArray` and nothing else — the answer comes from the PROJECT's own
-        // CLI, so it is data to be checked, never a shape to be trusted; anything that is not
-        // a list becomes an absence rather than a row nobody can read.
-        const materialized = Array.isArray(wt.materialized) ? wt.materialized : undefined
-        if (materialized === undefined) {
-          // An install whose CLI predates the materializing verb answers no list at all. That
-          // is not a failure — the copy still exists and the attempt still runs — but it must
-          // be SAID, because an empty spot on a card otherwise reads as «nothing was put in».
-          writeLog(deps, {
-            type: 'task.worktree_materialized_missing',
-            taskId: task.id,
-            branch,
-            detail: 'верб провизии не сообщил список материализованного — старая установка CLI проекта или ошибка манифеста',
-          })
-        }
-        // The copy, as ONE object handed to whichever door closes this attempt. Assembled
-        // once, here, so the finished and the failed paths can never come to disagree about
-        // where the work was and what it can be rolled back to.
-        worktreeRow = copyRow({ wt, base: worktreeBase, branch, worktreePath: workDir, materialized, provisionMs })
+      }
+      // The copy, as ONE object handed to whichever door closes this attempt. Assembled
+      // once, here, so the finished and the failed paths can never come to disagree about
+      // where the work was and what it can be rolled back to.
+      worktreeRow = copyRow({ wt, base: worktreeBase, branch, worktreePath: workDir, materialized, provisionMs })
+      // THE SNAPSHOT IS THE CODE GATE'S, AND ONLY ITS. A documentary stage is judged by
+      // `documentGate` — a file and its commit — and never reaches the differential verdict
+      // below, so taking the picture for it would spend a verb run per stage to answer a
+      // question nobody asks. The COPY above is unconditional; this measurement is not.
+      if (!isDocument) {
         // ── WHAT WAS ALREADY BROKEN BEFORE ANYONE TOUCHED ANYTHING ──
         // The exit gate below used to read the ABSOLUTE answer of the re-verification: any
         // divergence in the tree failed the attempt. In a repository with a history that is
@@ -4095,9 +4108,9 @@ export async function tick(deps = {}) {
         }
       }
       if (personalLayer || mcpConfig) {
-        // A DOCUMENTARY stage runs in no copy at all, so the row object may not exist yet.
-        // These two facts are about the SESSION rather than about a worktree, and they are
-        // owed by every lane that starts a process.
+        // A refusal that came before the copy existed leaves the row object unmade, so it is
+        // created here rather than assumed. These two facts are about the SESSION rather than
+        // about a worktree, and they are owed by every lane that starts a process.
         worktreeRow = worktreeRow || {}
         if (personalLayer) worktreeRow.personalLayer = personalLayer
         if (mcpConfig) worktreeRow.mcpConfig = mcpConfig
@@ -4464,6 +4477,20 @@ export async function tick(deps = {}) {
       // whole stage over on the next attempt; completing it on the checkpoint's own receipt
       // parks the row in `awaiting_approval`, where the screen renders it as a card.
       const parked = infraReason ? null : parkedRound(deps, task, workDir)
+      // ГДЕ ЛЕЖИТ ЗАПАРКОВАННЫЙ ВОПРОС — СКАЗАНО ВСЛУХ, а не выведено человеком из молчания.
+      // Чекпойнт коммитится в КОПИИ, на ветке попытки, а двери вопросов (карточка фазы и запись
+      // ответа) читают дерево планирования — так было и до этой починки для ступени исполнения,
+      // и так стало для разговорной. Значит вопрос доезжает до экрана ПОСЛЕ приёмки ветки, и
+      // единственное, что тут по-честному можно сделать сегодня, — назвать ветку и файл в
+      // журнале оператора, чтобы «вопрос есть, но его не видно» не выглядело потерей.
+      if (parked && parked.receiptRef) {
+        writeLog(deps, {
+          type: 'checkpoint.parked_in_copy',
+          taskId: task.id,
+          branch,
+          detail: `вопрос запаркован в копии (${parked.receiptRef}) — на карточку фазы он выходит после приёмки ветки ${branch}`,
+        })
+      }
 
       if (parked || isDocument) {
         // WHICH DOOR DECIDED — recorded before it does, so the receipt of a parked round and
@@ -5257,8 +5284,8 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
  * ledger row: where it was, what it was cut from, what was put into it and how long that
  * took. ONE expression, used by both doors, so a finished attempt and a refused one can
  * never carry different halves of the same fact — and the refused one is precisely the one
- * somebody will want to roll back. No copy (a documentary stage, or a refusal that came
- * before provisioning) writes NO keys at all: absence says «there was none», where a null
+ * somebody will want to roll back. No copy (a refusal that came before provisioning — every
+ * lane that reaches a spawn now has one) writes NO keys at all: absence says «there was none», where a null
  * would say «there was one and we lost it».
  *
  * The same object also carries the two facts about the SESSION the attempt ran in — the

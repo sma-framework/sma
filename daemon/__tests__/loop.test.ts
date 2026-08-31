@@ -618,10 +618,26 @@ const stageTask = (data: any, over: any = {}) => ({
   ...over,
 })
 
+/**
+ * Провизия копии, отвечающая КОРНЕМ ФИКСТУРЫ, — потому что кейсы ниже про ГЕЙТ.
+ *
+ * Ступень любого рода теперь идёт в своей копии (31.08.2026: документарная ступень писала
+ * коммитами прямо в main дерева планирования). Кейсам этого раздела адрес копии безразличен —
+ * им важно, ЧТО гейт признаёт документом, — поэтому подделка отвечает тем же корнем, в котором
+ * лежат фикстуры, и ни один из полутора десятка их не переписывается ради одного адреса. Сам
+ * АДРЕС — «работник стоит в копии, а не в дереве человека» — утверждается там, где он и есть
+ * предмет спора: `stage-copy-wire.test.ts`, настоящей дверью над настоящей очередью.
+ */
+const STAGE_WORKTREE = {
+  code: 0,
+  stdout: JSON.stringify({ ok: true, path: '/repo', branch: 'wt/ST-1', expectedBase: 'base1234' }),
+}
+
 /** Every stage case routes the same way; the cases are about the GATE, nothing else. */
 const stageDeps = (over: any = {}) =>
   makeDeps({
     ...over,
+    responses: { worktree: STAGE_WORKTREE, ...over.responses },
     deps: { routing: { resolveRoute: () => ({ workerId: 'max-2', provider: 'claude' }) }, ...over.deps },
   })
 
@@ -644,10 +660,11 @@ describe('a document stage completes on a committed artifact — and on nothing 
     expect(call.result.receiptRef).toBe('artifact:.planning/phases/12-front/12-02-PLAN.md@abc1234')
     expect(call.result.receiptRef.startsWith('artifact:')).toBe(true)
     expect(call.result.receiptRef).toContain('@')
-    // a documentary stage stands in the project checkout: no worktree, and no preflight —
-    // «is this backlog item already built» is not a question a phase stage can be asked
-    expect(order).toEqual(['spawn'])
-    expect(call.result.branch).toBe(null)
+    // a documentary stage gets a copy exactly like code work (31.08.2026 — without one it
+    // committed straight into the founder's own main), and no preflight: «is this backlog item
+    // already built» is not a question a phase stage can be asked
+    expect(order).toEqual(['worktree', 'spawn'])
+    expect(call.result.branch).toBe('wt/ST-1')
   })
 
   it('no artifact → fail("no_artifact"), whatever the worker printed about itself', async () => {
@@ -840,7 +857,7 @@ describe('a discussion round parks for a human instead of going red', () => {
     const [row] = await adapter.list({})
     // the contract turns a receipted complete() into «ждёт человека» — the card the screen shows
     expect(row.status).toBe('awaiting_approval')
-    expect(order).toEqual(['spawn'])
+    expect(order).toEqual(['worktree', 'spawn'])
   })
 
   it('a parked question that was never committed is not a question yet', async () => {
@@ -4095,7 +4112,10 @@ describe('строка попытки несёт копию: базу, ветк�
     expect(journalled.some((e: any) => e.type === 'task.worktree_materialized_missing')).toBe(true)
   })
 
-  it('документарная стадия шла без копии — ни пути, ни списка в строке', async () => {
+  it('документарная стадия идёт В КОПИИ — путь, база и ветка стоят в строке попытки', async () => {
+    // ДО 31.08.2026 ЗДЕСЬ УТВЕРЖДАЛОСЬ ОБРАТНОЕ: «шла без копии — ни пути, ни списка». Ровно это
+    // и означало, что ступень пишет в дерево планирования, а строка попытки не может назвать НИ
+    // ОДНОЙ точки отката: откатывать приходилось руками по хэшам, найденным задним числом.
     const adapter = oneTaskAdapter(stageTask({ kind: 'document', stage: 'plan', phase: 12 }))
     const { deps, attempts } = stageDeps({
       adapter,
@@ -4109,9 +4129,9 @@ describe('строка попытки несёт копию: базу, ветк�
 
     expect(res.completed).toBe('ST-1')
     const row = attempts.find((a) => a.outcome === 'completed')
-    expect(row.worktreePath).toBeUndefined()
-    expect(row.materialized).toBeUndefined()
-    expect(row.base).toBeUndefined()
+    expect(row.worktreePath).toBe('/repo')
+    expect(row.branch).toBe('wt/ST-1')
+    expect(row.base).toBe('base1234')
   })
 })
 
@@ -5907,7 +5927,9 @@ describe('дверь «работа уже сделана» спрашивает
     const seen: { verb: string; args: string[]; cwd: string }[] = []
     const { deps, journalled } = stageDeps({
       adapter,
-      verbRunner: recordingRunner(seen, {}),
+      // копия провизится и документарной ступени — верб обязан ответить путём, иначе тик честно
+      // откажется запускать работника в каталог, которого никто не делал
+      verbRunner: recordingRunner(seen, { worktree: STAGE_WORKTREE }),
       deps: {
         fsImpl: makeFs({ [`${PHASE_DIR}/12-01-PLAN.md`]: '# plan' }),
         execGit: makeGit({ '.planning/phases/12-front/12-01-PLAN.md': 'abc1234' }),
