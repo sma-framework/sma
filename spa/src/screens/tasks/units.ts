@@ -192,6 +192,35 @@ const IDLE_WORDS: Record<string, string> = {
   pipeline_off: 'Конвейер выключен — задача не начнётся, пока не включите тумблер',
   windows_closed: 'Все окна подписок закрыты — ждёт окна (платный канал не настроен)',
   budget_stop: 'Платный канал исчерпан на месяц — ждёт окна подписки',
+  // Запасные слова: состав удержания приезжает отдельным полем и говорит точнее — но код
+  // причины без состава (строка старее поля) обязан оставаться предложением, а не пустотой.
+  files_busy: 'Её файлы заняты идущей работой — пойдёт следующей, а не одновременно',
+}
+
+/** Сколько путей называется в строке. Остальные названы числом, а не отброшены молча. */
+const HELD_FILES_SHOWN = 2
+
+/**
+ * heldWords(held) → «Ждёт файла: … — его держит «…»» или `null`, когда никто ничего не держит.
+ *
+ * ПОЧЕМУ ЭТО ОТДЕЛЬНОЕ ПРЕДЛОЖЕНИЕ, А НЕ ЯРЛЫК. Очередь придерживает работу, чьи объявленные
+ * файлы уже заняты идущей: две работы про один файл — это не «параллельно», а «последовательно
+ * с ручным разводом в конце». Но человек, читающий «в очереди · место 3» при свободных
+ * работниках, идёт искать поломку там, где её нет. Названные файл и держатель отвечают сразу
+ * на оба вопроса — почему стоит и когда пойдёт: как только освободится названная работа.
+ */
+function heldWords(held: QueueRow['heldBy']): string | null {
+  const files = held?.files ?? []
+  if (files.length === 0) return null
+  const shown = files.slice(0, HELD_FILES_SHOWN).join(' · ')
+  const rest = files.length - Math.min(files.length, HELD_FILES_SHOWN)
+  const first = held?.holders?.[0]
+  const who = first ? `«${first.title ?? first.id}»` : 'идущая работа'
+  const more = (held?.holders?.length ?? 0) - 1
+  return (
+    `Ждёт своей очереди к файлам: ${shown}${rest ? ` … ещё ${rest}` : ''} — ` +
+    `их держит ${who}${more > 0 ? ` и ещё ${more}` : ''}`
+  )
 }
 
 /**
@@ -497,7 +526,12 @@ function batchUnit(row: BatchRow): WorkUnit {
  * стоял возраст ожидания, и строка, которой никто не занимался, читалась как работающая час.
  */
 function queueUnit(row: QueueRow, awaiting: boolean): WorkUnit {
-  const idle = row.idleReason ? IDLE_WORDS[row.idleReason] : null
+  // СОСТАВ УДЕРЖАНИЯ ГОВОРИТ ТОЧНЕЕ КОДА ПРИЧИНЫ — но только там, где дверь назвала причиной
+  // именно его. Приоритет уже разрешён у двери: при выключенном конвейере стоит ВСЯ очередь, и
+  // «ждёт файла» поверх этого было бы правдой, отвечающей не на тот вопрос. Второе мнение об
+  // этом здесь разошлось бы с первым в первый же день.
+  const held = row.idleReason === 'files_busy' ? heldWords(row.heldBy) : null
+  const idle = held ?? (row.idleReason ? IDLE_WORDS[row.idleReason] : null)
   const waited = waitWords(row.agedForHours)
   return {
     id: row.id,

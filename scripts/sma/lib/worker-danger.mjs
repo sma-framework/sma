@@ -119,7 +119,14 @@ const reCheckoutPaths = new RegExp('\\b' + GIT + '\\s+' + CHECKOUT_VERB + '\\s+-
 const reRestore = new RegExp('\\b' + GIT + '\\s+' + RESTORE_VERB + '\\b([^&|;]*)')
 const reBranchDelete = new RegExp('\\b' + GIT + '\\s+' + BRANCH_VERB + '\\s+(?:-D|--delete\\s+--force|--delete|-D\\s+-f|-f\\s+-D)\\b')
 const reRebase = new RegExp('\\b' + GIT + '\\s+' + REBASE_VERB + '\\b([^&|;]*)')
-const reMerge = new RegExp('\\b' + GIT + '\\s+' + MERGE_VERB + '\\b([^&|;]*)')
+// ГЛАГОЛ РОВНО `merge`, А НЕ НАЧАЛО ДРУГОГО. Со словарной границей `\b` сюда попадали и
+// `merge-base`, и `merge-tree` — оба НИЧЕГО не двигают: первый печатает имя общего предка,
+// второй считает слияние в памяти и не трогает ни одной ссылки. Замерено 31.08.2026: оба
+// вопроса, заданные ради того, чтобы УЗНАТЬ состав будущего конфликта, вставали на парковку и
+// умирали по сроку ожидания — то есть охрана мешала ровно той разведке, ради которой она стоит.
+// САМО СЛИЯНИЕ ЭТИМ НЕ РАЗРЕШЕНО и разрешено не будет: оно остаётся решением человека, а
+// работник сводит ветку с вершиной не рукой, а глаголом (`cli.mjs sync-branch`).
+const reMerge = new RegExp('\\b' + GIT + '\\s+' + MERGE_VERB + '(?![-\\w])([^&|;]*)')
 const reTag = new RegExp('\\b' + GIT + '\\s+' + TAG_VERB + '\\b([^&|;]*)')
 const reRemote = new RegExp('\\b' + GIT + '\\s+' + REMOTE_VERB + '\\b([^&|;]*)')
 const reConfig = new RegExp('\\b' + GIT + '\\s+' + CONFIG_VERB + '\\b([^&|;]*)')
@@ -152,13 +159,13 @@ const reNetExec =
   /\b(curl|wget|iwr|Invoke-WebRequest|Invoke-RestMethod)\b[^\n]*\|\s*(sudo\s+)?(sh|bash|zsh|dash|python3?|node|iex|Invoke-Expression)\b/i
 
 /**
- * Части составной команды: оболочечные соединители плюс тела подстановок.
+ * Тела подстановок, вынутые из текста: `{outer, bodies}`.
  * Подстановка разбирается ОТДЕЛЬНОЙ частью, а не остаётся текстом внутри внешней:
  * `echo "$(<опасное>)"` иначе читалось бы как безобидный вывод строки.
  */
-function commandParts(command) {
+function liftSubstitutions(text) {
   const bodies = []
-  let outer = String(command)
+  let outer = String(text)
   // Один проход по самым внутренним подстановкам, затем ещё раз по тому, что осталось:
   // двух хватает для форм, которые встречаются в живых командах, и цикл конечен.
   for (let pass = 0; pass < 2; pass += 1) {
@@ -175,12 +182,83 @@ function commandParts(command) {
     })
     if (!changed) break
   }
-  const pieces = [outer, ...bodies]
+  return { outer, bodies }
+}
+
+/** Открывающая метка встроенного документа: `<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`, `<<\EOF`. */
+const reHeredocOpen = /<<-?\s*(?:'([^']*)'|"([^"]*)"|(\\?)([A-Za-z_][A-Za-z0-9_]*))/
+
+/** Толкователь на строке-заголовке: тело такого документа — КОМАНДЫ, а не данные. */
+const reInterpreter = /(^|[\s(|&;])(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|node|python3?|ruby|perl|php|iex|Invoke-Expression)\b/i
+
+/**
+ * liftHeredocs(command) → `{outer, scan}` — команда без тел встроенных документов и то из
+ * этих тел, что всё-таки нужно разобрать как команды.
+ *
+ * ЗАЧЕМ. Тело `<<'EOF'`, отданное не толкователю, — это ДАННЫЕ: git читает его как текст
+ * сообщения коммита и не исполняет ни строки. Разобранное построчно, оно читалось как
+ * команды, а обратные кавычки внутри — как подстановка; сообщение коммита, назвавшее
+ * глагол слияния (а на этой самой работе его называет каждое второе), вставало на парковку
+ * и умирало по сроку ожидания человека. Замерено 31.08.2026 в живой сессии: работник
+ * потерял готовый коммит на фразе о слиянии в собственной пояснительной записке.
+ *
+ * ГРАНИЦА ЭТИМ НЕ ОСЛАБЛЕНА, и три случая разведены нарочно:
+ *   - на строке-заголовке есть толкователь (`bash <<EOF`, `cat <<'EOF' | sh`) — тело
+ *     ИСПОЛНЯЕТСЯ, и оно разбирается как команды целиком. Заголовок смотрится ВЕСЬ, а не
+ *     до `<<`: толкователь бывает и справа, за трубой;
+ *   - метка не в кавычках (`<<EOF`) — оболочка раскроет `$(…)` и обратные кавычки ещё до
+ *     того, как данные куда-то поедут, поэтому подстановки из тела разбираются, а простые
+ *     строки — нет;
+ *   - метка в кавычках и толкователя нет — тело не исполняется ничем и не судится.
+ *
+ * НЕЗАКРЫТЫЙ ДОКУМЕНТ НЕ ВЫНИМАЕТСЯ ВОВСЕ. Не нашлась метка конца — строка остаётся как
+ * была и судится обычным порядком: ошибаться здесь можно только в сторону лишнего разбора.
+ * По той же причине метка конца узнаётся по обрезанной строке, а не по точному равенству:
+ * документ, закрытый РАНЬШЕ, чем думал автор, отдаёт остаток на разбор, а не прячет его.
+ */
+function liftHeredocs(command) {
+  const lines = String(command).split('\n')
+  const kept = []
+  const scan = []
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+    const open = reHeredocOpen.exec(line)
+    if (!open) {
+      kept.push(line)
+      continue
+    }
+    const marker = open[1] ?? open[2] ?? open[4]
+    const quoted = open[1] !== undefined || open[2] !== undefined || open[3] === '\\'
+    let end = -1
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if (lines[j].trim() === marker) { end = j; break }
+    }
+    if (end === -1) {
+      kept.push(line)
+      continue
+    }
+    // Заголовок остаётся без самой метки: команда, ПРИНИМАЮЩАЯ документ, судится как всегда.
+    kept.push(line.slice(0, open.index) + line.slice(open.index + open[0].length))
+    const body = lines.slice(i + 1, end).join('\n')
+    if (reInterpreter.test(line)) scan.push(body)
+    else if (!quoted) scan.push(liftSubstitutions(body).bodies.join('\n'))
+    i = end
+  }
+  return { outer: kept.join('\n'), scan }
+}
+
+/** Части составной команды: оболочечные соединители, тела подстановок и то из встроенных
+ *  документов, что исполняется. */
+function commandParts(command) {
+  const { outer, scan } = liftHeredocs(command)
   const out = []
-  for (const piece of pieces) {
-    for (const part of String(piece).split(/&&|\|\||[;|\n]/)) {
-      const t = part.trim()
-      if (t) out.push(t)
+  for (const source of [outer, ...scan]) {
+    const lifted = liftSubstitutions(source)
+    for (const piece of [lifted.outer, ...lifted.bodies]) {
+      for (const part of String(piece).split(/&&|\|\||[;|\n]/)) {
+        const t = part.trim()
+        if (t) out.push(t)
+      }
     }
   }
   return out

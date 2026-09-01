@@ -10,6 +10,13 @@
  *   2. bring the branch into the WORKING TREE WITHOUT COMMITTING IT
  *                                             (`merge --no-ff --no-commit`; mock/real execGit —
  *                                              NEVER a push, NEVER a deploy)
+ *   2a. A CONFLICT IS NAMED, AND THE MECHANICAL HALF OF IT IS SETTLED WITHOUT A PERSON
+ *                                             (branch-sync.mjs: `conflictedFiles` asks git
+ *                                              WHICH files, `resolveMechanical` rebuilds what
+ *                                              is generated and keeps BOTH appended paragraphs
+ *                                              where both sides only appended). Anything left
+ *                                              travels out by NAME and by COUNT — never again
+ *                                              as one line of «Command failed».
  *   3. ask whether there was anything to bring at all (`rev-parse -q --verify MERGE_HEAD`).
  *      Nothing to bring is SAID, never dressed up as a run that happened.
  *   4. run the injected tests ON THE MERGED WORKING TREE. There is no result sha at this
@@ -70,6 +77,7 @@ import { execFileSync } from 'node:child_process'
 import { claimSlot, releaseSlot, readClaims } from './claims.mjs'
 import { appendEvent } from './journal.mjs'
 import { MERGE_CLAIM_TTL_MS, MERGE_SLOT_NAME } from './constants.mjs'
+import { conflictedFiles, conflictWords, resolveMechanical, MECHANICAL_DEFAULTS } from './branch-sync.mjs'
 import { checkEnvironmentFitness } from './deps-guard.mjs'
 
 // Re-export the slot name so consumers import the merge contract from one place.
@@ -290,6 +298,23 @@ export async function runMerge(o = {}) {
   // aborted. It is what the catch block below reads to know whether there is a half-merge to
   // undo — «откатываемо» is not the same thing as «видно, к чему откатывать».
   let mergeInTree = false
+  /**
+   * ЧТО ИМЕННО НЕ СОШЛОСЬ — заполняется при конфликте и читается общим catch ниже.
+   *
+   * До этого поля конфликт доезжал до человека как «слияние не прошло: Command failed»: имя
+   * файла в этой строке отсутствовало, и приёмщик КАЖДЫЙ РАЗ выяснял состав конфликта сам,
+   * руками, в чужой копии. Замерено 31.08.2026 на пяти приёмках подряд.
+   */
+  let conflictDetail = null
+  /** Что развелось механически по дороге — едет в квитанцию, а не остаётся молчаливым. */
+  let mechanicallyResolved = []
+  /**
+   * …И С КАКОЙ ОГОВОРКОЙ. Развод, прошедший вопреки отказу команды пересборки («аудитор вернул
+   * ненулевой код, но обе стороны пересобрались в одно»), и развод, прошедший гладко, — разные
+   * события. Квитанция, называющая их одинаково, врёт ровно тому читателю, ради которого она
+   * пишется; на пути отказа эти строки едут как `conflictNotes` — здесь у них та же цена.
+   */
+  let mechanicalNotes = []
   try {
     if (!branch || typeof branch !== 'string') return { ok: false, message: 'no-branch' }
 
@@ -312,7 +337,35 @@ export async function runMerge(o = {}) {
     //     STILL leaves the tree half-merged, so a flag set on the success path would leave
     //     exactly the conflict case — the likeliest one of all — without an undo.
     mergeInTree = true
-    execGit(['merge', '--no-ff', '--no-commit', branch], { cwd })
+    try {
+      execGit(['merge', '--no-ff', '--no-commit', branch], { cwd })
+    } catch (err) {
+      // (2a) КОНФЛИКТ НАЗЫВАЕТСЯ ПО ИМЕНАМ, И МЕХАНИЧЕСКОЕ РАЗВОДИТСЯ БЕЗ ЧЕЛОВЕКА.
+      //
+      // Раньше отсюда был ровно один путь — наружу, в общий catch, и человек получал первую
+      // строку ошибки git. Теперь сначала задаётся вопрос самому git («что осталось в
+      // конфликте»), потом разводится то, что разводится БЕЗ ВЫБОРА: сгенерированное
+      // пересобирается своей командой, абзац, дописанный обеими сторонами, остаётся обоими
+      // абзацами. Если после этого не осталось НИЧЕГО — ритуал идёт дальше как ни в чём не
+      // бывало, и прогон тестов ниже проверяет именно разведённое дерево. Если осталось хоть
+      // что-то — падаем наружу, но уже с именами файлов и их числом.
+      const found = conflictedFiles({ cwd, execGit })
+      if (!found.answered || found.count === 0) throw err
+      const fixed = resolveMechanical({ cwd, execGit, files: found.files, rules: o.mechanicalRules ?? MECHANICAL_DEFAULTS, io: o.io, run: o.run })
+      if (fixed.remaining.length > 0) {
+        conflictDetail = {
+          conflict: true,
+          conflictFiles: fixed.remaining,
+          conflictCount: fixed.remaining.length,
+          ...(fixed.resolved.length ? { conflictResolved: fixed.resolved } : {}),
+          ...(fixed.notes.length ? { conflictNotes: fixed.notes } : {}),
+          words: conflictWords({ files: fixed.remaining, count: fixed.remaining.length }),
+        }
+        throw err
+      }
+      mechanicallyResolved = fixed.resolved
+      mechanicalNotes = fixed.notes
+    }
 
     // (3) was there anything to bring? An `--no-commit` merge of a branch that is already in
     //     the tree leaves NO MERGE_HEAD and nothing staged. That is not a run and not a
@@ -522,6 +575,11 @@ export async function runMerge(o = {}) {
       repo: cwd,
       testsPassed,
       ...(testsPassed === null ? { testsNote } : {}),
+      // ЧТО РАЗВЕЛОСЬ БЕЗ ЧЕЛОВЕКА — в квитанции, потому что автоматический развод, о котором
+      // никто не узнал, неотличим от слияния, где спора не было вовсе. Оговорка развода едет
+      // рядом: «прошло вопреки отказу команды» — это не то же самое, что «прошло гладко».
+      ...(mechanicallyResolved.length ? { mechanicallyResolved } : {}),
+      ...(mechanicalNotes.length ? { mechanicalNotes } : {}),
     }
     try {
       appendEvent(
@@ -540,6 +598,8 @@ export async function runMerge(o = {}) {
       merged: true,
       testsPassed,
       ...(testsPassed === null ? { testsNote } : {}),
+      ...(mechanicallyResolved.length ? { mechanicallyResolved } : {}),
+      ...(mechanicalNotes.length ? { mechanicalNotes } : {}),
       branch,
       resultSha: resultSha || null,
       receipt,
@@ -564,9 +624,23 @@ export async function runMerge(o = {}) {
         /* best-effort */
       }
     }
+    // ИМЕНА ФАЙЛОВ ЕДУТ ВПЕРЕДИ ПРОЗЫ GIT. `message` читают и человек, и классификатор отказов
+    // (mergeRefusal): поставленный первым, состав конфликта попадает даже туда, где строку
+    // обрезают по длине. Поля `conflictFiles`/`conflictCount` рядом — для читателя, которому
+    // нужен список, а не предложение.
+    const said = err && err.message ? String(err.message) : 'merge-failed'
     return {
       ok: false,
-      message: err && err.message ? String(err.message) : 'merge-failed',
+      message: conflictDetail ? `${conflictDetail.words} — ${said}` : said,
+      ...(conflictDetail
+        ? {
+            conflict: true,
+            conflictFiles: conflictDetail.conflictFiles,
+            conflictCount: conflictDetail.conflictCount,
+            ...(conflictDetail.conflictResolved ? { conflictResolved: conflictDetail.conflictResolved } : {}),
+            ...(conflictDetail.conflictNotes ? { conflictNotes: conflictDetail.conflictNotes } : {}),
+          }
+        : {}),
       ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
     }
   }

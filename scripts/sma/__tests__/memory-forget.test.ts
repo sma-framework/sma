@@ -313,15 +313,25 @@ describe('memory forget — one command, and it says which state it applied', ()
     // verb — `/sma-start` now prints what SMA will do in this repository BEFORE its first
     // question, and a map that has to be rendered before anything is asked is a command a
     // person can run themselves, not a paragraph inside a workflow.
-    // It is 98 for the SEVENTH time in the same shape: the fleet window's front door arrived as
-    // its own verb. The window's auth was never the problem — the token on every route and the
-    // HttpOnly cookie stand untouched; what was missing was any command that performed the one
-    // sanctioned exchange, so opening your own window meant lifting a token out of a config file
-    // and assembling an address by hand after every daemon restart.
+    // It is 99 for the SEVENTH time in the same shape, and this time the shape arrived whole
+    // TWICE OVER — two verbs landed from two lines of work, and each side pinned 98, counting
+    // only its own arrival:
+    //   - the branch-sync door — a worker owes the trunk brought into its branch BEFORE it hands
+    //     the work over, and the bare merge verb is refused to it by the launch arguments on
+    //     purpose. A duty with nothing to perform it with is a paragraph, not a duty, so the
+    //     duty got a verb;
+    //   - the fleet window's front door. The window's auth was never the problem — the token on
+    //     every route and the HttpOnly cookie stand untouched; what was missing was any command
+    //     that performed the one sanctioned exchange, so opening your own window meant lifting a
+    //     token out of a config file and assembling an address by hand after every daemon
+    //     restart.
+    // The pin is the SUM of what actually landed, never one side's figure — which is the whole
+    // reason this number is pinned rather than floored, and it is the SEVENTH time it has been
+    // said in this comment.
     // The claim this case actually makes is the line below it: the deletion surface stayed a
     // SUBCOMMAND of the corpus namespace and never grew a top-level key, which is what a count
     // alone could never say.
-    expect(keys).toBe(98)
+    expect(keys).toBe(99)
     // and the handler that WOULD have been added is absent by name
     expect(block).not.toContain('forget')
   })

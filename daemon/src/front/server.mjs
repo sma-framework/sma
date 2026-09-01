@@ -127,6 +127,9 @@ import {
 } from '../queue/run-dir.mjs'
 import { approvalWall, defaultEnvelope } from '../queue/capability-envelope.mjs'
 import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
+// СКОЛЬКО ИМЁН КОНФЛИКТА ПОКАЗЫВАТЬ — потолок один на весь продукт и живёт там, где живёт сам
+// словарь конфликта. Второе число здесь однажды разошлось бы с тем, от которого считается «ещё N».
+import { CONFLICT_FILES_CAP as MERGE_CONFLICT_FILES_SHOWN } from '../../../scripts/sma/lib/branch-sync.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
 import { writeWaveHold, WAVE_ACTIONS } from '../queue/wave-holds.mjs'
 import { BATCH_DECISIONS, parseReceiptProof, projectOf } from './state.mjs'
@@ -1077,6 +1080,22 @@ async function handleTask({ res, params, config, deps }) {
     // научилась нести вердикт, обязаны молчать, а не показывать пустую шестёрку.
     runDir: a.runDir ?? null,
     parity: a.parity ?? null,
+    // ═══ СВЕДЕНА ЛИ ВЕТКА С ВЕРШИНОЙ — И ЕСЛИ НЕТ, ЧТО ИМЕННО НЕ СОШЛОСЬ ═════════
+    //
+    // Дверь сдачи сводит ветку работника с вершиной в его собственной копии и кладёт ответ
+    // на строку попытки: с какой вершиной сводили, на сколько она уехала, свелось ли, что
+    // развелось без человека и — если не свелось — имена оставшихся файлов с их числом.
+    //
+    // ДО ЭТОЙ СТРОКИ ОТВЕТ НЕ ВИДЕЛ НИКТО. Он вычислялся, записывался в долговечную строку —
+    // и упирался в дверь карточки, которая его не называла: приёмщик узнавал о споре только
+    // ПОСЛЕ того, как нажал «принять» и слияние отказало. Ровно тот случай, ради которого
+    // поле и клали на строку: копию после приёмки выметают, и к моменту вопроса ответа уже
+    // нет. Вычислено и записано — не то же самое, что предъявлено.
+    //
+    // Отдано КАК ЕСТЬ и явным выбором, как всё выше. `null` — «попытка об этом молчит»
+    // (сдача до появления поля, попытка, которой нечего было сводить), и это НЕ то же самое,
+    // что «сведена»: молчание не имеет права читаться как чистая ветка.
+    sync: a.sync ?? null,
     // ═══ ЧЕГО ЭТА ПОПЫТКА СТОИЛА ════════════════════════════════════════════════
     //
     // Четыре числа поставщика — вход, выход, чтение кэша и запись в кэш — как их записала
@@ -1222,6 +1241,9 @@ async function handleTask({ res, params, config, deps }) {
       // опущены, по той же причине, что и шесть полей выше.
       runDir: null,
       parity: null,
+      // Ветку сводят с вершиной у двери сдачи, то есть когда попытка ЗАКАНЧИВАЕТСЯ, — у идущей
+      // ответа ещё нет. Назван нулём, а не опущен, по той же причине, что и поля выше.
+      sync: null,
       // Четыре числа поставщика приезжают в квитанцию, когда попытка ЗАКАНЧИВАЕТСЯ: у идущей
       // финального кадра ещё не было, и назвать её расход можно было бы только выдумав его.
       tokens: null,
@@ -1906,12 +1928,33 @@ async function handleEnqueue({ req, res, config, deps }) {
  * sentence names the terminal holding the slot and the command that frees a hung one, and a
  * paraphrase would drop both.
  *
+ * И ЕЩЁ ОДНО, ПОВЕРХ ЛЮБОГО КЛАССА: В КАКОМ СОСТОЯНИИ ОСТАЛОСЬ ОБЩЕЕ ДЕРЕВО. Ритуал слияния
+ * откатывает незафиксированное слияние на КАЖДОМ отказе — конфликт, красный прогон, непригодная
+ * среда, — и только когда сам откат не удался, возвращает `unfinishedMerge` вместе с командой
+ * выхода. До этого хвоста ни то, ни другое до экрана не доезжало: человек читал «конфликт в двух
+ * файлах», нажимал ещё раз, получал «в рабочем дереве есть несохранённые правки» — и шёл
+ * выяснять руками, что общая копия стоит в незавершённом слиянии. Полусведённое общее дерево —
+ * самая дорогая из всех неназванных вещей в этом файле, поэтому оно называется на любом отказе,
+ * а не только на том, который его породил.
+ *
  * @param {object|null|undefined} merge — whatever the merge verb returned
  * @returns {{reasonCode: string, reason: string}}
  */
 export function mergeRefusal(merge) {
   const m = merge && typeof merge === 'object' ? merge : {}
+  const said = refusalClass(m)
+  if (!m.unfinishedMerge) return said
+  const exit = typeof m.howToClear === 'string' && m.howToClear.trim() ? m.howToClear.trim() : null
+  return {
+    ...said,
+    reason:
+      `${said.reason}; ⚠ ОБЩЕЕ ДЕРЕВО ОСТАЛОСЬ В НЕЗАВЕРШЁННОМ СЛИЯНИИ` +
+      (exit ? ` — ${exit}` : ' — откатить его не удалось, и команда выхода не названа'),
+  }
+}
 
+/** Класс отказа — то, что решает, ЧТО человеку делать дальше. Хвост о дереве добавляет звонящий. */
+function refusalClass(m) {
   if (m.softDenied) {
     const said = typeof m.override === 'string' && m.override.trim() ? m.override : null
     const holder = m.holder && m.holder.by ? m.holder.by : 'другой терминал'
@@ -1972,6 +2015,44 @@ export function mergeRefusal(merge) {
   const said = typeof m.message === 'string' ? m.message.trim() : ''
   const firstLine = said.split('\n')[0].slice(0, 200)
 
+  // КОНФЛИКТ, НАЗВАННЫЙ САМИМ РИТУАЛОМ — по именам файлов и по их числу. Ритуал спрашивает
+  // git, ЧТО осталось неразведённым, и кладёт список в ответ; до этой ветки человек получал
+  // «конфликт с основным деревом» без единого имени и КАЖДЫЙ РАЗ выяснял состав сам (замерено
+  // 31.08.2026 на пяти приёмках подряд). Если часть конфликта ритуал развёл механически —
+  // сказано и это: иначе автоматический развод неотличим от слияния, где спора не было.
+  if (m.conflict === true && Array.isArray(m.conflictFiles) && m.conflictFiles.length > 0) {
+    const shown = m.conflictFiles.slice(0, MERGE_CONFLICT_FILES_SHOWN)
+    const rest = Math.max(0, m.conflictFiles.length - shown.length)
+    const n = Number.isFinite(m.conflictCount) ? m.conflictCount : m.conflictFiles.length
+    // «УЖЕ РАЗВЕДЕНО» БЫЛО НЕПРАВДОЙ РОВНО ЗДЕСЬ. Ритуал разводит механическое в рабочем
+    // дереве, а потом, не досчитавшись развода остального, ОТКАТЫВАЕТ слияние целиком — вместе
+    // с этим разводом. Человек читал «механическое уже разведено» и понимал это как работу,
+    // которая уже лежит в дереве и которую он унаследует; в дереве не лежало ничего. Тот же
+    // верб сведения (`sync-branch`) называет судьбу разведённого двумя разными фразами именно
+    // потому, что одна фраза на два исхода — враньё о состоянии дерева. Здесь говорится то, что
+    // верно при любом исходе отката: эти файлы разводятся САМИ, и в работу человека не входят.
+    const settled = Array.isArray(m.conflictResolved) && m.conflictResolved.length
+      ? ` (механическое разводится САМО и рук не требует: ${m.conflictResolved.map((r) => r && r.file).filter(Boolean).join(' · ')})`
+      : ''
+    // …А ПОЧЕМУ ОСТАЛЬНОЕ НЕ РАЗВЕЛОСЬ — вопрос, с которого начинается КАЖДЫЙ разбор: файл,
+    // похожий на механический (карта замера, README), в списке спора выглядит как поломка
+    // развода, пока не сказано, что стороны пересобрались в РАЗНОЕ или что правили существующие
+    // строки. Ритуал это уже выяснил и положил в `conflictNotes`; до этой строки оговорки
+    // доезжали только до квитанции слияния, то есть не до того, кто нажимает «принять».
+    const notes = (Array.isArray(m.conflictNotes) ? m.conflictNotes : [])
+      .filter((s) => typeof s === 'string' && s.trim())
+      .map((s) => s.trim().slice(0, 160))
+    const why = notes.length
+      ? `; почему не развелось: ${notes.slice(0, 2).join(' | ')}${notes.length > 2 ? ` … ещё ${notes.length - 2}` : ''}`
+      : ''
+    return {
+      reasonCode: 'conflict',
+      reason:
+        `ветка работника не сливается: конфликт в ${n} файл(ах) — ` +
+        `${shown.join(' · ')}${rest ? ` … ещё ${rest}` : ''}${settled}; ` +
+        `остальное разводит человек${why}`,
+    }
+  }
   if (/CONFLICT|merge conflict|fix conflicts|Automatic merge failed/i.test(said)) {
     return {
       reasonCode: 'conflict',

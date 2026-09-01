@@ -53,6 +53,24 @@ describe('classifyForWorker — классы, которых у подушки �
     expect(cls('git tag -a v9.9.9 -m release')).toBe('tag')
   })
 
+  it('слияние остаётся решением человека, КУДА БЫ ни вело', () => {
+    expect(cls('git merge main')).toBe('merge')
+    expect(cls('git merge --no-ff --no-commit main')).toBe('merge')
+    expect(cls('git merge wt/BL-1')).toBe('merge')
+    // Выход из начатого слияния безопасен, как и был: он ничего не приносит.
+    expect(cls('git merge --abort')).toBe(null)
+  })
+
+  it('ВОПРОСЫ о слиянии ничего не двигают и не паркуются', () => {
+    // `merge-base` печатает имя общего предка, `merge-tree` считает слияние в памяти — ни один
+    // не трогает ни ссылки, ни рабочего дерева. Оба ловились словарной границей `\b`, и обоих
+    // это стоило полного срока ожидания человека (замерено 31.08.2026) — то есть охрана мешала
+    // ровно той разведке, ради которой она и стоит.
+    expect(cls('git merge-base HEAD main')).toBe(null)
+    expect(cls('git merge-tree --write-tree HEAD main')).toBe(null)
+    expect(cls('git merge-base --is-ancestor main wt/BL-1')).toBe(null)
+  })
+
   it('публикация пакета и выпуск релиза опасны', () => {
     expect(cls('npm publish --access public')).toBe('publish')
     expect(cls('gh release create v1.2.3')).toBe('publish')
@@ -114,6 +132,53 @@ describe('classifyForWorker — составная команда', () => {
   it('составная безопасная остаётся безопасной', () => {
     expect(cls('git add -A && git commit -m "wip" && git status')).toBe(null)
     expect(cls('git log --oneline | head -20')).toBe(null)
+  })
+})
+
+describe('classifyForWorker — встроенный документ: данные или команды', () => {
+  /** Читается как живая команда: заголовок, тело, метка конца. */
+  const doc = (...lines: string[]) => lines.join('\n')
+
+  it('тело документа, отданное НЕ толкователю, — данные: сообщение коммита не опасно', () => {
+    // Замерено 31.08.2026: работник потерял готовый коммит на собственной пояснительной
+    // записке — она называла глагол слияния, и охрана поставила коммит на парковку.
+    const command = doc(
+      "git commit -q -F - <<'EOF'",
+      'fix(guard): охрана перестала путать текст с командой',
+      '',
+      'Работнику запрещён голый глагол слияния (git merge), и это верно; но НАЗВАТЬ его',
+      'в сообщении коммита он обязан — иначе история молчит о том, что делает код.',
+      'EOF',
+    )
+    expect(cls(command)).toBe(null)
+  })
+
+  it('обратные кавычки внутри такого тела не читаются как подстановка', () => {
+    const command = doc(
+      "git commit -F - <<'EOF'",
+      'дверь сведения зовётся `git merge --no-ff --no-commit main` и живёт внутри верба',
+      'EOF',
+    )
+    expect(cls(command)).toBe(null)
+  })
+
+  it('тело, отданное ТОЛКОВАТЕЛЮ, остаётся командами — и справа за трубой тоже', () => {
+    expect(cls(doc("bash <<'EOF'", 'git push origin HEAD', 'EOF'))).toBe('push')
+    expect(cls(doc("cat <<'EOF' | sh", 'git tag -a v1 -m x', 'EOF'))).toBe('tag')
+  })
+
+  it('метка НЕ в кавычках: подстановка из тела исполнится, простая строка — нет', () => {
+    // `<<EOF` без кавычек оболочка раскрывает ещё до того, как данные куда-то поедут.
+    expect(cls(doc('git commit -F - <<EOF', 'итог: $(git push origin HEAD)', 'EOF'))).toBe('push')
+    expect(cls(doc('git commit -F - <<EOF', 'этот коммит про git push и только про него', 'EOF'))).toBe(null)
+  })
+
+  it('незакрытый документ не вынимается вовсе — разбор идёт как раньше', () => {
+    expect(cls(doc("git commit -F - <<'EOF'", 'git push origin HEAD'))).toBe('push')
+  })
+
+  it('команда, ПРИНИМАЮЩАЯ документ, судится как всегда', () => {
+    expect(cls(doc("git push origin HEAD <<'EOF'", 'текст', 'EOF'))).toBe('push')
   })
 })
 

@@ -100,6 +100,9 @@ import {
   batchHeldOf,
   waveAddressOf,
   waveHeldOf,
+  // Третье правило удержания той же формы: работы, чьи объявленные файлы уже заняты идущей
+  // работой, выдаются ПОСЛЕДОВАТЕЛЬНО, а не веером от одной вершины.
+  fileHeldOf,
   batchDecisionsOf,
   DEFAULT_EXPIRE_MS,
   // The attempt border and the queue's own last word about a row it will not hand out again —
@@ -731,12 +734,15 @@ export function createPgBossQueue({
    * FAIL-OPEN. A release that cannot run costs this pass its batch progress — the next claim
    * tries again — and never the claim of ordinary work, which is why it can never throw here.
    */
-  async function releaseBatchTurns(rows) {
+  async function releaseBatchTurns(rows, heldByAny) {
     const items = rows.filter((r) => r && r.batchId && !isBatchParent(r) && r.status === 'queued')
     if (items.length === 0) return
-    const held = batchHeldOf(rows)
+    // ЧЬЯ ОЧЕРЕДЬ — И НЕ ДЕРЖИТ ЛИ ЕГО КТО-ТО ЕЩЁ. Кусок партии, чей черёд пришёл, но чей файл
+    // занят идущей работой, остаётся на месте: иначе одно правило выпускало бы то, что другое
+    // только что придержало.
+    const held = heldByAny instanceof Set ? heldByAny : new Set(batchHeldOf(rows))
     for (const item of items) {
-      if (held.includes(item.id)) continue
+      if (held.has(item.id)) continue
       try {
         await runSql(
           `UPDATE pgboss.job SET start_after = now()
@@ -766,11 +772,10 @@ export function createPgBossQueue({
    * FAIL-OPEN, like its twin: a statement that cannot run costs this pass its stop and never the
    * claim of ordinary work.
    */
-  async function applyWaveHolds(rows, holds) {
+  async function applyWaveHolds(rows, holds, heldByAny) {
     const governed = rows.filter((r) => r && r.status === 'queued' && !isBatchParent(r) && waveAddressOf(r))
     if (governed.length === 0) return
     const stopped = new Set(waveHeldOf(rows, holds))
-    const batchHeld = new Set(batchHeldOf(rows))
     for (const r of governed) {
       try {
         if (stopped.has(r.id)) {
@@ -779,7 +784,10 @@ export function createPgBossQueue({
                WHERE data->>'id' = $1 AND state = 'created' AND start_after <= now()`,
             [r.id, HELD_UNTIL],
           )
-        } else if (!batchHeld.has(r.id)) {
+        } else if (!heldByAny.has(r.id)) {
+          // ОСВОБОЖДАЕТ ТОЛЬКО ТО, ЧЕГО НЕ ДЕРЖИТ НИКТО. Раньше здесь стояло «кроме партии», и
+          // третье правило удержания (занятые файлы) молча отменялось бы этой же строкой:
+          // одна дверь откладывает, другая тут же возвращает, и работа уезжает всё равно.
           await runSql(
             `UPDATE pgboss.job SET start_after = now()
                WHERE data->>'id' = $1 AND state = 'created' AND start_after > now()`,
@@ -788,6 +796,47 @@ export function createPgBossQueue({
         }
       } catch (err) {
         log(`wave hold not applied to ${r.id}: ${maskError(err)}`)
+      }
+    }
+  }
+
+  /**
+   * applyFileHolds(rows, fileHeld, heldByAny) — придержать работы, чьи объявленные файлы уже
+   * заняты работой, идущей прямо сейчас, и отпустить их, когда файл освободился.
+   *
+   * ТОТ ЖЕ МЕХАНИЗМ, ЧТО У ОСТАНОВЛЕННОЙ ВОЛНЫ, и по той же причине: выборка ЕСТЬ захват, а
+   * значит строку, узнанную после выдачи, отказывать уже нечем. Придержанная строка отложена
+   * на дату, до которой не доходит ни один час, — видна каждому читателю, недостижима ни для
+   * одного работника.
+   *
+   * ОТПУСКАЕТСЯ ТОЛЬКО СВОЁ УДЕРЖАНИЕ. Условие возврата смотрит на ту самую далёкую дату, а не
+   * на «отложено вообще»: отложенной строка бывает и по причинам самой очереди (пауза перед
+   * повтором), и возвращать её оттуда — значит отменять чужую выдержку, о которой это правило
+   * ничего не знает.
+   *
+   * FAIL-OPEN, как оба близнеца: не прошедшее заявление стоит проходу его удержания и никогда —
+   * захвата обычной работы.
+   */
+  async function applyFileHolds(rows, fileHeld, heldByAny) {
+    const governed = rows.filter((r) => r && r.status === 'queued' && !isBatchParent(r))
+    if (governed.length === 0) return
+    for (const r of governed) {
+      try {
+        if (fileHeld.has(r.id)) {
+          await runSql(
+            `UPDATE pgboss.job SET start_after = $2
+               WHERE data->>'id' = $1 AND state = 'created' AND start_after <= now()`,
+            [r.id, HELD_UNTIL],
+          )
+        } else if (!heldByAny.has(r.id)) {
+          await runSql(
+            `UPDATE pgboss.job SET start_after = now()
+               WHERE data->>'id' = $1 AND state = 'created' AND start_after >= $2`,
+            [r.id, HELD_UNTIL],
+          )
+        }
+      } catch (err) {
+        log(`file hold not applied to ${r.id}: ${maskError(err)}`)
       }
     }
   }
@@ -808,8 +857,14 @@ export function createPgBossQueue({
       log(`turn not computed: ${maskError(err)}`)
       return
     }
-    await releaseBatchTurns(rows)
-    await applyWaveHolds(rows, holds)
+    // ОДИН ОТВЕТ НА ВОПРОС «КОГО СЕЙЧАС ВЫДАВАТЬ НЕЛЬЗЯ» — три правила, сложенные в одно
+    // множество, и все три двери читают именно его. Порознь они отменяли бы друг друга:
+    // всякая дверь, отпускающая «всё, кроме своего», отпускает и чужое удержание.
+    const fileHeld = new Set(fileHeldOf(rows))
+    const heldByAny = new Set([...batchHeldOf(rows), ...waveHeldOf(rows, holds), ...fileHeld])
+    await releaseBatchTurns(rows, heldByAny)
+    await applyWaveHolds(rows, holds, heldByAny)
+    await applyFileHolds(rows, fileHeld, heldByAny)
   }
 
   async function claimNext(workerId, { lanes, holds } = {}) {

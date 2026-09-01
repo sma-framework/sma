@@ -151,6 +151,9 @@ import { parseNote } from '../../scripts/sma/lib/frontmatter.mjs'
 import { PIPELINE_DRAFT_KIND } from '../../scripts/sma/lib/write-pipeline.mjs'
 import { smaRoot, tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { WORKTREE_COPIES_DIR } from '../../scripts/sma/lib/constants.mjs'
+// СВЕДЕНИЕ ВЕТКИ С ВЕРШИНОЙ ДО СДАЧИ — тот же ритуал и тот же словарь конфликта, которыми
+// говорит приёмка (merge-gate.mjs зовёт их же). Два выражения в двух файлах разошлись бы молча.
+import { syncWithTrunk, TRUNK_DEFAULT } from '../../scripts/sma/lib/branch-sync.mjs'
 import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { checkEnvironmentFitness } from '../../scripts/sma/lib/deps-guard.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
@@ -5694,6 +5697,100 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
  * `from` names the fine state the task was really in; omitting it (the preflight-«built»
  * door) writes the row with no transition fields rather than an invented pair.
  */
+/**
+ * syncBeforeHandoff(deps, task, worktree) — СВЕСТИ ВЕТКУ С ВЕРШИНОЙ ДО СДАЧИ, в копии
+ * работника, и записать результат туда, где его прочтёт и человек, и строка реестра.
+ *
+ * ЗАЧЕМ. Очередь отводит все работы от ОДНОЙ вершины, а вершина живёт минут двадцать. Замерено
+ * 31.08.2026: за один вечер пять готовых работ из шести не слились с первого раза, и причина
+ * всякий раз была одна — ветка отведена от того, чего к моменту приёмки уже нет. Цена такой
+ * приёмки — либо возврат работнику (полная стоимость подхода заново), либо ручной развод
+ * конфликта приёмщиком, а ручной развод и есть тот способ тихо откатить чужую свежую починку,
+ * от которого дом уже пострадал. Свести — работа СДАЮЩЕГО, и она делается здесь, в его
+ * собственной копии, где не задевает ни общее дерево, ни соседей.
+ *
+ * ПОЧЕМУ У ЭТОЙ ДВЕРИ, А НЕ У КАЖДОГО ГЕЙТА. `completeTask` — единственный вход в «сдано»:
+ * двадцать три выхода тика ведут в него, и правило, поставленное здесь, действует на все, в том
+ * числе на тот, который допишут завтра.
+ *
+ * ТОЛЬКО ТАМ, ГДЕ ЕСТЬ ЧТО СВОДИТЬ, И ЭТО ЧИТАЕТСЯ ИЗ УЖЕ ЗАДАННОГО ВОПРОСА. Попытка, ничего
+ * не тронувшая (ответ словами, отказ до всякой правки), сводилась бы в пустой коммит слияния —
+ * а по коммитам поверх базы гейты и считают, была ли работа вообще. Пустота узнаётся из
+ * `worktree.changed`, снятого строкой выше: git спрашивают ОДИН раз за попытку, и это тоже
+ * закон, а не бережливость — на нём стоят три запертых случая в сьюте тика. Неизвестность
+ * («git не ответил») читается как «не сводим»: слияние в дереве, о котором git молчит, — не то
+ * место, где стоит выяснять, почему он молчит.
+ *
+ * НИКОГДА НЕ ЦЕНОЙ ГОТОВОЙ РАБОТЫ. Конфликт, который не развёлся сам, НЕ проваливает попытку:
+ * работа сделана, квитанция есть, и выбрасывать её за то, что вершина уехала, — ровно тот
+ * возврат работнику, который здесь и оплачивается. Он записывается словами — в журнал
+ * оператора и на строку реестра, — и приёмщик впервые видит состав конфликта до того, как
+ * нажмёт «принять», а не после.
+ */
+async function syncBeforeHandoff(deps, task, worktree) {
+  const cwd = worktree && worktree.worktreePath
+  if (!cwd || typeof deps.execGit !== 'function') return null
+  const trunk = (deps.config && deps.config.trunkBranch) || TRUNK_DEFAULT
+  const branch = (worktree && worktree.branch) || null
+  const changed = worktree.changed
+  if (!changed || changed.answered !== true || changed.files.length === 0) return null
+
+  const res = await syncWithTrunk({
+    cwd,
+    trunk,
+    execGit: deps.execGit,
+    message: `свести ${branch || 'ветку задачи'} с ${trunk} перед сдачей`,
+  })
+
+  // СУДЬБА РАЗВЕДЁННОГО ЗАВИСИТ ОТ ИСХОДА, И ДВУМ ИСХОДАМ НУЖНЫ ДВЕ ФРАЗЫ. Свелось — развод
+  // лежит в коммите сведения и его наследует всякий, кто возьмёт ветку. НЕ свелось — сведение
+  // откатано целиком, вместе с разводом, и «механически разведено: README.md» на этой строке
+  // читалось как работа, которой в дереве нет. Верб сведения различает эти два случая с самого
+  // начала («уже в индексе» / «слияние всё равно отменено целиком»); журнал двери сдачи —
+  // не различал, и это ровно то враньё о состоянии дерева, от которого лечит вся эта дверь.
+  const names = Array.isArray(res.resolved) && res.resolved.length
+    ? res.resolved.map((r) => `${r.file} (${r.how})`).join(' · ')
+    : ''
+  const settled = names ? ` механически разведено: ${names};` : ''
+  // На отказе НЕ утверждаем о дереве ничего: сказано лишь, что эти файлы разводятся сами и в
+  // работу человека не входят, — это верно и когда откат прошёл, и когда он сам не удался.
+  const settledOnRefusal = names ? ` механическое разводится САМО и рук не требует: ${names};` : ''
+  // ОГОВОРКИ РАЗВОДА ЕДУТ ВМЕСТЕ С НИМ. Развод, прошедший с оговоркой («команда пересборки
+  // вернула отказ, но обе стороны сошлись»), и развод, прошедший гладко, — разные события;
+  // журнал, называющий их одинаково, врёт оператору ровно в том месте, ради которого он ведётся.
+  const caveats = Array.isArray(res.notes) && res.notes.length ? ` оговорки: ${res.notes.join(' | ')};` : ''
+  if (res.ok && res.synced) {
+    writeLog(deps, {
+      type: 'task.branch_synced',
+      taskId: task.id,
+      branch,
+      detail: `ветка сведена с ${trunk} до сдачи: отставала на ${res.behind} коммит(ов);${settled}${caveats} слияние ${(res.mergeSha || '').slice(0, 7) || 'без имени'}`,
+    })
+  } else if (!res.ok) {
+    writeLog(deps, {
+      type: 'task.branch_unmerged',
+      taskId: task.id,
+      branch,
+      detail:
+        `свести с ${trunk} не удалось: ${res.detail || 'причина не названа'};${settledOnRefusal}` +
+        ` работа уезжает человеку НЕСВЕДЁННОЙ — разводить придётся при приёмке` +
+        (res.unfinishedMerge ? ` | ${res.howToClear}` : ''),
+    })
+  }
+
+  // На копии — чтобы строка реестра, которую пишут обе двери, несла один и тот же ответ.
+  worktree.sync = {
+    trunk,
+    behind: res.behind ?? null,
+    synced: !!(res.ok && res.synced),
+    ...(res.resolved && res.resolved.length ? { resolved: res.resolved } : {}),
+    ...(res.ok
+      ? {}
+      : { unmerged: { count: res.count ?? 0, files: res.remaining ?? res.files ?? [], detail: res.detail ?? null } }),
+  }
+  return res
+}
+
 async function completeTask(deps, task, { receiptRef, branch, diffStat, route, now, envelope, from, sessionId, startedAt, worktree, turns }) {
   const { adapter, ledger, report, journal } = deps
   // THE VERDICT FIRST, THE ROW SECOND. The five parity receipts are computed here rather than
@@ -5706,6 +5803,10 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
   // is built from. One question to git per attempt, cached on the copy — whichever door
   // arrives here first.
   attachChangedFiles(deps, worktree)
+  // …И ТОЛЬКО ПОТОМ ВЕТКА СВОДИТСЯ С ВЕРШИНОЙ. Порядок здесь — часть договора: список
+  // изменённого выше снимается ДО сведения, иначе в «что тронула эта попытка» въехали бы
+  // файлы, которых работник не касался, — всё, что вершина успела нажить, пока он работал.
+  await syncBeforeHandoff(deps, task, worktree)
   const closing = {
     receiptRef,
     branch,
@@ -5840,6 +5941,11 @@ function worktreeFields(worktree) {
     // is present and null, which is «nobody has checked», not «checked and fine».
     runDir: (worktree.run && worktree.run.dir) || undefined,
     ...(worktree.run && worktree.run.dir ? { parity: worktree.run.parity ?? null } : {}),
+    // СВЕДЕНА ЛИ ВЕТКА С ВЕРШИНОЙ — на обеих дверях, по той же причине, что и всё остальное в
+    // этом объекте: приёмка выметает копию, и после неё ответить на этот вопрос неоткуда.
+    // Отсутствие ключа означает «не сводили» (попытка без собственных коммитов, копии нет,
+    // git недоступен), а не «свелось».
+    sync: worktree.sync ?? undefined,
     // WHAT THE ATTEMPT CHANGED, and what it made disappear — handed out by the SAME expression
     // that hands out the point of return, so the two halves of one answer can never travel
     // apart: a base commit with no list is «откатить можно, а к чему — неизвестно», which is
