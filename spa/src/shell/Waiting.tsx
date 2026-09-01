@@ -42,6 +42,7 @@
 
 import { useEffect, useState, type CSSProperties } from 'react'
 
+import { MagicRings, webglAvailable } from './MagicRings'
 import {
   RING_LINE_PX,
   RING_NOISE,
@@ -90,19 +91,19 @@ export function Waiting({ what, fill = false }: { what: string; fill?: boolean }
   }, [])
 
   const words = waitingWords(what, now - since)
+  // Решается один раз на ожидание: поле — шейдер (вид, выбранный владельцем), а машина
+  // без WebGL получает прежнее спокойное поле из окружностей, не пустоту.
+  const [shader] = useState(() => webglAvailable())
 
   return (
-    <section role="status" aria-busy="true" aria-label={what} className={`flex flex-col ${fill ? 'flex-1 p-7' : ''}`}>
+    <section role="status" aria-busy="true" aria-label={what} className={`flex flex-1 flex-col ${fill ? 'p-7' : ''}`}>
       {/*
-        РАЗМЕР — ПО МЕСТУ ОЖИДАНИЯ. Верхнее (`fill`) растёт на всю доступную область — заставка;
-        `min-h` держит её в рост и там, где родительская колонка своей высоты не даёт. Экранное
-        остаётся карточкой фиксированной высоты: место под слова занято ВСЕГДА, поэтому
-        появление строки не двигает ничего.
+        ОЖИДАНИЕ ЗАНИМАЕТ ВСЮ ДОСТУПНУЮ ОБЛАСТЬ — решение владельца 01.09: полоса на пустом
+        экране бессмысленна, смотреть больше не на что. `flex-1` растит поле, где родитель
+        даёт высоту, `min-h` держит его в рост там, где не даёт.
       */}
       <div
-        className={`sma-wait-appear relative overflow-hidden rounded-[14px] border border-bd shadow-panel ${
-          fill ? 'flex-1 min-h-[70dvh]' : 'h-[164px]'
-        }`}
+        className="sma-wait-appear relative flex-1 overflow-hidden rounded-[14px] border border-bd shadow-panel min-h-[70dvh]"
         style={{ background: `var(${WAIT_SKY})` }}
       >
         {/*
@@ -110,6 +111,8 @@ export function Waiting({ what, fill = false }: { what: string; fill?: boolean }
           растянутое по ширине карточки, кольцом уже не является. Внешние кольца шире кадра и
           потому уходят за верхний и нижний край — так и задумано, поле не помещается целиком.
         */}
+        {shader ? <MagicRings /> : null}
+        {!shader ? (
         <svg aria-hidden viewBox={WAIT_VIEWBOX} preserveAspectRatio="xMidYMid meet" className="absolute inset-0 block h-full w-full">
           <defs>
             <filter id={NOISE_FILTER} x="-30%" y="-30%" width="160%" height="160%" colorInterpolationFilters="sRGB">
@@ -136,6 +139,7 @@ export function Waiting({ what, fill = false }: { what: string; fill?: boolean }
             ))}
           </g>
         </svg>
+        ) : null}
 
         {/*
           СЛОВА — ПОВЕРХ. Затемнение снизу вверх лежит под строкой, а не под всей карточкой:
