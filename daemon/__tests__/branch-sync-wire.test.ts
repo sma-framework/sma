@@ -487,6 +487,62 @@ describe('сведение ветки доезжает до человека, а
     expect(said[0]).not.toContain('механически развелось')
   })
 
+  /**
+   * СПОР И «НЕ СВЕЛОСЬ» — РАЗНЫЕ СОБЫТИЯ, И КАРТОЧКА НАЗЫВАЛА ИХ ОДИНАКОВО.
+   *
+   * Верб сведения различает их с самого начала: конфликт едет с именами файлов, а слияние, не
+   * дошедшее до спора (грязное дерево, исчезнувшая ветка, отказ самого git), — с числом НОЛЬ и
+   * своей причиной в `detail`. Дверь карточки читала оба как конфликт и печатала «конфликт в 0
+   * файл(ах) (файлы не названы)», выбрасывая единственное, что там было правдой, — причину.
+   * Приёмщик получал строку без имён, ради избавления от которой писан весь этот провод.
+   */
+  const NOT_MERGED = {
+    trunk: 'main',
+    behind: 3,
+    synced: false,
+    unmerged: {
+      count: 0,
+      files: [] as string[],
+      detail: 'error: Your local changes to the following files would be overwritten by merge',
+    },
+  }
+
+  it('слияние, не дошедшее до спора, называет ПРИЧИНУ, а не «конфликт в 0 файл(ах)»', () => {
+    const said = syncLine({ sync: NOT_MERGED } as any)
+    expect(said).toHaveLength(1)
+    expect(said[0]).toContain('НЕ сведена')
+    expect(said[0]).toContain('Your local changes')
+    // СПОРА НЕ БЫЛО — и слово о нём не произносится ни числом, ни именем.
+    expect(said[0]).not.toContain('конфликт')
+    expect(said[0]).not.toContain('файлы не названы')
+  })
+
+  it('причина, которую дверь не назвала, не подменяется выдуманным спором', () => {
+    const said = syncLine({
+      sync: { trunk: 'main', behind: 3, synced: false, unmerged: { count: 0, files: [], detail: null } },
+    } as any)
+    expect(said[0]).toContain('причина не названа')
+    expect(said[0]).not.toContain('конфликт')
+  })
+
+  /**
+   * И САМЫЙ ОБЫЧНЫЙ ИСХОД ИЗ ВСЕХ: сводить было нечего. Дверь сдачи пишет `synced:false` и НЕ
+   * кладёт блока спора — ветка уже содержала вершину. Карточка объявляла это конфликтом в нуле
+   * файлов, то есть посылала приёмщика разбирать здоровую попытку.
+   */
+  it('ветке, которой нечего было сводить, не приписывается конфликт', () => {
+    expect(syncLine({ sync: { trunk: 'main', behind: 0, synced: false } } as any)).toEqual([
+      'Сводить с main было нечего — ветка уже содержала вершину',
+    ])
+  })
+
+  it('сведение, которого не было, названо им самим, а не спором', () => {
+    const said = syncLine({ sync: { trunk: 'main', behind: null, synced: false } } as any)
+    expect(said).toHaveLength(1)
+    expect(said[0]).toContain('Сведения с main не было')
+    expect(said[0]).not.toContain('конфликт')
+  })
+
   it('сведённая ветка говорит об этом, а молчащая попытка не говорит ничего', () => {
     expect(syncLine({ sync: { trunk: 'main', behind: 4, synced: true } } as any)).toEqual([
       'Ветка сведена с main — отставала на 4 коммит(ов)',
