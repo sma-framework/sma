@@ -79,7 +79,8 @@ function ringStyle(ring: WaitRing): CSSProperties {
  */
 const NOISE_FILTER = 'sma-wait-noise'
 
-export function Waiting({ what, fill = false }: { what: string; fill?: boolean }) {
+// `fill` остался в подписи ради вызывающих: размер теперь один — вся область (решение владельца).
+export function Waiting({ what }: { what: string; fill?: boolean }) {
   // Отсчёт начинается в тот момент, когда ожидание появилось на экране, а не когда экран
   // смонтировался: компонент и живёт ровно столько, сколько длится ожидание.
   const [since] = useState(() => Date.now())
