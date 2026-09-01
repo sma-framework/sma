@@ -3,7 +3,7 @@
  *
  * ЗАЧЕМ ЭТОТ ФАЙЛ СУЩЕСТВУЕТ. 01.09.2026 склад зависимостей человека опустел в ЧЕТВЁРТЫЙ
  * раз за двое суток, и оба отказа стража (`deps-guard`) при этом не сработали: потрошил не
- * тот, чей путь закрыт. Леджер попытки SB-203#1 сохранил следы ПОСЛЕ — в 10:10:32Z каталога
+ * тот, чей путь закрыт. Леджер живой попытки сохранил следы ПОСЛЕ — в 10:10:32Z каталога
  * `node_modules/.bin` основного дерева уже не было, в 10:11:15Z в складе `.pnpm` не было
  * `@jridgewell+sourcemap-codec@1.5.5`, — и ни одной записи о том, что шло в ту минуту.
  * Вахта заводится ровно ради этого промежутка, и проверяется здесь ровно он.
@@ -128,22 +128,22 @@ describe('вахта: пропажа записи называет ПРОМЕЖ�
   it('склад не изменился — строки нет, но отметка «видел целым» переезжает на нового наблюдателя', () => {
     const clock = clockFrom(0)
     noteStoreAccess({ cwd: mainTree, command: 'git status', actor: 'Окно-1', pid: 11, clock })
-    const res = noteStoreAccess({ cwd: mainTree, command: 'npx vitest run', actor: 'SB-203#1', pid: 22, clock })
+    const res = noteStoreAccess({ cwd: mainTree, command: 'npx vitest run', actor: 'попытка-1', pid: 22, clock })
     expect(res.recorded).toBe(false)
     expect(readStoreJournal({ root: mainTree }).entries).toHaveLength(0)
     const seen = JSON.parse(readFileSync(join(mainTree, ...STORE_SEEN_REL.split('/')), 'utf8'))
     expect(seen.command).toBe('npx vitest run')
-    expect(seen.actor).toBe('SB-203#1')
+    expect(seen.actor).toBe('попытка-1')
     expect(seen.pid).toBe(22)
   })
 
   it('запись исчезла — одна строка журнала называет пропажу, прошлую команду и нынешнюю', () => {
     const clock = clockFrom(0)
     noteStoreAccess({ cwd: mainTree, command: 'git status', actor: 'Окно-1', pid: 11, clock })
-    noteStoreAccess({ cwd: mainTree, command: 'npx vitest run tests', actor: 'SB-203#1', pid: 22, clock })
+    noteStoreAccess({ cwd: mainTree, command: 'npx vitest run tests', actor: 'попытка-1', pid: 22, clock })
     // ровно то, что случилось 01.09: из склада исчезла ОДНА запись
     rmSync(join(mainTree, 'node_modules', '.pnpm', '@jridgewell+sourcemap-codec@1.5.5'), { recursive: true, force: true })
-    const res = noteStoreAccess({ cwd: mainTree, command: 'node vitest.mjs run', actor: 'SB-203#1', pid: 22, clock })
+    const res = noteStoreAccess({ cwd: mainTree, command: 'node vitest.mjs run', actor: 'попытка-1', pid: 22, clock })
 
     expect(res.recorded).toBe(true)
     expect(res.gone).toEqual(['node_modules/.pnpm/@jridgewell+sourcemap-codec@1.5.5'])
@@ -171,9 +171,9 @@ describe('вахта: пропажа записи называет ПРОМЕЖ�
 
   it('наблюдение ИЗ КОПИИ пишет в журнал ВЛАДЕЛЬЦА — иначе соседняя команда не попадёт в один журнал', () => {
     const clock = clockFrom(0)
-    noteStoreAccess({ cwd: copyTree, command: 'git log', actor: 'SB-206#1', pid: 33, clock })
+    noteStoreAccess({ cwd: copyTree, command: 'git log', actor: 'попытка-2', pid: 33, clock })
     rmSync(join(mainTree, 'node_modules', '.bin'), { recursive: true, force: true })
-    const res = noteStoreAccess({ cwd: copyTree, command: 'npx vitest run', actor: 'SB-206#1', pid: 33, clock })
+    const res = noteStoreAccess({ cwd: copyTree, command: 'npx vitest run', actor: 'попытка-2', pid: 33, clock })
 
     expect(res.owner!.toLowerCase()).toBe(mainTree.replace(/\\/g, '/').toLowerCase())
     expect(res.gone).toEqual(['node_modules/.bin'])
@@ -185,9 +185,9 @@ describe('вахта: пропажа записи называет ПРОМЕЖ�
     const clock = clockFrom(0)
     noteStoreAccess({ cwd: mainTree, command: 'pnpm install', actor: 'Окно-1', pid: 11, clock })
     rmSync(join(mainTree, 'node_modules', '.pnpm', 'magic-string@0.30.21'), { recursive: true, force: true })
-    const res = noteStoreAccess({ cwd: copyTree, command: 'npx vitest run', actor: 'SB-206#1', pid: 33, clock })
+    const res = noteStoreAccess({ cwd: copyTree, command: 'npx vitest run', actor: 'попытка-2', pid: 33, clock })
     expect(res.entry!.lastIntact.actor).toBe('Окно-1')
-    expect(res.entry!.seenBy.actor).toBe('SB-206#1')
+    expect(res.entry!.seenBy.actor).toBe('попытка-2')
   })
 })
 
