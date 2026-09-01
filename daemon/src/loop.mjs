@@ -162,7 +162,7 @@ import { markWindowObserved, markWindowClosed, readingSaysExhausted, canonicalWi
 // РОЛИ ПУЛА — ЧИТАЮТСЯ ТЕМ ЖЕ ВЫРАЖЕНИЕМ, КАКИМ ИХ ЧИТАЕТ МАРШРУТИЗАТОР. Проба пригодности
 // полосы обязана спрашивать ровно то же, что спросят при захвате: разойдясь, они начнут
 // объявлять полосу пригодной для того, кого маршрут потом не выберет.
-import { EXECUTOR_ROLE, roleOf } from './policy/worker-role.mjs'
+import { EXECUTOR_ROLE, holdsRole, roleOf, roleWanted } from './policy/worker-role.mjs'
 // ФОРМА РАБОТЫ — третий вопрос выходного гейта, рядом с «есть ли квитанция» и «объяснена ли
 // попытка»: О ЧЁМ то, что легло на ветку. Живёт отдельным модулем, потому что это ЧИСТОЕ
 // суждение о списке изменений, и его цена — прочитать его тестами без тика вокруг.
@@ -3264,10 +3264,35 @@ function eligibleLanes(deps) {
  * the batch for an unavailable account would be a stall nobody asked for — and the tick says so
  * in its own log rather than letting the change happen silently.
  *
+ * ЭТА ПОСЛЕДНЯЯ ПОЛОВИНА ФРАЗЫ БЫЛА ОБЕЩАНИЕМ, А НЕ КОДОМ, и это вскрылось замером: строка
+ * `batch.pin_unreadable` пишется только когда очередь БРОСИЛА, а закрепление, отпущенное по
+ * любой другой причине, уходило молча. Два случая, и оба теперь названы вслух:
+ *
+ *   • `not_in_pool` — работник, за которым держалась сборка, из конфига исчез. Куски поедут
+ *     другому, и человек, открывший журнал, узнает почему, а не будет гадать по строкам.
+ *   • `role_mismatch` — РОЛЬ ГЛАВНЕЕ ЗАКРЕПЛЕНИЯ, и здесь это сказано словами. Кусок без слова
+ *     о роли просит ИСПОЛНИТЕЛЯ (policy/worker-role.mjs); сборка, закреплённая за СПЕЦИАЛИСТОМ,
+ *     этому куску закрепление не отдаёт — иначе работа, названная исполнительской, поехала бы
+ *     под чужим описанием агента, ровно та подмена, ради запрета которой роль и стоит первой
+ *     строкой фильтра маршрута. Так что сборка честно расклеивается — и ГОВОРИТ об этом.
+ *
+ * ОБЕ ПРОВЕРКИ — НАРРАТИВНЫЕ, а не решающие: маршрутизатор отбросил бы такого закреплённого
+ * сам, тем же фильтром роли, и порядок оставшихся от этого не менялся. Поэтому пул возвращается
+ * ровно тот же, что и раньше, — прибавились только слова.
+ *
+ * ЧЕГО ЭТА ФУНКЦИЯ НЕ ЗНАЕТ И НЕ ПРИТВОРЯЕТСЯ, ЧТО ЗНАЕТ: окна, занятость и деньги — дело
+ * маршрутизатора. Закрепление, отпущенное закрытым окном, называет своим словом ОН
+ * (`window_exhausted`, `worker_busy`), и второй голос об этом же был бы вторым источником
+ * правды о том, почему сборка сменила работника.
+ *
  * Fail-open at every step: no adapter list, a throw, or nothing to prefer, and the pool comes
  * back exactly as configured.
+ *
+ * ЭКСПОРТИРОВАНА РАДИ ПРОБЫ. Правило «одна сборка — один работник» жило здесь и не было закрыто
+ * ни одной проверкой: провод через тик доказывает, что куски достаются одному работнику, а
+ * прямые случаи — что закрепление отпускается по названным причинам и со словами.
  */
-async function poolFor(deps, task) {
+export async function poolFor(deps, task) {
   const workers = (deps.config && deps.config.workers) || []
   if (!task || typeof task.batchId !== 'string' || task.batchId === '') return workers
   let pinned = null
@@ -3277,7 +3302,35 @@ async function poolFor(deps, task) {
     writeLog(deps, { type: 'batch.pin_unreadable', taskId: task.id, error: String((err && err.message) || err) })
     return workers
   }
-  if (!pinned || !workers.some((w) => w && w.id === pinned)) return workers
+  if (!pinned) return workers
+  const held = workers.find((w) => w && w.id === pinned) ?? null
+  if (!held) {
+    writeLog(deps, {
+      type: 'batch.pin_let_go',
+      taskId: task.id,
+      batchId: task.batchId,
+      workerId: pinned,
+      reason: 'not_in_pool',
+      detail: 'работника, за которым держалась сборка, в пуле больше нет — кусок поедет другому',
+    })
+    return workers
+  }
+  const wanted = roleWanted(task)
+  if (!holdsRole(held, wanted)) {
+    writeLog(deps, {
+      type: 'batch.pin_let_go',
+      taskId: task.id,
+      batchId: task.batchId,
+      workerId: pinned,
+      reason: 'role_mismatch',
+      role: wanted,
+      pinnedRole: roleOf(held),
+      detail:
+        `кусок просит роль «${wanted}», а сборка закреплена за работником с ролью «${roleOf(held)}» — ` +
+        'роль главнее закрепления, и сборка расклеивается по работникам',
+    })
+    return workers
+  }
   return [...workers.filter((w) => w && w.id === pinned), ...workers.filter((w) => !w || w.id !== pinned)]
 }
 
