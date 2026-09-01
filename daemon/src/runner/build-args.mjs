@@ -60,6 +60,7 @@ import {
   expectedModelEffort,
   codexSandboxFor,
   codexWorkspaceWriteSupport,
+  codexSandboxSourceFor,
   codexSandboxRefusal,
   seedCodexHome,
   CodexHomeError,
@@ -459,11 +460,11 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
         // ровно тот, в котором лежит и его `auth.json`: один провизированный шаблон на счёт,
         // копия на задачу, ничего общего между задачами.
         //
-        // `account.configDir` без счёта — это `undefined`, то есть «источника нет»: посев
-        // ничего не сеет, конфиг выходит прежним, и дом честно выглядит непровизированным.
-        sandboxSource: worker.account && worker.account.configDir
-          ? expandHome(String(worker.account.configDir), homedir)
-          : undefined,
+        // `account.configDir` без счёта — это `null`, то есть «источника нет»: посев ничего
+        // не сеет, конфиг выходит прежним, и дом честно выглядит непровизированным. Путь
+        // собирается ТЕМ ЖЕ выражением, каким тик заранее считает, ляжет ли посев
+        // (codexSandboxSourceFor): две сборки одного пути — это страж и посев про разные дома.
+        sandboxSource: codexSandboxSourceFor({ account: worker.account, homedir }) ?? undefined,
         fsImpl,
       })
       // ASKED OF THE ENVIRONMENT THE CHILD WILL ACTUALLY HAVE, not of the daemon's own: those
@@ -490,6 +491,11 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
       // создан выше: не «умеет ли Windows», а «провизирован ли ЭТОТ дом» (см.
       // codexWorkspaceWriteSupport). Про `read-only` не спрашивается вовсе — читающая сессия
       // на непровизированной машине работает ровно так, как обещано.
+      //
+      // ЗДЕСЬ ЭТО ФАКТ, А У ТИКА — ПРОГНОЗ, И ЭТО РАЗНЫЕ ВОПРОСЫ ПО МОМЕНТУ. Тик спрашивает до
+      // всякой копии, когда дома ещё нет на диске, и потому считает, ЛЯЖЕТ ЛИ ПОСЕВ
+      // (codexWorkspaceWriteOutlook); этот пояс спрашивает ПОСЛЕ посева — здесь след либо лёг,
+      // либо нет, и прогноз был бы догадкой о том, что уже случилось строкой выше.
       if (codexSandbox === 'workspace-write') {
         const support = codexWorkspaceWriteSupport({ platform, home: spawnEnv.CODEX_HOME, fsImpl })
         if (!support.supported) {
