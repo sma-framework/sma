@@ -72,7 +72,7 @@
  *              content, and it is the SAME function both prompt builders use.
  */
 
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -86,6 +86,9 @@ import {
   buildMcpConfigFile,
   codexConfigSeed,
   codexSandboxFor,
+  codexWorkspaceWriteSupport,
+  codexHomeFor,
+  CODEX_WINDOWS_SANDBOX_MARKER,
   seedCodexHome,
   CODEX_APPROVAL_POLICY,
   ForbiddenFlagError,
@@ -229,6 +232,50 @@ describe('buildCodexArgs (exit-gate lane)', () => {
   it('the forbidden-flag guard holds on the Codex lane', () => {
     expect(() => buildCodexArgs({ dangerouslySkipPermissions: true } as any)).toThrow(ForbiddenFlagError)
     expect(() => buildCodexArgs({ model: '--dangerously-skip-permissions' })).toThrow(ForbiddenFlagError)
+  })
+
+  /**
+   * ═══════ ФЛАГ — ЭТО ПРОСЬБА; ИСПОЛНИТ ЛИ ЕЁ МАШИНА — ОТДЕЛЬНЫЙ ВОПРОС ══════════════════
+   *
+   * На macOS и Linux песочницу держит ядро, готовить нечего. На Windows её держит отдельно
+   * заведённый ограниченный пользователь, которого создаёт элевированная установка; её след —
+   * файл в ТОМ ЖЕ доме. Дом без следа принимает `--sandbox workspace-write` и молча остаётся
+   * читающим — ровно это и стоило окна подписки 01.09.2026.
+   *
+   * ЗДЕСЬ ПРОВЕРЯЕТСЯ ЧТЕНИЕ ДИСКА, А НЕ МНЕНИЕ О ПЛАТФОРМЕ: «Windows не умеет» было бы
+   * догадкой и было бы неправдой — умеет, если установка проведена.
+   */
+  it('workspace-write on Windows is a reading of the home, not an opinion about the platform', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sma-codexhome-'))
+
+    expect(codexWorkspaceWriteSupport({ platform: 'win32', home }).supported).toBe(false)
+    expect(codexWorkspaceWriteSupport({ platform: 'win32', home }).reason).toBe('windows-sandbox-unprovisioned')
+
+    mkdirSync(join(home, '.sandbox'), { recursive: true })
+    writeFileSync(join(home, CODEX_WINDOWS_SANDBOX_MARKER), '{"version":5}')
+    expect(codexWorkspaceWriteSupport({ platform: 'win32', home }).supported).toBe(true)
+
+    // ядро держит границу само — ни одного обращения к диску и ни одного файла-доказательства
+    expect(codexWorkspaceWriteSupport({ platform: 'linux', home: '/nowhere' })).toMatchObject({
+      supported: true,
+      marker: null,
+    })
+    // дома нет вовсе — это «не доказано», а не «наверное, да»
+    expect(codexWorkspaceWriteSupport({ platform: 'win32' }).supported).toBe(false)
+
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  /**
+   * ОДНО ВЫРАЖЕНИЕ ПУТИ НА ВСЕХ ЧИТАТЕЛЕЙ. Дом называет окружение спавна, создаёт его сеятель,
+   * а спрашивает о нём тик — до всякого процесса. Разойдись эти три написания, проверка шла бы
+   * не по тому каталогу, в котором стартует сессия: зелёная проверка и та же стена.
+   */
+  it('the per-task home is ONE expression: the env names exactly what codexHomeFor answers', () => {
+    const account = { name: 'pro-1', configDir: join('/accounts', 'pro-1') }
+    const env = buildAccountEnv({ account, provider: 'codex', env: {}, taskId: 'T-77' })
+    expect(env.CODEX_HOME).toBe(codexHomeFor({ account, taskId: 'T-77' }))
+    expect(String(env.CODEX_HOME)).toContain('codex-tasks')
   })
 })
 

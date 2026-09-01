@@ -59,8 +59,11 @@ import {
   assertProfileParity,
   expectedModelEffort,
   codexSandboxFor,
+  codexWorkspaceWriteSupport,
+  codexSandboxRefusal,
   seedCodexHome,
   CodexHomeError,
+  CodexSandboxUnsupportedError,
   CODEX_AUTH_FILE,
 } from './args.mjs'
 import { readFileSync } from 'node:fs'
@@ -248,10 +251,14 @@ function codexAuthSources(account, env, homedir) {
  * the binary this daemon is already running under — the one node we know exists on this
  * machine — and is injectable so the suite can assert the translation without one.
  *
- * @param {{config?:object, env?:object, fsImpl?:object, homedir?:Function, nodePath?:string}} [deps]
+ * `platform` is the machine this spawn would run on. It exists for ONE question — whether a
+ * Codex home can really enforce `workspace-write` here (see step 5b) — and is injectable for
+ * the same reason `fsImpl` is: the suite must be able to drive the Windows branch from a Mac.
+ *
+ * @param {{config?:object, env?:object, fsImpl?:object, homedir?:Function, nodePath?:string, platform?:string}} [deps]
  * @returns {(task:object, route:object, options?:object) => {bin:string, args:string[], env:object, prompt:string, workerId:string, provider:string}}
  */
-export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedir = osHomedir, nodePath = process.execPath } = {}) {
+export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedir = osHomedir, nodePath = process.execPath, platform = process.platform } = {}) {
   const readFile = (fsImpl && fsImpl.readFileSync) || readFileSync
   return function buildArgs(task, route, options = {}) {
     if (!task || typeof task !== 'object') {
@@ -323,6 +330,10 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
 
     let bin
     let args
+    // ОДНО ЧТЕНИЕ КОНВЕРТА НА ДВА ВОПРОСА: какую песочницу поставить на командную строку и
+    // сможет ли эта машина её исполнить (шаг 5b). Второе решение, посчитанное из второго
+    // выражения, — это ровно тот способ отказать в одной песочнице, а запустить в другой.
+    const codexSandbox = isCodex ? codexSandboxFor(options.allowedTools) : null
     if (isCodex) {
       bin = CODEX_BIN
       // THE ENVELOPE REACHES THIS LANE TOO — as a sandbox, because that is the only shape
@@ -331,7 +342,7 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
       // `workspace-write`, and a grant that includes neither becomes `read-only`. One
       // derivation, so the checker and the worker cannot end up bounded by two different
       // readings of one envelope.
-      args = buildCodexArgs({ ...argOpts, sandbox: codexSandboxFor(options.allowedTools) })
+      args = buildCodexArgs({ ...argOpts, sandbox: codexSandbox })
     } else {
       bin = CLAUDE_BIN
       // The live attempt log is the reason for this flag: without it a session that delegates
@@ -448,6 +459,38 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
             `${CODEX_API_KEY_ENV} — a session started in it would answer 401 and spend a window saying so. ` +
             'Point account.codexAuthFile at this account\'s login, or mirror it into the account directory.',
         )
+      }
+
+      // ── (5b) И ИСПОЛНИТ ЛИ ЭТА МАШИНА ТУ ПЕСОЧНИЦУ, КОТОРУЮ МЫ СОБИРАЕМСЯ ОБЕЩАТЬ ──
+      //
+      // ФЛАГ НА КОМАНДНОЙ СТРОКЕ — ЭТО ПРОСЬБА, А НЕ ФАКТ. `codex exec --sandbox
+      // workspace-write` на непровизированной Windows не отказывается: сессия стартует и молча
+      // остаётся читающей. Замерено 01.09.2026 — конверт нёс Edit/Write/Bash, работник десять
+      // минут честно объяснял, что писать ему не дают, и попытка ушла как «нет квитанции».
+      // Стена, в которую упирается такой спавн, стоит окна подписки и не оставляет НИ ОДНОЙ
+      // строки, по которой причину можно было бы назвать.
+      //
+      // ПОЭТОМУ ОТКАЗ — СЛОВАМИ И ДО ПРОЦЕССА. Спрашивается тот самый дом, который только что
+      // создан выше: не «умеет ли Windows», а «провизирован ли ЭТОТ дом» (см.
+      // codexWorkspaceWriteSupport). Про `read-only` не спрашивается вовсе — читающая сессия
+      // на непровизированной машине работает ровно так, как обещано.
+      if (codexSandbox === 'workspace-write') {
+        const support = codexWorkspaceWriteSupport({ platform, home: spawnEnv.CODEX_HOME, fsImpl })
+        if (!support.supported) {
+          // СЛОВА — ОДНИМ ВЫРАЖЕНИЕМ С ДВЕРЬЮ ТИКА. Две редакции одного отказа расходятся в
+          // первый же день, когда правят одну, и человек читает на карточке одно, а в журнале
+          // другое — про ту же самую стену.
+          throw new CodexSandboxUnsupportedError(
+            `buildArgs: ${codexSandboxRefusal({
+              sandbox: codexSandbox,
+              home: spawnEnv.CODEX_HOME,
+              account: worker.account,
+              homedir,
+              platform,
+              fsImpl,
+            })}`,
+          )
+        }
       }
     }
 
