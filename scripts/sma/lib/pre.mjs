@@ -49,6 +49,8 @@ import { appendFileSync, statSync, readFileSync, mkdirSync } from 'node:fs'
 
 import { atomicWriteRaw, atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
 import { CATALOG_REFRESH_CAP, PACK_ACTIVE_TTL_MS } from './constants.mjs'
+// ОДИН СУДЬЯ О ТОМ, ЧТО СЧИТАТЬ ВЫЗОВОМ ОБОЛОЧКИ — тот же, что у классификатора опасного.
+import { shellCommandOf } from './worker-danger.mjs'
 
 /** Default soft time-budget: once cumulative stream time crosses this, remaining
  * streams are skipped (well inside the 5 s harness timeout). Env-overridable. */
@@ -327,7 +329,8 @@ async function runAirbag(ctx) {
 /**
  * deps stream — СКЛАД ЗАВИСИМОСТЕЙ ОДИН НА ЧЕЛОВЕКА И НА ВСЕ КОПИИ РАБОТНИКОВ.
  *
- * Bash-only, mayDeny:true, и обе его причины отказа — ФАКТЫ файловой системы, а не догадки
+ * Обе оболочки работника (Bash и PowerShell), mayDeny:true, и обе его причины отказа —
+ * ФАКТЫ файловой системы, а не догадки
  * по имени каталога:
  *   • команда убирает копию, внутри которой ещё висят ссылки на склад. Сырой
  *     `git worktree remove` идёт ПО ссылке: 31.08.2026 в 17:27:58Z такая команда прошла из
@@ -341,9 +344,11 @@ async function runAirbag(ctx) {
 async function runDeps(ctx) {
   const warns = []
   try {
-    if (ctx.toolName !== 'Bash') return { warns }
-    const command = typeof ctx.toolInput.command === 'string' ? ctx.toolInput.command : ''
-    if (!command.trim()) return { warns }
+    // ОБЕ ОБОЛОЧКИ РАБОТНИКА, А НЕ ОДНА. `worker-danger` знал про две (`SHELL_TOOLS`) с
+    // самого начала, а этот стрим спрашивал только Bash — и 01.09.2026 склад опустошила
+    // рука, вошедшая вызовом PowerShell. Один судья на вопрос «это оболочка и что в ней».
+    const command = shellCommandOf(ctx.toolName, ctx.toolInput)
+    if (!command) return { warns }
     const guard = ctx.deps && ctx.deps.depsGuard
     if (!guard) return { warns }
     // ГДЕ СТОИТ ВЫЗЫВАЮЩИЙ — это и есть каталог, относительно которого читаются `cd` и
@@ -751,7 +756,10 @@ export const PRE_CHECKS = [
   { id: 'airbag', tools: ['Bash'], killSwitchEnv: 'SMA_AIRBAG_DISABLE', mayDeny: true, run: runAirbag },
   // Стоит ПОСЛЕ подушки нарочно: подушка снимает точку возврата по git-разрушению, и отказ,
   // поставленный раньше, лишил бы её этой работы на командах, которые всё равно не пройдут.
-  { id: 'deps', tools: ['Bash'], killSwitchEnv: 'SMA_DEPS_GUARD_DISABLE', mayDeny: true, run: runDeps },
+  // ОБЕ ОБОЛОЧКИ. Список инструментов здесь — ПЕРВАЯ дверь: стрим, не поднятый на событии,
+  // не спасёт никакая проверка внутри него. 01.09.2026 склад опустошила рука, вошедшая
+  // вызовом PowerShell, — для стрима, поднятого только на Bash, её не существовало.
+  { id: 'deps', tools: ['Bash', 'PowerShell'], killSwitchEnv: 'SMA_DEPS_GUARD_DISABLE', mayDeny: true, run: runDeps },
   { id: 'spend', tools: ['Edit', 'Write', 'Bash', 'Task'], killSwitchEnv: 'SMA_SPEND_DISABLE', mayDeny: true, run: runSpend },
   { id: 'fingerprint', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_FINGERPRINT_DISABLE', mayDeny: false, run: runFingerprint },
   // enforcing scopes: SOFT-deny-with-override, on by default, silent without a

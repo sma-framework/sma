@@ -91,7 +91,7 @@ import {
 } from 'node:fs'
 import { basename, join } from 'node:path'
 
-import { classifyForWorker } from './worker-danger.mjs'
+import { classifyForWorker, shellCommandOf } from './worker-danger.mjs'
 // ОДИН СУДЬЯ О ССЫЛКАХ НА СКЛАД ЗАВИСИМОСТЕЙ на весь продукт — этот же модуль спрашивают
 // поток `sma pre` и гейт слияния. Второй ответ на «а ссылка ли это?» разошёлся бы молча.
 import { installRefusal, copyRemovalRefusal } from './deps-guard.mjs'
@@ -471,10 +471,11 @@ export async function decideOnEvent({
   // 01.09.2026 склад потрошил как раз тот, кого не видно в своей сессии, и вахта, стоящая
   // только внутри наших попыток, не увидела бы его снова. Пишется одна крошечная отметка;
   // строка в журнал уходит только когда перепись разошлась. Fail-open внутри самой вахты.
-  if (tool === 'Bash' && typeof input.command === 'string' && input.command.trim()) {
+  const shellCommand = shellCommandOf(tool, input)
+  if (shellCommand) {
     noteStoreAccess({
       cwd,
-      command: input.command,
+      command: shellCommand,
       actor: runDir ? basename(runDir) : 'вне попытки',
       pid: typeof process !== 'undefined' && process ? process.pid : null,
       clock,
@@ -502,8 +503,10 @@ export async function decideOnEvent({
     // «не опасно по классификатору» и прошёл молча. Билета здесь тоже нет и по той же
     // причине, что у установки: одобрение не делает вызов безопасным — опустошение случится
     // и с ним. Слова — те же самые, что читает терминал в потоке `sma pre`: один судья.
-    if (tool === 'Bash' && typeof input.command === 'string' && input.command.trim()) {
-      const removal = copyRemovalRefusal({ command: input.command, cwd, root: cwd, fsImpl })
+    // ОБЕ ОБОЛОЧКИ, А НЕ ОДНА: спрашивать здесь `tool === 'Bash'` значило оставить открытой
+    // дверь PowerShell — ту самую, которой 01.09.2026 пришёл четвёртый потрошитель склада.
+    if (shellCommand) {
+      const removal = copyRemovalRefusal({ command: shellCommand, cwd, root: cwd, fsImpl })
       if (removal.refuse) {
         return { ...base, configured: true, dangerous: true, decision: 'deny', reason: removal.reason }
       }
