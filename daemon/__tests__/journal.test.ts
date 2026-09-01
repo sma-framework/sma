@@ -736,6 +736,33 @@ describe('markerLinesFrom — the marker text is dug out of the CLI frames, what
     const lines = approachLinesFrom([ASSISTANT_FRAME('APPROACH_NOTE: прямой путь')])
     expect(parseApproachNote(lines)?.approach).toBe('прямой путь')
   })
+
+  /**
+   * ВТОРАЯ ФОРМА КАДРА — ПОТОК ПОЛОСЫ CODEX, И ЭТО ЕДИНСТВЕННАЯ ДОРОГА ЗАПИСКИ, НЕ ТРЕБУЮЩАЯ
+   * ЗАПИСИ НА ДИСК.
+   *
+   * `codex exec --json` кладёт слова работника в `item.text`; ни `message.content`, ни `result`
+   * там не бывает. Пока разбиралась только чужая форма кадра, маркеры такой попытки не
+   * находились ни разу — ни записка, ни урок. 01.09.2026 работник в читающей песочнице назвал
+   * причину словами в поток (файл он написать НЕ МОГ), и гейт закрыл попытку как «записки нет»:
+   * невозможность писать съедала и сам канал объяснения.
+   */
+  const CODEX_ITEM_FRAME = (text: string) =>
+    JSON.stringify({ type: 'item.completed', item: { id: 'it_1', type: 'agent_message', text } })
+
+  it('unwraps the codex frame too — the note a read-only worker can still leave', () => {
+    const lines = markerLinesFrom(
+      [
+        '{"type":"thread.started","thread_id":"th_01H8XABCDEFG"}',
+        CODEX_ITEM_FRAME('APPROACH_NOTE: писать не дают — объясняю словами\nLESSON_NONE: причина названа выше'),
+      ],
+      ['APPROACH_', 'LESSON_'],
+    )
+    expect(parseApproachNote(lines)?.approach).toBe('писать не дают — объясняю словами')
+    expect(parseLessonMarker(lines)).toEqual({ none: 'причина названа выше' })
+    // и сырой поток по-прежнему на месте, байт в байт
+    expect(lines.some((l) => l.includes('"type":"thread.started"'))).toBe(true)
+  })
 })
 
 // ═══════ the attempt stamp — fleet invariant 6 ═════════
@@ -811,11 +838,18 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     // хвост: `conflictsWith` пишет дверь, а не звонящий, и он остаётся последним — поэтому
     // указатель на последнее имя и тройка ходов позади него НЕ ДВИНУЛИСЬ, а всё, что тянется
     // назад ЗА точку вставки, сдвинулось ровно на единицу и перезакреплено в своих случаях.
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(39)
+    //
+    // RE-PINNED ONCE MORE, reason in words: строка получила `spawn` — ЧЕМ попытку запустили
+    // (полная команда) и ПОД КАКОЙ ПЕСОЧНИЦЕЙ она правда шла, прочитанной с той же командной
+    // строки. Вставлено СРАЗУ ЗА `mcpConfig`, к двум другим фактам о самой сессии, которые
+    // после уборки копии восстановить неоткуда, — поэтому всё, что тянется назад ЗА точку
+    // вставки, сдвинулось ровно на единицу и перезакреплено в своих случаях, а хвостовые
+    // указатели (`runDir`/`parity`, тройка ходов, `conflictsWith`) НЕ ДВИНУЛИСЬ.
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(40)
     expect(ALLOWED_ATTEMPT_KEYS.at(-1)).toBe('conflictsWith')
     expect(ALLOWED_ATTEMPT_KEYS.slice(-4, -1)).toEqual(['turnCap', 'turnsUsed', 'turnKinds'])
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(39) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(40) // no duplicate name
   })
 
   /**
@@ -873,13 +907,36 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     // end. The order is still the contract — the copy, then what happened inside it, then the
     // session — and the four are asserted right here rather than somewhere else, so nobody can
     // shift this block again without reading why it is where it is.
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-20, -14)).toEqual(COPY_KEYS)
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-14, -10)).toEqual(CHANGED_KEYS)
+    // И ЕЩЁ НА ОДИН, по той же причине и с тем же правилом: `spawn` вставлено сразу ЗА
+    // `mcpConfig`, к фактам о самой сессии, — значит всё, что впереди него, отодвинулось от
+    // конца ровно на единицу. Хвост за точкой вставки не двигался.
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-21, -15)).toEqual(COPY_KEYS)
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-15, -11)).toEqual(CHANGED_KEYS)
     // Сдвинулось на один: `failureDetail` дописано сразу за `receiptRef`, впереди этого имени.
     expect(ALLOWED_ATTEMPT_KEYS.slice(0, 19)[18]).toBe('reconstructed')
-    // What the account actually held when this attempt ran, and which servers it was given.
-    // Both are digests of a decision, not the decision's contents — the row stays a record.
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-10, -8)).toEqual(['personalLayer', 'mcpConfig'])
+    // What the account actually held when this attempt ran, which servers it was given — and
+    // WHAT IT WAS STARTED WITH. All three are facts about the session that the sweep of the
+    // copy makes unrecoverable, which is exactly why they live on the durable row.
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-11, -8)).toEqual(['personalLayer', 'mcpConfig', 'spawn'])
+  })
+
+  /**
+   * ЧЕМ ПОПЫТКУ ЗАПУСТИЛИ — ПОЛНОЙ КОМАНДОЙ, И ПОД КАКОЙ ПЕСОЧНИЦЕЙ ОНА ПРАВДА ШЛА.
+   *
+   * Вопрос «работник не мог или не стал» задают ПОСЛЕ: когда копия выметена, поток свёрнут, а
+   * на карточке стоит «нет квитанции». 01.09.2026 ответить на него было нечем — конверт обещал
+   * правку, сессия оказалась читающей, и ни одна долговечная запись об этом не говорила.
+   */
+  it('carries the spawn command and the sandbox it really ran under — and nothing when there was no process', () => {
+    const spawn = { bin: 'codex', args: ['exec', '--json', '--strict-config', '--sandbox', 'workspace-write', '-'], sandbox: 'workspace-write' }
+    recordAttempt(dir, { taskId: 'BL-SPAWN', attempt: 1, outcome: 'failed', spawn })
+    const [row] = readAttempts(dir, 'BL-SPAWN')
+    expect(row.spawn).toEqual(spawn)
+
+    // Отказ ДО спавна процесса не имел — и ключа не имеет: отсутствие говорит «запуска не было»,
+    // а пустой объект сказал бы «запуск был, но команду мы потеряли».
+    recordAttempt(dir, { taskId: 'BL-NOSPAWN', attempt: 1, outcome: 'failed', failureReason: 'missing_access' })
+    expect(Object.hasOwn(readAttempts(dir, 'BL-NOSPAWN')[0], 'spawn')).toBe(false)
   })
 
   /**

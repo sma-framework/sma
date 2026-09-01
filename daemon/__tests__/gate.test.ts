@@ -64,6 +64,10 @@ function makeDeps({ adapter, clock, responses, spawnWorker }: any) {
     config: { workers: WORKERS, agingHours: 24, backlogScanMinutes: 60, repoDir: '/repo', pipeline: { enabled: true } },
     routing: { resolveRoute },
     windows: () => true,
+    // The fake machine keeps its sandbox in the kernel: these cases are about the RECEIPT
+    // gate, and on win32 the pre-spawn sandbox blocker would refuse the codex lane first —
+    // the wire it exercises has its own suite (codex-sandbox-wire).
+    platform: 'linux',
     buildArgs: () => ({ bin: 'exec', args: ['-'], env: {}, prompt: 'p' }),
     verbRunner: makeVerbRunner(responses),
     spawnWorker: spawnWorker ?? makeSpawnWorker(),

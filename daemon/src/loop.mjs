@@ -178,7 +178,14 @@ import {
 } from './runner/redirects.mjs'
 import { readWaveHolds, readWaveParked, markWaveParked } from './queue/wave-holds.mjs'
 import { CLAUDE_BIN } from './runner/build-args.mjs'
-import { buildMcpConfigFile, isResumableSessionId } from './runner/args.mjs'
+import {
+  buildMcpConfigFile,
+  isResumableSessionId,
+  codexHomeFor,
+  codexSandboxFor,
+  codexWorkspaceWriteSupport,
+  codexSandboxRefusal,
+} from './runner/args.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
 
@@ -1119,6 +1126,51 @@ function argMaxTurns(args) {
 }
 
 /**
+ * argSandbox(args) → ПЕСОЧНИЦА, В КОТОРОЙ ЭТОТ СПАВН ПРАВДА СТОИТ, прочитанная с его же
+ * командной строки, или null, когда её там нет.
+ *
+ * ЧИТАЕТСЯ, А НЕ ВЫЧИСЛЯЕТСЯ ЗАНОВО, по той же причине, что и потолок ходов рядом: конверт,
+ * настройка и правило вывода — это утверждения о запуске, а массив аргументов — сам запуск.
+ * 01.09.2026 разница между ними стоила окна подписки: по всем утверждениям работник получил
+ * право писать, а сессия оказалась читающей, и назвать это было нечем — командная строка
+ * никуда не записывалась.
+ *
+ * NULL — ЭТО УТВЕРЖДЕНИЕ, А НЕ ПРОБЕЛ: у полосы Claude флага песочницы нет вовсе (её границу
+ * несёт `--allowedTools`), и ноль на этом месте читался бы как «песочницы не дали».
+ */
+function argSandbox(args) {
+  if (!Array.isArray(args)) return null
+  const at = args.indexOf('--sandbox')
+  if (at < 0) return null
+  const mode = args[at + 1]
+  return typeof mode === 'string' && mode !== '' ? mode : null
+}
+
+/**
+ * spawnRecordOf(spec) → ЧЕМ ЭТА ПОПЫТКА БЫЛА ЗАПУЩЕНА, в форме строки реестра:
+ * `{bin, args, sandbox?}`.
+ *
+ * ПОЛНАЯ КОМАНДА, А НЕ ЕЁ ПЕРЕСКАЗ. Каталог прогона уже хранил её — но каталог живёт в копии
+ * проекта и подметается, а строка реестра остаётся. Вопрос «под какой границей правда шёл этот
+ * работник» задают ПОСЛЕ: когда копии нет, поток свёрнут, а на карточке стоит «ничего не
+ * сделал». Пока ответа не было, отличить «работник ленился» от «ему не дали писать» было
+ * нельзя ничем.
+ *
+ * СЕКРЕТОВ ЗДЕСЬ НЕТ ПО ПОСТРОЕНИЮ: массив аргументов собирают строители, которые сканируют
+ * каждую произведённую строку, а всё, что похоже на учётные данные, едет ИМЕНАМИ переменных
+ * окружения и в аргументы не попадает вовсе.
+ */
+function spawnRecordOf(spec) {
+  if (!spec || typeof spec !== 'object') return undefined
+  const sandbox = argSandbox(spec.args)
+  return {
+    bin: spec.bin ?? null,
+    args: Array.isArray(spec.args) ? [...spec.args] : [],
+    ...(sandbox ? { sandbox } : {}),
+  }
+}
+
+/**
  * turnRecordOf(args, lines) → поля ходов для строки реестра: `{turnCap, turnsUsed, turnKinds}`.
  *
  * ОДНО ВЫРАЖЕНИЕ НА ОБА ПУТИ ЗАПУСКА. Потолок читается с ТОЙ ЖЕ командной строки, что и у
@@ -1694,6 +1746,66 @@ function envelopeBlocker(envelope) {
     }
   }
   return null
+}
+
+/**
+ * codexSandboxBlocker(deps, task, route, envelope) → {reason, detail}, когда конверт даёт этой
+ * задаче ПРАВО ПИСАТЬ, полоса ведёт в codex, а машина этого права не исполнит; иначе null.
+ *
+ * ЗАЧЕМ ОТКАЗ ЗДЕСЬ, А НЕ В СТЕНЕ. `codex exec --sandbox workspace-write` в непровизированном
+ * доме не отказывается — сессия стартует читающей и молчит об этом. 01.09.2026 такая попытка
+ * стоила окна подписки и кончилась «нет квитанции»: работник объяснял словами, что писать ему
+ * не дают, а карточка показывала пустую работу. Отказ до спавна стоит ноль процессов и ноль
+ * минут, а человек получает НАЗВАННУЮ причину и названный выход.
+ *
+ * ОДНО РЕШЕНИЕ, ДВА ЧИТАТЕЛЯ. Тот же ответ ловит и сборщик аргументов (build-args, шаг 5b) —
+ * он последний пояс, мимо которого не проходит ни один путь спавна, включая кузницу. Здесь
+ * решение спрашивается РАНЬШЕ только ради слова на карточке: брошенное из строителя, оно
+ * приехало бы общим `runtime_offline`, под которым не видно ни песочницы, ни дома.
+ *
+ * `missing_access` — потому что это ровно оно и есть по словарю очереди: «нужен человек, не
+ * хватает доступа». Установку песочницы проводит человек из элевированной оболочки; ни один
+ * повтор попытки этого не изменит.
+ *
+ * DI-СТОРОЖА КАК У СОСЕДЕЙ: платформа и домашний каталог инжектируются, чтобы сьют гонял ветку
+ * Windows на любой машине; невыясненный работник, отсутствующий аккаунт и не-codex маршрут
+ * возвращают null — это чужие вопросы, и на них отвечают другие двери.
+ */
+function codexSandboxBlocker(deps, task, route, envelope) {
+  const config = (deps && deps.config) || {}
+  const worker = ((config.workers || []).find((w) => w && w.id === ((route && route.workerId) || null))) || null
+  // ПРОВАЙДЕР ЧИТАЕТСЯ ТЕМ ЖЕ ПРАВИЛОМ, ЧТО У СБОРЩИКА АРГУМЕНТОВ: маршрут, потом профиль
+  // работника. Иначе полоса, назвавшая исполнителя без слова о провайдере, прошла бы мимо.
+  const provider = String((route && route.provider) || (worker && worker.provider) || 'claude')
+  if (provider !== 'codex') return null
+  if (!worker || !worker.account || typeof worker.account !== 'object') return null
+  // ЧТО КОНВЕРТ ДАЛ — ТЕМ ЖЕ ВЫРАЖЕНИЕМ, КАКИМ ЭТО ПРОЧТЁТ СПАВН. Второе прочтение грантов
+  // здесь означало бы отказывать по одному конверту, а запускать по другому.
+  const sandbox = codexSandboxFor(envelopeSpawnOptions(envelope).allowedTools)
+  if (sandbox !== 'workspace-write') return null
+
+  let home
+  try {
+    home = codexHomeFor({ account: worker.account, taskId: task.id, homedir: deps.homedir })
+  } catch {
+    return null // дом не собрался — это скажет сборщик аргументов своими словами
+  }
+  const support = codexWorkspaceWriteSupport({ platform: deps.platform, home, fsImpl: deps.fsImpl })
+  if (support.supported) return null
+  return {
+    reason: 'missing_access',
+    // СЛОВА ОТКАЗА ЖИВУТ ОДНИМ ВЫРАЖЕНИЕМ РЯДОМ С ПРЕДИКАТОМ, А НЕ ЗДЕСЬ: тот же текст читает
+    // сборщик аргументов (последний пояс), и две редакции одного отказа — это карточка и
+    // журнал, говорящие разное про одну стену.
+    detail: codexSandboxRefusal({
+      sandbox,
+      home,
+      account: worker.account,
+      homedir: deps.homedir,
+      platform: deps.platform,
+      fsImpl: deps.fsImpl,
+    }),
+  }
 }
 
 /**
@@ -4340,6 +4452,18 @@ export async function tick(deps = {}) {
         return result
       }
 
+      // (4c-bis) И ИСПОЛНИТ ЛИ ЭТА МАШИНА ТО ПРАВО, КОТОРОЕ КОНВЕРТ УЖЕ ДАЛ. Спрашивается
+      // рядом с конвертом и по той же причине: полоса codex переводит грант в ПЕСОЧНИЦУ, а
+      // песочница, которую платформа не исполнит, — это обещание, о котором узнают только из
+      // стенограммы работника, упёршегося в стену. Отказ здесь стоит ноль процессов.
+      const noSandbox = codexSandboxBlocker(deps, task, route, envelope)
+      if (noSandbox) {
+        writeLog(deps, { type: 'task.refused', taskId: task.id, lane: task.lane, reason: noSandbox.reason, detail: noSandbox.detail })
+        await failTask(deps, task, { reason: noSandbox.reason, failureDetail: noSandbox.detail, route, now: now(), envelope, from: fleetState })
+        result.failed = { taskId: task.id, reason: noSandbox.reason, detail: noSandbox.detail }
+        return result
+      }
+
       // (4d) СКОЛЬКО ХОДОВ ПОЛУЧИТ ЭТА ПОПЫТКА — И ЕСТЬ ЛИ ЧТО ЕЙ ДАТЬ.
       //
       // Спрашивается ЗДЕСЬ, до провизии копии и до всякого процесса, потому что единственный
@@ -4651,6 +4775,12 @@ export async function tick(deps = {}) {
         // exists — the parking gate inside the child reads both out of its environment.
         ...gateSpawnOptions(deps, config, task),
       })
+      // ЧЕМ ЭТА ПОПЫТКА ЗАПУЩЕНА — НА ДОЛГОВЕЧНУЮ СТРОКУ, И ПРЯМО ЗДЕСЬ, ГДЕ КОМАНДА ТОЛЬКО
+      // ЧТО СОБРАНА. Ниже лежит дюжина дорог, и та, что уносит попытку в отказ, обязана унести
+      // с собой и командную строку: именно у отказавшей попытки спрашивают, под какой границей
+      // она шла. Пишется на ОБЕИХ дверях одним выражением (см. worktreeFields).
+      worktreeRow = worktreeRow || {}
+      worktreeRow.spawn = spawnRecordOf(spec)
       // THE LINE IS WRITTEN ONLY WHERE IT IS TRUE. A timer wake takes no session with it, so
       // saying it resumed one would make the operator's log claim something that never happened.
       if (wake.resumeId) writeLog(deps, { type: 'task.session_resumed', taskId: task.id, attempt: task.attempt })
@@ -5406,6 +5536,20 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
     return result
   }
 
+  // …И ИСПОЛНИТ ЛИ МАШИНА ТО ПРАВО, КОТОРОЕ КОНВЕРТ ТОЛЬКО ЧТО ДАЛ — ТЕМ ЖЕ ВЫРАЖЕНИЕМ, ЧТО И
+  // НА ПУТИ КОДА. Забытая вторая дверь — мина, которую этот файл уже дважды разминировал задним
+  // числом (копия, материализация), и здесь она была бы той же самой: полоса кузницы ПИШЕТ
+  // файл — черновик — и без права писать её сессия упирается ровно в ту стену, что стоила окна
+  // подписки 01.09.2026. Отказ до спавна стоит ноль процессов; спавн в стену стоит окно и
+  // кончается «черновик не закоммичен», то есть виноватым работником.
+  const noSandbox = codexSandboxBlocker(deps, task, route, envelope)
+  if (noSandbox) {
+    writeLog(deps, { type: 'task.refused', taskId: task.id, lane: task.lane, reason: noSandbox.reason, detail: noSandbox.detail })
+    await failTask(deps, task, { reason: noSandbox.reason, failureDetail: noSandbox.detail, route, now: now(), envelope, from: fleetState })
+    result.failed = { taskId: task.id, reason: noSandbox.reason, detail: noSandbox.detail }
+    return result
+  }
+
   // И СКОЛЬКО ХОДОВ ЕЙ ПОЛОЖЕНО — тот же вопрос, тем же выражением, что и на пути кода. Полоса
   // кузницы тоже платится подпиской, и повтор известного исхода стоит здесь ровно столько же.
   const turnBudget = turnBudgetFor(deps, config, task)
@@ -5562,6 +5706,11 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
     // two points each carried a private copy of a spawn decision.
     ...gateSpawnOptions(deps, config, task),
   })
+  // И ЧЕМ ЗАПУЩЕНА ЭТА ПОПЫТКА — тем же выражением, что и на пути кода, прямо там, где команда
+  // собрана. У кузницы своей квитанции нет: строка попытки — единственная запись о прогоне, и
+  // без командной строки на ней вопрос «работник не мог или не стал» остаётся без ответа ровно
+  // так же, как он остался 01.09.2026.
+  worktreeRow.spawn = spawnRecordOf(spec)
   spec.prompt = buildForgePrompt({
     kind,
     description: task.forge && task.forge.description,
@@ -5988,6 +6137,11 @@ function worktreeFields(worktree) {
     provisionMs: worktree.provisionMs ?? undefined,
     personalLayer: worktree.personalLayer ?? undefined,
     mcpConfig: worktree.mcpConfig ?? undefined,
+    // ЧЕМ ПОПЫТКУ ЗАПУСТИЛИ — по той же причине, по какой здесь лежат две строки выше:
+    // ответ нужен ПОСЛЕ, когда копия выметена, а восстановить его неоткуда. Отсутствие
+    // ключа означает «процесса не было вовсе» (отказ до спавна), и это не то же самое,
+    // что запуск, о котором мы не записали команду.
+    spawn: worktree.spawn ?? undefined,
     // WHERE THE EVIDENCE OF THIS TRY LIVES. The row is the durable record, so it names the
     // directory rather than leaving it to be guessed from an id and a convention. `parity` is
     // the verdict of the checking tool, written back beside it; until it is computed the key

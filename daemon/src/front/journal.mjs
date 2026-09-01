@@ -952,6 +952,20 @@ export function markerLinesFrom(streamLines, prefixes = ['APPROACH_']) {
         }
       }
       if (typeof (frame && frame.result) === 'string') out.push(...frame.result.split(/\r?\n/))
+      // ── И ВТОРАЯ ФОРМА КАДРА: ПОТОК ПОЛОСЫ CODEX ────────────────────────────────
+      // Тот же самый провал, что и у сырых строк выше, только на другом CLI: `codex exec
+      // --json` кладёт слова работника в `{"type":"item.completed","item":{"type":
+      // "agent_message","text":"…"}}`, и ни `message.content`, ни `result` там не бывает
+      // никогда. Маркеры такой попытки не находились НИ РАЗУ — ни записка, ни урок, ни
+      // «предмета нет».
+      //
+      // ЦЕНОЙ ЭТОГО БЫЛА ЕДИНСТВЕННАЯ ДОРОГА ОБЪЯСНЕНИЯ. 01.09.2026 работник в читающей
+      // песочнице назвал причину словами в поток — записать её файлом он не мог, писать ему
+      // не давали, — и попытка ушла как «записки нет». Невозможность писать съедала и сам
+      // канал объяснения: единственный путь записки, не требующий записи на диск, разбирался
+      // только для чужого формата кадра. Отсюда — обе формы, одним обходом.
+      const item = frame && frame.item
+      if (item && typeof item.text === 'string') out.push(...item.text.split(/\r?\n/))
     } catch {
       /* not a frame — the raw line above is all there is, and it was already pushed */
     }
