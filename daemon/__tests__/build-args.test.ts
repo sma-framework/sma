@@ -24,7 +24,13 @@ import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
 
 import { createBuildArgs, NoWorkerForRouteError, UnknownStageError, CLAUDE_BIN, CODEX_BIN } from '../src/runner/build-args.mjs'
-import { ProfileParityError, assertProfileParity, buildClaudeArgs } from '../src/runner/args.mjs'
+import {
+  ProfileParityError,
+  assertProfileParity,
+  buildClaudeArgs,
+  codexHomeFor,
+  CODEX_WINDOWS_SANDBOX_MARKER,
+} from '../src/runner/args.mjs'
 import { DEFAULT_PIPELINE_MAX_TURNS } from '../src/config.mjs'
 import { CHAT_MAX_TURNS } from '../src/front/chat.mjs'
 
@@ -87,8 +93,8 @@ const settingsFs = (content: string = MIRRORED_SETTINGS): any => ({
 // The product is plain JS with JSDoc types; the spec it returns is a bag of strings. `any`
 // here keeps the suite about behaviour rather than about the editor's view of an untyped module.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const build = (cfg: any = CONFIG, env: any = ENV, fsImpl: any = settingsFs()): any =>
-  createBuildArgs({ config: cfg, env, fsImpl })
+const build = (cfg: any = CONFIG, env: any = ENV, fsImpl: any = settingsFs(), platform?: string): any =>
+  createBuildArgs({ config: cfg, env, fsImpl, ...(platform ? { platform } : {}) })
 
 /**
  * A REAL account directory with a REAL login in it. The Codex cases below are wire cases —
@@ -416,7 +422,11 @@ describe('buildArgs — the Codex home is created, seeded and authenticated', ()
    */
   it('the sandbox the envelope amounts to is IN THE ARGUMENT ARRAY of the spawn', () => {
     const { cfg, env, fsImpl } = codexFixture()
-    const editor = build(cfg, env, fsImpl)(codexTask(), codexRoute(), {
+    // ПЛАТФОРМА НАЗВАНА, А НЕ УНАСЛЕДОВАНА ОТ МАШИНЫ СЬЮТА: `workspace-write` на Windows
+    // требует проведённой установки песочницы (см. случаи ниже), и случай про argv не должен
+    // отвечать по-разному на двух ноутбуках. Здесь спрашивается ядерная платформа — там
+    // готовить нечего, и грант доезжает до флага ровно так, как он и задуман.
+    const editor = build(cfg, env, fsImpl, 'linux')(codexTask(), codexRoute(), {
       allowedTools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'Skill'],
     })
     const reader = build(cfg, env, fsImpl)(codexTask(), codexRoute(), { allowedTools: ['Read', 'Grep', 'Glob'] })
@@ -430,6 +440,55 @@ describe('buildArgs — the Codex home is created, seeded and authenticated', ()
     // and the tool flags of the OTHER lane never appear here — this CLI has none
     expect(editor.args).not.toContain('--allowedTools')
     expect(editor.args).toContain('--strict-config')
+  })
+
+  /**
+   * ═══════ ПЕСОЧНИЦА, КОТОРУЮ МАШИНА НЕ ИСПОЛНИТ, — ОТКАЗ, А НЕ ФЛАГ ═════════════════════
+   *
+   * Флаг на командной строке — это ПРОСЬБА. На Windows границу держит отдельно заведённый
+   * ограниченный пользователь, и в свежем доме задачи следа элевированной установки нет:
+   * `codex exec --sandbox workspace-write` там не отказывается, а молча остаётся читающим.
+   * Замерено живьём 01.09.2026 — работник десять минут объяснял, что писать ему не дают,
+   * попытка ушла как «нет квитанции», и назвать причину было нечем.
+   *
+   * ДВЕ ПОЛОВИНЫ ОДНОГО ТРЕБОВАНИЯ, И ОБЕ ОБЯЗАТЕЛЬНЫ: задача с правом писать либо ПИШЕТ,
+   * либо ОТКАЗАНА ДО СПАВНА. Без второго случая отказ был бы просто выключенной полосой.
+   */
+  describe('workspace-write: либо машина его исполнит, либо спавна не будет', () => {
+    it('непровизированная Windows: НАЗВАННЫЙ отказ вместо спека — и в словах есть, что делать', () => {
+      const { cfg, env, fsImpl } = codexFixture()
+      const writing = { allowedTools: ['Read', 'Edit', 'Write', 'Bash'] }
+      let err: Error | null = null
+      try {
+        build(cfg, env, fsImpl, 'win32')(codexTask(), codexRoute(), writing)
+      } catch (e) {
+        err = e as Error
+      }
+      expect(err, 'спек собрался — значит сессия ушла бы в стену молча').toBeTruthy()
+      expect(err!.name).toBe('CodexSandboxUnsupportedError')
+      expect(err!.message).toContain('workspace-write')
+      expect(err!.message).toContain('codex sandbox setup')
+    })
+
+    it('провизированная Windows: тот же конверт даёт workspace-write и обычный спек', () => {
+      const { cfg, env, fsImpl } = codexFixture()
+      // След элевированной установки — В ТОМ ДОМЕ, который спавн и создаст: путь собран тем
+      // же выражением, каким его найдёт демон, а не строкой, написанной здесь руками.
+      const home = codexHomeFor({ account: cfg.workers[0].account, taskId: 'T-0001' })
+      mkdirSync(join(home, '.sandbox'), { recursive: true })
+      writeFileSync(join(home, CODEX_WINDOWS_SANDBOX_MARKER), '{"version":5}')
+
+      const spec = build(cfg, env, fsImpl, 'win32')(codexTask(), codexRoute(), {
+        allowedTools: ['Read', 'Edit', 'Write', 'Bash'],
+      })
+      expect(spec.args[spec.args.indexOf('--sandbox') + 1]).toBe('workspace-write')
+    })
+
+    it('читающий конверт на той же машине проходит: отказ про право писать, а не про полосу', () => {
+      const { cfg, env, fsImpl } = codexFixture()
+      const spec = build(cfg, env, fsImpl, 'win32')(codexTask(), codexRoute(), { allowedTools: ['Read', 'Grep'] })
+      expect(spec.args[spec.args.indexOf('--sandbox') + 1]).toBe('read-only')
+    })
   })
 
   /**
