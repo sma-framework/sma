@@ -1786,6 +1786,16 @@ function stripLeadingAside(title) {
 }
 
 /**
+ * `- [x] **Phase 12: …` — ГАЛОЧКА ЧЕЛОВЕКА о том, что фаза закрыта.
+ *
+ * Это ТРЕТИЙ источник о готовности фазы рядом с диском и очередью, и единственный, где говорит
+ * сам человек. Форма — та же, что читает командная строка: список фаз в шапке роадмапа, где
+ * закрытое отмечено крестиком. Жирная разметка вокруг слова «Phase» необязательна, потому что
+ * роадмапы пишут руками и обе формы встречаются.
+ */
+const ROADMAP_CHECKBOX = /^\s*[-*]\s*\[([ xX])\]\s*(?:\*\*)?\s*Phase\s+(\d+(?:\.\d+)?)\b/
+
+/**
  * roadmapTitles(projectDir, io) → Map(phase number → the title the ROADMAP gives it).
  *
  * WHY THE ROADMAP AND NOT THE DIRECTORY NAME. A directory name is a file-system identifier and
@@ -1801,6 +1811,10 @@ function stripLeadingAside(title) {
 function roadmapTitles(projectDir, io) {
   const byNumber = new Map()
   const headings = []
+  // Отмеченные крестиком — собираются ТЕМ ЖЕ единственным чтением файла, что и заголовки.
+  // Список фаз стоит в шапке роадмапа, ВЫШЕ разделов, поэтому применяется он после обоих
+  // проходов: иначе галочка приходила бы раньше строки, которую она закрывает.
+  const ticked = new Set()
 
   for (const rel of ['ROADMAP.md', 'ROADMAP.ru.md']) {
     let raw = ''
@@ -1811,6 +1825,8 @@ function roadmapTitles(projectDir, io) {
     }
     const lines = raw.split(/\r?\n/)
     for (let i = 0; i < lines.length; i += 1) {
+      const tick = lines[i].match(ROADMAP_CHECKBOX)
+      if (tick && tick[1] !== ' ') ticked.add(Number(tick[2]))
       const m = lines[i].match(ROADMAP_HEADING)
       if (!m) continue
       const n = Number(m[1])
@@ -1823,7 +1839,9 @@ function roadmapTitles(projectDir, io) {
       // чтением файла, потому что нужен он ровно тогда, когда у фазы нет своего CONTEXT.md, и
       // второе открытие того же роадмапа ради одной строки было бы вторым источником одного факта.
       if (!byNumber.has(n)) {
-        byNumber.set(n, { n, title: stripLeadingAside(full), lead: paragraphAt(lines, i + 1) })
+        // `closed: false` СТАВИТСЯ СРАЗУ: «галочки не стоит» — это ответ, а не молчание, и
+        // отсутствие поля читалось бы вторым способом сказать то же самое.
+        byNumber.set(n, { n, title: stripLeadingAside(full), lead: paragraphAt(lines, i + 1), closed: false })
       }
     }
   }
@@ -1846,6 +1864,14 @@ function roadmapTitles(projectDir, io) {
     if (alias === null || byNumber.has(alias)) continue
     const primary = byNumber.get(n)
     if (primary) byNumber.set(alias, primary)
+  }
+
+  // ТРЕТИЙ ПРОХОД — галочки. Он последний, потому что список фаз стоит выше разделов, а запись
+  // об одной фазе тут одна на оба её номера: псевдоним — тот же объект, и закрытие достаётся
+  // папке, которая всё ещё носит старый номер, вместе с названием.
+  for (const n of ticked) {
+    const entry = byNumber.get(n)
+    if (entry) entry.closed = true
   }
 
   return byNumber
@@ -1984,6 +2010,23 @@ function phaseOrderOf(dir, titles) {
   const entry = dirNumber === null ? null : titles.get(dirNumber)
   if (entry) return entry.n
   return dirNumber === null ? Number.NEGATIVE_INFINITY : dirNumber
+}
+
+/**
+ * СТОИТ ЛИ В РОАДМАПЕ ГАЛОЧКА «ЭТА ФАЗА ЗАКРЫТА» — по номеру фазы, а не по имени папки.
+ *
+ * Это ФАКТ, а не вывод: что сказать человеку о фазе, которую роадмап закрыл, а диск не
+ * подтверждает, решает окно — там же оно и называет расхождение словами. Здесь только читается
+ * галочка, и ступени она не подделывает: диск продолжает говорить своё.
+ *
+ * Фаза, которой роадмап не знает вовсе, закрытой не объявляется: `false` — это «галочки не
+ * стоит», и оно ровно то же самое, что «роадмапа нет». Приписать закрытие молчанию значило бы
+ * объявить сделанной работу, о которой никто ничего не сказал.
+ */
+function roadmapClosedOf(dir, titles) {
+  const dirNumber = phaseNumberOf(dir)
+  const entry = dirNumber === null ? null : titles.get(dirNumber)
+  return !!entry && entry.closed === true
 }
 
 /** Where a stage stands, read off the files of the phase directory and nothing else. */
@@ -2163,10 +2206,12 @@ function progressOf(engine, phaseId) {
 }
 
 /**
- * derivePhaseIndex({projectDir, fsImpl}) → {phases:[{id, name, stages, open, answered}]}.
+ * derivePhaseIndex({projectDir, fsImpl}) → {phases:[{id, name, stages, roadmapClosed, open, answered}]}.
  *
- * Every directory of `.planning/phases`, in name order, with where each stage of it stands and
- * how many questions it is holding. `id` is the DIRECTORY NAME — the one spelling that is
+ * Every directory of `.planning/phases`, in name order, with where each stage of it stands,
+ * whether the ROADMAP carries a person's tick against it, and how many questions it is holding.
+ * Диск и галочка едут РЯДОМ, а не сведёнными в одно слово: сводит их окно, и оно же называет
+ * расхождение человеку. `id` is the DIRECTORY NAME — the one spelling that is
  * unambiguous, and one both this module and the daemon's gate resolve through the same
  * `findPhaseDir`, so a phase number reaches the same row.
  *
@@ -2192,7 +2237,14 @@ export function derivePhaseIndex({ projectDir, fsImpl } = {}) {
     phases: dirs.map((dir) => {
       const files = safeList(io, join(root, dir))
       const { open, answered } = progressOf(engine, dir)
-      return { id: dir, name: phaseTitleOf(dir, titles), stages: stagesOf(files), open, answered }
+      return {
+        id: dir,
+        name: phaseTitleOf(dir, titles),
+        stages: stagesOf(files),
+        roadmapClosed: roadmapClosedOf(dir, titles),
+        open,
+        answered,
+      }
     }),
   }
 }
