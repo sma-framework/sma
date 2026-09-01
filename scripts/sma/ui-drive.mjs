@@ -7,8 +7,13 @@
  *                                       [--at <desktop|tablet|mobile>]
  *
  * Steps: goto:<path> | click:<visible text> | type:<selector>=<text>
- *        select:<selector>=<option value or label>
+ *        type:<selector>=env:<VAR> | select:<selector>=<option value or label>
  *        wait:<ms> | shot:<name> | expect:<visible text>
+ *
+ * A credential is typed with the `env:` form and never any other way: the receipt prints the
+ * path walked step by step, so a literal password would be written to disk. `env:` puts the
+ * variable's NAME on disk and reads its value at run time; an unset variable fails the step
+ * out loud instead of typing an empty string into a password box.
  *
  * --at names the width the scripted path and the sweep are walked at (every width is opened
  *      and measured regardless); without it both walk the desktop, as they always have.
@@ -60,6 +65,7 @@ import {
   renderReceipt,
   resolveDriveViewport,
   sweepSparseNote,
+  typeText,
   verdict,
   worstOverflow,
 } from './lib/ui-drive.mjs'
@@ -543,7 +549,14 @@ async function main() {
         try {
           if (step.verb === 'goto') await open(page, new URL(step.arg, url).toString())
           else if (step.verb === 'click') await page.getByText(step.arg, { exact: false }).first().click({ timeout: 8000 })
-          else if (step.verb === 'type') await page.fill(step.selector, step.text, { timeout: 8000 })
+          else if (step.verb === 'type') {
+            // Значение читается ЗДЕСЬ и только здесь: разбор шага знает имя переменной, а не
+            // её содержимое, и в квитанцию уезжает разобранный шаг — то есть имя. Не заданная
+            // переменная валит шаг (blocker), а не набирает пустую строку в поле пароля.
+            const value = typeText(step, process.env)
+            if (!value.ok) throw new Error(value.reason)
+            await page.fill(step.selector, value.text, { timeout: 8000 })
+          }
           // ОПЦИЯ НАЗЫВАЕТСЯ ТАК, КАК ЕЁ ЧИТАЕТ ЧЕЛОВЕК: строка сверяется и со значением опции,
           // и с подписью на экране — сценарий пишут по тому, что видно, а не по разметке.
           else if (step.verb === 'select') await page.selectOption(step.selector, step.text, { timeout: 8000 })
