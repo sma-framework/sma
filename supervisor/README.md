@@ -38,23 +38,6 @@ host-agnostic by design; the OS binding is a thin supervisor layer only).
   risen daemon, which says it after knocking on its OWN door (`daemon/src/outage.mjs`) and closes
   the outage with a receipt carrying every time. The decision table lives in `daemon/src/watch.mjs`
   and is proved with no process, no socket and no Telegram.
-- **A daemon can die without its process dying, and that death is now treated as one.** Measured
-  three times in one day: the process alive and busy, and `GET /` hanging until the timeout knock
-  after knock. To a person that is the same death — the window is silent and so is the bot — and the
-  cure is the one they applied by hand: put it out, then bring it up. A watchdog that only *starts a
-  lift* over a live wedge cures nothing, because the wedge still holds the port and the second daemon
-  loses the race for the door and dies quietly; that is how ten minutes of wedge survived three lifts.
-  So a declared fall with a **live** recorded process is extinguished first — by the same
-  `daemon-control` stop a person would run, never by a second killer of its own — and only then
-  lifted. Patience with a merely BUSY daemon is untouched: the extinguishing stands after the
-  threshold for a timed-out knock, not instead of it, and with no process record nothing is ever
-  killed (there would be nothing to name it with).
-- **And «still loading» is not «wedged».** A lifted daemon honestly says nothing for about two
-  minutes: it sweeps the working copies of closed tasks *before* it binds the door. The only thing
-  that tells the two apart is how long the lift has been allowed, so that number is named
-  (`BOOT_CLEANUP_MS`) and the lift's window covers it with room to spare. A shorter window made the
-  watchdog catch itself — it declared a booting daemon a failed lift and started a second one on top
-  of it, which began the same sweep from the beginning.
 - **But a started lift has no outcome yet, and the watchdog now waits for one.** «The spawn call did
   not throw» is not «the daemon is coming back»: the lift is detached, so a launch that never
   happened is invisible unless someone goes and looks at the door. A started lift is recorded as

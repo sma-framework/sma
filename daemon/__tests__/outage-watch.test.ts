@@ -38,7 +38,7 @@ import {
   riseWords,
   stampOutage,
 } from '../src/outage.mjs'
-import { BOOT_CLEANUP_MS, createWatch, KNOCK_PATH, KNOCK_TIMEOUT_MS, LIFT_DOOR_WAIT_MS, TIMEOUT_MISSES_TO_DECLARE } from '../src/watch.mjs'
+import { createWatch, KNOCK_PATH, KNOCK_TIMEOUT_MS } from '../src/watch.mjs'
 import { noteLift, openLiftLog, spawnLiftLogged, tailLiftLog } from '../../supervisor/lift-log.mjs'
 import { probeDoor } from '../src/control.mjs'
 import { telegramApiBase, TELEGRAM_API_BASE } from '../src/telegram/client.mjs'
@@ -104,9 +104,6 @@ describe('сторож — молчание двери превращается 
         }
       },
       readRecord: () => live,
-      // Номер процесса из подделки — не процесс ЭТОЙ машины: живость называет прогон, а не ОС.
-      // Иначе разбор зависел бы от того, занят ли номер 4242 на машине, где идёт сьют.
-      isAlive: () => false,
       lift: { cmd: 'подъём', args: ['раз'], cwd: '.' },
       spawnLift: () => {
         lifts.push({ at: clock.now() })
@@ -177,10 +174,7 @@ describe('сторож — молчание двери превращается 
     }
     expect(w.lifts).toHaveLength(1)
 
-    // Повтор ждёт не выдержки, а ИСХОДА первой попытки: пока запущенному подъёму отпущено
-    // время на стартовую уборку, второй подъём был бы гонкой за тот же порт, а не удвоенной
-    // надеждой. Поэтому часы двигаются на отпущенное время, а не на одну выдержку.
-    w.clock.advance(LIFT_DOOR_WAIT_MS + 1)
+    w.clock.advance(120000)
     const round = await w.watch.tick()
     expect(round.phase).toBe('lifting')
     expect(w.lifts).toHaveLength(2)
@@ -391,8 +385,6 @@ describe('сторож — запущенный подъём доводится 
       // дверь молчит ВСЕГДА: сколько ни поднимай, никто не отвечает
       probe: async () => ({ answered: false, status: 0, state: null, reason: 'ECONNREFUSED', kind: 'refused' }),
       readRecord: () => ({ pid: 4242, bind: '127.0.0.1', port: 7791, startedAt: '', path: '' }),
-      // Здесь разбирается МЁРТВЫЙ демон: процесса за записью нет, гасить нечего (см. клин ниже).
-      isAlive: () => false,
       lift: { cmd: 'подъём', args: ['раз'], cwd: '.' },
       spawnLift: () => {
         if (spawnThrows) throw new Error('powershell не найден')
@@ -602,156 +594,6 @@ describe('сторож — запущенный подъём доводится 
       now: () => T0 + 40000,
     })
     expect(receipt.lifts[0].outcome).toBe('no-need')
-  })
-})
-
-// ── КЛИН: ПРОЦЕСС ЖИВ, А ДВЕРЬ МОЛЧИТ ───────────────────────────────────────────
-
-/**
- * ЖИВОЙ ПРОЦЕСС ЗА МОЛЧАЩЕЙ ДВЕРЬЮ — ЭТО СМЕРТЬ, А НЕ ЗАНЯТОСТЬ, и подъём над ним бесполезен.
- *
- * ЗАМЕРЕНО 29.08 вечером, третье наблюдение за день: процесс жив (память на месте, процессор
- * идёт), а `GET /` висит до таймаута три пробы подряд. Сторож работал всё это время и демона НЕ
- * вернул — клин провисел десять минут. Причина не в пороге: порог добивается, провал
- * объявляется, подъём запускается. Причина в том, что подъём запускался РЯДОМ с живым
- * процессом, который всё ещё держит порт: второй демон проигрывает гонку за дверь и умирает
- * молча, дверь остаётся той же самой молчащей дверью, и так все три попытки — до «зову
- * человека». Оба штатных стопа того дня говорили ровно это: «дверь молчит, а процесс жив —
- * гашу его». Сторож обязан говорить то же самое.
- *
- * И ВТОРАЯ ПОЛОВИНА ТОГО ЖЕ: ПОДНЯТЫЙ ДЕМОН ЧЕСТНО МОЛЧИТ, ПОКА МЕТЁТ КОПИИ. Стартовая уборка
- * рабочих копий идёт ДО того, как дверь связана, и занимает около двух минут. Сторож, который
- * отпускает подъёму меньше этого, объявляет неудачей демона, который просто загружается, — и
- * поднимает второго поверх первого. «Грузится» и «заклинило» выглядят одинаково; отличает их
- * только отпущенное время, поэтому оно названо здесь числом, а не подобрано на глаз.
- */
-describe('сторож — живой процесс за молчащей дверью гасится, а не поднимается рядом', () => {
-  /**
-   * Сторож над КЛИНОМ: дверь молчит по истёкшему ожиданию (замороженный обработчик двери
-   * выглядит именно так — соединение приняли и не ответили), а процесс при этом жив.
-   *
-   * Гашение и подъём пишут в ОДНУ ленту: утверждение здесь — не «оба случились», а «гашение
-   * случилось ПЕРЕД подъёмом». Два независимых счётчика оба выросли бы и в той поломке, ради
-   * которой этот разбор написан.
-   */
-  function wedgedDaemon({
-    config = scratchConfig(),
-    clock = clockFrom(T0),
-    alive = true,
-    record = { pid: 4242, bind: '127.0.0.1', port: 7791, startedAt: '', path: '' } as any,
-    liftLeavesRecord = true,
-  }: {
-    config?: Record<string, unknown>
-    clock?: ReturnType<typeof clockFrom>
-    alive?: boolean
-    record?: unknown
-    liftLeavesRecord?: boolean
-  } = {}) {
-    const events: string[] = []
-    const lines: string[] = []
-    const sent: string[] = []
-    let live: any = record
-    let nextPid = 4343
-    const watch = createWatch({
-      config,
-      // ЗАМОРОЖЕННЫЙ ОБРАБОТЧИК ДВЕРИ: соединение принято, ответа нет за отпущенное время.
-      probe: async () => ({ answered: false, status: 0, state: null, reason: 'TimeoutError', kind: 'timeout' }),
-      readRecord: () => live,
-      isAlive: (pid: number) => alive && !!live && pid === live.pid,
-      extinguish: async () => {
-        events.push(`гашу:${live ? live.pid : '?'}`)
-        // Настоящее гашение убирает запись о процессе — это её последний шаг.
-        live = null
-        return { outcome: 'killed', lines: [], code: 0 }
-      },
-      lift: { cmd: 'подъём', args: ['раз'], cwd: '.' },
-      spawnLift: () => {
-        events.push('поднимаю')
-        // Поднятый демон свяжет дверь и оставит СВОЮ запись — если он вообще поднимется.
-        if (liftLeavesRecord) live = { pid: (nextPid += 1), bind: '127.0.0.1', port: 7791, startedAt: '', path: '' }
-        return { log: '/logs/daemon-lift-20260829.log' }
-      },
-      readLiftOutput: () => '',
-      notify: async ({ text }: { text: string }) => {
-        sent.push(text)
-        return { sent: true, reason: '' }
-      },
-      now: clock.now,
-      log: (l: string) => lines.push(l),
-    })
-    /** Домолчать дверь до объявления провала: столько проб, сколько стоит истёкшее ожидание. */
-    async function untilDeclared() {
-      let round: any = null
-      for (let i = 0; i < TIMEOUT_MISSES_TO_DECLARE; i += 1) {
-        round = await watch.tick()
-        clock.advance(15000)
-      }
-      return round
-    }
-    return { watch, events, lines, sent, clock, config, untilDeclared }
-  }
-
-  it('замороженная дверь при живом процессе: сторож ГАСИТ его — и только потом поднимает', async () => {
-    const w = wedgedDaemon()
-    const round = await w.untilDeclared()
-
-    expect(round.phase).toBe('declared')
-    expect(w.events, 'подъём рядом с живым процессом — это гонка за занятый порт').toEqual(['гашу:4242', 'поднимаю'])
-    expect(w.lines.join(' ')).toContain('процесс 4242 жив')
-  })
-
-  it('человеку сказано, что демона именно ГАСЯТ, а не просто поднимают', async () => {
-    const w = wedgedDaemon()
-    await w.untilDeclared()
-    expect(w.lines.join(' ')).toMatch(/гашу|погасил/i)
-  })
-
-  it('мёртвый процесс не гасят: гасить нечего, и подъём идёт как раньше', async () => {
-    const w = wedgedDaemon({ alive: false })
-    const round = await w.untilDeclared()
-
-    expect(round.phase).toBe('declared')
-    expect(w.events).toEqual(['поднимаю'])
-  })
-
-  it('записи о процессе нет — не гасится НИЧЕГО: назвать свой процесс нечем', async () => {
-    const w = wedgedDaemon({ record: null })
-    for (let i = 0; i < TIMEOUT_MISSES_TO_DECLARE; i += 1) {
-      expect((await w.watch.tick()).phase).toBe('stopped')
-      w.clock.advance(15000)
-    }
-    expect(w.events).toEqual([])
-  })
-
-  it('повторный подъём тоже начинается с гашения: клин мог пережить первое', async () => {
-    const w = wedgedDaemon()
-    await w.untilDeclared()
-    expect(w.events).toEqual(['гашу:4242', 'поднимаю'])
-
-    // Отпущенное подъёму время вышло, дверь всё молчит, а поднятый процесс — жив и молчит.
-    w.clock.advance(LIFT_DOOR_WAIT_MS + 1)
-    const round = await w.watch.tick()
-
-    expect(round.phase).toBe('lifting')
-    expect(w.events).toEqual(['гашу:4242', 'поднимаю', 'гашу:4344', 'поднимаю'])
-  })
-
-  it('стартовая уборка — не клин: отпущенное подъёму время покрывает уборку копий', async () => {
-    // Число, а не глазомер: демон метёт копии ДО того, как свяжет дверь, и это около двух минут.
-    expect(LIFT_DOOR_WAIT_MS).toBeGreaterThan(BOOT_CLEANUP_MS)
-
-    const w = wedgedDaemon()
-    await w.untilDeclared()
-    const liftsAfterFall = w.events.filter((e) => e === 'поднимаю').length
-
-    w.clock.advance(BOOT_CLEANUP_MS) // всё это время дверь честно молчит: идёт уборка
-    const round = await w.watch.tick()
-
-    expect(round.phase).toBe('down')
-    expect(round.outage!.lifts[0].outcome).toBe('pending') // ещё не «не удался»
-    expect(w.lines.join(' ')).not.toContain('подъём НЕ УДАЛСЯ')
-    expect(w.events.filter((e) => e === 'поднимаю')).toHaveLength(liftsAfterFall) // второго поверх уборки нет
-    expect(w.sent).toHaveLength(1) // и человека вторым сообщением не тревожат
   })
 })
 
