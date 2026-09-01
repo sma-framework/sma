@@ -111,6 +111,7 @@ import {
   derivePhaseIndex,
   deriveState,
 } from '../../daemon/src/front/state.mjs'
+import { WORDS_EDITABLE_STATUSES } from '../../daemon/src/queue/adapter.mjs'
 import { createAttemptLogWriter, readAttemptLog, recordAttempt } from '../../daemon/src/queue/attempt-ledger.mjs'
 import { readCoordinationLedger, readMergeJournal } from '../../daemon/src/main.mjs'
 import { MERGE_SLOT_NAME } from './lib/constants.mjs'
@@ -335,7 +336,9 @@ async function main() {
   }
   // Очередь сцены, помнящая нажатия человека: без неё дверь приёмки отвечала «не реализовано»,
   // а на экране это читается как «этого в продукте нет».
-  const queue = stageQueue({ now: () => Date.now() })
+  // Какие строки правятся словами — закон САМОЙ ОЧЕРЕДИ, взятый у неё же: написанный в ките
+  // второй раз, он разошёлся бы с продуктом молча.
+  const queue = stageQueue({ now: () => Date.now(), wordsEditableIn: WORDS_EDITABLE_STATUSES })
 
   const config = stageConfig({ port: 0, token, projects, activeProject: STAGE_ACTIVE_PROJECT })
   // ФАЙЛ НАСТРОЕК СЦЕНЫ — во временном каталоге сцены и НАМЕРЕННО не такой, как копия выше.
@@ -379,7 +382,11 @@ async function main() {
       // row — the work that ran out of turns — because the card that offers a person his three
       // ways out cannot be looked at on a scene where nothing ever failed. Closed is the whole
       // difference: nothing here waits for a worker, so the queue is as empty as it was.
-      adapter: { list: queue.list },
+      // …И ПРАВКА СЛОВ — ВТОРОЕ ДЕЙСТВИЕ, КОТОРОЕ НА СЦЕНЕ МОЖНО НАЖАТЬ. Переключатель проекта
+      // на карточке живой задачи ходит в эту дверь; без `setWords` она отвечает 501, и
+      // единственная кнопка, которой промах с проектом чинится без пересоздания, живым прогоном
+      // не проверяется вовсе. Судит по-прежнему дверь: закрытой строке она отвечает 409.
+      adapter: { list: queue.list, setWords: queue.setWords },
       deriveState,
       // ═══ ПРИЁМКУ НА СЦЕНЕ МОЖНО НАЖАТЬ — И ЭТО НАСТОЯЩАЯ ДВЕРЬ ═══════════════════════
       // Кнопка «Одобрить» стоит теперь прямо в строке ленты дня, то есть на первом же экране,

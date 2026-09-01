@@ -31,6 +31,7 @@ import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { namedPaths, missingPaths, NAMED_PATH_CAP } from '../src/front/tree-probe.mjs'
 import { tick } from '../src/loop.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
+import { taskProjectOf } from '../../spa/src/screens/task-card/task-project'
 
 const TOKEN = 'p'.repeat(64)
 const NOW = 1_700_000_000_000
@@ -76,6 +77,14 @@ function mkRes() {
 async function post(front: any, url: string, body: unknown) {
   const res = mkRes()
   await front.handle(mkReq(url, body), res)
+  return res
+}
+
+async function get(front: any, url: string) {
+  const req = mkReq(url)
+  req.method = 'GET'
+  const res = mkRes()
+  await front.handle(req, res)
   return res
 }
 
@@ -418,5 +427,85 @@ describe('ПРОВОД: перестановка проекта у СОЗДАН�
     await post(front, '/api/task/words', { taskId: id, project: PRODUCT.id })
 
     expect(config.activeProject).toBe(WORKSHOP.id)
+  })
+})
+
+// ═══ 4 · ПЕРЕСТАВЛЯЮЩИЙ ВИДИТ, ОТКУДА ПЕРЕСТАВЛЯЕТ — ВКЛЮЧАЯ РАБОТУ, КОТОРАЯ УЖЕ ИДЁТ ══
+
+/**
+ * Переключатель проекта на карточке показывает ТЕКУЩИЙ проект задачи, и до сих пор он брал
+ * его, разыскивая строку по спискам общей картины — «в очереди», «ждут вас», «сделано».
+ * ИДУЩЕЙ РАБОТЫ НИ В ОДНОМ ИЗ ТРЁХ НЕТ: занятая строка живёт в составе (у работника, который
+ * её держит), и карточка задачи в работе печатала «проект не назван» о задаче со штампом.
+ *
+ * Цена ровно та, ради которой перестановка и написана. Промах с проектом человек замечает не
+ * когда ставит задачу, а когда работа уже пошла и уткнулась в чужое дерево, — и в этот самый
+ * момент окно переставало называть, откуда он переставляет. Выбор вслепую между двумя
+ * деревьями — это то же пересоздание, только с лишним нажатием.
+ *
+ * Чинится это тем, что проект называет САМА ЗАДАЧА: дверь карточки отвечает штампом строки,
+ * тем же правилом (`projectOf`), которым его читает общая картина. Розыск по спискам остаётся
+ * запасным путём для демона постарше — и вот он-то и дотянут до состава.
+ */
+describe('карточка знает, в каком проекте задача, — и у той, что уже в работе', () => {
+  const doorFor = async (adapter: any) =>
+    createFrontServer({ config: twoTreeConfig(), deps: { adapter, clock: () => NOW } })
+
+  it('дверь задачи называет штамп строки — у работы, которую держит работник', async () => {
+    const adapter = createMemoryQueue({ clock: () => NOW, expireMs: 300000 })
+    await adapter.enqueue({ id: 'R-7', source: 'roster', title: 'работа', lane: 'prod', project: WORKSHOP.id })
+    await adapter.claimNext('w-1', {})
+
+    const answer = JSON.parse((await get(await doorFor(adapter), '/api/task/R-7')).body)
+
+    expect(answer.task.status).toBe('claimed')
+    expect(answer.task.project).toBe(WORKSHOP.id)
+  })
+
+  it('строка, не назвавшая проекта, читается ничьей — а не активным проектом машины', async () => {
+    const adapter = createMemoryQueue({ clock: () => NOW })
+    await adapter.enqueue({ id: 'R-8', source: 'roster', title: 'работа', lane: 'prod' })
+
+    const answer = JSON.parse((await get(await doorFor(adapter), '/api/task/R-8')).body)
+
+    expect(answer.task.project).toBeNull()
+  })
+})
+
+describe('окно читает проект задачи одним путём', () => {
+  const state = (over: any = {}) => ({ queue: [], awaiting: [], done: [], workers: [], ...over }) as any
+  const detail = (task: any) => ({ task: { id: 'R-7', ...task } }) as any
+
+  it('сказанное самой задачей и есть ответ — списки картины при этом не спрашиваются вовсе', () => {
+    const picture = state({ queue: [{ id: 'R-7', project: WORKSHOP.id }] })
+
+    expect(taskProjectOf({ detail: detail({ project: PRODUCT.id }), state: picture, taskId: 'R-7' })).toBe(PRODUCT.id)
+  })
+
+  it('сказанный дверью `null` — измерение: строка своего проекта не называет, и точка', () => {
+    const picture = state({ workers: [{ id: 'w-1', taskId: 'R-7', project: PRODUCT.id }] })
+
+    expect(taskProjectOf({ detail: detail({ project: null }), state: picture, taskId: 'R-7' })).toBeNull()
+  })
+
+  it('дверь постарше молчит — и работа В РАБОТЕ находится там, где она живёт: у работника', () => {
+    const picture = state({ workers: [{ id: 'w-1', taskId: 'R-7', project: WORKSHOP.id }] })
+
+    expect(taskProjectOf({ detail: detail({}), state: picture, taskId: 'R-7' })).toBe(WORKSHOP.id)
+  })
+
+  it('на молчащей двери запасной путь по-прежнему знает очередь, ждущих и сделанное', () => {
+    const queued = state({ queue: [{ id: 'R-7', project: WORKSHOP.id }] })
+    const waiting = state({ awaiting: [{ id: 'R-7', project: PRODUCT.id }] })
+    const finished = state({ done: [{ id: 'R-7', project: PRODUCT.id }] })
+
+    expect(taskProjectOf({ detail: detail({}), state: queued, taskId: 'R-7' })).toBe(WORKSHOP.id)
+    expect(taskProjectOf({ detail: detail({}), state: waiting, taskId: 'R-7' })).toBe(PRODUCT.id)
+    expect(taskProjectOf({ detail: detail({}), state: finished, taskId: 'R-7' })).toBe(PRODUCT.id)
+  })
+
+  it('о задаче, которой ни дверь, ни картина не назвали, окно не выдумывает проекта', () => {
+    expect(taskProjectOf({ detail: null, state: state(), taskId: 'R-7' })).toBeNull()
+    expect(taskProjectOf({ detail: null, state: undefined, taskId: null })).toBeNull()
   })
 })

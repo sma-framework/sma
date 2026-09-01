@@ -29,6 +29,7 @@ import {
   STAGE_DESIGN_TASK,
   STAGE_DONE_TASK,
   STAGE_HOST,
+  STAGE_LIVE_TASK,
   STAGE_PROJECTS,
   URL_ENV,
   announcement,
@@ -329,9 +330,49 @@ describe('очередь сцены помнит, что человек с не�
     expect(again.rows).toEqual([])
   })
 
-  it('никакая строка сцены работника не ждёт: очередь по-прежнему пуста для флота', async () => {
+  /*
+    ЗАБОР СТОИТ ТАМ, ГДЕ ВЫДАЁТСЯ РАБОТА, А НЕ ТАМ, ГДЕ ОНА ЖИВА.
+
+    Прежде здесь проверялось, что живой строки у сцены не бывает вовсе, — и этот забор
+    огораживал не то: выдачу он не запрещал (запрещать её нечем и незачем — выдавать некому),
+    зато запрещал единственный экран, на котором видно перестановку проекта. Настоящее
+    условие «сцена — окно, а не флот» держится составом: работников у неё НЕТ, поэтому ни одна
+    строка, в каком бы статусе она ни стояла, никому не уедет.
+  */
+  it('выдавать работу сцене некому: состав пуст, и это и есть забор', () => {
+    expect(stageConfig({ port: 0, token: 't', projects: [] }).workers).toEqual([])
+  })
+
+  it('живая строка ровно одна — та, у которой есть переключатель проекта', async () => {
     const rows = await stageQueue({ now: () => 1 }).list()
-    expect(rows.some((r) => r.status === 'queued' || r.status === 'claimed')).toBe(false)
+    const live = rows.filter((r) => r.status === 'queued' || r.status === 'claimed')
+    expect(live.map((r) => r.id)).toEqual([STAGE_LIVE_TASK.id])
+    // …и стоит она в дереве, на котором окно открывается: доска показывает работу одного
+    // проекта, и строка, названная чужим именем, на неё не попала бы вовсе.
+    expect(live[0].project).toBe(STAGE_ACTIVE_PROJECT)
+  })
+
+  it('перестановка проекта видна следующему чтению — сцена помнит её, как помнит приёмку', async () => {
+    const queue = stageQueue({ now: () => 1, wordsEditableIn: ['queued', 'claimed'] })
+
+    expect(await queue.setWords(STAGE_LIVE_TASK.id, { project: 'stage-second' })).toBe(true)
+
+    const after = (await queue.list()).find((r) => r.id === STAGE_LIVE_TASK.id)
+    expect(after?.project).toBe('stage-second')
+    expect(after?.title).toBe(STAGE_LIVE_TASK.title) // переставили задачу, а не переписали её
+  })
+
+  it('закрытую строку сцена не правит — и отказ приходит от того же закона, что и в бою', async () => {
+    const queue = stageQueue({ now: () => 1, wordsEditableIn: ['queued', 'claimed'] })
+
+    expect(await queue.setWords(STAGE_DONE_TASK.id, { project: 'stage-second' })).toBe(false)
+    expect(await queue.setWords('нет-такой-строки', { project: 'stage-second' })).toBe(false)
+  })
+
+  it('кит сам по себе о правке слов ничего не утверждает: закон приходит сверху', async () => {
+    const queue = stageQueue({ now: () => 1 })
+
+    expect(await queue.setWords(STAGE_LIVE_TASK.id, { project: 'stage-second' })).toBe(false)
   })
 })
 

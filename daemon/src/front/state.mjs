@@ -473,8 +473,12 @@ function windowFor(windows, account) {
  * an invented number like any other, only about whose work it is, and a confident wrong answer
  * is worse than none: nobody can tell it apart from a right one. The window says «неизвестен»
  * in words instead.
+ *
+ * ЭКСПОРТИРУЕТСЯ, ПОТОМУ ЧТО СПРАШИВАЮЩИХ ДВОЕ. Дверь одной задачи называет штамп тем же
+ * правилом, каким его читает общая картина: два написания одного правила и есть способ
+ * получить две поверхности, рассказывающие об одной задаче разное.
  */
-function projectOf(row) {
+export function projectOf(row) {
   const own = row && row.project
   return typeof own === 'string' && own !== '' ? own : null
 }

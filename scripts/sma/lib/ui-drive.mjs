@@ -280,15 +280,53 @@ export const INTERACTIVE_SELECTOR = [
  * a keyboard feature would end up signed off by reading its handler. The argument is handed
  * to the driver as written: naming the combination is the caller's business, and a name the
  * driver does not know fails the step loudly instead of passing quietly.
+ *
+ * `select` CHOOSES AN OPTION IN A DROP-DOWN — `select:<selector>=<option>` — and it exists for
+ * the same reason `key` does: a class of the window's surface could not be walked at all. A
+ * native `<select>` is not a thing you click and not a thing you fill: `click` reaches the box
+ * and never the option (the list the browser opens is not in the page), and `type` refuses it
+ * outright. This window carries four of them — the project of a task, the project of a new
+ * task, the filter of the board, the lane of the live feed — so every claim about any of them
+ * was signed off by reading its handler. The option is named the way a person names it: the
+ * driver matches an option by its value OR by the label on the screen.
  */
-export const STEP_VERBS = Object.freeze(['goto', 'click', 'type', 'wait', 'shot', 'expect', 'key'])
+export const STEP_VERBS = Object.freeze(['goto', 'click', 'type', 'select', 'wait', 'shot', 'expect', 'key'])
+
+/**
+ * ГДЕ КОНЧАЕТСЯ СЕЛЕКТОР И НАЧИНАЕТСЯ ЗНАЧЕНИЕ — первое `=` СНАРУЖИ скобок и кавычек.
+ *
+ * Наивное «первое `=` в строке» режет посередине любой селектор по атрибуту:
+ * `[aria-label="Проект задачи"]=Второе дерево` превращался в селектор `[aria-label` и падал
+ * разбором css уже в браузере — то есть шаг проваливался ПОСЛЕ того, как сцена поднята, и
+ * говорил о css, а не о том, что в скрипте не так. Атрибут — основной способ назвать контрол
+ * в этом окне (подписи есть у всего, идентификаторов почти нет), так что случай не редкий.
+ *
+ * Возвращает -1, когда снаружи скобок `=` нет вовсе: зовущий отвечает на это отказом.
+ */
+function targetSplit(arg) {
+  let depth = 0
+  let quote = ''
+  for (let i = 0; i < arg.length; i += 1) {
+    const c = arg[i]
+    if (quote) {
+      if (c === quote) quote = ''
+      continue
+    }
+    if (c === '"' || c === "'") quote = c
+    else if (c === '[') depth += 1
+    else if (c === ']') depth = Math.max(0, depth - 1)
+    else if (c === '=' && depth === 0) return i
+  }
+  return -1
+}
 
 /**
  * parseSteps(argv) -> {ok:true, steps} | {ok:false, errors}
  *
- * A step is `<verb>:<arg>`; `type` splits its arg once more on `=`. An unknown verb is
- * an ERROR, not a skip: a typo'd step that is silently dropped turns an unrun check
- * into a green one, which is the exact failure this module exists to prevent.
+ * A step is `<verb>:<arg>`; `type` and `select` split their arg once more on `=` (see
+ * targetSplit for which one). An unknown verb is an ERROR, not a skip: a typo'd step that is
+ * silently dropped turns an unrun check into a green one, which is the exact failure this
+ * module exists to prevent.
  *
  * @param {string[]} argv
  * @returns {{ok:boolean, steps?:Array<object>, errors?:string[]}}
@@ -308,10 +346,12 @@ export function parseSteps(argv = []) {
       errors.push(`step "${raw}" uses unknown verb "${verb}" — verbs: ${STEP_VERBS.join(', ')}`)
       continue
     }
-    if (verb === 'type') {
-      const eq = arg.indexOf('=')
+    // ДВА ГЛАГОЛА С ОДНОЙ ФОРМОЙ АРГУМЕНТА: оба называют ЧТО и КУДА. Разбор общий, потому что
+    // разный разбор одной формы — это второй способ ошибиться в ней.
+    if (verb === 'type' || verb === 'select') {
+      const eq = targetSplit(arg)
       if (eq < 1) {
-        errors.push(`step "${raw}" needs type:<selector>=<text>`)
+        errors.push(`step "${raw}" needs ${verb}:<selector>=${verb === 'type' ? '<text>' : '<option>'}`)
         continue
       }
       steps.push({ verb, selector: arg.slice(0, eq), text: arg.slice(eq + 1), raw })

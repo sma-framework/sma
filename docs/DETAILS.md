@@ -668,7 +668,10 @@ Underneath, `scripts/sma/ui-drive.mjs` writes the receipt and exits non-zero on 
 so it can gate rather than advise. Alongside the contract it reports what is measured rather than
 judged: content wider than the viewport at phone width, a control that cannot be operated, a
 control with no accessible name, uncaught exceptions, dead requests, the app's own API at 4xx or
-5xx.
+5xx. A scripted path can also **choose an option in a drop-down** (`select:<selector>=<option>`,
+matched by the option's value or by the label on the screen): a native `<select>` is neither
+clicked nor filled — the list the browser opens is not in the page — so until this verb existed
+every claim about one was signed off by reading its handler instead of walking it.
 
 **And the window it drives comes from one command.** A live look needs a live window, and the
 running daemon is the wrong one twice over: it serves the build of the main tree, so a change made
@@ -696,8 +699,12 @@ coordination ledger is written by the runtime's own writers and read back by the
 reader, so the fixture cannot drift away from the format the product keeps; each tree carries a
 profile, so the window opens on the board instead of on the first-run interview. The switcher keeps
 its production applier and loses its **pen** — the registry lives in memory for exactly as long as
-the scene does, which is why the token still meets no file. The queue stays empty and in memory: the
-scene is a window, not a fleet.
+the scene does, which is why the token still meets no file. The queue is in memory and nobody is
+there to hand it out — the scene has no workers and no tick, so it stays a window rather than a
+fleet. One of its rows is nevertheless **live**, and that is a fixture, not a leak: the project
+picker only exists on the card of a task whose work is not over (a promise already judged is not
+re-stamped), so a scene of closed rows alone could not show the one control that makes a
+wrong-project task cost a click instead of a re-creation.
 
 **The receipt lands outside every working copy, and the path is printed.** A run made in a
 throwaway copy used to write its verdict and its screenshots into that copy, which is then removed —
