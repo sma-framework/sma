@@ -88,6 +88,7 @@ import {
   codexSandboxFor,
   seedCodexHome,
   CODEX_APPROVAL_POLICY,
+  CODEX_SANDBOX_ARTIFACTS,
   ForbiddenFlagError,
   ProfileParityError,
   TERMINAL_PARITY_PATHS,
@@ -382,6 +383,102 @@ describe('seedCodexHome — the fresh home is really made, and really carries a 
       },
     })
     expect(seeded.authPath).toBeNull()
+  })
+})
+
+/**
+ * ── ПОСЕВ СЛЕДА ПЕСОЧНИЦЫ: СВЕЖИЙ ДОМ ПОЛУЧАЕТ ПРАВО ПИСАТЬ ИЛИ НЕ ОБЕЩАЕТ ЕГО ─────────────
+ *
+ * ЧТО ЭТИ ПРОВЕРКИ ЛОВЯТ В ПРОДУКТЕ. Право писать на Windows держит не флаг командной строки, а
+ * ограниченный пользователь, которого заводит РУЧНАЯ элевированная установка — и её запись живёт
+ * в доме, для которого её запускали. Дом задачи свежий, унаследовать он ничего не может, и без
+ * посева `codex exec --sandbox workspace-write` не отказывается, а молча остаётся читающим.
+ * Замерено живьём 01.09.2026 на этой машине двумя одинаковыми прогонами: непровизированный дом →
+ * «patch rejected: writing is blocked by read-only sandbox», ноль файлов; дом с посеянным следом
+ * и строкой `[windows] sandbox = "elevated"` → песочница поднялась, CLI сам донёс `codex.exe` в
+ * `.sandbox-bin/` и провёл ACL-установку.
+ *
+ * ПОЭТОМУ ЗДЕСЬ ТРИ УТВЕРЖДЕНИЯ О ПОВЕДЕНИИ ПОСЕВА, А НЕ О ФАЙЛАХ ЭТОЙ ЗАДАЧИ: след доезжает
+ * целиком; конфиг просит воспользоваться им ровно тогда, когда он доехал; неполный источник не
+ * кладёт НИЧЕГО — потому что дом с маркером и без учётных данных прошёл бы проверку перед спавном
+ * и упёрся бы в ту же стену уже внутри процесса.
+ */
+describe('seedCodexHome — след песочницы едет тем же швом, что и логин', () => {
+  const homeUnder = (dir: string) => join(dir, 'codex-tasks', 'T-0002')
+
+  /** Провизированный рукой шаблон счёта — ровно те три каталога, что оставляет установка. */
+  const provisionedAccount = (root: string) => {
+    const account = join(root, 'account')
+    for (const entry of CODEX_SANDBOX_ARTIFACTS) mkdirSync(join(account, entry), { recursive: true })
+    writeFileSync(join(account, '.sandbox', 'setup_marker.json'), '{"version":5,"offline_username":"CodexSandboxOffline"}')
+    writeFileSync(join(account, '.sandbox-secrets', 'sandbox_users.json'), '{"version":1,"offline":{"username":"u","password":"p"}}')
+    return account
+  }
+
+  it('след установки доезжает в свежий дом целиком — вместе с учётными данными, а не одним маркером', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-codex-sandbox-'))
+    const account = provisionedAccount(root)
+    const home = homeUnder(root)
+
+    const seeded = seedCodexHome({ home, authSources: [], sandboxSource: account })
+
+    // ИМЕННО ЭТОТ ПУТЬ читает проверка перед спавном — она ищет след установки, а не каталог.
+    expect(existsSync(join(home, '.sandbox', 'setup_marker.json'))).toBe(true)
+    // …и без учётных данных ограниченного пользователя маркер был бы зелёным светом в стену.
+    expect(readFileSync(join(home, '.sandbox-secrets', 'sandbox_users.json'), 'utf8')).toContain('password')
+    expect(seeded.sandboxSeeded).toEqual([...CODEX_SANDBOX_ARTIFACTS])
+    expect(seeded.sandboxSource).toBe(account)
+  })
+
+  it('дом со следом ПРОСИТ элевированную песочницу — иначе он принимает флаг и молча остаётся читающим', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-codex-sandbox-cfg-'))
+    const home = homeUnder(root)
+
+    seedCodexHome({ home, authSources: [], sandboxSource: provisionedAccount(root) })
+
+    const toml = readFileSync(join(home, 'config.toml'), 'utf8')
+    expect(toml).toContain('[windows]')
+    expect(toml).toContain('sandbox = "elevated"')
+    // и прежние два обещания дома никуда не делись
+    expect(toml).toContain('memories = false')
+    expect(toml).toContain(`approval_policy = "${CODEX_APPROVAL_POLICY}"`)
+  })
+
+  it('копия, а не ссылка: сессия, написавшая в свой след, не портит шаблон счёта', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-codex-sandbox-copy-'))
+    const account = provisionedAccount(root)
+    const home = homeUnder(root)
+    seedCodexHome({ home, authSources: [], sandboxSource: account })
+
+    writeFileSync(join(home, '.sandbox', 'setup_marker.json'), '{"the session wrote here":true}')
+    expect(readFileSync(join(account, '.sandbox', 'setup_marker.json'), 'utf8')).toContain('CodexSandboxOffline')
+  })
+
+  it('неполный след не кладётся ВОВСЕ, и дом честно не обещает права, которого не получит', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-codex-sandbox-partial-'))
+    const account = join(root, 'account')
+    // маркер есть, учётных данных нет — ровно та комбинация, что проходит проверку и упирается
+    // в стену уже внутри процесса
+    mkdirSync(join(account, '.sandbox'), { recursive: true })
+    writeFileSync(join(account, '.sandbox', 'setup_marker.json'), '{"version":5}')
+    const home = homeUnder(root)
+
+    const seeded = seedCodexHome({ home, authSources: [], sandboxSource: account })
+
+    expect(seeded.sandboxSeeded).toEqual([])
+    expect(seeded.sandboxSource).toBeNull()
+    expect(existsSync(join(home, '.sandbox'))).toBe(false)
+    expect(readFileSync(join(home, 'config.toml'), 'utf8')).not.toContain('[windows]')
+  })
+
+  it('источника нет (ядерная песочница, непровизированный счёт) → форма дома в точности прежняя', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-codex-sandbox-none-'))
+    const home = homeUnder(root)
+
+    const seeded = seedCodexHome({ home, authSources: [] })
+
+    expect(seeded.sandboxSeeded).toEqual([])
+    expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe(codexConfigSeed())
   })
 })
 

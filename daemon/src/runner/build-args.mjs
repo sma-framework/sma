@@ -437,6 +437,22 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
       const seeded = seedCodexHome({
         home: spawnEnv.CODEX_HOME,
         authSources: codexAuthSources(worker.account, env, homedir),
+        // ── И СЛЕД ПЕСОЧНИЦЫ ЕДЕТ ИЗ ТОГО ЖЕ КАТАЛОГА, ЧТО И ЛОГИН ──────────────
+        //
+        // Элевированная установка на Windows проводится РУКОЙ и для ОДНОГО дома — счёта
+        // (`codex sandbox setup --elevated --current-user --codex-home <configDir>`), потому
+        // что она заводит машинных пользователей и требует прав, которых у демона нет и не
+        // должно быть. Дом ЗАДАЧИ свежий и лежит внутри этого же каталога — унаследовать он
+        // ничего не может, а без следа установки его `--sandbox workspace-write` не будет
+        // исполнен: сессия стартует читающей и молча. Поэтому источник — сам каталог счёта,
+        // ровно тот, в котором лежит и его `auth.json`: один провизированный шаблон на счёт,
+        // копия на задачу, ничего общего между задачами.
+        //
+        // `account.configDir` без счёта — это `undefined`, то есть «источника нет»: посев
+        // ничего не сеет, конфиг выходит прежним, и дом честно выглядит непровизированным.
+        sandboxSource: worker.account && worker.account.configDir
+          ? expandHome(String(worker.account.configDir), homedir)
+          : undefined,
         fsImpl,
       })
       // ASKED OF THE ENVIRONMENT THE CHILD WILL ACTUALLY HAVE, not of the daemon's own: those
