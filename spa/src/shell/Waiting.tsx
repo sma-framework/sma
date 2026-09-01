@@ -96,14 +96,14 @@ export function Waiting({ what, fill = false }: { what: string; fill?: boolean }
   const [shader] = useState(() => webglAvailable())
 
   return (
-    <section role="status" aria-busy="true" aria-label={what} className={`flex flex-1 flex-col ${fill ? 'p-7' : ''}`}>
+    <section role="status" aria-busy="true" aria-label={what} className="flex flex-1 flex-col">
       {/*
         ОЖИДАНИЕ ЗАНИМАЕТ ВСЮ ДОСТУПНУЮ ОБЛАСТЬ — решение владельца 01.09: полоса на пустом
         экране бессмысленна, смотреть больше не на что. `flex-1` растит поле, где родитель
         даёт высоту, `min-h` держит его в рост там, где не даёт.
       */}
       <div
-        className="sma-wait-appear relative flex-1 overflow-hidden rounded-[14px] border border-bd shadow-panel min-h-[70dvh]"
+        className="sma-wait-appear relative flex-1 overflow-hidden min-h-[70dvh]"
         style={{ background: `var(${WAIT_SKY})` }}
       >
         {/*
