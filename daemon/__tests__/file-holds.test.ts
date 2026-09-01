@@ -19,13 +19,18 @@
  *      может стоять часами, и остановленный на это время конвейер дороже болезни;
  *   4. справочный бэкенд держит обещание: пересекающаяся работа НЕ выдаётся, пока сосед в
  *      работе, и выдаётся сразу, как он закончил (последовательно, а не никогда);
- *   5. дверь приёмки называет ЧИСЛО и ИМЕНА файлов, а механически разведённое — отдельно.
+ *   5. дверь приёмки называет ЧИСЛО и ИМЕНА файлов, а механически разведённое — отдельно;
+ *   6. само удержание не бывает МОЛЧАЛИВЫМ: придержанная строка называет занятый файл и
+ *      работу, которая его держит, — иначе свободные работники и стоящая задача читаются как
+ *      поломка, и человек идёт искать её там, где её нет.
  */
 
 import { describe, it, expect } from 'vitest'
 
-import { createMemoryQueue, declaredFiles, fileHeldOf } from '../src/queue/adapter.mjs'
+import { createMemoryQueue, declaredFiles, fileHeldOf, fileHoldsOf } from '../src/queue/adapter.mjs'
 import { mergeRefusal } from '../src/front/server.mjs'
+import { buildUnits } from '../../spa/src/screens/tasks/units'
+import type { QueueRow } from '../../spa/src/api/types'
 
 /** Готовая к выдаче строка бэклога: без оценки и признаков успеха очередь её не принимает. */
 const task = (id: string, extra: Record<string, any> = {}) => ({
@@ -87,6 +92,118 @@ describe('fileHeldOf — чьи файлы уже заняты идущей ра
   it('строка, ждущая ЧЕЛОВЕКА, очередь не останавливает', () => {
     const waiting = { id: 'A', status: 'awaiting_approval', title: 'движок daemon/src/loop.mjs' }
     expect(fileHeldOf([waiting, { id: 'B', status: 'queued', title: 'тоже daemon/src/loop.mjs' }])).toEqual([])
+  })
+})
+
+describe('fileHoldsOf — удержание вместе с причиной, а не молча', () => {
+  const busy = { id: 'A', status: 'claimed', title: 'движок daemon/src/loop.mjs' }
+
+  it('названы и занятый файл, и работа, которая его держит', () => {
+    const holds = fileHoldsOf([busy, { id: 'B', status: 'queued', title: 'тоже daemon/src/loop.mjs' }])
+    expect(holds).toEqual([
+      { id: 'B', files: ['daemon/src/loop.mjs'], holders: [{ id: 'A', title: 'движок daemon/src/loop.mjs' }] },
+    ])
+  })
+
+  // Свои файлы, которых никто не занял, к остановке отношения не имеют: лишний путь в причине
+  // отправляет человека разбираться не туда.
+  it('в причине только ПЕРЕСЁКШИЕСЯ пути, а не все объявленные', () => {
+    const holds = fileHoldsOf([busy, { id: 'B', status: 'queued', title: 'daemon/src/loop.mjs и spa/app.mjs' }])
+    expect(holds[0].files).toEqual(['daemon/src/loop.mjs'])
+  })
+
+  it('держатели не повторяются: одна работа, занявшая два файла, названа один раз', () => {
+    const two = { id: 'A', status: 'claimed', title: 'README.md и README.ru.md' }
+    const holds = fileHoldsOf([two, { id: 'B', status: 'queued', title: 'дописать в README.md и README.ru.md' }])
+    expect(holds[0].files).toEqual(['README.md', 'README.ru.md'])
+    expect(holds[0].holders).toEqual([{ id: 'A', title: 'README.md и README.ru.md' }])
+  })
+
+  // ВОЗВРАЩЁННАЯ РАБОТА ВСТАЁТ В ОЧЕРЕДЬ ПОД СВОИМ ЖЕ НОМЕРОМ, и долговечный бэкенд хранит
+  // рядом строку, на которой она остановилась. Придержать её собственной прежней попыткой —
+  // значит придержать навсегда: освободить файл могла только она.
+  it('сама себя работа не держит, даже когда её прежняя попытка ещё числится идущей', () => {
+    const stale = { id: 'B', status: 'claimed', title: 'та же работа: daemon/src/loop.mjs' }
+    const again = { id: 'B', status: 'queued', title: 'та же работа: daemon/src/loop.mjs' }
+    expect(fileHoldsOf([stale, again])).toEqual([])
+  })
+
+  it('…но настоящего держателя своя прежняя попытка не заслоняет', () => {
+    const stale = { id: 'B', status: 'claimed', title: 'та же работа: daemon/src/loop.mjs' }
+    const other = { id: 'A', status: 'claimed', title: 'движок daemon/src/loop.mjs' }
+    const again = { id: 'B', status: 'queued', title: 'та же работа: daemon/src/loop.mjs' }
+    const holds = fileHoldsOf([stale, other, again])
+    expect(holds).toHaveLength(1)
+    expect(holds[0].holders).toEqual([{ id: 'A', title: 'движок daemon/src/loop.mjs' }])
+  })
+
+  // Одна функция держит и одна называет причину: два выражения одного правила разошлись бы в
+  // первый же день, и человек читал бы объяснение удержания, которого нет.
+  it('список придержанных — тот же самый, что читает очередь', () => {
+    const rows = [busy, { id: 'B', status: 'queued', title: 'тоже daemon/src/loop.mjs' }, { id: 'C', status: 'queued', title: 'spa/app.mjs' }]
+    expect(fileHeldOf(rows)).toEqual(fileHoldsOf(rows).map((h) => h.id))
+    expect(fileHeldOf(rows)).toEqual(['B'])
+  })
+})
+
+describe('экран задач — придержанная строка объясняется предложением, а не молчанием', () => {
+  const row = (over: Partial<QueueRow> = {}): QueueRow =>
+    ({
+      id: 'r-wait',
+      title: 'Задача',
+      lane: null,
+      project: 'sma',
+      machine: 'm1',
+      priority: 0,
+      status: 'queued',
+      position: 3,
+      ...over,
+    }) as QueueRow
+
+  const sentenceOf = (queue: QueueRow[]) => {
+    const units = buildUnits({
+      queue,
+      awaiting: [],
+      workers: [],
+      done: [],
+      batches: [],
+      phases: [],
+      activeProject: 'sma',
+      machine: '',
+      selfMachine: 'm1',
+      clock: () => '12:00',
+      now: 1_000_000,
+    })
+    expect(units).toHaveLength(1)
+    return units[0].next
+  }
+
+  it('названы файл и держатель — человек читает, почему стоит и когда пойдёт', () => {
+    const said = sentenceOf([
+      row({
+        idleReason: 'files_busy',
+        heldBy: { files: ['daemon/src/loop.mjs'], holders: [{ id: 'r-busy', title: 'движок под замену' }] },
+      }),
+    ])
+    expect(said).toContain('daemon/src/loop.mjs')
+    expect(said).toContain('движок под замену')
+  })
+
+  it('состав удержания без общей причины не подменяет её: выключенный конвейер говорит за всю очередь', () => {
+    const said = sentenceOf([
+      row({
+        idleReason: 'pipeline_off',
+        heldBy: { files: ['daemon/src/loop.mjs'], holders: [{ id: 'r-busy', title: 'движок под замену' }] },
+      }),
+    ])
+    expect(said).toContain('Конвейер выключен')
+    expect(said).not.toContain('daemon/src/loop.mjs')
+  })
+
+  // Код причины старее поля состава (строка, пришедшая из демона до этой работы) обязан
+  // оставаться предложением: пустое место читается как «причины нет».
+  it('код причины без состава по-прежнему говорит словами', () => {
+    expect(sentenceOf([row({ idleReason: 'files_busy' })])).toContain('файлы заняты')
   })
 })
 

@@ -2995,6 +2995,87 @@ describe('deriveState — idleReason on queued rows', () => {
   })
 })
 
+// ═══════════ heldBy — ПОЧЕМУ СТОИТ ИМЕННО ЭТА СТРОКА, когда весь конвейер идёт ═══════════
+//
+// Очередь не выдаёт разом две работы, чьи объявленные файлы пересекаются: иначе обе отводятся
+// от одной вершины и приезжают на приёмку конфликтом, который система создала себе сама
+// (замерено 31.08.2026 — пять готовых работ из шести не слились с первого раза). Удержание,
+// О КОТОРОМ НИКТО НЕ ЗНАЕТ, — это молча остановленная очередь: работники свободны, строка
+// стоит, и человек идёт искать поломку там, где её нет.
+
+describe('deriveState — придержанная по файлам строка называет причину', () => {
+  const busy = {
+    id: 'r-busy',
+    title: 'движок daemon/src/loop.mjs',
+    lane: 'prod',
+    status: 'claimed',
+    workerId: 'max-1',
+    enqueuedAt: NOW - 5000,
+    claimedAt: NOW - 4000,
+    priority: 0,
+  }
+  const waiting = { id: 'r-wait', title: 'тоже daemon/src/loop.mjs', lane: 'prod', status: 'queued', enqueuedAt: NOW - 1000, priority: 0 }
+  const running = { ...config, pipeline: { enabled: true } }
+  const rowOf = (payload: any, id: string) => payload.queue.find((q: any) => q.id === id)
+
+  it('файл и держатель названы на самой строке, и причина названа кодом', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter([busy, waiting]),
+      windows: makeWindows({}),
+      config: running,
+      clock: () => NOW,
+    })
+    const row = rowOf(payload, 'r-wait')
+    expect(row.idleReason).toBe('files_busy')
+    expect(row.heldBy.files).toEqual(['daemon/src/loop.mjs'])
+    expect(row.heldBy.holders).toEqual([{ id: 'r-busy', title: 'движок daemon/src/loop.mjs' }])
+  })
+
+  it('свободные файлы — ни слова: строка секунды от запуска ничего не объясняет', async () => {
+    const free = { ...waiting, id: 'r-free', title: 'экран spa/app.mjs' }
+    const payload = await deriveState({
+      adapter: mkAdapter([busy, free]),
+      windows: makeWindows({}),
+      config: running,
+      clock: () => NOW,
+    })
+    const row = rowOf(payload, 'r-free')
+    expect(row.heldBy).toBeUndefined()
+    expect(row.idleReason).toBeUndefined()
+  })
+
+  // ОБЩАЯ ПРИЧИНА СИЛЬНЕЕ ЧАСТНОЙ, и это не вкусовщина: пока тумблер выключен, эта строка не
+  // двинулась бы и с пустыми файлами, — «ждёт файла» было бы правдой не о том. Состав удержания
+  // при этом отдаётся всё равно: он факт о строке, а не объяснение простоя.
+  it('выключенный конвейер объясняет всю очередь, а состав удержания едет рядом', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter([busy, waiting]),
+      windows: makeWindows({}),
+      config, // ключа pipeline нет → продуктовое умолчание: конвейер ВЫКЛЮЧЕН
+      clock: () => NOW,
+    })
+    const row = rowOf(payload, 'r-wait')
+    expect(row.idleReason).toBe('pipeline_off')
+    expect(row.heldBy.files).toEqual(['daemon/src/loop.mjs'])
+  })
+
+  // ФАЙЛ ОДИН НА ДЕРЕВО, А ВЗГЛЯД ЧЕЛОВЕКА СУЖЕН ПРОЕКТОМ. Держатель из соседнего проекта в
+  // сужённые строки не попадает — и правило, прочитанное по ним, объявило бы файл свободным.
+  it('держатель из другого проекта тоже держит: правило читается по несужённым строкам', async () => {
+    const other = { ...busy, project: 'соседний' }
+    const payload = await deriveState({
+      adapter: mkAdapter([other, { ...waiting, project: 'sma' }]),
+      windows: makeWindows({}),
+      config: running,
+      clock: () => NOW,
+      project: 'sma',
+    })
+    const row = rowOf(payload, 'r-wait')
+    expect(row.idleReason).toBe('files_busy')
+    expect(row.heldBy.holders[0].id).toBe('r-busy')
+  })
+})
+
 describe('POST /api/approve — a per-file migration yes rides the EXISTING door', () => {
   it('the route table carries no migration route — the yes rides the approve door', () => {
     // The SIZE of the table is pinned in exactly one place (front-auth.test.ts), where each
