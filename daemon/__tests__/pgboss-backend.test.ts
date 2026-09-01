@@ -1430,6 +1430,61 @@ describe('pg-boss backend — a batch request is not sent where a fetch can reac
   })
 })
 
+/**
+ * КЕМ РАБОТУ ПРОСИЛИ ВЕСТИ — И ПОЧЕМУ ЭТО СПРАШИВАЕТСЯ У ЭТОГО БЭКЕНДА ОТДЕЛЬНО.
+ *
+ * Дверь возврата пересобирает повторную постановку РОВНО из строк `list()` и ничего другого о
+ * задаче не знает. Пока роль на строке не ехала, работа, названная поимённо, ставилась заново
+ * БЕЗ имени: не отказ, а забывчивость — и названного специалиста молча вёл ИСПОЛНИТЕЛЬ, ровно
+ * та подмена, ради запрета которой роль и завели. У куска сборки та же потеря стоит дороже:
+ * повтор без роли просит исполнителя, `poolFor` называет это `role_mismatch`, и сборка,
+ * закреплённая за специалистом, меняет работника — правило «одна сборка — один работник»
+ * расклеивается на первом же повторе.
+ *
+ * ПОЛЕ ПОЧИНИЛИ В ДВУХ БЭКЕНДАХ ЗЕРКАЛЬНО, А ЗАМЕРИЛИ В ОДНОМ — в памяти
+ * (`role-survives-return.test.ts` держит эталонную половину целиком, через двери). В бою очередь
+ * ЭТА, и её половина держалась на честном слове коммита: потеряй она роль здесь — вышла бы та же
+ * тихая подмена, а весь прогон остался бы зелёным, потому что каждый случай про роль поднимает
+ * очередь в памяти. Здесь эта половина имеет зубы.
+ *
+ * ПОЧЕМУ НЕ В ОБЩЕМ КОНТРАКТЕ, где ему место и где его прошли бы оба бэкенда разом: `adapter.mjs`
+ * в момент этой правки держала другая сессия того же рабочего дерева, и запись в него была бы
+ * гонкой, а не помощью. Случай написан так, чтобы переехать в контракт без изменений.
+ */
+describe('pg-boss backend — строка списка помнит, кем работу просили вести', () => {
+  it('роль, которой назвали работу, видна на строке — и в том состоянии, где её читает возврат', async () => {
+    const c = mkClock()
+    const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+
+    await adapter.enqueue({
+      id: 'R-named',
+      source: 'roster',
+      title: 'к исследователю',
+      lane: 'prod',
+      role: 'ai-researcher',
+    })
+    await adapter.enqueue({ id: 'R-plain', source: 'roster', title: 'обычная работа', lane: 'prod' })
+
+    const rows = await adapter.list({})
+    expect(rows.find((r: any) => r.id === 'R-named').role).toBe('ai-researcher')
+    // Работа, никем поимённо не названная, о роли не говорит НИЧЕГО — не «null», который каждому
+    // читателю пришлось бы отличать от имени. «Не назвали» и «назвали исполнителя» — разные
+    // факты (см. roleIsNamed), и бэкенд, кладущий сюда null, стёр бы различие молча.
+    expect(rows.find((r: any) => r.id === 'R-plain').role).toBeUndefined()
+
+    // И В ТОМ СОСТОЯНИИ, В КОТОРОМ ЭТУ СТРОКУ ЧИТАЕТ ДВЕРЬ ВОЗВРАТА: работа уже сделана и ждёт
+    // человека. Роль, дожившая до очереди, но пропавшая к этому моменту, — та же подмена, только
+    // позже: возврат прочитал бы строку без имени и поставил бы работу заново без него.
+    const claimed = await adapter.claimNext('w1', {})
+    expect(claimed.id).toBe('R-named')
+    await adapter.complete(claimed.id, { receiptRef: 'reverify:ok', attemptToken: claimed.attemptToken })
+
+    const back = (await adapter.list({})).find((r: any) => r.id === 'R-named')
+    expect(back.status).toBe('awaiting_approval')
+    expect(back.role).toBe('ai-researcher')
+  })
+})
+
 // ── attempt-ledger direct invariants (Task 2) ──
 describe('attempt-ledger — append-only per-task history', () => {
   it('recordAttempt appends and readAttempts returns rows ordered by attempt number', () => {
