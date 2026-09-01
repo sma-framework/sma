@@ -121,6 +121,48 @@ describe('sync-branch — вершина входит в ветку в копи�
     expect(readme).not.toContain('<<<<<<<')
   })
 
+  /**
+   * САМЫЙ ЧАСТЫЙ КОНФЛИКТ ЭТОГО ДОМА, И ДО ЭТОГО ЗАМКА ОН УЕЗЖАЛ ЧЕЛОВЕКУ ВСЕГДА.
+   *
+   * Всякая работа перед сдачей перештамповывает бейдж прогона: одну строку в каждом README и
+   * всю квитанцию. Это правка СУЩЕСТВУЮЩЕЙ строки, то есть непустая база, а склейка на непустой
+   * базе отказывала НА ВЕСЬ ФАЙЛ — вместе с честно дописанными абзацами, ради которых класс
+   * `union` и заведён. Здесь оба спора лежат в одном README, и оба обязаны развестись сами:
+   * абзацы — оставшись обоими, число — взятым со своей стороны и НАЗВАННЫМ устаревшим.
+   */
+  it('обе стороны перештамповали бейдж прогона → README сведён целиком, а устаревшее число названо', () => {
+    const badge = (n: number) =>
+      `  <img src="https://img.shields.io/badge/tests-${n}%2F${n}-3CC0A0" alt="tests ${n}/${n}">`
+    // Между бейджем и разделом абзацев — рукописная проза: git разводит их РАЗНЫМИ секциями,
+    // как в живом README, а не одной на весь файл.
+    const readme = (n: number, tail: string[]) =>
+      ['# README', '', badge(n), '', 'Раздел про установку.', '', 'Раздел про запуск.', '',
+        'Раздел про приёмку.', '', 'Раздел про память.', '', '## Что нового', '', ...tail, ''].join('\n')
+    const receipt = (n: number) => `${JSON.stringify({ tests: n, files: 277, commit: 'aaaaaaa' }, null, 2)}\n`
+
+    const dir = makeCopy(
+      { 'README.md': readme(6100, ['- абзац соседней работы']), 'test-receipt.json': receipt(6100) },
+      { 'README.md': readme(6156, ['- абзац моей работы']), 'test-receipt.json': receipt(6156) },
+      { 'README.md': readme(6054, []), 'test-receipt.json': receipt(6054) },
+    )
+
+    const res = runVerb([], dir)
+    expect(res.code).toBe(0)
+    expect(trunkIsAncestor(dir)).toBe(true)
+
+    const out = readFileSync(join(dir, 'README.md'), 'utf8')
+    expect(out).toContain('- абзац моей работы')
+    expect(out).toContain('- абзац соседней работы')
+    expect(out).not.toContain('<<<<<<<')
+    // Своя сторона — не как правая, а как одна из двух одинаково устаревших.
+    expect(out).toContain('tests-6156')
+    // Квитанция и её проекция взяты С ОДНОЙ стороны: разойдясь, они соврали бы `badge --check`.
+    expect(readFileSync(join(dir, 'test-receipt.json'), 'utf8')).toContain('6156')
+    // И ГЛАВНОЕ: устаревшее число не выдано за свежее — перештамповка названа человеку.
+    expect(res.stdout).toContain('npm run badge')
+    expect(res.stdout).toContain('test-receipt.json (measured)')
+  })
+
   it('настоящий спор → отказ, ФАЙЛ НАЗВАН, и дерево не осталось в половинчатом слиянии', () => {
     const dir = makeCopy({ 'engine.txt': 'строка вершины\n' }, { 'engine.txt': 'строка работника\n' }, {
       'engine.txt': 'исходная строка\n',

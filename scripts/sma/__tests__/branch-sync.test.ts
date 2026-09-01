@@ -22,7 +22,12 @@
  *      само слияние;
  *  10. код возврата команды пересборки — не всегда итог записи: у правила, объявившего
  *      `exitIsVerdict`, решает доказательство на самом файле, а отказ называется вслух. Без
- *      этого один посторонний упрёк аудитора отправлял человеку уже пересобранную карту.
+ *      этого один посторонний упрёк аудитора отправлял человеку уже пересобранную карту;
+ *  11. строка ЗАМЕРА (бейдж прогона, квитанция) — единственная непустая база, которая
+ *      разводится без человека: числа измерены на двух разных деревьях, слитого не видел ни
+ *      один прогон, и своя сторона берётся не как правая, а как одна из двух устаревших. Без
+ *      этого одна строка бейджа отказывала склейке НА ВЕСЬ README — а перештамповывает бейдж
+ *      КАЖДАЯ работа этого дома. Исключение узкое: бейдж версии и рукописное рядом — человеку.
  *
  * Швы: execGit / io / run — подделки. Ни настоящего git, ни настоящего диска, ни одной
  * настоящей команды пересборки.
@@ -41,6 +46,7 @@ import {
   abortSync,
   unresolvedMergeHint,
   matchesPattern,
+  measuredLinePatterns,
   hasConflictMarkers,
   CONFLICT_FILES_CAP,
   MECHANICAL_DEFAULTS,
@@ -114,6 +120,12 @@ describe('что считается механическим — и что не 
     expect(split.human).toEqual(['daemon/src/loop.mjs'])
   })
 
+  it('квитанция замера — свой класс, а не «человеку»: склеивать две квитанции нечем', () => {
+    const split = classifyConflicts(['test-receipt.json', 'daemon/src/loop.mjs'], MECHANICAL_DEFAULTS)
+    expect(split.measured).toEqual(['test-receipt.json'])
+    expect(split.human).toEqual(['daemon/src/loop.mjs'])
+  })
+
   it('правило БЕЗ команды пересборки не делает файл механическим', () => {
     const split = classifyConflicts(['docs/master-graph.html'], {
       union: [],
@@ -160,6 +172,62 @@ describe('склейка дописанного — обе стороны ост
   })
 })
 
+/**
+ * СТРОКА ЗАМЕРА — ЕДИНСТВЕННАЯ НЕПУСТАЯ БАЗА, КОТОРАЯ РАЗВОДИТСЯ БЕЗ ЧЕЛОВЕКА.
+ *
+ * Дефект за этими замками измерен на живом дереве 01.09.2026: всякая работа перед сдачей
+ * перештамповывает бейдж прогона, это правка существующей строки, и склейка отказывала НА ВЕСЬ
+ * README — вместе с абзацами, ради которых класс `union` и писался. Исключение обязано остаться
+ * узким: числа замера — да; всё, что рядом с ними, — по-прежнему человеку.
+ */
+describe('секция чистого замера — устарела у обеих сторон, и это не спор о содержании', () => {
+  const lines = measuredLinePatterns(MECHANICAL_DEFAULTS)
+  const badge = (n: number) => `  <img src="https://img.shields.io/badge/tests-${n}%2F${n}-3CC0A0" alt="tests ${n}/${n}">`
+  const section = (ours: string, base: string, theirs: string) =>
+    ['<<<<<<< HEAD', ours, '||||||| base', base, '=======', theirs, '>>>>>>> main'].join('\n')
+
+  it('бейдж прогона с обеих сторон → берётся своя, секция засчитана как замер', () => {
+    const out = unionResolve(section(badge(6156), badge(6054), badge(6100)), { measuredLines: lines })
+    expect(out.text).toBe(badge(6156))
+    expect(out.measured).toBe(1)
+    expect(hasConflictMarkers(out.text as string)).toBe(false)
+  })
+
+  it('в одном файле и абзац, и бейдж → развелось ВСЁ, а раньше отказывало всё', () => {
+    const text = [
+      section(badge(6156), badge(6054), badge(6100)),
+      '## Что нового',
+      '<<<<<<< HEAD',
+      'абзац моей работы',
+      '||||||| base',
+      '=======',
+      'абзац соседней работы',
+      '>>>>>>> main',
+    ].join('\n')
+    const out = unionResolve(text, { measuredLines: lines })
+    expect(out.text).toBe([badge(6156), '## Что нового', 'абзац моей работы', 'абзац соседней работы'].join('\n'))
+    expect(out.hunks).toBe(2)
+    expect(out.measured).toBe(1)
+    // Тот же текст БЕЗ объявленных образцов ведёт себя ровно как до появления класса.
+    expect(unionResolve(text).text).toBeNull()
+  })
+
+  it('бейдж ВЕРСИИ замером не является — выпуск объявляют, а не измеряют', () => {
+    const ver = (v: string) => `  <img src="https://img.shields.io/badge/version-${v}-3B82F6">`
+    const out = unionResolve(section(ver('5.7.2'), ver('5.7.0'), ver('5.7.1')), { measuredLines: lines })
+    expect(out.text).toBeNull()
+    expect(out.reason).toContain('существующие строки')
+  })
+
+  it('рукописная строка, заехавшая в секцию с бейджем, возвращает её человеку целиком', () => {
+    const out = unionResolve(
+      section(`${badge(6156)}\nи моя правка рядом`, badge(6054), badge(6100)),
+      { measuredLines: lines },
+    )
+    expect(out.text).toBeNull()
+  })
+})
+
 describe('resolveMechanical — разводит без выбора и не трогает ничего больше', () => {
   const unionFile = ['<<<<<<< HEAD', 'моё', '||||||| base', '=======', 'чужое', '>>>>>>> main'].join('\n')
 
@@ -184,6 +252,65 @@ describe('resolveMechanical — разводит без выбора и не т�
     expect(Object.values(written)[0]).toBe('моё\nчужое')
     expect(calls.some((c) => c[0] === 'add' && c.includes('README.md'))).toBe(true)
     expect(calls.some((c) => c.join(' ').includes('--conflict=diff3'))).toBe(true)
+  })
+
+  it('квитанция замера разводится ПЕРВОЙ — до пересборки карты, которая её читает', () => {
+    const trace: string[] = []
+    const out = resolveMechanical({
+      cwd: '/copy',
+      execGit: (args: string[]) => {
+        trace.push(`git ${args.join(' ')}`)
+        return ''
+      },
+      files: ['docs/master-graph.html', 'test-receipt.json'],
+      io: { readFileSync: () => 'пересобрано, маркеров нет', writeFileSync: () => {} },
+      run: (cmd: string[]) => {
+        trace.push(`run ${cmd.join(' ')}`)
+        return ''
+      },
+    })
+    const ours = trace.findIndex((t) => t === 'git checkout --ours -- test-receipt.json')
+    const firstRun = trace.findIndex((t) => t.startsWith('run '))
+    expect(ours).toBeGreaterThanOrEqual(0)
+    // Пересборка карты читает квитанцию: запущенная поверх маркеров, она вернула бы обе стороны
+    // неизменными, и механический по природе файл уехал бы человеку следом за источником.
+    expect(firstRun).toBeGreaterThan(ours)
+    expect(out.resolved).toContainEqual({ file: 'test-receipt.json', how: 'measured' })
+    expect(out.notes.join(' ')).toContain('устарели у ОБЕИХ сторон')
+    expect(out.notes.join(' ')).toContain('npm run badge')
+    expect(out.remaining).toEqual([])
+  })
+
+  it('README с бейджем и абзацем: развод назван составом, а устаревшее число — вслух', () => {
+    const { git } = fakeGit()
+    const readme = [
+      '<<<<<<< HEAD',
+      '  <img src="https://img.shields.io/badge/tests-6156%2F6156-3CC0A0" alt="tests 6156/6156">',
+      '||||||| base',
+      '  <img src="https://img.shields.io/badge/tests-6054%2F6054-3CC0A0" alt="tests 6054/6054">',
+      '=======',
+      '  <img src="https://img.shields.io/badge/tests-6100%2F6100-3CC0A0" alt="tests 6100/6100">',
+      '>>>>>>> main',
+      '<<<<<<< HEAD',
+      'мой абзац',
+      '||||||| base',
+      '=======',
+      'соседний абзац',
+      '>>>>>>> main',
+    ].join('\n')
+    let saved = ''
+    const out = resolveMechanical({
+      cwd: '/copy',
+      execGit: git,
+      files: ['README.md'],
+      io: { readFileSync: () => readme, writeFileSync: (_p: string, t: string) => { saved = t } },
+      run: () => '',
+    })
+    expect(out.resolved).toEqual([{ file: 'README.md', how: 'union+measured' }])
+    expect(saved).toContain('tests-6156')
+    expect(saved).toContain('мой абзац')
+    expect(saved).toContain('соседний абзац')
+    expect(out.notes.join(' ')).toContain('npm run badge')
   })
 
   it('одна команда пересборки запускается ОДИН раз на весь свой набор файлов', () => {
