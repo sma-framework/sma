@@ -2332,6 +2332,14 @@ export interface PhaseIndexRow {
   id: string
   name: string
   stages: Record<PhaseStage, PhaseStageStatus>
+  /**
+   * Стоит ли в роадмапе галочка человека «эта фаза закрыта» — ТРЕТИЙ источник о готовности
+   * рядом с диском (`stages`) и очередью, и единственный, где говорит сам человек.
+   *
+   * Необязательное: процесс демона, поднятый до появления поля, отвечает без него, и молчание
+   * читается как «галочки не стоит» — а не как закрытая фаза.
+   */
+  roadmapClosed?: boolean
   /** Questions this phase parked and nobody has answered yet. */
   open: number
   /** Questions already answered — the pair is «N открыто / M отвечено», counted, never stored. */
