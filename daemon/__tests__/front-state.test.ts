@@ -3256,6 +3256,32 @@ describe('POST /api/batch — the request fans out into the work it names', () =
     expect(await adapter.list({})).toHaveLength(0)
   })
 
+  it('дверь батча роли НЕ несёт: ни одна её строка не просит специалиста, и попросить нельзя', async () => {
+    // ПОЧЕМУ ЭТОТ СЛУЧАЙ СТОИТ У ДВЕРИ, А НЕ У МАРШРУТА. Правило владельца «одна сборка — один
+    // работник» держится тем, что кусок достаётся работнику предыдущего куска (`poolFor`), а
+    // роль этот выбор перебивает: кусок без слова о роли просит ИСПОЛНИТЕЛЯ, и сборка,
+    // закреплённая за специалистом, на нём расклеивается — см. `batch-pin-wire.test.ts`.
+    // Сегодня это по продукту недостижимо ровно потому, что здесь роли нет: дверь пишет куски
+    // БЕЗ `role`, значит все куски одной сборки просят одно и то же и закрепление держится.
+    // Утверждение хрупкое и потому закреплено: правка, добавившая `role` в этот набор ключей,
+    // впустила бы сборку со смешанными ролями — то есть тихую расклейку по разным счетам, от
+    // которой правило и стоит. Пусть такая правка красит этот случай и объясняется словами.
+    const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
+    const front = mkBatchFront({ adapter })
+
+    const named = await callBatch(front, { title: 'к исследователю', items: ['дело'], role: 'ai-researcher' })
+    expect(named.statusCode).toBe(400)
+    expect(await adapter.list({})).toHaveLength(0)
+
+    // И то же самое с положительной стороны: то, что дверь ВСЁ-ТАКИ пишет, роли не несёт —
+    // проверка переживёт смену набора ключей, потому что говорит о строках, а не о валидации.
+    const ok = await callBatch(front, { title: 'разгрести', items: ['первое', 'второе'] })
+    expect(ok.statusCode).toBe(200)
+    const rows = await adapter.list({})
+    expect(rows).toHaveLength(3)
+    for (const r of rows) expect(r.role ?? null).toBeNull()
+  })
+
   it('a referenced line that is not in the file is a 404 — a batch never carries an item nobody can trace', async () => {
     const adapter = createMemoryQueue({ clock: () => BATCH_NOW })
     const front = mkBatchFront({ adapter, deriveBacklog: backlogOf([{ id: 'BL-1', title: 'есть' }]) })

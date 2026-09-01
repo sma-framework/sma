@@ -1496,6 +1496,10 @@ export function createPgBossQueue({
       // only when there is one, so ordinary work states nothing about a batch. It is the ONLY
       // thing that lets a reader group the items of one request back together.
       ...(data.batchId ? { batchId: data.batchId } : {}),
+      // КОГО ЭТА РАБОТА ПРОСИТ, зеркально эталонному бэкенду и по той же причине: дверь
+      // возврата пересобирает повторную постановку из строк списка, и роль, потерянная здесь,
+      // теряется задачей насовсем. Несётся только когда названа.
+      ...(data.role ? { role: data.role } : {}),
       // The two facts a decision leaves behind, carried only when they exist: a row that
       // was never returned states nothing about a note rather than carrying a null one.
       ...(r.returned_note ? { returnedNote: r.returned_note } : {}),

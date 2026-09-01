@@ -2436,6 +2436,15 @@ async function handleReturn({ req, res, config, deps }) {
     title: (typeof v.title === 'string' && v.title.trim()) || nameFromRow || taskId,
     lane: v.lane || (prevRow && prevRow.lane) || 'prod',
     ...(prevData ? { data: prevData } : {}),
+    // РОЛЬ — ТРЕТИЙ СЛУЧАЙ ТОГО ЖЕ ДЕФЕКТА, и он дороже обоих предыдущих. Конверт и слова
+    // терялись перезаписью молча; роль терялась так же — но она ЕДИНСТВЕННОЕ слово, которым
+    // человек называет исполнителя работы. Вторая попытка работы, названной поимённо,
+    // приезжала без имени, `roleWanted` отвечал «исполнитель», и работа шла под чужим
+    // описанием агента: та самая тихая подмена, на которую маршрут в открытую отвечает
+    // `role_unavailable`, обойдённая не отказом, а забывчивостью. Ключа тела у роли здесь нет
+    // по той же причине, что у конверта: возврат — это состояние ТОЙ ЖЕ работы, а сменить
+    // исполнителя значит поставить другую, своей дверью.
+    ...(prevRow && prevRow.role ? { role: prevRow.role } : {}),
     ...(prevRow && prevRow.acceptance != null ? { acceptance: prevRow.acceptance } : {}),
     ...(prevRow && prevRow.description != null ? { description: prevRow.description } : {}),
     ...(prevRow && Number.isFinite(prevRow.storyPoints) ? { storyPoints: prevRow.storyPoints } : {}),
@@ -6395,6 +6404,12 @@ async function handleBatchDecide({ req, res, deps }) {
     title: item.title || itemId,
     lane: item.lane || BACKLOG_DEFAULT_LANE,
     batchId,
+    // КОГО ЭТОТ КУСОК ПРОСИЛ — тем же правилом, что у двери возврата выше, и с ценой, которую
+    // платит именно сборка: правило «одна сборка — один работник» держится тем, что все куски
+    // просят одно и то же. Кусок, повторённый без роли, попросил бы исполнителя, `poolFor`
+    // назвал бы это `role_mismatch` — и сборка, честно закреплённая за специалистом,
+    // расклеилась бы на первом же повторе.
+    ...(item.role ? { role: item.role } : {}),
     attempt,
   })
   if (requeue.answered) return undefined // the database refused the text; the reason is sent

@@ -2091,6 +2091,14 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
       // states nothing about a batch rather than carrying a null every grouping would then
       // have to skip. Without it, a reader could group items by nothing but their titles.
       ...(rec.task.batchId ? { batchId: rec.task.batchId } : {}),
+      // КОГО ЭТА РАБОТА ПРОСИТ, и почему это едет на строке, а не остаётся в полезной нагрузке.
+      // Маршрут читает роль с ВЫДАННОЙ задачи и в списке не нуждался — а вот дверь возврата
+      // строит повторную постановку РОВНО из этих строк и ничего другого о задаче не знает.
+      // Пока поля здесь не было, возврат работы, названной поимённо, ставил её заново БЕЗ имени:
+      // молчаливая подмена исполнителя, ради запрета которой роль вообще завели. Несётся только
+      // когда названа — безымянная работа продолжает не говорить о роли ничего, потому что
+      // «не назвали» и «назвали исполнителя» это разные факты (см. roleIsNamed).
+      ...(rec.task.role ? { role: rec.task.role } : {}),
       attempt: rec.attempt,
       coalesceCount: rec.coalesceCount,
       workerId: rec.workerId,
