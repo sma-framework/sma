@@ -170,9 +170,14 @@ describe('verify-rebrand (g) — a test title is prose', () => {
 })
 
 describe('verify-rebrand — the scanner does not go red on this repository', () => {
+  // The scanner walks the WHOLE tree (7k+ test titles) as a child process; under a full
+  // parallel suite run that walk shares the machine with every other worker and the default
+  // 30s budget times out on a tree the scanner clears in seconds when idle. The budget is
+  // about the machine's load, not the scanner's health — so it is set where a loaded run
+  // still finishes, and a hang still fails.
   it('is green on the real tree, this suite and its specimens included (Test 5)', () => {
     const r = run(process.execPath, [SCANNER], REPO_ROOT)
     expect(r.status, r.out).toBe(0)
     expect(r.out).toMatch(/test titles scanned: \d+/)
-  })
+  }, 180_000)
 })
