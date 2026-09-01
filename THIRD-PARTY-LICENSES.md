@@ -179,3 +179,9 @@ The operator's window is built from `spa/` into `daemon/static/app` and ships in
 
 MIT asks for the copyright and permission notice in every copy or substantial portion, so the notices travel WITH the bundle in this file instead of inside it — see «Window bundle — MIT notices (verbatim)» above. This file is packed by `files[]`, so it reaches the adopter in the same tarball as the bundle it describes. That is a statement about a real build, not a belief about the toolchain: the test suite re-measures both halves of it against `daemon/static/app` whenever a build is on disk.
 <!-- spa-bundle:end -->
+
+## Adapted code
+
+| source | license | what was taken |
+| --- | --- | --- |
+| Magic Rings — reactbits.dev (davidhdev/react-bits) | MIT | the fragment shader of the waiting-screen ring field, adapted verbatim into `spa/src/shell/MagicRings.tsx`; the three.js scaffolding around it was replaced with plain WebGL |
