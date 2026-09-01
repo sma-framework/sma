@@ -78,7 +78,7 @@
  * at the top take an injectable `fsImpl`, so tests touch no real home. Zero deps.
  */
 
-import { copyFileSync as fsCopyFileSync, existsSync as fsExistsSync } from 'node:fs'
+import { copyFileSync as fsCopyFileSync, cpSync as fsCpSync, existsSync as fsExistsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { atomicWriteJson, atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
@@ -806,6 +806,30 @@ export const CODEX_CONFIG_FILE = 'config.toml'
 export const CODEX_AUTH_FILE = 'auth.json'
 
 /**
+ * ЧТО ЭЛЕВИРОВАННАЯ УСТАНОВКА ОСТАВЛЯЕТ В ДОМЕ, ДЛЯ КОТОРОГО ЕЁ ЗАПУСКАЛИ.
+ *
+ * `codex sandbox setup --elevated --current-user --codex-home <дом>` заводит на МАШИНЕ двух
+ * ограниченных пользователей (`CodexSandboxOffline` / `CodexSandboxOnline`) — именно ими
+ * потом исполняется `workspace-write` на Windows — и кладёт в ТОТ САМЫЙ дом три каталога:
+ * `.sandbox/` (со следом установки `setup_marker.json`), `.sandbox-bin/` и
+ * `.sandbox-secrets/` (учётные данные этих пользователей). Пользователи — машинные, они уже
+ * существуют; эти три каталога — ЗАПИСЬ о том, что установка была, и без неё дом ведёт себя
+ * так, будто её не было.
+ *
+ * ПОЧЕМУ ЭТО СПИСОК, А НЕ ОДИН МАРКЕР. Проверка перед спавном смотрит на один файл
+ * (`.sandbox/setup_marker.json`) — ей достаточно доказательства. Посев обязан положить ВЕСЬ
+ * след: дом с маркером, но без `.sandbox-secrets/`, прошёл бы проверку и упёрся бы в ту же
+ * стену внутри процесса, то есть в точности вернул бы отказ, который эта проверка и заводилась
+ * предотвращать, — только теперь с зелёной проверкой перед ним.
+ *
+ * Проверено на этой машине 01.09.2026: `.sandbox-bin/` пуст, в `.sandbox-secrets/` лежит один
+ * `sandbox_users.json`, а сам маркер не называет НИ ОДНОГО пути — только имена пользователей и
+ * время установки. Поэтому копия маркера в другом доме — не подделка: она правдиво говорит о
+ * машине, а не о каталоге.
+ */
+export const CODEX_SANDBOX_ARTIFACTS = Object.freeze(['.sandbox', '.sandbox-bin', '.sandbox-secrets'])
+
+/**
  * The approval policy a headless Codex session runs under. `never` because there is nobody
  * at this keyboard to approve anything — the same fact HEADLESS_ENV states to the session
  * itself. It travels in the config file and NOT as a flag because `codex exec` has none:
@@ -831,11 +855,27 @@ export const CODEX_APPROVAL_POLICY = 'never'
  *     worker leaves belongs in the project's corpus, through the pipeline a person approves;
  *     a second, private memory nobody staged is exactly the thing this product refuses.
  *
+ *   - `[windows] sandbox = "elevated"` — ТОЛЬКО когда в этот дом посеян след установки
+ *     (`windowsSandbox: true`, см. seedCodexHome). Это третья строка, и она стоит здесь по той
+ *     же причине, что и две первые: у `codex exec` нет для неё флага. Файл-след доказывает, что
+ *     ограниченные пользователи на машине есть; ЭТА строка — то, чем дом просит ими
+ *     воспользоваться. Дом, несущий след, но не несущий строки, ведёт себя как непровизированный:
+ *     принимает `--sandbox workspace-write` и молча остаётся читающим — та же стена, что и без
+ *     следа, только теперь мимо проверки. Замерено на этой машине 01.09.2026: шаблон счёта,
+ *     провизированный рукой основателя, несёт ровно эту строку в своём `config.toml`, а
+ *     `codexConfigSeed()` её не писал — то есть свежий дом задачи не мог её унаследовать ниоткуда.
+ *
+ *     И ОНА НЕ ПИШЕТСЯ БЕЗ СЛЕДА, а не «пишется на Windows». Строка без следа — это обещание,
+ *     которого машина не исполнит; спрашивается диск, а не платформа, ровно как в проверке
+ *     перед спавном. На системе, где песочницу держит ядро, копировать нечего, посев ничего не
+ *     сеет, и текст выходит в точности прежним — ни один существующий спавн не меняет формы.
+ *
  * Verified against codex-cli 0.150.1: this text passes `--strict-config`.
  *
+ * @param {{windowsSandbox?:boolean}} [opts]
  * @returns {string}
  */
-export function codexConfigSeed() {
+export function codexConfigSeed({ windowsSandbox = false } = {}) {
   return [
     '# SMA — written fresh for THIS task; never shared with another and never hand-edited.',
     `approval_policy = "${CODEX_APPROVAL_POLICY}"`,
@@ -843,6 +883,7 @@ export function codexConfigSeed() {
     '[features]',
     'memories = false',
     '',
+    ...(windowsSandbox === true ? ['[windows]', 'sandbox = "elevated"', ''] : []),
   ].join('\n')
 }
 
@@ -877,17 +918,69 @@ export class CodexHomeError extends Error {
  * the child's environment is another way to be authenticated, and only the composer sees that
  * environment. It refuses by name; see build-args.mjs.
  *
- * @param {{home:string, authSources?:string[], fsImpl?:object}} args
- * @returns {{home:string, configPath:string, authPath:(string|null), authSource:(string|null)}}
+ * И ТРЕТЬЕ, ЧТО ЕДЕТ ТЕМ ЖЕ ШВОМ, — СЛЕД ПЕСОЧНИЦЫ. Право писать на Windows держит не флаг, а
+ * ограниченный пользователь, заведённый элевированной установкой; дом, в котором её не было,
+ * принимает `--sandbox workspace-write` и молча остаётся читающим (замерено 01.09.2026: конверт
+ * с редактором и оболочкой, ноль файлов, «writing is blocked by read-only sandbox»). Установка —
+ * машинная и разовая, её нельзя проводить на каждую задачу; но её ЗАПИСЬ живёт в доме, а дом у
+ * каждой задачи свежий. Поэтому `sandboxSource` — провизированный рукой шаблон счёта — и три его
+ * каталога (CODEX_SANDBOX_ARTIFACTS) КОПИРУЮТСЯ сюда ровно так же и ровно по той же причине, что
+ * и логин: свежий дом ничего не наследует, а сессия не должна писать обратно в то, что ей одолжили.
+ *
+ * ПОСЕВ ИДЁТ ДО КОНФИГА, потому что конфиг о нём отчитывается: `[windows] sandbox = "elevated"`
+ * пишется тогда и только тогда, когда след действительно лёг (см. codexConfigSeed). Отсутствие
+ * источника, отсутствие каталогов на диске и ошибка копирования — это все три «следа нет»:
+ * функция не бросает, `sandboxSeeded` выходит пустым, конфиг выходит прежним, а решение, можно
+ * ли в такой дом спавнить, остаётся там же, где решение про логин, — у композитора.
+ *
+ * @param {{home:string, authSources?:string[], sandboxSource?:string, fsImpl?:object}} args
+ * @returns {{home:string, configPath:string, authPath:(string|null), authSource:(string|null), sandboxSeeded:string[], sandboxSource:(string|null)}}
  */
-export function seedCodexHome({ home, authSources, fsImpl } = {}) {
+export function seedCodexHome({ home, authSources, sandboxSource, fsImpl } = {}) {
   if (!home || String(home).trim() === '') throw new CodexHomeError('seedCodexHome: a home path is required')
   const dir = String(home)
   const existsFn = (fsImpl && fsImpl.existsSync) || fsExistsSync
   const copyFn = (fsImpl && fsImpl.copyFileSync) || fsCopyFileSync
+  const cpFn = (fsImpl && fsImpl.cpSync) || fsCpSync
+
+  // ── СЛЕД ПЕСОЧНИЦЫ — ПЕРВЫМ, И ЦЕЛИКОМ ЛИБО НИКАК ─────────────────────────────
+  //
+  // ЦЕЛИКОМ ЛИБО НИКАК — ЭТО НЕ АККУРАТНОСТЬ, А ЕДИНСТВЕННЫЙ БЕЗОПАСНЫЙ ИСХОД. Проверка перед
+  // спавном ищет ОДИН файл — маркер внутри `.sandbox/`. Дом, куда лёг маркер и не легли учётные
+  // данные из `.sandbox-secrets/`, эту проверку ПРОЙДЁТ и упрётся в ту же читающую стену уже
+  // внутри процесса — то есть ровно в тот срыв, ради предотвращения которого проверка и
+  // заводилась, только теперь с зелёным светом перед ним. Поэтому источники сперва
+  // пересчитываются целиком, и только полная пачка копируется; неполная не кладёт НИЧЕГО, и
+  // дом честно выглядит непровизированным.
+  const sandboxSeeded = []
+  const sandboxFrom = typeof sandboxSource === 'string' && sandboxSource.trim() !== '' ? sandboxSource : null
+  if (sandboxFrom) {
+    let whole = true
+    for (const entry of CODEX_SANDBOX_ARTIFACTS) {
+      try {
+        if (existsFn(join(sandboxFrom, entry)) !== true) whole = false
+      } catch {
+        whole = false // нечитаемый источник — это «следа нет», а не «наверное, всё-таки да»
+      }
+      if (!whole) break
+    }
+    if (whole) {
+      try {
+        for (const entry of CODEX_SANDBOX_ARTIFACTS) {
+          cpFn(join(sandboxFrom, entry), join(dir, entry), { recursive: true })
+          sandboxSeeded.push(entry)
+        }
+      } catch {
+        // Копия оборвалась на середине: пачка объявляется несостоявшейся, конфиг ниже выйдет
+        // прежним, и дом не обещает права, которого у него нет.
+        sandboxSeeded.length = 0
+      }
+    }
+  }
+  const sandboxWhole = sandboxSeeded.length === CODEX_SANDBOX_ARTIFACTS.length
 
   const configPath = join(dir, CODEX_CONFIG_FILE)
-  atomicWriteRaw(configPath, codexConfigSeed(), {
+  atomicWriteRaw(configPath, codexConfigSeed({ windowsSandbox: sandboxWhole }), {
     mkdirFn: fsImpl && fsImpl.mkdirSync,
     writeFn: fsImpl && fsImpl.writeFileSync,
     renameFn: fsImpl && fsImpl.renameSync,
@@ -910,7 +1003,14 @@ export function seedCodexHome({ home, authSources, fsImpl } = {}) {
     break
   }
 
-  return { home: dir, configPath, authPath, authSource }
+  return {
+    home: dir,
+    configPath,
+    authPath,
+    authSource,
+    sandboxSeeded,
+    sandboxSource: sandboxWhole ? sandboxFrom : null,
+  }
 }
 
 /**
