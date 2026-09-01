@@ -50,6 +50,7 @@ import { DiffSummary, DiffText } from './DiffView'
 import { JournalSection } from './JournalSection'
 import { LiveFlow } from './LiveFlow'
 import { SpendPanel } from './SpendPanel'
+import { taskProjectOf } from './task-project'
 import { turnPlanLine, turnPlanWhy } from './turn-plan'
 
 /**
@@ -880,14 +881,14 @@ export function Screen() {
     return rows.find((r) => r.id === taskId)?.machine
   }, [state.data, taskId])
 
-  // ЧЕЙ ЭТО ПРОЕКТ — из того же чтения и по той же тропе, что и машина. Строка называет свой
-  // проект или не называет ничей; догадка «раз не сказано, значит текущий» — ровно то, из-за
-  // чего одна и та же работа однажды числилась за обоими деревьями сразу.
-  const taskProject = useMemo(() => {
-    if (!taskId) return null
-    const rows = [...(state.data?.queue ?? []), ...(state.data?.awaiting ?? []), ...(state.data?.done ?? [])]
-    return rows.find((r) => r.id === taskId)?.project ?? null
-  }, [state.data, taskId])
+  // ЧЕЙ ЭТО ПРОЕКТ — спрошено у САМОЙ ЗАДАЧИ, а не разыскано по спискам картины: занятой
+  // строки нет ни в очереди, ни у ждущих, ни в сделанном, и карточка идущей работы печатала
+  // «проект не назван» о задаче со штампом — ровно в тот момент, когда промах и замечают.
+  // Правило одно и живёт в `taskProjectOf`, вместе с причиной каждого его шага.
+  const taskProject = useMemo(
+    () => taskProjectOf({ detail: detail.data, state: state.data, taskId }),
+    [detail.data, state.data, taskId],
+  )
 
   // СВОЯ МАШИНА НЕ ПОСЫЛАЕТСЯ. Чтение помечает КАЖДУЮ здешнюю задачу собственным именем машины
   // — «self», если имя не задано, — и карточка честно возвращала его с решением. Дверь читала
@@ -1238,6 +1239,13 @@ export function Screen() {
                 </select>
                 <span className="text-[10.5px] text-tx3">
                   Работник получит копию из дерева этого проекта — переставьте, если задача уехала не туда.
+                  {/* КОПИЯ УЖЕ ОТРЕЗАНА, И ПЕРЕСТАВИТЬ ЕЁ НЕЧЕМ. Идущий подход работает в дереве,
+                      которое ему отвели при выдаче; перестановка меняет то, откуда отведут
+                      СЛЕДУЮЩУЮ копию. Умолчать об этом значило бы дать человеку нажать и ждать
+                      от работника того, чего он сделать не может. */}
+                  {status === 'claimed'
+                    ? ' Работа уже идёт в прежнем дереве — перестановка подействует со следующего подхода.'
+                    : ''}
                 </span>
               </div>
             ) : null}

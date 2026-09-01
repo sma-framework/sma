@@ -7,7 +7,8 @@
  *                                       [--at <desktop|tablet|mobile>]
  *
  * Steps: goto:<path> | click:<visible text> | type:<selector>=<text>
- *        type:<selector>=env:<VAR> | wait:<ms> | shot:<name> | expect:<visible text>
+ *        type:<selector>=env:<VAR> | select:<selector>=<option value or label>
+ *        wait:<ms> | shot:<name> | expect:<visible text>
  *
  * A credential is typed with the `env:` form and never any other way: the receipt prints the
  * path walked step by step, so a literal password would be written to disk. `env:` puts the
@@ -556,6 +557,9 @@ async function main() {
             if (!value.ok) throw new Error(value.reason)
             await page.fill(step.selector, value.text, { timeout: 8000 })
           }
+          // ОПЦИЯ НАЗЫВАЕТСЯ ТАК, КАК ЕЁ ЧИТАЕТ ЧЕЛОВЕК: строка сверяется и со значением опции,
+          // и с подписью на экране — сценарий пишут по тому, что видно, а не по разметке.
+          else if (step.verb === 'select') await page.selectOption(step.selector, step.text, { timeout: 8000 })
           else if (step.verb === 'wait') await page.waitForTimeout(step.ms)
           else if (step.verb === 'shot') await capture(page, `${label}-${step.arg.replace(/[^\w-]+/g, '_')}`)
           else if (step.verb === 'key') await page.keyboard.press(step.arg)
