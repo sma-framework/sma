@@ -16,6 +16,11 @@ import type { UnitState, WorkUnit } from './units'
 /** Тон каждого состояния — точка, отрезок ленты и слово читают его отсюда. */
 export const TONE: Record<UnitState, { dot: string; seg: string; word: string }> = {
   run: { dot: 'bg-blue', seg: 'bg-blue', word: 'text-blue' },
+  // ПАУЗА — НЕ СИНЯЯ. Синий в этом окне означает движение, и он же красит пульсирующую точку;
+  // покрасить им стоящую фазу значило бы вернуть тот самый спор, ради которого слово и завели.
+  // Приглушённый тон при этом не «ничего не начиналось»: работа позади есть, и отрезок ленты
+  // заливается, а не остаётся контуром.
+  pause: { dot: 'bg-tx3', seg: 'bg-bd2', word: 'text-tx2' },
   dec: { dot: 'bg-warn', seg: 'bg-warn', word: 'text-warn-tx' },
   ok: { dot: 'bg-green', seg: 'bg-green', word: 'text-ok-tx' },
   wait: { dot: 'bg-tx3', seg: '', word: 'text-tx3' },

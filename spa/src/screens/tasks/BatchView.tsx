@@ -51,6 +51,10 @@ export interface BatchCrumb {
 /** Тон куска: цвет линии и подложка. Цвет никогда не единственный носитель — слово рядом. */
 const NODE_TONE: Record<UnitState, { box: string; word: string; dot: string; stroke: string }> = {
   run: { box: 'border-blue/30 bg-blue-s', word: 'text-blue', dot: 'bg-blue', stroke: 'var(--color-blue)' },
+  // Пауза принадлежит ФАЗЕ: кусок сборки её не носит — движок такого слова о куске не говорит
+  // (`BATCH_ITEM_TONE`). Запись здесь стоит потому, что таблица отвечает за ВЕСЬ словарь окна:
+  // молчаливая дыра в ней однажды покрасила бы неизвестное состояние в ничто.
+  pause: { box: 'border-bd bg-surf', word: 'text-tx2', dot: 'bg-tx3', stroke: 'var(--color-bd2)' },
   dec: { box: 'border-warn/50 bg-warn-s', word: 'text-warn-tx', dot: 'bg-warn', stroke: 'var(--color-warn)' },
   ok: { box: 'border-green/40 bg-ok-s', word: 'text-ok-tx', dot: 'bg-green', stroke: 'var(--color-green)' },
   wait: { box: 'border-bd bg-card', word: 'text-tx3', dot: 'bg-tx3', stroke: 'var(--color-tx3)' },
