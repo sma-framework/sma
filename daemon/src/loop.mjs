@@ -184,7 +184,7 @@ import {
   codexHomeFor,
   codexSandboxFor,
   codexWorkspaceWriteSupport,
-  CODEX_WINDOWS_SANDBOX_MARKER,
+  codexSandboxRefusal,
 } from './runner/args.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
@@ -1794,12 +1794,17 @@ function codexSandboxBlocker(deps, task, route, envelope) {
   if (support.supported) return null
   return {
     reason: 'missing_access',
-    detail:
-      `конверт задачи даёт правку и оболочку (песочница ${sandbox}), а дом ${home} на платформе ` +
-      `${deps.platform || process.platform} её не исполнит (${support.reason}): следа элевированной установки ` +
-      `${CODEX_WINDOWS_SANDBOX_MARKER} в нём нет. Сессия стартовала бы читающей и молча — поэтому она не ` +
-      'стартует вовсе. Выходы: провести `codex sandbox setup --elevated` для этого дома, вести работу с ' +
-      'правкой на полосе Claude, либо оставить codex-полосе только читающие задачи.',
+    // СЛОВА ОТКАЗА ЖИВУТ ОДНИМ ВЫРАЖЕНИЕМ РЯДОМ С ПРЕДИКАТОМ, А НЕ ЗДЕСЬ: тот же текст читает
+    // сборщик аргументов (последний пояс), и две редакции одного отказа — это карточка и
+    // журнал, говорящие разное про одну стену.
+    detail: codexSandboxRefusal({
+      sandbox,
+      home,
+      account: worker.account,
+      homedir: deps.homedir,
+      platform: deps.platform,
+      fsImpl: deps.fsImpl,
+    }),
   }
 }
 

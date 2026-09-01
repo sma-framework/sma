@@ -707,6 +707,52 @@ export function codexWorkspaceWriteSupport({ platform = process.platform, home, 
 }
 
 /**
+ * codexSandboxRefusal({sandbox, home, account, homedir, platform, fsImpl}) → ТЕКСТ ОТКАЗА,
+ * который человек прочитает на карточке, одним выражением на обе двери спавна.
+ *
+ * ОТКАЗ БЕЗ ИСПОЛНИМОГО ВЫХОДА — ЭТО ПОЛОВИНА ОТКАЗА. Первая редакция этих слов звала
+ * «провести `codex sandbox setup --elevated` для этого дома» — для дома, которого до задачи
+ * НЕ СУЩЕСТВУЕТ и который выметается вместе с ней. Совет отправлял человека в тупик, а на
+ * машине, где установка УЖЕ проведена для аккаунта, читался ещё и как обвинение: «вы её не
+ * проводили». Замерено чтением диска 01.09.2026 — в аккаунтском доме
+ * `.sma-accounts/codex-1/.sandbox/setup_marker.json` лежит, а в доме задачи
+ * `codex-tasks/B-1788253929094-1/.sandbox/` есть только лог.
+ *
+ * ПОЭТОМУ ОТКАЗ НАЗЫВАЕТ РАЗВИЛКУ, А НЕ ПОДОЗРЕВАЕМОГО: дом задачи чеканится заново на каждую
+ * задачу НАШИМ выражением (codexHomeFor), и провизия аккаунта в него не наследуется. Про
+ * аккаунтский дом спрашивается тем же предикатом — чтобы «установки не было вовсе» и «установка
+ * есть, но не там, где её читает CLI» не выглядели на карточке одинаково.
+ *
+ * СДЕЛАТЬ ПОЛОСУ ПИШУЩЕЙ — РЕШЕНИЕ ЧЕЛОВЕКА, И ОНО НАЗВАНО КАК РЕШЕНИЕ. Наследовать провизию в
+ * дом задачи или отказаться от дома на задачу — выбор с разной ценой (в первом случае в
+ * одноразовый каталог едут секреты песочницы, во втором задачи перестают быть изолированными
+ * друг от друга), и угадывать его за человека этот файл не будет.
+ *
+ * @param {{sandbox?:string, home?:string, account?:object, homedir?:Function, platform?:string, fsImpl?:object}} [args]
+ * @returns {string}
+ */
+export function codexSandboxRefusal({ sandbox = 'workspace-write', home, account, homedir, platform = process.platform, fsImpl } = {}) {
+  const accountHome =
+    account && typeof account === 'object' && account.configDir ? expandHome(String(account.configDir), homedir) : null
+  const accountSupport = accountHome ? codexWorkspaceWriteSupport({ platform, home: accountHome, fsImpl }) : null
+  const accountWords = !accountSupport
+    ? ''
+    : accountSupport.supported
+      ? `Аккаунтский дом ${accountHome} провизирован — установка проведена, и дело не в ней: дом задачи её не наследует. `
+      : `Не провизирован и аккаунтский дом ${accountHome} — элевированной установки не было вовсе. `
+  return (
+    `конверт задачи даёт правку и оболочку, то есть песочницу ${sandbox}, а дом ${home} на платформе ${platform} ` +
+    `её не исполнит: следа элевированной установки (${CODEX_WINDOWS_SANDBOX_MARKER}) в нём нет. ` +
+    'ЭТОТ ДОМ ЧЕКАНИТСЯ ЗАНОВО НА КАЖДУЮ ЗАДАЧУ (codexHomeFor: <configDir>/codex-tasks/<id>) и уходит вместе с ней — ' +
+    'поэтому ни повтор попытки, ни `codex sandbox setup --elevated` ПО ЭТОМУ ПУТИ делу не помогут. ' +
+    accountWords +
+    'Сессия стартовала бы читающей и молча — поэтому она не стартует вовсе. Выходы сегодня: вести работу с правкой ' +
+    'на полосе Claude, либо оставить codex-полосе только читающие задачи. Сделать codex-полосу пишущей на Windows — ' +
+    'решение человека о доме задачи (наследовать провизию аккаунта или отказаться от дома на задачу), а не повтор.'
+  )
+}
+
+/**
  * buildCodexArgs(opts) → the headless Codex argument array. Base is
  * `exec --json --strict-config --sandbox <mode> … -` (prompt on stdin). effort maps to
  * `-c model_reasoning_effort=<E>`; resume takes a thread_id recovered from the JSONL stream.

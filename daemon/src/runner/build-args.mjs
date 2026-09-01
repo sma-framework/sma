@@ -60,11 +60,11 @@ import {
   expectedModelEffort,
   codexSandboxFor,
   codexWorkspaceWriteSupport,
+  codexSandboxRefusal,
   seedCodexHome,
   CodexHomeError,
   CodexSandboxUnsupportedError,
   CODEX_AUTH_FILE,
-  CODEX_WINDOWS_SANDBOX_MARKER,
 } from './args.mjs'
 import { readFileSync } from 'node:fs'
 import { homedir as osHomedir } from 'node:os'
@@ -477,12 +477,18 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
       if (codexSandbox === 'workspace-write') {
         const support = codexWorkspaceWriteSupport({ platform, home: spawnEnv.CODEX_HOME, fsImpl })
         if (!support.supported) {
+          // СЛОВА — ОДНИМ ВЫРАЖЕНИЕМ С ДВЕРЬЮ ТИКА. Две редакции одного отказа расходятся в
+          // первый же день, когда правят одну, и человек читает на карточке одно, а в журнале
+          // другое — про ту же самую стену.
           throw new CodexSandboxUnsupportedError(
-            `buildArgs: конверт этой задачи даёт правку и оболочку, то есть песочницу workspace-write, а дом ` +
-              `${spawnEnv.CODEX_HOME} на платформе ${platform} её не исполнит (${support.reason}): нет следа ` +
-              `элевированной установки ${CODEX_WINDOWS_SANDBOX_MARKER}. Сессия стартовала бы читающей и молча — ` +
-              'поэтому она не стартует вовсе. Выходы: провести `codex sandbox setup --elevated` для этого дома, ' +
-              'либо вести работу с правкой на полосе Claude, либо оставить codex-полосе только читающие задачи.',
+            `buildArgs: ${codexSandboxRefusal({
+              sandbox: codexSandbox,
+              home: spawnEnv.CODEX_HOME,
+              account: worker.account,
+              homedir,
+              platform,
+              fsImpl,
+            })}`,
           )
         }
       }

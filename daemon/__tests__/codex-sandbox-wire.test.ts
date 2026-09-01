@@ -124,9 +124,14 @@ const GREEN_REVERIFY = { code: 0, stdout: JSON.stringify({ verdict: 'green', rec
  * `provisioned` — проведена ли на этой машине элевированная установка песочницы ДЛЯ ДОМА ЭТОЙ
  * ЗАДАЧИ: файл кладётся по тому же выражению пути, каким его найдёт демон (`codexHomeFor`),
  * а не по строке, собранной здесь руками, — иначе сьют проверял бы не тот каталог.
+ *
+ * `accountProvisioned` — проведена ли она для ДОМА АККАУНТА. Это РАЗНЫЕ каталоги, и именно их
+ * разница стоила окна подписки 01.09.2026: установка была проведена (аккаунтский дом её несёт),
+ * а сессия стояла в свежем доме задачи, где её нет и быть не может.
  */
 async function runTick(over: {
   provisioned?: boolean
+  accountProvisioned?: boolean
   platform?: string
   lines?: string[]
   sandbox?: string
@@ -142,6 +147,10 @@ async function runTick(over: {
   if (over.provisioned) {
     mkdirSync(join(home, '.sandbox'), { recursive: true })
     writeFileSync(join(home, CODEX_WINDOWS_SANDBOX_MARKER), '{"version":5}', 'utf8')
+  }
+  if (over.accountProvisioned) {
+    mkdirSync(join(accountDir, '.sandbox'), { recursive: true })
+    writeFileSync(join(accountDir, CODEX_WINDOWS_SANDBOX_MARKER), '{"version":5}', 'utf8')
   }
 
   const c = mkClock()
@@ -207,7 +216,7 @@ async function runTick(over: {
 
   const res = await tick(deps)
   const rows = readAttempts(ledgerDir, 'BL-1')
-  return { res, row: rows[rows.length - 1], logged, spawned, home, ledgerDir }
+  return { res, row: rows[rows.length - 1], logged, spawned, home, accountDir, ledgerDir }
 }
 
 // ═══════════ (1) ЧЕМ ЗАПУСТИЛИ — НА ДОЛГОВЕЧНОЙ СТРОКЕ ═════════════════════════════════════
@@ -265,6 +274,58 @@ describe('задача с правом писать на полосе codex: л�
   it('не-Windows: песочницу держит ядро, готовить нечего — запуск как раньше', async () => {
     const { spawned } = await runTick({ provisioned: false, platform: 'linux' })
     expect(spawned).toHaveLength(1)
+  })
+})
+
+// ═══════════ ОТКАЗ НАЗЫВАЕТ ИСПОЛНИМЫЙ ВЫХОД, А НЕ ТУПИК ═══════════════════════════════════
+//
+// ОТКАЗ БЕЗ ВЫХОДА, КОТОРЫМ МОЖНО ВОСПОЛЬЗОВАТЬСЯ, — ЭТО ПОЛОВИНА ОТКАЗА. Первая редакция этих
+// слов звала «провести `codex sandbox setup --elevated` для этого дома» — для каталога, который
+// демон чеканит НА КАЖДУЮ ЗАДАЧУ и выметает вместе с ней: до задачи его нет, после задачи его
+// нет, провести для него установку заранее нельзя вообще никак.
+//
+// А НА ЭТОЙ МАШИНЕ ЭТО ЧИТАЛОСЬ БЫ ЕЩЁ И КАК ЛОЖНОЕ ОБВИНЕНИЕ. Замерено чтением диска
+// 01.09.2026: в аккаунтском доме `.sma-accounts/codex-1/.sandbox/setup_marker.json` лежит —
+// установка ПРОВЕДЕНА, — а в доме задачи `codex-tasks/B-1788253929094-1/.sandbox/` только лог.
+// Человек, сделавший всё правильно, прочитал бы на карточке «вы этого не сделали».
+describe('слова отказа: развилка названа, тупик не предлагается', () => {
+  it('дом задачи чеканится на задачу — и отказ говорит это, а не зовёт провизировать одноразовый путь', async () => {
+    const { row } = await runTick({ provisioned: false })
+    const detail = String(row.failureDetail)
+
+    // ПРИЧИНА, ПО КОТОРОЙ СОВЕТ «ПРОВЕСТИ УСТАНОВКУ» ЗДЕСЬ НЕ РАБОТАЕТ, — В САМИХ СЛОВАХ.
+    expect(detail).toMatch(/на каждую задачу/i)
+    expect(detail).toContain('codex-tasks')
+    // …и повтор попытки назван бесполезным ЯВНО: иначе карточка с `missing_access` читается
+    // как «попробуй ещё раз», а попыток здесь сколько угодно и все одинаковые.
+    expect(detail).toMatch(/ни повтор попытки/i)
+    // ВЫХОДЫ, КОТОРЫЕ ПРАВДА ЕСТЬ СЕГОДНЯ.
+    expect(detail).toContain('полосе Claude')
+    expect(detail).toMatch(/читающие задачи/i)
+    // …а «сделать полосу пишущей» названо РЕШЕНИЕМ ЧЕЛОВЕКА, а не действием, которое демон
+    // предлагает выполнить: у обеих развилок своя цена, и выбирает её не эта функция.
+    expect(detail).toMatch(/решение человека/i)
+  })
+
+  it('установка проведена для аккаунта, но не для задачи — отказ различает это, а не винит человека', async () => {
+    const { row, accountDir } = await runTick({ provisioned: false, accountProvisioned: true })
+    const detail = String(row.failureDetail)
+
+    expect(detail).toContain(accountDir)
+    expect(detail).toMatch(/провизирован/i)
+    // ГЛАВНОЕ УТВЕРЖДЕНИЕ ЭТОГО СЛУЧАЯ: причина названа как НАША развилка (дом задачи не
+    // наследует провизию), а не как забытая человеком установка.
+    expect(detail).toMatch(/не наследует/i)
+    expect(detail).not.toMatch(/установки не было вовсе/i)
+  })
+
+  it('установки нет нигде — те же слова говорят другое: её не проводили', async () => {
+    const { row, accountDir } = await runTick({ provisioned: false })
+    const detail = String(row.failureDetail)
+
+    expect(detail).toContain(accountDir)
+    expect(detail).toMatch(/установки не было вовсе/i)
+    expect(detail).not.toMatch(/не наследует/i)
   })
 })
 
