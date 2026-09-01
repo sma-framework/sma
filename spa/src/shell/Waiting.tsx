@@ -7,11 +7,20 @@
  *
  * ═══════════════ ДВИЖЕНИЕ ОБЕЩАЕТ, СЛОВА ГОВОРЯТ ПРАВДУ ═══════════════
  *
- * Полоса-горизонт едет слоями с первой миллисекунды: окно живо, ответ в пути. Но красивое
+ * Поле концентрических колец живёт с первой миллисекунды: окно живо, ответ в пути. Но красивое
  * ожидание умеет прятать зависание — сломанное выглядит ровно как задуманное, и человек ждёт
- * ответа, которого не будет. Поэтому через `WORDS_AFTER_MS` над полосой появляются слова: что
+ * ответа, которого не будет. Поэтому через `WORDS_AFTER_MS` ПОВЕРХ колец появляются слова: что
  * именно идёт и СКОЛЬКО УЖЕ идёт. Секунду отсчитывает сам компонент — по той же причине, что и
  * чип таймера: интервал, заведённый в экране, перерисовывал бы весь экран ради одной строки.
+ *
+ * ═══════════════ ФОН НЕ ЗАМЕНЯЕТ СЛОВ, А СТОИТ ПОД НИМИ ═══════════════
+ *
+ * Кольца — фон, и потому они лежат отдельным слоем во всю карточку, а слова стоят НАД ними в
+ * своём потоке. Разделение не косметическое: пока кольца были содержимым (гребни горизонта
+ * занимали нижнюю половину карточки), слова и картинка делили высоту, и всякая правка одного
+ * двигала другое. Теперь высота у карточки одна, слова не двигаются никогда, а под ними лежит
+ * затемнение снизу вверх — чтобы строку было видно и в тот момент, когда под ней проходит
+ * разгоревшееся кольцо.
  *
  * ═══════════════ ПОЧЕМУ КАРТОЧКА, А НЕ ЗАСТАВКА ВО ВЕСЬ ЭКРАН ═══════════════
  *
@@ -20,34 +29,53 @@
  * какие займёт первая карточка приехавшего экрана, — сверху области содержимого. Глаз остаётся
  * там, где ему и надо быть, и переход от ожидания к ответу не двигает его никуда.
  *
- * Помощнику это место читается словами, а не картинкой: у гребней `aria-hidden`, а сама
- * область объявлена занятой (`aria-busy`) и рассказывает о себе строкой (`role="status"`).
+ * ═══════════════ У ОЖИДАНИЯ НЕТ РУК ═══════════════
+ *
+ * Ни одного обработчика указателя здесь нет и быть не должно: кольца не тянутся за мышью и не
+ * вспыхивают по клику. Фон, отвечающий на руку, обещает, что здесь есть чем управлять, — а
+ * управлять нечем, здесь ждут ответа двери.
+ *
+ * Помощнику это место читается словами, а не картинкой: у колец `aria-hidden`, а сама область
+ * объявлена занятой (`aria-busy`) и рассказывает о себе строкой (`role="status"`).
  */
 
 import { useEffect, useState, type CSSProperties } from 'react'
 
 import {
-  WAIT_LAYERS,
+  RING_LINE_PX,
+  RING_NOISE,
+  WAIT_CENTER,
+  WAIT_RINGS,
   WAIT_SKY,
   WAIT_VIEWBOX,
   waitingWords,
-  type WaitLayer,
+  type WaitRing,
 } from './waiting-language'
 
 /**
- * Скорость и смещение слоя — переменными, а не пятью наборами кадров: это свойства СЛОЯ, и
- * держать их в CSS значило бы разложить одно описание горизонта по двум файлам.
+ * Очередь кольца и его покойная яркость — переменными, а не шестью наборами кадров: это
+ * свойства КОЛЬЦА, и держать их в CSS значило бы разложить одно описание поля по двум файлам.
  *
  * Двойное приведение — цена пользовательских свойств: React знает про свойства CSS по именам,
- * а `--sma-wait-*` именем CSS не является ни для одного словаря типов.
+ * а `--sma-ring-*` именем CSS не является ни для одного словаря типов.
  */
-function layerStyle(layer: WaitLayer): CSSProperties {
+function ringStyle(ring: WaitRing): CSSProperties {
   const vars: Record<string, string> = {
-    '--sma-wait-drift': layer.drift,
-    '--sma-wait-seconds': `${layer.seconds}s`,
+    '--sma-ring-delay': `${ring.delay}s`,
+    '--sma-ring-rest': `${ring.rest}`,
   }
   return vars as unknown as CSSProperties
 }
+
+/**
+ * ШУМ НА ЛИНИИ — ОДИН ФИЛЬТР НА ВСЁ ПОЛЕ, и он статичный.
+ *
+ * Шесть идеальных окружностей читаются как чертёж, а не как живое поле; лёгкое дрожание линии
+ * (`RING_NOISE`) снимает эту стерильность. Смещение считается один раз при отрисовке и не
+ * пересчитывается по кадрам: анимированная турбулентность — это перерисовка всей карточки
+ * шестьдесят раз в секунду ради ряби, которую никто не заметит.
+ */
+const NOISE_FILTER = 'sma-wait-noise'
 
 export function Waiting({ what, fill = false }: { what: string; fill?: boolean }) {
   // Отсчёт начинается в тот момент, когда ожидание появилось на экране, а не когда экран
@@ -67,34 +95,58 @@ export function Waiting({ what, fill = false }: { what: string; fill?: boolean }
       {/*
         КАРТОЧКА, А НЕ ЗАЛИВКА ОБЛАСТИ. Она стоит СВЕРХУ той области, куда приедет содержимое, —
         там, где через секунду начнётся ответ, — и занимает столько же места, сколько заняла бы
-        первая карточка экрана. Полоса, прижатая к низу пустой области, оставляла бы над собой
-        то самое белое поле, из-за которого всё и затевалось.
+        первая карточка экрана. Высота задана здесь и одна на карточку: место под слова занято
+        ВСЕГДА, поэтому появление строки не двигает ничего.
       */}
-      <div className="sma-wait-appear overflow-hidden rounded-[14px] border border-bd bg-card shadow-panel">
+      <div
+        className={`sma-wait-appear relative overflow-hidden rounded-[14px] border border-bd shadow-panel ${
+          fill ? 'h-[244px]' : 'h-[164px]'
+        }`}
+        style={{ background: `var(${WAIT_SKY})` }}
+      >
         {/*
-          Место под слова занято ВСЕГДА, с первой миллисекунды. Иначе появление строки сдвинуло бы
-          полосу ровно в тот момент, когда человек начинает читать, — а он и так уже ждёт.
+          ПОЛЕ КОЛЕЦ. Кадр квадратный и вписан по меньшей стороне (`xMidYMid meet`): кольцо,
+          растянутое по ширине карточки, кольцом уже не является. Внешние кольца шире кадра и
+          потому уходят за верхний и нижний край — так и задумано, поле не помещается целиком.
         */}
-        <div className="flex min-h-[54px] items-end px-5 pb-3.5" aria-live="polite">
-          {words.shown ? (
-            <p className="sma-wait-words m-0 text-[12.5px] leading-none text-tx2">{words.text}</p>
-          ) : null}
-        </div>
-
-        <div className="leading-[0]">
-          <svg
-            aria-hidden
-            viewBox={WAIT_VIEWBOX}
-            preserveAspectRatio="none"
-            className={`block w-full ${fill ? 'h-[190px]' : 'h-[110px]'}`}
-          >
-            <rect x="0" y="0" width="1600" height="400" fill={`var(${WAIT_SKY})`} />
-            {WAIT_LAYERS.map((layer) => (
-              <g key={layer.id} className="sma-wait-layer" style={layerStyle(layer)}>
-                <path d={layer.d} fill={`var(${layer.fill})`} />
-              </g>
+        <svg aria-hidden viewBox={WAIT_VIEWBOX} preserveAspectRatio="xMidYMid meet" className="absolute inset-0 block h-full w-full">
+          <defs>
+            <filter id={NOISE_FILTER} x="-30%" y="-30%" width="160%" height="160%" colorInterpolationFilters="sRGB">
+              <feTurbulence type="fractalNoise" baseFrequency="0.009" numOctaves="2" seed="7" result="noise" />
+              <feDisplacementMap in="SourceGraphic" in2="noise" scale={RING_NOISE * 40} xChannelSelector="R" yChannelSelector="G" />
+            </filter>
+          </defs>
+          <g filter={`url(#${NOISE_FILTER})`}>
+            {WAIT_RINGS.map((ring) => (
+              <circle
+                key={ring.id}
+                className="sma-wait-ring"
+                style={ringStyle(ring)}
+                cx={WAIT_CENTER}
+                cy={WAIT_CENTER}
+                r={ring.radius}
+                fill="none"
+                stroke={`var(${ring.stroke})`}
+                strokeWidth={RING_LINE_PX}
+                /* Линия остаётся тонкой в любом масштабе карточки: `RING_LINE_PX` — пиксели
+                   экрана, а не единицы кадра, иначе узкая карточка рисовала бы волосок. */
+                vectorEffect="non-scaling-stroke"
+              />
             ))}
-          </svg>
+          </g>
+        </svg>
+
+        {/*
+          СЛОВА — ПОВЕРХ. Затемнение снизу вверх лежит под строкой, а не под всей карточкой:
+          кольца остаются видны, а строка читается даже над разгоревшимся кольцом.
+        */}
+        <div
+          className="absolute inset-x-0 bottom-0 flex min-h-[54px] items-end bg-gradient-to-t from-scrim to-transparent px-5 pt-8 pb-3.5"
+          aria-live="polite"
+        >
+          {words.shown ? (
+            <p className="sma-wait-words m-0 text-[12.5px] leading-none text-side-tx">{words.text}</p>
+          ) : null}
         </div>
       </div>
     </section>
