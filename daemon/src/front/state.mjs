@@ -88,6 +88,7 @@
  */
 
 import { readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, statSync as fsStatSync } from 'node:fs'
+import { networkInterfaces as osNetworkInterfaces } from 'node:os'
 import { join } from 'node:path'
 
 import { activeProjectEntry, apiCapUsd, codeTreeOf, pipelineEnabled, planningHomeOf } from '../config.mjs'
@@ -955,6 +956,133 @@ export function deriveAccounts(config = {}, windows) {
     entry.workers.push(w.id)
   }
   return out
+}
+
+// ══════════════════ «Работать удалённо»: the FACT about the door ════════════════
+//
+// deriveRemoteAccess(config, {networkInterfaces}) → what a person needs to know before
+// deciding whether their daemon can be reached from a second machine, and NOTHING they
+// could act on by accident. It reads the door out of the config and the interfaces out of
+// the operating system; it changes neither, and there is no writing sibling to this
+// function anywhere in the product.
+//
+// IT RIDES THE STATE PAYLOAD ON PURPOSE. The onboarding screen asks one question the daemon
+// already knows the answer to — «where am I bound, and who can see me» — and a route of its
+// own would have been the expensive way to say it, exactly as it would have been for
+// «Правила» and «Аккаунты». The frozen table is the table of ROUTES.
+//
+// THE NETWORK IS RECOGNISED BY ITS ADDRESSES, NEVER BY A VENDOR. The product does not ask
+// whether some particular mesh is installed — it looks for the address ranges an encrypted
+// private network hands out (CGNAT 100.64.0.0/10 for IPv4, unique-local fc00::/7 for IPv6).
+// Any private network that issues one is seen; none is named in this code, and a person who
+// prefers a different one is not told they are using the product wrong. RFC1918 addresses
+// are carried too, but as `lan` — a shared office wire is not an encrypted tunnel, and
+// calling it one would be the screen's first lie.
+//
+// WHAT IT MAY NOT CARRY, said here so a later reader has to argue with a sentence: the
+// daemon's token, in any form. The whole point of the screen is that the token becomes a
+// real password the moment the daemon is reachable; a field that carried it would put that
+// password on the wire of the very poll the screen renders. The machine's OWN private
+// address does travel — it is the one thing a person cannot look up from the second machine
+// and the reason they opened the screen at all.
+
+/** A bind that means «this machine and nobody else». */
+const LOOPBACK_BINDS = new Set(['127.0.0.1', 'localhost', '::1'])
+
+/** A bind that means «every interface this machine has» — including ones nobody meant. */
+const WILDCARD_BINDS = new Set(['0.0.0.0', '::', ''])
+
+/** `family` arrives as 'IPv4'/'IPv6' on current Node and as 4/6 on older ones. */
+function familyOf(family) {
+  if (family === 4 || family === 'IPv4') return 'IPv4'
+  if (family === 6 || family === 'IPv6') return 'IPv6'
+  return String(family ?? '')
+}
+
+/**
+ * What KIND of network an address belongs to — `mesh` (an encrypted private network),
+ * `lan` (an ordinary local wire) or null (anything else, including public addresses, which
+ * this function deliberately does not report at all).
+ */
+function networkKindOf(address, family) {
+  if (familyOf(family) === 'IPv4') {
+    const parts = address.split('.').map((n) => Number(n))
+    if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n))) return null
+    const [a, b] = parts
+    if (a === 100 && b >= 64 && b <= 127) return 'mesh' // CGNAT — what the meshes hand out
+    if (a === 10) return 'lan'
+    if (a === 172 && b >= 16 && b <= 31) return 'lan'
+    if (a === 192 && b === 168) return 'lan'
+    return null
+  }
+  // fc00::/7 — unique-local, the IPv6 half of the same idea.
+  return /^f[cd]/i.test(address) ? 'mesh' : null
+}
+
+/** An address as a url host: IPv6 goes in brackets, or the url is not a url at all. */
+function urlHost({ address, family }) {
+  return familyOf(family) === 'IPv6' ? `[${address}]` : address
+}
+
+/**
+ * The read model behind «Работать удалённо». Fail-soft to the last line: a machine whose
+ * interfaces cannot be listed says so (`readable:false`) instead of claiming there is no
+ * private network — «I could not look» and «I looked and there is nothing» are different
+ * answers, and only one of them should send a person to reinstall their tunnel.
+ */
+export function deriveRemoteAccess(config = {}, { networkInterfaces } = {}) {
+  const bind = typeof config.bind === 'string' && config.bind !== '' ? config.bind : '127.0.0.1'
+  const port = Number.isFinite(config.port) ? config.port : 7777
+  const reach = LOOPBACK_BINDS.has(bind)
+    ? 'this_machine_only'
+    : WILDCARD_BINDS.has(bind)
+      ? 'every_interface'
+      : 'named_address'
+  const visibleBeyondThisMachine = reach !== 'this_machine_only'
+
+  const read = typeof networkInterfaces === 'function' ? networkInterfaces : osNetworkInterfaces
+  let readable = true
+  const interfaces = []
+  try {
+    const table = read() ?? {}
+    for (const [name, list] of Object.entries(table)) {
+      for (const entry of list ?? []) {
+        if (!entry || entry.internal) continue
+        // An IPv6 address can carry a zone («fe80::1%en0»); the zone is not part of the address.
+        const address = String(entry.address ?? '').split('%')[0]
+        const kind = address === '' ? null : networkKindOf(address, entry.family)
+        if (!kind) continue
+        interfaces.push({ interface: name, address, family: familyOf(entry.family), kind })
+      }
+    }
+  } catch {
+    readable = false
+    interfaces.length = 0
+  }
+
+  const mesh = interfaces.find((i) => i.kind === 'mesh') ?? null
+
+  // WHERE THE SECOND MACHINE WOULD TYPE, or null — and null is the interesting case. A
+  // private network can be up while the daemon still listens to the loopback alone: the
+  // network is not the door, and the screen has to be able to say exactly that instead of
+  // printing an address that answers nothing.
+  const openFrom =
+    reach === 'this_machine_only'
+      ? null
+      : reach === 'named_address'
+        ? `http://${urlHost({ address: bind, family: bind.includes(':') ? 'IPv6' : 'IPv4' })}:${port}`
+        : mesh
+          ? `http://${urlHost(mesh)}:${port}`
+          : null
+
+  return {
+    bind,
+    port,
+    reach,
+    visibleBeyondThisMachine,
+    privateNetwork: { detected: mesh !== null, readable, interfaces },
+    openFrom,
+  }
 }
 
 // ══════════════════ the corpus read models: memory + style ══════════════════════
@@ -3352,6 +3480,10 @@ export async function deriveState(deps = {}) {
     memory,
     style,
     projectMemory,
+    // ЧТО ЗА ДВЕРЬ У ЭТОГО ДЕМОНА И КОМУ ОНА ВИДНА — факт, на котором стоит онбординг
+    // приватной сети. Ключ присутствует ВСЕГДА: на машине без приватной сети это
+    // `detected:false`, а не отсутствующий ключ, который экран прочёл бы как «такого не бывает».
+    remoteAccess: deriveRemoteAccess(config, { networkInterfaces: deps.networkInterfaces }),
   }
 
   // ── the federation merge (hub only) — FILLS this payload, never redefines it ──

@@ -118,6 +118,14 @@ const ICONS: Record<ScreenId, ReactNode> = {
       <path d="M6 13.4h4" strokeLinecap="round" />
     </>
   ),
+  // Две машины и пунктир между ними: связь, которой ещё нет, пока её не поднял человек.
+  'remote-access': (
+    <>
+      <rect x="1.6" y="4.6" width="4.6" height="6.8" rx="1.4" />
+      <rect x="9.8" y="4.6" width="4.6" height="6.8" rx="1.4" />
+      <path d="M6.9 8h.001M8.1 8h.001M9.3 8h.001" strokeLinecap="round" />
+    </>
+  ),
   system: (
     <>
       <rect x="4.4" y="4.4" width="7.2" height="7.2" rx="1.4" />

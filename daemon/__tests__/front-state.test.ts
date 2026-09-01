@@ -299,6 +299,9 @@ describe('deriveState — the one-poll payload', () => {
       'queue',
       // КОГО МОЖНО НАЗВАТЬ ПРИ ПОСТАНОВКЕ — состав машины, свёрнутый по ролям (форма задачи
       // спрашивает «кто возьмёт»). Ключ присутствует всегда, пустой список там, где работников нет.
+      // ГДЕ СТОИТ ДВЕРЬ ЭТОГО ДЕМОНА И КОМУ ОНА ВИДНА — опора экрана «Работать удалённо».
+      // Присутствует всегда: на машине без приватной сети это `detected:false`, а не пропавший ключ.
+      'remoteAccess',
       'roles',
       'rules',
       'spend',
@@ -1985,6 +1988,7 @@ describe('deriveState — the federation aggregator seam', () => {
       'queue',
       // КОГО МОЖНО НАЗВАТЬ ПРИ ПОСТАНОВКЕ — состав машины, свёрнутый по ролям (форма задачи
       // спрашивает «кто возьмёт»). Ключ присутствует всегда, пустой список там, где работников нет.
+      'remoteAccess',
       'roles',
       'rules',
       'spend',
@@ -2722,6 +2726,7 @@ describe('deriveState — projectMemory rides the SAME route, additively', () =>
         'projectMemory',
         'projects',
         'queue',
+        'remoteAccess',
         'roles',
         'rules',
         'spend',
