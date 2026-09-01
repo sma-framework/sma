@@ -350,6 +350,23 @@ async function runDeps(ctx) {
     // относительные пути команды. Корень репозитория остаётся ответом только когда харнесс
     // своего каталога не назвал.
     const cwd = (ctx.evt && typeof ctx.evt.cwd === 'string' && ctx.evt.cwd.trim()) || ctx.repoRoot
+    // ── ВАХТА ПЕРВОЙ, ДО ОБОИХ ОТКАЗОВ ──
+    // Свидетель обязан увидеть КАЖДУЮ руку, включая ту, которой сейчас откажут: отметка,
+    // снятая только на пропущенных вызовах, оставила бы в журнале дыру ровно там, где
+    // интереснее всего. И ровно здесь у человека появляется ТРЕВОГА в тот ход, когда
+    // запись исчезла, — вместо `ERR_MODULE_NOT_FOUND` через полчаса и без объяснения.
+    const watch = ctx.deps && ctx.deps.storeJournal
+    if (watch && typeof watch.noteStoreAccess === 'function') {
+      const seen = watch.noteStoreAccess({
+        cwd,
+        command,
+        actor: `терминал ${(ctx.identity && ctx.identity.terminalId) || 'unknown'}`,
+        pid: process.pid,
+      })
+      if (seen && Array.isArray(seen.gone) && seen.gone.length > 0) {
+        warns.push(`SMA-deps: ${watch.blameSentence(seen.entry)}`)
+      }
+    }
     const removal = guard.copyRemovalRefusal({ command, cwd, root: ctx.repoRoot })
     if (removal && removal.refuse) return { warns, deny: { text: `SMA-deps: ${removal.reason}` } }
     const install = guard.installRefusal({ command, cwd })
@@ -770,7 +787,7 @@ async function realGitHeadSha(repoRoot) {
 
 /** Lazy-load the real lib modules the streams depend on (overridable in tests). */
 async function loadDefaultDeps() {
-  const [collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate, depsGuard] =
+  const [collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate, depsGuard, storeJournal] =
     await Promise.all([
       import('./collision.mjs'),
       import('./reflex.mjs'),
@@ -788,8 +805,9 @@ async function loadDefaultDeps() {
       import('./citations.mjs'), // fragment fires ride the SAME usage journal
       import('./merge-gate.mjs'), // enforce stream: verified-live-only soft-deny predicate
       import('./deps-guard.mjs'), // deps stream: the dependency store's own refusals
+      import('./store-journal.mjs'), // deps stream: the store's own watch — who touched it, when
     ])
-  return { collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate, depsGuard }
+  return { collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate, depsGuard, storeJournal }
 }
 
 /**

@@ -95,6 +95,9 @@ import { classifyForWorker } from './worker-danger.mjs'
 // ОДИН СУДЬЯ О ССЫЛКАХ НА СКЛАД ЗАВИСИМОСТЕЙ на весь продукт — этот же модуль спрашивают
 // поток `sma pre` и гейт слияния. Второй ответ на «а ссылка ли это?» разошёлся бы молча.
 import { installRefusal, copyRemovalRefusal } from './deps-guard.mjs'
+// ВАХТА НА СКЛАДЕ — не судья, а свидетель: она ничего не запрещает, она записывает, кто
+// стоял у склада, когда из него пропала запись. Два закрытых пути не удержали класс.
+import { noteStoreAccess } from './store-journal.mjs'
 // THE FORM OF A DECISION comes from the one file both sides import — the window's bundle and
 // this hook. Re-exported here so a caller that already holds the gate needs no second import,
 // and so `TICKET_DECISION_FORM` names the same string in both processes by construction.
@@ -457,6 +460,27 @@ export async function decideOnEvent({
   const io = resolveIo(fsImpl)
   const runDir = typeof (env && env.SMA_RUN_DIR) === 'string' ? env.SMA_RUN_DIR.trim() : ''
   const base = { configured: false, dangerous: false, ticketId: null, decidedBy: null, waitedMs: 0, steerTexts: [] }
+  const tool = (event && event.tool_name) || ''
+  const input = (event && event.tool_input) || {}
+  const cwd = (event && typeof event.cwd === 'string' && event.cwd) || (env && env.CLAUDE_PROJECT_DIR) || ''
+
+  // ── ВАХТА НА СКЛАДЕ: ОТМЕТКА ДО ВСЯКОГО РЕШЕНИЯ И ДЛЯ ЛЮБОЙ СЕССИИ ──
+  // Этот хук — единственное место в продукте, которое стоит перед КАЖДЫМ вызовом КАЖДОГО
+  // работника на машине, включая чужих: он живёт в настройках аккаунта, общих для всех
+  // демонов. Ровно поэтому отметка снимается ЗДЕСЬ и ВЫШЕ раннего «не наша попытка»:
+  // 01.09.2026 склад потрошил как раз тот, кого не видно в своей сессии, и вахта, стоящая
+  // только внутри наших попыток, не увидела бы его снова. Пишется одна крошечная отметка;
+  // строка в журнал уходит только когда перепись разошлась. Fail-open внутри самой вахты.
+  if (tool === 'Bash' && typeof input.command === 'string' && input.command.trim()) {
+    noteStoreAccess({
+      cwd,
+      command: input.command,
+      actor: runDir ? basename(runDir) : 'вне попытки',
+      pid: typeof process !== 'undefined' && process ? process.pid : null,
+      clock,
+      fsImpl,
+    })
+  }
 
   // ── ЕДИНСТВЕННОЕ исключение из отказа-по-умолчанию, и оно намеренное ──
   // Каталога попытки нет — значит это не наша попытка: чужое окно, работник продакшна,
@@ -468,9 +492,6 @@ export async function decideOnEvent({
   const startedAt = clock()
   try {
     const attemptId = basename(runDir)
-    const tool = (event && event.tool_name) || ''
-    const input = (event && event.tool_input) || {}
-    const cwd = (event && typeof event.cwd === 'string' && event.cwd) || (env && env.CLAUDE_PROJECT_DIR) || ''
     // ПУТЬ К ПЕРЕПИСКЕ читается здесь, а не у самого билета: с этой волны он нужен обеим
     // разрешающим дорогам, а не только парковке.
     const redirectsFile = typeof (env && env.SMA_REDIRECTS_FILE) === 'string' ? env.SMA_REDIRECTS_FILE.trim() : ''

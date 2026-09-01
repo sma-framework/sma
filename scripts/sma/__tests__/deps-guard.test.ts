@@ -195,6 +195,33 @@ describe('сырая уборка копии со ссылками — отка�
     expect(res.links.map((l: any) => l.path)).toEqual(['daemon/node_modules'])
   })
 
+  it('`git clean -xfd` — ТА ЖЕ рука git, и она тоже видна: цель без пути — сам рабочий каталог', () => {
+    // Внутри git обе уборки идут через одну рекурсивную функцию — ту, что 31.08 прошла ПО
+    // живой ссылке. Опасна связка `-d` (входит в каталоги) с `-x`/`-X` (берёт игнорируемое):
+    // `node_modules` игнорируется, и без `-x` до него не доходят.
+    expect(copyRemovalTargetsOf({ command: 'git clean -xfd', cwd: copyTree })).toEqual([copyTree])
+    expect(copyRemovalTargetsOf({ command: 'git clean -fdX', cwd: copyTree })).toEqual([copyTree])
+    expect(copyRemovalTargetsOf({ command: `git clean -d -f -x "${copyTree}"`, cwd: mainTree })).toEqual([copyTree])
+    // без `-d` каталоги не сносятся, без `-x`/`-X` до игнорируемого склада не доходят
+    expect(copyRemovalTargetsOf({ command: 'git clean -fx', cwd: copyTree })).toEqual([])
+    expect(copyRemovalTargetsOf({ command: 'git clean -fd', cwd: copyTree })).toEqual([])
+    // сухой прогон ничего не удаляет — отказ на нём был бы ложной тревогой
+    expect(copyRemovalTargetsOf({ command: 'git clean -nxd', cwd: copyTree })).toEqual([])
+    expect(copyRemovalTargetsOf({ command: 'git clean -xfd --dry-run', cwd: copyTree })).toEqual([])
+  })
+
+  it('`git clean -xfd` в копии со живыми ссылками — отказ теми же словами, что и уборка', () => {
+    const res: any = copyRemovalRefusal({ command: 'git clean -xfd', cwd: copyTree, root: copyTree })
+    expect(res.refuse).toBe(true)
+    expect(res.reason).toContain('worktree remove') // назван верб, который убирает безопасно
+  })
+
+  it('`rmdir /s` — форма, которой копию убирают на Windows руками', () => {
+    expect(copyRemovalTargetsOf({ command: `rmdir /s /q "${copyTree}"`, cwd: mainTree })).toEqual([copyTree])
+    expect(copyRemovalTargetsOf({ command: 'rd /S /Q copy', cwd: sandbox })).toEqual([copyTree])
+    expect(copyRemovalTargetsOf({ command: `rmdir "${copyTree}"`, cwd: mainTree })).toEqual([]) // без /s каталог с содержимым не сносится
+  })
+
   it('в команде нечего убирать — до диска дело не доходит вовсе', () => {
     // Этот вопрос задаётся перед КАЖДЫМ вызовом Bash в двух местах сразу. Разведка
     // подпроектов на каждом `git status` — цена, которую страж брал бы ни за что, поэтому
