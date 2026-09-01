@@ -5531,6 +5531,20 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
     return result
   }
 
+  // …И ИСПОЛНИТ ЛИ МАШИНА ТО ПРАВО, КОТОРОЕ КОНВЕРТ ТОЛЬКО ЧТО ДАЛ — ТЕМ ЖЕ ВЫРАЖЕНИЕМ, ЧТО И
+  // НА ПУТИ КОДА. Забытая вторая дверь — мина, которую этот файл уже дважды разминировал задним
+  // числом (копия, материализация), и здесь она была бы той же самой: полоса кузницы ПИШЕТ
+  // файл — черновик — и без права писать её сессия упирается ровно в ту стену, что стоила окна
+  // подписки 01.09.2026. Отказ до спавна стоит ноль процессов; спавн в стену стоит окно и
+  // кончается «черновик не закоммичен», то есть виноватым работником.
+  const noSandbox = codexSandboxBlocker(deps, task, route, envelope)
+  if (noSandbox) {
+    writeLog(deps, { type: 'task.refused', taskId: task.id, lane: task.lane, reason: noSandbox.reason, detail: noSandbox.detail })
+    await failTask(deps, task, { reason: noSandbox.reason, failureDetail: noSandbox.detail, route, now: now(), envelope, from: fleetState })
+    result.failed = { taskId: task.id, reason: noSandbox.reason, detail: noSandbox.detail }
+    return result
+  }
+
   // И СКОЛЬКО ХОДОВ ЕЙ ПОЛОЖЕНО — тот же вопрос, тем же выражением, что и на пути кода. Полоса
   // кузницы тоже платится подпиской, и повтор известного исхода стоит здесь ровно столько же.
   const turnBudget = turnBudgetFor(deps, config, task)
@@ -5687,6 +5701,11 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
     // two points each carried a private copy of a spawn decision.
     ...gateSpawnOptions(deps, config, task),
   })
+  // И ЧЕМ ЗАПУЩЕНА ЭТА ПОПЫТКА — тем же выражением, что и на пути кода, прямо там, где команда
+  // собрана. У кузницы своей квитанции нет: строка попытки — единственная запись о прогоне, и
+  // без командной строки на ней вопрос «работник не мог или не стал» остаётся без ответа ровно
+  // так же, как он остался 01.09.2026.
+  worktreeRow.spawn = spawnRecordOf(spec)
   spec.prompt = buildForgePrompt({
     kind,
     description: task.forge && task.forge.description,

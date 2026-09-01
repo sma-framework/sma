@@ -285,3 +285,128 @@ describe('слова работника с полосы codex доезжают �
     expect(res.failed).toMatchObject({ taskId: 'BL-1' })
   })
 })
+
+// ═══════════ ВТОРАЯ ДВЕРЬ СПАВНА: ПОЛОСА КУЗНИЦЫ ═══════════════════════════════════════════
+//
+// ПОЧЕМУ ЭТОТ РАЗДЕЛ ЕСТЬ. Спавн в этом файле живёт в ДВУХ местах: путь кода и путь кузницы.
+// Забытая вторая дверь — мина, которую loop.mjs уже дважды разминировал задним числом (куда
+// кладётся копия, что в ней материализуется), и здесь она была бы той же самой: полоса кузницы
+// ПИШЕТ файл — черновик, — значит её конверт несёт Edit/Write/Bash, значит на codex она
+// переводится в `workspace-write` и на непровизированной машине упирается в ровно ту стену,
+// что стоила окна подписки. Кончилось бы это не «песочницей», а «черновик не закоммичен»: на
+// карточке виноват работник.
+//
+// Маршрут кузницы по умолчанию ведёт в claude — здесь он объявлен в codex явно, потому что
+// это настройка человека, и вопрос случая именно «что будет, если её так поставят».
+
+const forgeTask = (over: Record<string, unknown> = {}) => ({
+  id: 'F-1',
+  source: 'roster',
+  title: 'сделай агента, который парсит ленту по тегу',
+  lane: 'forge',
+  forge: { kind: 'agent', description: 'парсит ленту по тегу и пишет сводку' },
+  ...over,
+})
+
+async function runForgeTick(over: { provisioned?: boolean; platform?: string } = {}) {
+  const accountDir = mkDir('sma-codexforge-acct-')
+  const projectDir = mkDir('sma-codexforge-proj-')
+  const ledgerDir = mkDir('sma-codexforge-ledger-')
+  const copy = makeCopy()
+  const workDir = copy.dir
+  const worker = {
+    id: 'creator',
+    lane: 'forge',
+    provider: 'codex',
+    enabled: true,
+    account: { name: 'creator', configDir: accountDir, spendLogsDir: join(accountDir, 'spend') },
+  }
+
+  const home = codexHomeFor({ account: worker.account, taskId: 'F-1' })
+  if (over.provisioned) {
+    mkdirSync(join(home, '.sandbox'), { recursive: true })
+    writeFileSync(join(home, CODEX_WINDOWS_SANDBOX_MARKER), '{"version":5}', 'utf8')
+  }
+
+  const c = mkClock()
+  const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+  await adapter.enqueue(forgeTask())
+  const logged: Record<string, unknown>[] = []
+  const spawned: Record<string, unknown>[] = []
+
+  const deps: Record<string, unknown> = {
+    adapter,
+    ledger: {
+      recordAttempt: (row: unknown) => recordAttempt(ledgerDir, row),
+      readAttempts: (id: string) => readAttempts(ledgerDir, id),
+      attemptLog: ({ attemptId }: { attemptId: string }) => createAttemptLogWriter({ dir: ledgerDir, attemptId }),
+    },
+    config: {
+      workers: [worker],
+      agingHours: 24,
+      backlogScanMinutes: 60,
+      repoDir: projectDir,
+      pipeline: { enabled: true },
+      laneRouting: { forge: { provider: 'codex' } },
+    },
+    routing: { resolveRoute },
+    windows: () => true,
+    projectDir: () => projectDir,
+    platform: over.platform ?? 'win32',
+    buildArgs: () => ({
+      bin: 'codex',
+      args: buildCodexArgs({ sandbox: 'workspace-write' }),
+      env: { CODEX_HOME: home, PATH: '/usr/bin' },
+      prompt: 'ЗАМЕНИТСЯ подсказкой кузницы',
+      workerId: worker.id,
+      provider: 'codex',
+    }),
+    verbRunner: makeVerbRunner({
+      worktree: {
+        code: 0,
+        stdout: JSON.stringify({ ok: true, path: workDir, branch: 'wt/F-1', expectedBase: copy.base, materialized: [] }),
+      },
+    }),
+    spawnWorker: (spec: Record<string, unknown>) => {
+      spawned.push(spec)
+      ;(spec.onLine as (l: string) => void)?.(codexSaid(NOTE))
+      ;(spec.onExit as (e: unknown) => void)?.({ code: 0, signal: null })
+      return { pid: 4243, kill: () => {} }
+    },
+    report: async () => {},
+    clock: c.clock,
+    journal: (e: Record<string, unknown>) => logged.push(e),
+    execGit: (args: string[], opts: { cwd?: string } = {}) => git(args, opts.cwd || workDir),
+  }
+
+  const res = await tick(deps)
+  const rows = readAttempts(ledgerDir, 'F-1')
+  return { res, row: rows[rows.length - 1], logged, spawned, home }
+}
+
+describe('полоса кузницы на codex: та же граница, та же дверь', () => {
+  it('непровизированная Windows: ни одного процесса, причина названа до всякой копии', async () => {
+    const { res, row, spawned, logged, home } = await runForgeTick({ provisioned: false })
+
+    expect(spawned).toHaveLength(0)
+    expect(res.failed).toMatchObject({ taskId: 'F-1', reason: 'missing_access' })
+    expect(row.failureReason).toBe('missing_access')
+    // СЛОВАМИ, а не «черновик не закоммичен»: без этой двери карточка обвинила бы работника.
+    expect(row.failureDetail).toContain('workspace-write')
+    expect(row.failureDetail).toContain(home)
+    expect(logged.some((e) => e.type === 'task.refused' && String(e.detail).includes('codex sandbox setup'))).toBe(true)
+    // Копию для этой попытки даже не заказывали — отказ стоит ноль процессов И ноль провизий.
+    expect(logged.some((e) => e.type === 'task.worktree_materialized_missing')).toBe(false)
+  })
+
+  it('провизированная Windows: попытка идёт, и на её строке лежит команда с песочницей', async () => {
+    const { row, spawned } = await runForgeTick({ provisioned: true })
+
+    expect(spawned).toHaveLength(1) // отказ не превратил полосу в выключенную
+    // Дальше эта попытка честно упрётся в свой гейт (черновика в копии нет) — вопрос случая не
+    // в её исходе, а в том, что ЧЕМ ЕЁ ЗАПУСКАЛИ теперь стоит на строке у ЛЮБОГО исхода.
+    expect(row.spawn.bin).toBe('codex')
+    expect(row.spawn.args).toEqual(spawned[0].args)
+    expect(row.spawn.sandbox).toBe('workspace-write')
+  })
+})
