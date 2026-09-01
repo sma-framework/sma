@@ -7278,7 +7278,7 @@ describe('снимок контекста и навыки материализу
     expect(existsSync(join(copy, CONTEXT_FILE))).toBe(false)
   })
 
-  it('три встроенных навыка лежат в копии по пути навыков — каждый своим каталогом', async () => {
+  it('встроенные навыки лежат в копии по пути навыков — каждый своим каталогом', async () => {
     const copy = mkCopy()
     const adapter = oneTaskAdapter(backlogTask({ id: 'BL-1', attempt: 1 }))
     const { deps } = makeDeps({ adapter, verbRunner: runnerAnswering(copy) })

@@ -49,6 +49,7 @@ import {
   renderReceipt,
   resolveDriveViewport,
   sweepSparseNote,
+  typeText,
   verdict,
   worstOverflow,
 } from '../lib/ui-drive.mjs'
@@ -91,6 +92,73 @@ describe('parseSteps', () => {
     expect(parseSteps(['type:#email']).ok).toBe(false)
     expect(parseSteps(['wait:soon']).ok).toBe(false)
     expect(parseSteps(['justtext']).ok).toBe(false)
+  })
+})
+
+/**
+ * ═══════ УЧЁТНЫЕ ДАННЫЕ ЖИВУТ В ОКРУЖЕНИИ, А НЕ В ФАЙЛАХ ═══════
+ *
+ * Зачем эта форма шага вообще есть. Квитанция печатает пройденный путь ШАГАМИ КАК ОНИ
+ * НАПИСАНЫ (`renderReceipt`, раздел «Path walked»), а прогон входа в окно — это шаг `type`
+ * с паролем. Значит, самый обычный вход записывал бы пароль на диск, в файл, который потом
+ * прикладывают к отчёту. Приставка `env:` называет ПЕРЕМЕННУЮ вместо значения: на диск
+ * уезжает имя, значение читается из окружения в момент прогона и нигде не остаётся.
+ *
+ * Чего эти дела не доказывают: они не доказывают, что окно открылось. Они доказывают, что
+ * значение секрета не может попасть в квитанцию через разобранный шаг.
+ */
+describe('parseSteps — учётные данные только из окружения', () => {
+  it('type:<селектор>=env:<ИМЯ> называет переменную, а не значение', () => {
+    const r = parseSteps(['type:#password=env:APP_PASSWORD'])
+    expect(r.ok).toBe(true)
+    expect(r.steps[0]).toMatchObject({ verb: 'type', selector: '#password', fromEnv: 'APP_PASSWORD', text: null })
+    // Сырой шаг едет в квитанцию — значит в нём обязано стоять имя, а не секрет.
+    expect(r.steps[0].raw).toBe('type:#password=env:APP_PASSWORD')
+  })
+
+  it('обычный текст остаётся обычным текстом — прежняя форма шага не сломана', () => {
+    const r = parseSteps(['type:#email=a@b.c'])
+    expect(r.ok).toBe(true)
+    expect(r.steps[0]).toMatchObject({ selector: '#email', text: 'a@b.c', fromEnv: null })
+  })
+
+  it('опечатка в имени переменной — ОШИБКА, а не литерал «env:...», набитый в поле пароля', () => {
+    // Молча набранное «env:APP PASSWORD» — это провал входа, объяснить который по квитанции
+    // нельзя: шаг выглядит выполненным. Ошибка разбора видна до того, как открылось окно.
+    expect(parseSteps(['type:#password=env:APP PASSWORD']).ok).toBe(false)
+    expect(parseSteps(['type:#password=env:']).ok).toBe(false)
+    expect(parseSteps(['type:#password=env:9LIVES']).ok).toBe(false)
+    expect(parseSteps(['type:#password=env:APP-PASSWORD']).errors.join(' ')).toContain('env:')
+  })
+
+  it('typeText отдаёт значение из окружения — и НЕ отдаёт его шагу с обычным текстом', () => {
+    const [secret] = parseSteps(['type:#password=env:APP_PASSWORD']).steps
+    expect(typeText(secret, { APP_PASSWORD: 'hunter2' })).toEqual({ ok: true, text: 'hunter2' })
+    const [plain] = parseSteps(['type:#email=a@b.c']).steps
+    expect(typeText(plain, {})).toEqual({ ok: true, text: 'a@b.c' })
+  })
+
+  it('переменной нет — отказ СЛОВАМИ и с именем переменной, никогда не пустая строка', () => {
+    // Пустая строка в поле пароля даёт «неверный логин или пароль» — жалобу на приложение
+    // вместо жалобы на не заданную переменную, и человек чинит не то.
+    const [secret] = parseSteps(['type:#password=env:APP_PASSWORD']).steps
+    for (const env of [{}, { APP_PASSWORD: '' }, { APP_PASSWORD: '   ' }]) {
+      const r = typeText(secret, env)
+      expect(r.ok).toBe(false)
+      expect(r.text).toBeUndefined()
+      expect(r.reason).toContain('APP_PASSWORD')
+    }
+  })
+
+  it('значение секрета не попадает в квитанцию — там стоит имя переменной', () => {
+    const { steps } = parseSteps(['type:#password=env:APP_PASSWORD'])
+    const receipt = renderReceipt({
+      url: 'http://localhost:5173',
+      steps,
+      verdict: { status: 'PASS', blockers: 0, warnings: 0 },
+    })
+    expect(receipt).toContain('env:APP_PASSWORD')
+    expect(receipt).not.toContain('hunter2')
   })
 })
 

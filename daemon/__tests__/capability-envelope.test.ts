@@ -26,9 +26,13 @@ import {
   envelopeAllows,
   envelopeHash,
   DANGER_CLASS_HUMAN_ACTIONS,
+  ENVELOPE_SKILLS,
   approvalWall,
 } from '../src/queue/capability-envelope.mjs'
 import { TASK_LANES } from '../src/queue/adapter.mjs'
+// НАСТОЯЩИЙ список доставляемых навыков: объявление в конверте обязано быть отношением
+// между двумя существующими таблицами, а не третьей копией их содержимого.
+import { WORKER_SKILLS } from '../src/queue/worker-skills.mjs'
 // НАСТОЯЩИЙ строитель аргументов запуска: провод права проверяется на том массиве, который
 // поедет в спавн, а не на подделке, которая умеет ровно то, что удобно делу.
 import { buildClaudeArgs } from '../src/runner/args.mjs'
@@ -597,6 +601,39 @@ describe('право на инструмент навыков — провод �
     for (const tool of ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash']) {
       expect(grant, `инструмент ${tool} потерялся по дороге`).toContain(tool)
     }
+  })
+
+  it('КАЖДЫЙ доставляемый навык назван в конверте — и имя доезжает до аргументов запуска', () => {
+    // Голое слово «Skill» — это ПРАВО, но не ОБЪЯВЛЕНИЕ: по нему нельзя спросить, каким
+    // именно навыком попытка имела право пользоваться. Имена отвечают на этот вопрос, и
+    // отвечают одинаково на каждой дорожке — навык доставляется в копию любой из них.
+    for (const lane of ENVELOPE_LANES) {
+      const grant = grantOf(argvFor(lane))
+      for (const skill of WORKER_SKILLS as any[]) {
+        expect(grant, `дорожка ${lane}: навык ${skill.slug} не объявлен в конверте`).toContain(`Skill(${skill.slug})`)
+      }
+    }
+  })
+
+  it('навык про окно браузера объявлен поимённо — и конверту про него можно ЗАДАТЬ вопрос', () => {
+    const env = defaultEnvelope('prod')
+    expect(envelopeAllows(env, { action: 'tool', tool: 'Skill(sma-browser)' })).toBe(true)
+    // И конверт остаётся закрытым для того, чего в списке доставки нет: объявление, которое
+    // отвечает «да» на любое имя, не объявление.
+    expect(envelopeAllows(env, { action: 'tool', tool: 'Skill(sma-whatever)' })).toBe(false)
+  })
+
+  it('список конверта и список доставки не расходятся — побуквенно и по порядку', () => {
+    // Две таблицы в двух модулях согласуются делом, а не дисциплиной: навык, добавленный в
+    // доставку и забытый здесь, уехал бы в чужое дерево неназванным ни в одном конверте.
+    expect([...ENVELOPE_SKILLS]).toEqual((WORKER_SKILLS as any[]).map((s) => s.slug))
+    expect(Object.isFrozen(ENVELOPE_SKILLS)).toBe(true)
+  })
+
+  it('запертый конверт не объявляет ни одного навыка', () => {
+    // Неизвестная дорожка получает пустой набор — имя навыка не должно проезжать в грант
+    // мимо решения о дорожке.
+    expect(defaultEnvelope('нет такой дорожки').allowedTools).toEqual([])
   })
 
   it('сторож: расширение таблицы не открыло дыру в замке запрещённых флагов', () => {

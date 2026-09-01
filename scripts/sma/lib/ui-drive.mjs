@@ -284,6 +284,33 @@ export const INTERACTIVE_SELECTOR = [
 export const STEP_VERBS = Object.freeze(['goto', 'click', 'type', 'wait', 'shot', 'expect', 'key'])
 
 /**
+ * ═══════ УЧЁТНЫЕ ДАННЫЕ НАЗЫВАЮТСЯ, А НЕ ПИШУТСЯ ═══════
+ *
+ * `SECRET_PREFIX` — приставка, которой шаг `type` говорит: значение лежит В ОКРУЖЕНИИ, здесь
+ * стоит только его имя.
+ *
+ * ЗАЧЕМ ЭТО НУЖНО, СКАЗАННОЕ ОДНОЙ ПРИЧИНОЙ. Квитанция печатает пройденный путь ШАГАМИ КАК
+ * ОНИ НАПИСАНЫ (`renderReceipt`, раздел «Path walked»), а вход в окно — это шаг `type` с
+ * паролем. Без этой формы самый обычный вход записывал бы пароль на диск, в файл, который
+ * потом прикладывают к отчёту и коммитят. Отозвать его оттуда нельзя: файл уже написан.
+ * С приставкой на диск уезжает ИМЯ переменной, а значение читается в момент прогона и нигде
+ * не остаётся — ни в квитанции, ни в журнале, ни в аргументах, которые видит соседний процесс.
+ *
+ * ФОРМА ИМЕНИ — ПЕРЕМЕННАЯ ОКРУЖЕНИЯ, И ПРОВЕРЯЕТСЯ ОНА ПРИ РАЗБОРЕ. Имя с пробелом или
+ * дефисом переменной не бывает; пропустив такое, разбор набрал бы в поле пароля литерал
+ * «env:APP PASSWORD» и получил бы обычный отказ входа — жалобу на приложение вместо жалобы
+ * на опечатку. Ошибка при разборе видна ДО того, как открылось окно.
+ *
+ * ЛИТЕРАЛ, НАЧИНАЮЩИЙСЯ С `env:`, НАБРАТЬ БОЛЬШЕ НЕЛЬЗЯ, и это осознанный размен: текст,
+ * который выглядит как ссылка на переменную, в поле ввода почти всегда ею и является, а цена
+ * ошибки в другую сторону — записанный на диск пароль.
+ */
+export const SECRET_PREFIX = 'env:'
+
+/** Имя переменной окружения: буква или подчёркивание, дальше буквы, цифры, подчёркивания. */
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/**
  * parseSteps(argv) -> {ok:true, steps} | {ok:false, errors}
  *
  * A step is `<verb>:<arg>`; `type` splits its arg once more on `=`. An unknown verb is
@@ -314,7 +341,19 @@ export function parseSteps(argv = []) {
         errors.push(`step "${raw}" needs type:<selector>=<text>`)
         continue
       }
-      steps.push({ verb, selector: arg.slice(0, eq), text: arg.slice(eq + 1), raw })
+      const selector = arg.slice(0, eq)
+      const value = arg.slice(eq + 1)
+      if (value.startsWith(SECRET_PREFIX)) {
+        const name = value.slice(SECRET_PREFIX.length)
+        if (!ENV_NAME_RE.test(name)) {
+          errors.push(`step "${raw}" needs type:<selector>=${SECRET_PREFIX}<VARIABLE_NAME>`)
+          continue
+        }
+        // Значения здесь нет и быть не может: этот модуль не читает окружение, он его НАЗЫВАЕТ.
+        steps.push({ verb, selector, text: null, fromEnv: name, raw })
+        continue
+      }
+      steps.push({ verb, selector, text: value, fromEnv: null, raw })
       continue
     }
     if (verb === 'wait') {
@@ -333,6 +372,36 @@ export function parseSteps(argv = []) {
     steps.push({ verb, arg, raw })
   }
   return errors.length ? { ok: false, errors } : { ok: true, steps }
+}
+
+/**
+ * typeText(step, env) -> {ok:true, text} | {ok:false, reason}
+ *
+ * Что именно набирать в поле — ЕДИНСТВЕННЫЙ ответчик на этот вопрос. Обычный шаг отдаёт свой
+ * текст; шаг с именем переменной отдаёт то, что лежит в окружении ПРЯМО СЕЙЧАС.
+ *
+ * НЕ ЗАДАННАЯ ПЕРЕМЕННАЯ — ОТКАЗ СЛОВАМИ, А НЕ ПУСТАЯ СТРОКА. Пустая строка в поле пароля
+ * даёт обычное «неверный логин или пароль»: шаг выглядит выполненным, вина ложится на
+ * приложение, и человек чинит не то. Отказ называет ИМЯ переменной — единственное, чего не
+ * хватало, и единственное, что можно исправить. Пробельное значение считается не заданным по
+ * той же причине: пароль из пробелов не заводят, а забытые кавычки в оболочке — заводят.
+ *
+ * ЧИСТАЯ: окружение приезжает аргументом, `process.env` этот модуль не знает. И значение
+ * возвращается ТОЛЬКО наружу — ни в какую строку сообщения оно не попадает, потому что
+ * сообщения этого модуля едут в квитанцию на диск.
+ *
+ * @param {{text?:string|null, fromEnv?:string|null, raw?:string}} step
+ * @param {Record<string,string|undefined>} [env]
+ * @returns {{ok:true, text:string}|{ok:false, reason:string}}
+ */
+export function typeText(step, env = {}) {
+  const name = step && typeof step.fromEnv === 'string' && step.fromEnv !== '' ? step.fromEnv : null
+  if (name === null) return { ok: true, text: typeof step?.text === 'string' ? step.text : '' }
+  const value = env ? env[name] : undefined
+  if (typeof value !== 'string' || value.trim() === '') {
+    return { ok: false, reason: `${name} is not set in the environment — nothing was typed, and nothing was guessed` }
+  }
+  return { ok: true, text: value }
 }
 
 /**

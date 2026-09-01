@@ -370,6 +370,29 @@ const REQUEST_ACTIONS = Object.freeze(['read', 'write', 'tool', 'network', 'spen
 // ── the lane defaults ──
 
 /**
+ * ВСТРОЕННЫЕ НАВЫКИ, НАЗВАННЫЕ КОНВЕРТОМ ПОИМЁННО.
+ *
+ * ЧЕМ ЭТО ОТЛИЧАЕТСЯ ОТ ГОЛОГО СЛОВА `Skill` НИЖЕ. Голое слово — это ПРАВО: оно пускает
+ * сессию к любому навыку, который лежит в копии. Правом нельзя ответить на вопрос «каким
+ * именно навыком эта попытка имела право пользоваться» — а именно этот вопрос задаёт всякий,
+ * кто читает попытку после того, как она кончилась. Список доставки живёт в своём модуле,
+ * разрешение — в этом, и до сих пор их не связывало НИЧТО: навык можно было добавить в
+ * доставку и не встретить его имени ни в одном конверте, ни в одном отпечатке и ни в одной
+ * строке журнала.
+ *
+ * ЭТО НЕ УКРАШЕНИЕ, И РАЗНИЦА ПРОВЕРЯЕТСЯ ДЕЛОМ. Украшением была бы РАЗНИЦА МЕЖДУ
+ * ДОРОЖКАМИ, которой нет в жизни; здесь список одинаков для всех четырёх, потому что навыки
+ * доставляются в копию любой попытки. Работу делает не ширина гранта — она не меняется, —
+ * а связь двух таблиц: сьют сравнивает этот список с настоящим списком доставки, и навык,
+ * добавленный туда и забытый здесь, красит дело.
+ *
+ * ПЕРЕСКАЗАН, А НЕ ИМПОРТИРОВАН — по закону этого модуля (ни одного импорта сверх двух
+ * названных в шапке), той же техникой, которой пересказаны дорожки: расхождение ловит дело,
+ * а не дисциплина.
+ */
+export const ENVELOPE_SKILLS = Object.freeze(['sma-receipt', 'sma-lesson', 'sma-ask', 'sma-browser'])
+
+/**
  * The tool vocabulary. IDENTICAL FOR EVERY LANE, on purpose and against the temptation to
  * look thorough: all four lanes today run the same CLI in the same worktree under the same
  * `.claude/settings.json`, and every lane commits its own work, so every lane really does
@@ -384,9 +407,19 @@ const REQUEST_ACTIONS = Object.freeze(['read', 'write', 'tool', 'network', 'spen
  * delivered into a copy the worker may not read from are computed and not connected — the
  * exact shape of failure that once left this fleet unable to change a single file while
  * every part of it was green. It widens nothing else: the human-only refusals travel in the
- * same envelope, and the permissions-skip flag stays structurally unreachable.
+ * same envelope, and the permissions-skip flag stays structurally unreachable. The named
+ * `Skill(<slug>)` entries that follow it are the DECLARATION half — see ENVELOPE_SKILLS above.
  */
-const LANE_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'Skill'])
+const LANE_TOOLS = Object.freeze([
+  'Read',
+  'Grep',
+  'Glob',
+  'Edit',
+  'Write',
+  'Bash',
+  'Skill',
+  ...ENVELOPE_SKILLS.map((slug) => `Skill(${slug})`),
+])
 
 /**
  * The fleet's RUNNING→PRODUCED timeout, the one runtime number this codebase has actually

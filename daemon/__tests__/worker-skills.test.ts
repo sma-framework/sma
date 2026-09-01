@@ -33,8 +33,8 @@ const REGISTER_SHAPES = [
 const bySlug = (slug: string) => WORKER_SKILLS.find((s: any) => s.slug === slug)
 
 describe('встроенные навыки работника — замороженный список с одним владельцем', () => {
-  it('пин: ровно три записи, слаги побуквенно — новая запись есть ОСОЗНАННЫЙ перепин этого дела', () => {
-    expect(WORKER_SKILLS.map((s: any) => s.slug)).toEqual(['sma-receipt', 'sma-lesson', 'sma-ask'])
+  it('пин: слаги побуквенно и по порядку — новая запись есть ОСОЗНАННЫЙ перепин этого дела', () => {
+    expect(WORKER_SKILLS.map((s: any) => s.slug)).toEqual(['sma-receipt', 'sma-lesson', 'sma-ask', 'sma-browser'])
   })
 
   it('список и каждая запись заморожены — текст, уезжающий в чужое дерево, не правится по дороге', () => {
@@ -90,6 +90,34 @@ describe('встроенные навыки работника — заморо�
     expect(bySlug('sma-lesson')!.body).toContain(LESSON_MARKERS.written)
     expect(bySlug('sma-lesson')!.body).toContain(LESSON_MARKERS.none)
     expect(bySlug('sma-ask')!.body).toContain(APPROACH_MARKERS.approach)
+  })
+
+  it('навык про окно браузера называет команду продукта, а не пересказывает драйвер', () => {
+    // Агент ломится в окно вслепую ровно потому, что не знает, чем его открывают. Навык
+    // называет ту самую команду и ту самую переменную драйвера — второго словаря нет.
+    const browser = bySlug('sma-browser')!.body
+    expect(browser).toContain('node scripts/sma/ui-drive.mjs')
+    expect(browser).toContain('SMA_UI_DRIVER')
+    expect(browser).toContain('shot:')
+  })
+
+  it('навык про окно учит брать учётные данные ТОЛЬКО из окружения — и не писать их в файлы', () => {
+    const browser = bySlug('sma-browser')!.body
+    expect(browser).toContain('env:')
+    // Запрет назван прямым текстом: подразумеваемый запрет работник не читает.
+    expect(browser).toMatch(/не пиш\p{L}*\s+в файл/iu)
+    // И сам текст навыка не несёт ни одного придуманного примера пароля: текст уезжает в
+    // чужое дерево, а пример учётных данных в нём кто-нибудь однажды подставит всерьёз.
+    expect(browser).not.toMatch(/admin\s*[:/]\s*admin/i)
+  })
+
+  it('навык про окно называет честное «не смог» кодом, а не настроением', () => {
+    // Драйвера в дереве может не быть, и тогда прогон честно выходит кодом 3. Навык, который
+    // не назовёт этот исход, оставит работнику ровно один выход — назвать непроверенное
+    // проверенным.
+    const browser = bySlug('sma-browser')!.body
+    expect(browser).toContain('NOT RUN')
+    expect(browser).toMatch(/(?<![\p{L}])код(?:ом|е|а)?\s+3(?![\d])/u)
   })
 
   it('навык про вопросы НЕ обещает механизма, которого нет: диалога по ходу работы', () => {
