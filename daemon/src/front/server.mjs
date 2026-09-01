@@ -2409,6 +2409,21 @@ async function handleReturn({ req, res, config, deps }) {
     return sendJson(res, 200, { ok: true, taskId, attempt: prevAttempt, stageTaskId: norm.id, phase, stage: toStage })
   }
 
+  // ЧЕМ ЭТА ЗАДАЧА БЫЛА — НАГРУЗКОЙ ЦЕЛИКОМ, А НЕ ЧИТАЕМОЙ ЕЁ ФОРМОЙ. Спрошено ДО CAS по той же
+  // причине, по какой до него читаются строки: отказать надо раньше, чем работа закрыта.
+  // Адаптер, который такого вопроса не понимает (заглушка в деле, декоратор постарше), отвечает
+  // молчанием — и дверь честно возвращается к сборке из строк, с тем же огрызком, что и раньше,
+  // но без выдуманной нагрузки.
+  let prevPayload = null
+  if (deps.adapter && typeof deps.adapter.payloadOf === 'function') {
+    try {
+      const got = await deps.adapter.payloadOf(taskId)
+      if (got && typeof got === 'object' && !Array.isArray(got)) prevPayload = got
+    } catch {
+      /* fail-open — нечитаемая нагрузка стоит огрызка, а не отказанного возврата */
+    }
+  }
+
   const table = deps.taskTable || 'sma_task_attempts'
   const cas = await returnCas(deps, { table, taskId, note })
   if (!cas.won) return send409(res, 'return race lost (already handled)')
@@ -2429,25 +2444,35 @@ async function handleReturn({ req, res, config, deps }) {
   // показывала пустоту на месте того, что человек написал. Хуже того, ровно по этим полям
   // считается потолок ходов, так что нажатие «поднять потолок» стирало признаки размера —
   // единственный путь «повторить ТУ ЖЕ строку» повторял её огрызок.
+  //
+  // РОЛЬ БЫЛА ТРЕТЬИМ СЛУЧАЕМ ТОГО ЖЕ ДЕФЕКТА, и он дороже обоих предыдущих: роль —
+  // ЕДИНСТВЕННОЕ слово, которым человек называет исполнителя работы, и вторая попытка работы,
+  // названной поимённо, приезжала без имени, а `roleWanted` отвечал «исполнитель». Четвёртым
+  // было РОДСТВО СО СБОРКОЙ (`batchId`): возвращённый кусок пачки перевыдавался сиротой, и
+  // правила сборки — один работник, очерёдность, само присутствие куска в сборке — на него
+  // больше не действовали. Пятым — СНИМОК КОНТЕКСТА, и он-то и закрыл спор о способе: снимка в
+  // читаемой форме строки НЕТ ВООБЩЕ (он не едет в каждый полл, см. row() в очереди), так что
+  // перечислением полей его было не спасти ни при какой внимательности.
+  //
+  // ПОЭТОМУ ДВЕРЬ БОЛЬШЕ НЕ СОБИРАЕТ ЗАДАЧУ ИЗ ЧИТАЕМОЙ ФОРМЫ. Она берёт у очереди нагрузку
+  // ЦЕЛИКОМ — той же стороной, какой её берёт повтор сорвавшейся работы (`payloadOf`), — и
+  // накладывает сверху ровно то, что решает ВОЗВРАТ и никто другой: источник, слово человека,
+  // номер подхода и то, что человек мог переназвать телом запроса. Читаемая форма осталась
+  // ПОЛОМ под нагрузкой: адаптер, нагрузки не отдавший, роняет дверь не в пустоту, а в
+  // сегодняшнее поведение. Шестого поля в этом перечне не будет — перечня больше нет.
   const requeue = await enqueueOrExplain(res, deps.adapter, {
+    ...(prevData ? { data: prevData } : {}),
+    ...(prevRow && prevRow.role ? { role: prevRow.role } : {}),
+    ...(prevRow && prevRow.batchId ? { batchId: prevRow.batchId } : {}),
+    ...(prevRow && prevRow.acceptance != null ? { acceptance: prevRow.acceptance } : {}),
+    ...(prevRow && prevRow.description != null ? { description: prevRow.description } : {}),
+    ...(prevRow && Number.isFinite(prevRow.storyPoints) ? { storyPoints: prevRow.storyPoints } : {}),
+    ...(prevPayload || {}),
     id: taskId,
     source: 'return',
     ...ownProject,
     title: (typeof v.title === 'string' && v.title.trim()) || nameFromRow || taskId,
     lane: v.lane || (prevRow && prevRow.lane) || 'prod',
-    ...(prevData ? { data: prevData } : {}),
-    // РОЛЬ — ТРЕТИЙ СЛУЧАЙ ТОГО ЖЕ ДЕФЕКТА, и он дороже обоих предыдущих. Конверт и слова
-    // терялись перезаписью молча; роль терялась так же — но она ЕДИНСТВЕННОЕ слово, которым
-    // человек называет исполнителя работы. Вторая попытка работы, названной поимённо,
-    // приезжала без имени, `roleWanted` отвечал «исполнитель», и работа шла под чужим
-    // описанием агента: та самая тихая подмена, на которую маршрут в открытую отвечает
-    // `role_unavailable`, обойдённая не отказом, а забывчивостью. Ключа тела у роли здесь нет
-    // по той же причине, что у конверта: возврат — это состояние ТОЙ ЖЕ работы, а сменить
-    // исполнителя значит поставить другую, своей дверью.
-    ...(prevRow && prevRow.role ? { role: prevRow.role } : {}),
-    ...(prevRow && prevRow.acceptance != null ? { acceptance: prevRow.acceptance } : {}),
-    ...(prevRow && prevRow.description != null ? { description: prevRow.description } : {}),
-    ...(prevRow && Number.isFinite(prevRow.storyPoints) ? { storyPoints: prevRow.storyPoints } : {}),
     note,
     attempt: prevAttempt + 1,
   })
