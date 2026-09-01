@@ -18,6 +18,7 @@ import { Screen as Memory } from '../screens/memory'
 import { Screen as Accounts } from '../screens/accounts'
 import { Screen as Connections } from '../screens/connections'
 import { Screen as Machines } from '../screens/machines'
+import { Screen as RemoteAccess } from '../screens/remote-access'
 import { Screen as TaskCard } from '../screens/task-card'
 import { Screen as ImportWizard } from '../screens/import-wizard'
 import { Screen as FirstRun } from '../screens/first-run'
@@ -71,6 +72,7 @@ export type ScreenId =
   | 'accounts'
   | 'connections'
   | 'machines'
+  | 'remote-access'
   | 'task-card'
   | 'import-wizard'
   | 'first-run'
@@ -113,6 +115,10 @@ export const SCREENS: readonly ScreenEntry[] = [
   { id: 'accounts', title: 'Аккаунты', group: 'settings', Screen: Accounts },
   { id: 'connections', title: 'Подключения', group: 'settings', Screen: Connections },
   { id: 'machines', title: 'Машины и проекты', group: 'settings', Screen: Machines },
+  // Соседствует с «Машинами» не по алфавиту: обе строки об одном — где стоит эта установка и
+  // до чего с неё дотягиваются. Экран объясняет и проверяет; ставить приватную сеть и править
+  // настройки демона он не умеет и не будет.
+  { id: 'remote-access', title: 'Работать удалённо', group: 'settings', Screen: RemoteAccess },
   { id: 'system', title: 'Дом системы', group: 'settings', Screen: System },
   { id: 'task-card', title: 'Карточка задачи', group: null, Screen: TaskCard },
   { id: 'import-wizard', title: 'Привести своих', group: null, Screen: ImportWizard },

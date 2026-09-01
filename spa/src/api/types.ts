@@ -1103,6 +1103,50 @@ export interface StatePayload {
   style: StyleSection
   /** The CONNECTED project's notebook — absent on a daemon with no project connected. */
   projectMemory: ProjectMemorySection
+  /** Где стоит дверь этого демона и кому она видна — опора экрана «Работать удалённо». */
+  remoteAccess: RemoteAccess
+}
+
+// ── «Работать удалённо»: the fact, never the advice ─────────────────────────────────
+
+/**
+ * Кому видна дверь демона. `this_machine_only` — петля (умолчание продукта);
+ * `named_address` — один названный адрес; `every_interface` — дикая карта, то есть КАЖДЫЙ
+ * интерфейс машины, включая те, о которых человек не думал.
+ */
+export type RemoteReach = 'this_machine_only' | 'named_address' | 'every_interface'
+
+/** Один сетевой адрес этой машины, узнанный по ДИАПАЗОНУ, а не по имени поставщика. */
+export interface RemoteNetworkInterface {
+  interface: string
+  address: string
+  family: 'IPv4' | 'IPv6' | string
+  /** `mesh` — шифрованная приватная сеть (CGNAT / ULA); `lan` — обычная локальная сеть. */
+  kind: 'mesh' | 'lan'
+}
+
+/**
+ * Факт о доступности демона со второй машины. Токена не несёт ни в каком виде — именно
+ * потому, что весь экран об этом: токен становится настоящим паролем ровно тогда, когда до
+ * демона можно дотянуться не с этой машины.
+ */
+export interface RemoteAccess {
+  bind: string
+  port: number
+  reach: RemoteReach
+  visibleBeyondThisMachine: boolean
+  privateNetwork: {
+    /** Найден ли хоть один адрес шифрованной приватной сети. */
+    detected: boolean
+    /** Удалось ли вообще перечислить интерфейсы. `false` — «не смог посмотреть», не «нет». */
+    readable: boolean
+    interfaces: RemoteNetworkInterface[]
+  }
+  /**
+   * Адрес, который набирают на ВТОРОЙ машине, или `null`. `null` при поднятой сети — не
+   * ошибка, а самый частый случай: сеть есть, а демон слушает только петлю.
+   */
+  openFrom: string | null
 }
 
 // ── one task: GET /api/task/:id ─────────────────────────────────────────────────────
