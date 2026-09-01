@@ -129,7 +129,7 @@ import { approvalWall, defaultEnvelope } from '../queue/capability-envelope.mjs'
 import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
 import { writeWaveHold, WAVE_ACTIONS } from '../queue/wave-holds.mjs'
-import { BATCH_DECISIONS, parseReceiptProof } from './state.mjs'
+import { BATCH_DECISIONS, parseReceiptProof, projectOf } from './state.mjs'
 import { readTaskChanges } from './task-changes.mjs'
 import { DRAFT_KINDS } from '../forge/forge.mjs'
 import { buildPairingInstruction } from './federation.mjs'
@@ -1324,6 +1324,20 @@ async function handleTask({ res, params, config, deps }) {
       lane: row.lane ?? null,
       status: row.status ?? null,
       attempt: row.attempt ?? null,
+      // ═══ В КАКОМ ДЕРЕВЕ ЛЕЖИТ ЭТА РАБОТА — СКАЗАНО ЕЮ САМОЙ ═══════════════════
+      //
+      // На карточке это значение переключателя проекта: переставляя задачу, человек читает
+      // отсюда, ОТКУДА он её переставляет. Пока дверь молчала, окно разыскивало строку по
+      // спискам общей картины — «в очереди», «ждут вас», «сделано», — а ЗАНЯТОЙ строки нет ни
+      // в одном из трёх: она лежит в составе, у работника, который её держит. Промах с
+      // проектом замечают именно тогда, когда работа уже пошла и уткнулась в дерево без
+      // нужного кода, — и ровно в этот момент карточка печатала «проект не назван» о задаче
+      // со штампом, а выбор между двумя деревьями делался вслепую.
+      //
+      // ПРАВИЛО ТО ЖЕ САМОЕ, ЧТО У КАРТИНЫ (`projectOf`), и потому оно и импортировано, а не
+      // написано здесь второй раз: строка называет свой проект или не называет ничьего, и
+      // `null` — это измерение, а не приглашение подставить активный выбор окна.
+      project: projectOf(row),
       // «Что обещано» and what the work IS — the two words of a task, carried to the card in
       // the shape the row holds them. The card normalizes the promise to a list, exactly as
       // the prompt builder does, so the person and the worker read the same sentences.

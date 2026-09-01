@@ -63,6 +63,7 @@ describe('parseSteps', () => {
       'expect:Done',
       'goto:/inbox',
       'key:Control+K',
+      'select:#project=Второе дерево',
     ])
     expect(r.ok).toBe(true)
     expect(r.steps.map((s: { verb: string }) => s.verb)).toEqual([
@@ -73,12 +74,29 @@ describe('parseSteps', () => {
       'expect',
       'goto',
       'key',
+      'select',
     ])
     // Комбинация едет драйверу как написана: разбирать её здесь значило бы завести второй
     // словарь имён клавиш рядом с тем, который уже есть у драйвера.
     expect(r.steps[6]).toMatchObject({ arg: 'Control+K' })
     expect(r.steps[1]).toMatchObject({ selector: '#email', text: 'a@b.c' })
     expect(r.steps[2]).toMatchObject({ ms: 500 })
+    // Выпадающий список называется КУДА и ЧТО — той же формой, что и ввод текста: у одной
+    // формы один разбор. Опция названа подписью с экрана, и сверять её со значением — работа
+    // драйвера, а не второго словаря здесь.
+    expect(r.steps[7]).toMatchObject({ selector: '#project', text: 'Второе дерево' })
+  })
+
+  it('селектор по атрибуту не разрезается посередине — граница ищется снаружи скобок', () => {
+    const r = parseSteps(['select:[aria-label="Проект задачи"]=Сцена · второе дерево', 'type:[name="q"]=a=b'])
+
+    expect(r.ok).toBe(true)
+    expect(r.steps[0]).toMatchObject({
+      selector: '[aria-label="Проект задачи"]',
+      text: 'Сцена · второе дерево',
+    })
+    // …и значение со своим `=` внутри остаётся целым: делится ПЕРВОЕ равенство снаружи скобок.
+    expect(r.steps[1]).toMatchObject({ selector: '[name="q"]', text: 'a=b' })
   })
 
   it('refuses an unknown verb instead of skipping it', () => {
@@ -89,6 +107,7 @@ describe('parseSteps', () => {
 
   it('refuses a malformed step rather than guessing', () => {
     expect(parseSteps(['type:#email']).ok).toBe(false)
+    expect(parseSteps(['select:#project']).ok).toBe(false)
     expect(parseSteps(['wait:soon']).ok).toBe(false)
     expect(parseSteps(['justtext']).ok).toBe(false)
   })

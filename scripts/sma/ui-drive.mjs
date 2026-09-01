@@ -7,6 +7,7 @@
  *                                       [--at <desktop|tablet|mobile>]
  *
  * Steps: goto:<path> | click:<visible text> | type:<selector>=<text>
+ *        select:<selector>=<option value or label>
  *        wait:<ms> | shot:<name> | expect:<visible text>
  *
  * --at names the width the scripted path and the sweep are walked at (every width is opened
@@ -543,6 +544,9 @@ async function main() {
           if (step.verb === 'goto') await open(page, new URL(step.arg, url).toString())
           else if (step.verb === 'click') await page.getByText(step.arg, { exact: false }).first().click({ timeout: 8000 })
           else if (step.verb === 'type') await page.fill(step.selector, step.text, { timeout: 8000 })
+          // ОПЦИЯ НАЗЫВАЕТСЯ ТАК, КАК ЕЁ ЧИТАЕТ ЧЕЛОВЕК: строка сверяется и со значением опции,
+          // и с подписью на экране — сценарий пишут по тому, что видно, а не по разметке.
+          else if (step.verb === 'select') await page.selectOption(step.selector, step.text, { timeout: 8000 })
           else if (step.verb === 'wait') await page.waitForTimeout(step.ms)
           else if (step.verb === 'shot') await capture(page, `${label}-${step.arg.replace(/[^\w-]+/g, '_')}`)
           else if (step.verb === 'key') await page.keyboard.press(step.arg)
