@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { useApprove, useReturnTask, useTaskQuery } from '../api/queries'
-import type { TaskAttempt } from '../api/types'
+import { useApprove, useCloseTaskWithWords, useReturnTask, useTaskQuery } from '../api/queries'
+import type { ClosingReason, TaskAttempt } from '../api/types'
+import { CLOSING_OPTIONS, canCloseWithWords, closingNeedsWords } from '../screens/task-card/close'
 import { AttemptLog } from './AttemptLog'
 import {
   acceptanceList,
@@ -93,16 +94,28 @@ export function TaskPanel({
   const detail = useTaskQuery(taskId)
   const approve = useApprove()
   const returnTask = useReturnTask()
+  const closeTask = useCloseTaskWithWords(taskId)
 
   const [returning, setReturning] = useState(false)
   const [note, setNote] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
+  /**
+   * ЗАКРЫТЬ СЛОВАМИ — ЗДЕСЬ, А НЕ ТОЛЬКО НА КАРТОЧКЕ. Эта панель и есть то место, где человек
+   * встречает строку, стоящую на нём: её открывают и «Сегодня», и доска, — и до сих пор она
+   * предлагала ровно два выхода, оба из которых означают «эта работа будет сделана».
+   */
+  const [closingOpen, setClosingOpen] = useState(false)
+  const [closeReason, setCloseReason] = useState<ClosingReason | null>(null)
+  const [closeNote, setCloseNote] = useState('')
 
   // A new task in the panel starts a new conversation: nothing is carried over.
   useEffect(() => {
     setReturning(false)
     setNote('')
     setProblem(null)
+    setClosingOpen(false)
+    setCloseReason(null)
+    setCloseNote('')
   }, [taskId])
 
   useEffect(() => {
@@ -122,6 +135,9 @@ export function TaskPanel({
 
   const canApprove = status === 'awaiting_approval'
   const canReturn = status === 'awaiting_approval' || status === 'failed' || status === 'completed'
+  // Правило одно на обе поверхности и живёт в одном месте: панель и карточка не имеют права
+  // расходиться в том, какой строке выход предложен.
+  const canClose = canCloseWithWords(status)
 
   const openCard = () => {
     if (onOpenCard) {
@@ -162,6 +178,27 @@ export function TaskPanel({
     setProblem(null)
     returnTask.mutate(
       { taskId, note: text },
+      {
+        onSuccess: () => onClose(),
+        onError: (err) => setProblem(refusalWords(err)),
+      },
+    )
+  }
+
+  /** Последнее слово о работе, которую делать не будут. Правило слов — то же, что у двери. */
+  const doClose = () => {
+    if (!closeReason) {
+      setProblem('Выберите, чем эта работа кончается: устарело, предмета нет или сделано иначе.')
+      return
+    }
+    const text = closeNote.trim()
+    if (closingNeedsWords(closeReason) && text.length === 0) {
+      setProblem('«Сделано иначе» без sha или причины нечем перепроверить — назовите их.')
+      return
+    }
+    setProblem(null)
+    closeTask.mutate(
+      { taskId, reason: closeReason, ...(text === '' ? {} : { note: text }) },
       {
         onSuccess: () => onClose(),
         onError: (err) => setProblem(refusalWords(err)),
@@ -266,7 +303,7 @@ export function TaskPanel({
           </button>
         </div>
 
-        {canApprove || canReturn ? (
+        {canApprove || canReturn || canClose ? (
           // Нижний запас: подвал карточки заканчивается ВЫШЕ зоны плавающей плашки
           // разговора с системой (она висит в правом нижнем углу поверх всего окна:
           // 22px отступ + ~44px высота свёрнутой плашки + зазор). Без запаса плашка
@@ -274,7 +311,63 @@ export function TaskPanel({
           // Прятать или опускать плашку нельзя: разговор обязан открываться поверх карточки.
           <div className="flex flex-none flex-col gap-2.5 border-t border-bd px-[22px] pt-4 pb-[88px]">
             {problem ? <p className="m-0 text-[11.5px] text-err-tx">{problem}</p> : null}
-            {returning ? (
+            {closingOpen ? (
+              // ЗАКРЫТЬ СЛОВАМИ: исход из закрытого словаря двери и текст человека. Подпись
+              // под каждым исходом объясняет, что он означает: три слова без объяснения — это
+              // выбор наугад по работе, которую после него не вернуть нажатием.
+              <>
+                <div className="text-[10px] font-semibold tracking-[0.09em] text-tx3 uppercase">
+                  Чем эта работа кончается
+                </div>
+                {CLOSING_OPTIONS.map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    onClick={() => {
+                      setCloseReason(o.id)
+                      setProblem(null)
+                    }}
+                    className={`rounded-[9px] border px-3 py-2 text-left text-[12px] ${
+                      closeReason === o.id ? 'border-blue bg-blue-s text-tx' : 'border-bd bg-input text-tx2 hover:text-tx'
+                    }`}
+                  >
+                    <span className="block font-semibold">{o.label}</span>
+                    <span className="mt-0.5 block text-[11px] leading-[1.4] text-tx3">{o.detail}</span>
+                  </button>
+                ))}
+                <textarea
+                  value={closeNote}
+                  onChange={(e) => setCloseNote(e.target.value)}
+                  placeholder={
+                    closingNeedsWords(closeReason)
+                      ? 'Обязательно: sha коммита или причина'
+                      : 'Не обязательно: чем это закрыто, одной строкой'
+                  }
+                  rows={2}
+                  className="w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2.5 text-[12.5px] text-tx outline-none focus:border-blue"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={doClose}
+                    disabled={closeTask.isPending}
+                    className="flex-1 rounded-[9px] bg-blue py-2.5 text-[12px] font-semibold text-white hover:bg-blue-d disabled:opacity-60"
+                  >
+                    {closeTask.isPending ? 'Закрываю…' : 'Закрыть работу словами'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClosingOpen(false)
+                      setProblem(null)
+                    }}
+                    className="rounded-[9px] border border-bd2 px-3.5 py-2.5 text-[12px] text-tx2 hover:text-tx"
+                  >
+                    Отмена
+                  </button>
+                </div>
+              </>
+            ) : returning ? (
               <>
                 <textarea
                   value={note}
@@ -325,6 +418,23 @@ export function TaskPanel({
                     className="flex-1 rounded-[9px] border border-bd2 py-2.5 text-[12px] text-tx2 hover:text-tx disabled:opacity-60"
                   >
                     Вернуть
+                  </button>
+                ) : null}
+                {/* ТРЕТИЙ ВЫХОД, РЯДОМ С ДВУМЯ ПЕРВЫМИ. «Одобрить» и «Вернуть» оба означают,
+                    что работа будет сделана; строке, чей предмет устарел, которой предмета
+                    нет вовсе или которая сделана иначе, до сих пор нечем было сказать это
+                    отсюда — и такие строки стояли в столбике ожидания сутками. */}
+                {canClose ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClosingOpen(true)
+                      setProblem(null)
+                    }}
+                    disabled={busy || closeTask.isPending}
+                    className="flex-1 rounded-[9px] border border-bd2 py-2.5 text-[12px] text-tx2 hover:text-tx disabled:opacity-60"
+                  >
+                    Закрыть словами
                   </button>
                 ) : null}
               </div>
