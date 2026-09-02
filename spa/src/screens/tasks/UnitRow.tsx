@@ -26,10 +26,16 @@ export function UnitRow({
   unit,
   first,
   onOpen,
+  expanded,
 }: {
   unit: WorkUnit
   first: boolean
   onOpen: (unit: WorkUnit) => void
+  /**
+   * Раскрыта ли строка ПРЯМО ЗДЕСЬ. `undefined` — строка никуда не раскрывается, она уводит:
+   * `aria-expanded` на такой кнопке обещал бы читалке экрана раскрытие, которого нет.
+   */
+  expanded?: boolean
 }) {
   const tone = TONE[unit.state]
   const waiting = unit.state === 'dec'
@@ -37,6 +43,7 @@ export function UnitRow({
     <button
       type="button"
       onClick={() => onOpen(unit)}
+      aria-expanded={expanded}
       aria-label={`${KIND_WORD[unit.kind]} · ${unit.title} · ${STATE_WORD[unit.state]}`}
       className={`flex w-full items-center gap-0 px-4 py-3.5 text-left hover:bg-row-hover ${
         first ? '' : 'border-t border-bd'
