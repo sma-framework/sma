@@ -366,6 +366,67 @@ export const ALLOWED_ATTEMPT_KEYS = Object.freeze([
  */
 export const TERMINAL_OUTCOMES = Object.freeze(['completed', 'failed'])
 
+/**
+ * ИМЕНА, КОТОРЫЕ ОБЯЗАНЫ НЕСТИ МОМЕНТ, — И СХЕМА, КОТОРАЯ ЗНАЕТ ОБ ЭТОМ ОДНА НА ВСЕХ.
+ *
+ * Замерено 31.08.2026: у одной попытки `startedAt` оказался СЫРЫМ ЧИСЛОМ ЭПОХИ вместо ISO — и это
+ * был не косметический разнобой, а единственный видимый признак того, что строку писал не штатный
+ * путь захвата. Разбирающий строку человек этого не отличает: на карточке и то и другое рисуется
+ * временем, потому что каждый читатель на всякий случай умеет оба вида. Так проверяемое заявление
+ * («строку писала дверь захвата») превращается в непроверяемое.
+ *
+ * ПОЭТОМУ ВИД ЗАКРЕПЛЁН СХЕМОЙ, А НЕ ДОГОВОРЁННОСТЬЮ ПИШУЩИХ. Дверь ниже приводит эти два имени
+ * к ISO сама: число эпохи становится моментом, ISO остаётся ISO (в канонической записи), а то,
+ * что моментом не читается вовсе, на долговечную строку не попадает — отметка, которая не время,
+ * это не отметка, и запись её была бы вторым видом молчания.
+ */
+const STAMP_KEYS = Object.freeze(['startedAt', 'endedAt'])
+
+/** A stamp in the ONE form the schema admits — ISO-8601 — or null when it is not a moment. */
+function isoStamp(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? new Date(value).toISOString() : null
+  if (typeof value === 'string') {
+    const ms = Date.parse(value)
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : null
+  }
+  return null
+}
+
+/**
+ * nextAttemptNumber(rows, proposed) → НОМЕР, КОТОРЫЙ ЭТА ПОПЫТКА ИМЕЕТ ПРАВО НОСИТЬ. PURE.
+ *
+ * ЗАЧЕМ. Счёт подходов ведёт очередь, и она его ЗАБЫВАЕТ: строку законченной работы pg-boss
+ * уносит в архив по сроку хранения, а обход, поставивший карточку заново, начинает счёт с
+ * единицы. Замерено 31.08.2026: вторая физическая попытка одной задачи записана в реестр ТЕМ ЖЕ
+ * номером 1, что и первая. Цена не в красоте числа: каталогом прогона служит `<taskId>#<attempt>` (см.
+ * RUN_DIR_TAKEN в run-dir.mjs), ключ идемпотентности перехода минтится из того же номера, а
+ * сверка реестра находит «попытку 1» уже записанной и не восстанавливает ничего. Одно
+ * повторённое число молча накрывает запись предыдущего подхода.
+ *
+ * ПРАВИЛО ОДНО: номер строго больше всякого УЖЕ ЗАКОНЧИВШЕГОСЯ подхода этой задачи и никогда не
+ * меньше предложенного. «Закончившегося» — потому что два писателя пишут об ОДНОМ подходе
+ * (переход и тик), и подход, который идёт прямо сейчас, обязан остаться собой; свёртка
+ * `foldAttemptRows` задаёт этот вопрос ровно один раз, и здесь спрашивают её.
+ *
+ * РЕЕСТР — ИСТОЧНИК, КОТОРЫЙ НЕ ЗАБЫВАЕТ, и потому вопрос задан ему, а не второму счётчику рядом:
+ * счётчик, живущий столько же, сколько строка очереди, ответил бы тем же молчанием.
+ *
+ * @param {object[]} rows — строки реестра одной задачи (readAttempts)
+ * @param {number} proposed — номер, который назвала очередь
+ * @returns {number} 1-based номер подхода
+ */
+export function nextAttemptNumber(rows, proposed) {
+  const asked = Number(proposed)
+  const wanted = Number.isFinite(asked) && asked >= 1 ? Math.floor(asked) : 1
+  let ended = 0
+  for (const record of foldAttemptRows(Array.isArray(rows) ? rows : [])) {
+    if (!record || !TERMINAL_OUTCOMES.includes(record.outcome)) continue
+    const n = Number(record.attempt)
+    if (Number.isFinite(n) && n > ended) ended = Math.floor(n)
+  }
+  return wanted > ended ? wanted : ended + 1
+}
+
 /** The ONE rule for turning an id into a filename in this dir. An id is a queue id WE mint
  *  ('BL-…'/'R-…'/'F-…', or '<taskId>#<attempt>'); it is still sanitized (defense in depth —
  *  never a path traversal). Every file in this module goes through here, so the three
@@ -417,6 +478,17 @@ export function recordAttempt(ledgerDir, attempt) {
   mkdirSync(ledgerDir, { recursive: true })
   const row = {}
   for (const k of ALLOWED_ATTEMPT_KEYS) if (attempt[k] !== undefined) row[k] = attempt[k]
+  // ── ОТМЕТКИ ВРЕМЕНИ ПРИВОДЯТСЯ К ISO ЗДЕСЬ, У ЕДИНСТВЕННОЙ ДВЕРИ ────────────────────
+  // Схема строки допускает один вид момента (см. STAMP_KEYS): сырое число эпохи на долговечной
+  // строке — это признак нештатного писателя, который читатель отличить не может. Приводится, а
+  // не отвергается: строка аудита не теряется из-за формы своей отметки. То, что моментом не
+  // читается вовсе, ключа не получает — отсутствие честнее мусора.
+  for (const k of STAMP_KEYS) {
+    if (row[k] === undefined) continue
+    const iso = isoStamp(row[k])
+    if (iso === null) delete row[k]
+    else row[k] = iso
+  }
   // The envelope is hashed at the point of recording and only its digest is kept. A
   // malformed envelope is not fatal to the attempt — the stamp is simply not written,
   // because a wrong digest is worse than an absent one.
