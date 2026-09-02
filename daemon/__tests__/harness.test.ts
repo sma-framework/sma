@@ -42,6 +42,7 @@ import {
   resolveMachineAgentsDir,
   resolveWorkerContext,
   STOCK_TEAM_TARGET,
+  STOCK_PIPELINE_TARGET,
   MissingDefinitionFileError,
   UnknownProfileError,
   UnknownSkillError,
@@ -51,7 +52,12 @@ import {
   UnknownMcpServerError,
 } from '../src/front/harness.mjs'
 import { buildClaudeArgs, buildMcpConfigFile } from '../src/runner/args.mjs'
-import { createFrontServer, ROUTES, STOCK_TEAM_TARGET as SERVER_STOCK_TEAM_TARGET } from '../src/front/server.mjs'
+import {
+  createFrontServer,
+  ROUTES,
+  STOCK_TEAM_TARGET as SERVER_STOCK_TEAM_TARGET,
+  STOCK_PIPELINE_TARGET as SERVER_STOCK_PIPELINE_TARGET,
+} from '../src/front/server.mjs'
 
 // ── a fake fs (files for reads, dirs for readdir, records writes) ──
 
@@ -583,6 +589,15 @@ tools: Read, Bash
 Тело проверяющего.
 `
 
+/** Исполнитель — вторая из двух конвейерных ролей: ему едет задача, о роли которой не сказано. */
+const STOCK_EXECUTOR = `---
+name: sma-executor
+description: Пишет код и исправляет баги.
+tools: Read, Write, Edit, Bash
+---
+Тело исполнителя.
+`
+
 const OWN_HELPER = `---
 name: мой-помощник
 description: Личный агент, которого привёл пользователь.
@@ -779,7 +794,22 @@ describe('readStockTeam — the roster that actually arrived with the install', 
     expect(wire).not.toContain('.claude')
     for (const entry of team) {
       expect(Object.keys(entry).sort()).toEqual(
-        ['description', 'enabled', 'forked', 'id', 'origin', 'problem', 'source', 'stockUpdate', 'title', 'tools'].sort(),
+        // `role` и `pipeline` — тоже явно выбранные поля: имя роли и ответ «зовёт ли её
+        // конвейер». Ни то, ни другое не путь и не тело файла, и список остаётся закрытым.
+        [
+          'description',
+          'enabled',
+          'forked',
+          'id',
+          'origin',
+          'pipeline',
+          'problem',
+          'role',
+          'source',
+          'stockUpdate',
+          'title',
+          'tools',
+        ].sort(),
       )
     }
   })
@@ -1147,6 +1177,150 @@ describe('applyStockTeamToggle — one act, through the door that already exists
   })
 })
 
+/**
+ * ДВА ОКНА НА ОДИН ВЫКЛЮЧАТЕЛЬ — и почему карточке нужны РОЛЬ и признак конвейера.
+ *
+ * Владелец увидел в «Агентах» четвёртый десяток серых строк «выключен», а на доске «Команда» —
+ * работников, ждущих работы, и прочитал это как ошибку окна. Ошибки не было: два окна отвечают
+ * на два разных вопроса. Но выключенная карточка не говорила НИЧЕГО о том, кто она и кто ставит
+ * ей задачи, — а без этого «выключен» и «сломан» для человека одно и то же.
+ *
+ * Проверяется здесь именно ФАКТ на карточке, а не текст в разметке: слова экран подбирает сам
+ * (spa/src/screens/agents/role-words.ts), но подбирает их ПО ЭТИМ полям, и по ним же выключатель
+ * конвейера отбирает, кого включать. Разъедься эти два чтения — кнопка включила бы не тех, кого
+ * подписала, и молча.
+ */
+describe('readStockTeam — карточка называет роль и говорит, зовёт ли её конвейер', () => {
+  it('планировщик — конвейерная роль, проверяющий — нет, и обе роли названы', () => {
+    const { fs } = localInstall()
+    const team = readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })
+    expect(team.find((e: any) => e.id === 'sma-planner')).toMatchObject({ role: 'planner', pipeline: true })
+    expect(team.find((e: any) => e.id === 'sma-verifier')).toMatchObject({ role: 'verifier', pipeline: false })
+  })
+
+  it('исполнитель — конвейерная роль, и поставочный префикс имени на это не влияет', () => {
+    const { fs } = localInstall({
+      extraFiles: {
+        '/repo/.claude/agents/sma-executor.md': STOCK_EXECUTOR,
+        '/repo/.claude/sma-core/agents/sma-executor.md': STOCK_EXECUTOR,
+      },
+      extraAgents: ['sma-executor.md'],
+    })
+    const team = readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })
+    expect(team.find((e: any) => e.id === 'sma-executor')).toMatchObject({ role: 'executor', pipeline: true })
+  })
+
+  it('чужой агент без описания роли читается исполнителем — так же, как его читает маршрутизатор', () => {
+    const { fs } = localInstall({
+      extraFiles: { '/repo/.claude/agents/my-helper.md': OWN_HELPER },
+      extraAgents: ['my-helper.md'],
+    })
+    const team = readStockTeam({ config: { workers: [] }, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })
+    // имя файла ролью исполнителя не является — это специалист, которого зовут поимённо
+    expect(team.find((e: any) => e.id === 'my-helper')).toMatchObject({ role: 'my-helper', pipeline: false })
+  })
+
+  it('роль, названная РУКОЙ в профиле, главнее имени файла — на карточке та же роль, что у маршрута', () => {
+    const { fs } = localInstall()
+    const config = { workers: [{ id: 'sma-verifier', role: 'planner', enabled: true }] }
+    const team = readStockTeam({ config, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })
+    expect(team.find((e: any) => e.id === 'sma-verifier')).toMatchObject({ role: 'planner', pipeline: true })
+  })
+})
+
+/**
+ * УЗКОЕ ДЕЙСТВИЕ: ВКЛЮЧИТЬ ТЕХ, КОГО ЗОВЁТ САМ КОНВЕЙЕР.
+ *
+ * «Включить команду (35)» было единственным ответом на «почему всё серое», и ответ неверный:
+ * специалиста поднимает фаза изнутри своей работы, поэтому тридцать включённых специалистов не
+ * двигают ни одной задачи. Здесь проверяется, что узкое действие берёт РОВНО конвейерные роли и
+ * не трогает соседей — ни в одну, ни в другую сторону.
+ */
+describe('applyStockTeamToggle scope=pipeline — включаются только исполнители и планировщик', () => {
+  const baseConfig = () => ({
+    workers: [{ id: 'max-2', lane: 'prod', provider: 'claude', account: { configDir: '/m2', oauthTokenEnv: 'T' }, enabled: true }],
+  })
+  const toggleEnv = { SMA_DAEMON_CONFIG: '/cfg.json' }
+
+  const withExecutor = () =>
+    localInstall({
+      extraFiles: {
+        '/repo/.claude/agents/sma-executor.md': STOCK_EXECUTOR,
+        '/repo/.claude/sma-core/agents/sma-executor.md': STOCK_EXECUTOR,
+        '/repo/.claude/agents/my-helper.md': OWN_HELPER,
+      },
+      extraAgents: ['sma-executor.md', 'my-helper.md'],
+    })
+
+  it('узкое действие включает исполнителя и планировщика и НЕ трогает проверяющего', () => {
+    const { fs, lastWritten } = withExecutor()
+    const next = applyStockTeamToggle({
+      config: baseConfig(),
+      enabled: true,
+      scope: 'pipeline',
+      repoDir: '/repo',
+      fsImpl: fs,
+      env: toggleEnv,
+      homedir: NO_HOME,
+    })
+    expect(next.workers.map((w: any) => w.id).sort()).toEqual(['max-2', 'sma-executor', 'sma-planner'])
+    expect(next.workers.find((w: any) => w.id === 'sma-planner').enabled).toBe(true)
+    expect(next.workers.find((w: any) => w.id === 'sma-verifier')).toBeUndefined()
+    expect(next.workers.find((w: any) => w.id === 'my-helper')).toBeUndefined()
+    // и записано на диск, а не только возвращено
+    expect(lastWritten().workers.map((w: any) => w.id).sort()).toEqual(['max-2', 'sma-executor', 'sma-planner'])
+  })
+
+  it('после узкого действия окно показывает включённым конвейер и выключенным специалиста', () => {
+    const { fs } = withExecutor()
+    const next = applyStockTeamToggle({
+      config: baseConfig(),
+      enabled: true,
+      scope: 'pipeline',
+      repoDir: '/repo',
+      fsImpl: fs,
+      env: toggleEnv,
+      homedir: NO_HOME,
+    })
+    const team = readStockTeam({ config: next, repoDir: '/repo', fsImpl: fs, env: {}, homedir: NO_HOME })
+    expect(team.find((e: any) => e.id === 'sma-planner')).toMatchObject({ enabled: true, pipeline: true })
+    expect(team.find((e: any) => e.id === 'sma-executor')).toMatchObject({ enabled: true, pipeline: true })
+    expect(team.find((e: any) => e.id === 'sma-verifier')).toMatchObject({ enabled: false, pipeline: false })
+  })
+
+  it('умолчание не изменилось: без scope включается весь поставочный набор', () => {
+    const { fs } = withExecutor()
+    const next = applyStockTeamToggle({ config: baseConfig(), enabled: true, repoDir: '/repo', fsImpl: fs, env: toggleEnv, homedir: NO_HOME })
+    expect(next.workers.map((w: any) => w.id).sort()).toEqual(['max-2', 'sma-executor', 'sma-planner', 'sma-verifier'])
+  })
+
+  it('конвейерных описаний на диске нет — отказ по имени и НИ ОДНОЙ записи', () => {
+    // только специалист: включать нечего, и молча делать вид, что включили, нельзя
+    const { fs, writes } = fakeFs({
+      files: {
+        '/repo/.claude/agents/sma-verifier.md': STOCK_VERIFIER,
+        '/repo/.claude/sma-core/agents/sma-verifier.md': STOCK_VERIFIER,
+      },
+      dirs: {
+        '/repo/.claude/agents': ['sma-verifier.md'],
+        '/repo/.claude/sma-core/agents': ['sma-verifier.md'],
+      },
+    })
+    expect(() =>
+      applyStockTeamToggle({
+        config: baseConfig(),
+        enabled: true,
+        scope: 'pipeline',
+        repoDir: '/repo',
+        fsImpl: fs,
+        env: toggleEnv,
+        homedir: NO_HOME,
+      }),
+    ).toThrow(MissingDefinitionFileError)
+    expect(writes).toHaveLength(0)
+  })
+})
+
 // ── the door: the reserved target rides POST /api/agent/toggle, the table does not grow ──
 
 const TOKEN = 'a'.repeat(64)
@@ -1230,6 +1404,58 @@ describe('POST /api/agent/toggle — the stock team rides the EXISTING door (no 
     const res = await call(front, { method: 'POST', url: '/api/agent/toggle', body: { id: 'max-2', enabled: false } })
     expect(res.statusCode).toBe(200)
     expect(calls[0]).toMatchObject({ id: 'max-2', enabled: false })
+  })
+
+  it('the SECOND reserved target is the same literal on both sides of the seam too', () => {
+    expect(SERVER_STOCK_PIPELINE_TARGET).toBe(STOCK_PIPELINE_TARGET)
+    expect(STOCK_PIPELINE_TARGET).not.toBe(STOCK_TEAM_TARGET)
+  })
+
+  it('the narrow target reaches the applier with scope=pipeline and the answer names that scope', async () => {
+    const calls: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN, workers: [] },
+      deps: {
+        applyAgentToggle: () => { throw new Error('the single-agent applier must not be reached for the pipeline target') },
+        applyStockTeamToggle: (args: any) => {
+          calls.push(args)
+          return {
+            workers: [
+              { id: 'sma-planner', roleFile: '.claude/agents/sma-planner.md', enabled: true, stockDigest: 'x' },
+              // включён раньше и конвейерным не является — в счёт узкого действия не идёт
+              { id: 'sma-verifier', roleFile: '.claude/agents/sma-verifier.md', enabled: true, stockDigest: 'y' },
+            ],
+          }
+        },
+      },
+    })
+    const res = await call(front, { method: 'POST', url: '/api/agent/toggle', body: { id: STOCK_PIPELINE_TARGET, enabled: true } })
+    expect(res.statusCode).toBe(200)
+    expect(calls[0]).toMatchObject({ enabled: true, scope: 'pipeline' })
+    // число в ответе — про тот набор, что назван на кнопке, а не про всех, у кого есть отметка
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true, stockTeam: { enabled: true, scope: 'pipeline', agents: 1 } })
+  })
+
+  it('the whole-team target still asks for the whole team — the old act did not change meaning', async () => {
+    const calls: any[] = []
+    const front = createFrontServer({
+      config: { token: TOKEN, workers: [] },
+      deps: {
+        applyAgentToggle: () => { throw new Error('the single-agent applier must not be reached for the team target') },
+        applyStockTeamToggle: (args: any) => {
+          calls.push(args)
+          return {
+            workers: [
+              { id: 'sma-planner', roleFile: '.claude/agents/sma-planner.md', enabled: true, stockDigest: 'x' },
+              { id: 'sma-verifier', roleFile: '.claude/agents/sma-verifier.md', enabled: true, stockDigest: 'y' },
+            ],
+          }
+        },
+      },
+    })
+    const res = await call(front, { method: 'POST', url: '/api/agent/toggle', body: { id: STOCK_TEAM_TARGET, enabled: true } })
+    expect(calls[0]).toMatchObject({ enabled: true, scope: 'all' })
+    expect(JSON.parse(res.body)).toMatchObject({ stockTeam: { scope: 'all', agents: 2 } })
   })
 
   it('the refusal maps the same way it always did: nothing installed → 404, not a silent success', async () => {
