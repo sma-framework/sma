@@ -82,7 +82,7 @@ try {
 
 # TOUCH THE HANDLE, OR THE EXIT CODE IS LOST. Reading .Handle once caches it in this process;
 # without that, .ExitCode on the object Start-Process handed back comes out EMPTY after the
-# child is gone (measured on the first live run of this launcher: «already exited, code »).
+# child is gone (measured on the first live run of this launcher: "already exited, code ").
 # An exit code that only shows up sometimes is worse than none - it teaches a reader to skim.
 try { $null = $proc.Handle } catch { }
 
@@ -96,15 +96,16 @@ Write-Output ("raw boot output: {0} (stderr: {1})" -f $outFile, $errFile)
 # ALWAYS WRAP THE RESULT IN @() AT THE CALL SITE. PowerShell unrolls a one-element array on
 # its way out of a function, so a boot whose first line was the only line came back as a
 # STRING - and indexing a string yields CHARACTERS. The first live run of this launcher echoed
-# «boot: 2», the first character of «2026-09-02T22:41:50 the window already answers...», while
+# "boot: 2", the first character of "2026-09-02T22:41:50 the window already answers...", while
 # the capture file held the whole sentence. A log that quotes one character of the evidence is
 # the same silence this launcher exists to end.
 function Read-Lines([string]$path) {
   try {
     if (-not (Test-Path $path)) { return @() }
     # -Encoding UTF8: the wrapper prints UTF-8 and its stream was redirected byte-for-byte, so
-    # reading it as the ANSI code page turned every em dash into «a-tilde-euro-mdash» on its way
-    # back into the lift log. The mangling happened HERE, on the read, not in the capture file.
+    # reading it as the ANSI code page turned every em dash into three mojibake characters on
+    # its way back into the lift log. The mangling happened HERE, on the read, not in the file
+    # that captured it - the capture held the sentence intact all along.
     $c = Get-Content -Path $path -Encoding UTF8 -ErrorAction Stop
     if ($null -eq $c) { return @() }
     return @($c)
