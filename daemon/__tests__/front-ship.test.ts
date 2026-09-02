@@ -339,20 +339,25 @@ describe('the release doors — A WORKER HAS NO PATH TO THIS DOOR', () => {
 
   it('the publication is not reachable through the verb runner of a task', () => {
     const main = readFileSync(fileURLToPath(new URL('../src/main.mjs', import.meta.url)), 'utf8')
-    // `verbRunner` is the MERGE runner, and merging is local. A door that a task's runner
-    // could reach would make «работник не получает выката» a comment instead of a shape.
-    const verbRunnerLine = main.split('\n').find((l) => l.includes('verbRunner: (m) =>')) ?? ''
-    expect(verbRunnerLine, 'the door closure that calls the merge ritual was not found at all').not.toBe('')
-    expect(verbRunnerLine).toContain('runMerge')
-    expect(verbRunnerLine).not.toContain('publish')
-    // A THIRD CLAIM, and the one whose absence let a hole sit here in plain sight: the line
+    // `verbRunner` is the LANDING runner — merge plus the stamp of the tip's numbers — and
+    // every step of it is local. A door that a task's runner could reach would make «работник
+    // не получает выката» a comment instead of a shape.
+    //
+    // A BLOCK, NOT A LINE, since the landing gained its second half: the closure now awaits
+    // the ritual and stamps afterwards, so the claim is read over the whole closure. The lock
+    // did not weaken — the forbidden word is looked for across MORE text than before.
+    const lines = main.split('\n')
+    const at = lines.findIndex((l) => /verbRunner:\s*async/.test(l))
+    expect(at, 'the door closure that calls the merge ritual was not found at all').toBeGreaterThan(-1)
+    const closure = lines.slice(at, at + 40).join('\n')
+    expect(closure).toContain('runMerge')
+    expect(closure).not.toContain('publish')
+    // A THIRD CLAIM, and the one whose absence let a hole sit here in plain sight: the closure
     // must hand the ritual a runner that PRODUCTION has. It used to pass an injection slot
     // straight through, so on a daemon built the way production builds it the gate ran no
     // tests at all — while this very case stayed green, because a line can name a merge and
     // still hand it nothing to run.
-    expect(verbRunnerLine, 'the merge ritual is handed a test runner that production wires').toContain(
-      'mergeTestRunner',
-    )
+    expect(closure, 'the merge ritual is handed a test runner that production wires').toContain('mergeTestRunner')
   })
 
   it('the receipt formats are exported as WORDS, so a reader greps the format not an example', () => {

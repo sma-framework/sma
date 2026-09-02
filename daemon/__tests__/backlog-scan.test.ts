@@ -11,7 +11,15 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { parseBacklogContent, scanBacklog, toTask } from '../src/intake/backlog-scan.mjs'
+import {
+  headlineOf,
+  parseBacklogContent,
+  promiseOf,
+  queuePriority,
+  scanBacklog,
+  toTask,
+} from '../src/intake/backlog-scan.mjs'
+import { CAP_TEXT, CAP_TITLE, createMemoryQueue, validateTask } from '../src/queue/adapter.mjs'
 import { reportTaskEvent, ALLOWED_REPORT_KEYS } from '../src/report.mjs'
 
 // 4-5 real-shaped BACKLOG lines: an open+estimated one, a research-flavoured one, a
@@ -147,6 +155,207 @@ describe('scanBacklog — git fetch + age label + the DoR notReady split', () =>
     const deps = { repoDir: '/repo', execGit, clock: () => 1700003600000, fsImpl: { readFileSync: () => BACKLOG_FIXTURE } }
     const res = await scanBacklog(deps)
     expect(res.items.map((t: any) => t.id)).toEqual(['BL-300', 'BL-301'])
+  })
+})
+
+// ═══════════════ THE TRIAGE THE LINE ITSELF CARRIES ═══════════════
+//
+// Все фикстуры ниже — ВЫДУМАННЫЕ номера в формате реестра, а не строки чьего-то реестра:
+// проверяется формат строки, а не чужой список задач.
+
+/** Четыре строки одного веса и разной срочности — материал для порядка выдачи. */
+const TRIAGE_FIXTURE = [
+  '## Backlog',
+  '- [ ] **BL-030** · Мелкая обычная — сделать её тоже. `size:S` `added:2026-09-02` `sp:1`',
+  '- [ ] **BL-031** · Крупная критическая — без неё стоит всё. `size:L` `added:2026-09-02` `sp:2` `priority:critical`',
+  '- [ ] **BL-032** · Крупная спешная — горит, но не всё. `size:L` `added:2026-09-02` `sp:2` `priority:urgent`',
+  '- [ ] **BL-033** · Крупная важная — важно и не горит. `size:L` `added:2026-09-02` `sp:2` `priority:high`',
+].join('\n')
+
+/**
+ * Строка в форме карточки реестра 02.09: НАЗВАНИЕ ЗАГЛАВНЫМИ, скобка с обстоятельствами,
+ * «ЗАМЕРЕНО: …», обещание по пунктам «(а)(б)(в)». Абзацем — как их и пишут.
+ */
+const LONG_HEAD = 'ДОСКА ПОКАЗЫВАЕТ НЕДЕЛЬНОЕ ОКНО НА СУТКИ УСТАРЕВШИМ: ДЕМОН ЧИТАЕТ ТОЛЬКО ТО ОКНО, ЧТО НАЗВАНО В СОБЫТИИ'
+const LONG_LINE =
+  `- [ ] **BL-040** · ${LONG_HEAD} (вопрос владельца 02.09: «окно недели 7%, почему 67?»). ` +
+  'ЗАМЕРЕНО 02.09: строка состояния терминала говорит 7%, собственное чтение того же счёта несёт 0.67 от вчерашнего ' +
+  'дня, и доска трижды повторила «67%»; поле сводных окон не читается вовсе, недельное окно обновляется только когда ' +
+  'поставщик называет его в событии, то есть раз в сутки и реже. ' +
+  'ЧТО ПОСТРОИТЬ: (а) каждое событие о потолке обновляет ОБА окна из сводных; ' +
+  '(б) свежее чтение того же счёта главнее старого, откуда бы оно ни пришло; ' +
+  '(в) на доске рядом с процентом стоит возраст чтения словами. ' +
+  '`size:M` `added:2026-09-02` `sp:5` `priority:urgent`'
+
+/** Обещание, которое одной строкой в потолок не влезает: три пункта примерно по 900 знаков. */
+const BULK = 'слова обещания, которых много и все до одного нужны; '.repeat(18)
+const HUGE_PROMISE_LINE =
+  '- [ ] **BL-041** · КАРТОЧКА С ОБЕЩАНИЕМ ДЛИННЕЕ ПОТОЛКА (вскрыто живым прогоном). ' +
+  `ЧТО ПОСТРОИТЬ: (а) ${BULK}(б) ${BULK}(в) ${BULK}` +
+  '`size:S` `added:2026-09-02` `sp:3`'
+
+const scanOf = (backlog: string, extra: Record<string, unknown> = {}) =>
+  scanBacklog({
+    repoDir: '/repo',
+    execGit: (args: string[]) => (args[0] === 'log' ? '1700000000\n' : ''),
+    clock: () => 1700003600000,
+    fsImpl: { readFileSync: () => backlog },
+    ...extra,
+  } as any)
+
+describe('приоритет строки: пометка срочности старше размера, и путь один на скан и на дверь', () => {
+  it('parseBacklogContent читает priority: и deps: — теги, которых он раньше не видел вовсе', () => {
+    const items = parseBacklogContent(
+      '## Backlog\n- [ ] **BL-050** · Работа — делать. `size:M` `sp:3` `priority:critical` `deps:BL-051,BL-052`',
+    )
+    expect(items[0].priority).toBe('critical')
+    expect(items[0].deps).toEqual(['BL-051', 'BL-052'])
+  })
+
+  it('critical > urgent > high > обычный, а размер — только второй ключ внутри полосы', () => {
+    // крупная критическая обязана обгонять мелкую без пометки: до починки размер решал всё
+    expect(queuePriority({ size: 'L', priority: 'critical' })).toBeGreaterThan(queuePriority({ size: 'S', priority: null }))
+    expect(queuePriority({ size: 'L', priority: 'critical' })).toBeGreaterThan(queuePriority({ size: 'S', priority: 'urgent' }))
+    expect(queuePriority({ size: 'L', priority: 'urgent' })).toBeGreaterThan(queuePriority({ size: 'S', priority: 'high' }))
+    expect(queuePriority({ size: 'L', priority: 'high' })).toBeGreaterThan(queuePriority({ size: 'S', priority: null }))
+    // …и внутри одной полосы размер по-прежнему решает
+    expect(queuePriority({ size: 'S', priority: 'high' })).toBeGreaterThan(queuePriority({ size: 'M', priority: 'high' }))
+    // строка без пометки стоит ровно там же, где стояла всегда
+    expect(queuePriority({ size: 'S', priority: null })).toBe(2)
+    expect(queuePriority({ size: 'M', priority: null })).toBe(1)
+    expect(queuePriority({ size: 'L', priority: null })).toBe(0)
+    // незнакомое слово — обычная работа, а не отказ: словарь реестра ведёт человек
+    expect(queuePriority({ size: 'S', priority: 'потом' })).toBe(2)
+  })
+
+  it('ОЧЕРЕДЬ ВЫДАЁТ ПО СРОЧНОСТИ: claimNext отдаёт critical, urgent, high и только потом мелкую', async () => {
+    const { items } = await scanOf(TRIAGE_FIXTURE)
+    const q = createMemoryQueue({ clock: () => 1700003600000, expireMs: 60_000 })
+    // мелкая обычная ставится ПЕРВОЙ — если бы решало время прихода, она бы и уехала первой
+    for (const task of items) await q.enqueue(task)
+
+    const order: string[] = []
+    for (let i = 0; i < items.length; i += 1) order.push((await q.claimNext(`w${i}`, {})).id)
+    expect(order).toEqual(['BL-031', 'BL-032', 'BL-033', 'BL-030'])
+  })
+})
+
+describe('deps: карточка не минтится, пока названная ею карточка открыта', () => {
+  const WAITING = [
+    '## Backlog',
+    '- [ ] **BL-060** · Вторая половина шва — делать после первой. `size:S` `sp:2` `deps:BL-061`',
+    '- [ ] **BL-061** · Первая половина шва — сначала она. `size:S` `sp:2`',
+  ].join('\n')
+
+  it('зависимость открыта — строка не в очереди, и на неё есть причина словами', async () => {
+    const res = await scanOf(WAITING)
+    expect(res.items.map((t: any) => t.id)).toEqual(['BL-061'])
+    const waiting = res.notReady.find((n: any) => n.id === 'BL-060')
+    expect(waiting.reason).toContain('BL-061')
+    expect(waiting.reason).toMatch(/ждёт зависимости/)
+  })
+
+  it('зависимость закрыта — строка минтится как обычно', async () => {
+    const res = await scanOf(WAITING.replace('- [ ] **BL-061**', '- [x] **BL-061**'))
+    expect(res.items.map((t: any) => t.id)).toEqual(['BL-060'])
+    expect(res.notReady).toEqual([])
+  })
+
+  it('названная карточка, которой в реестре нет, не держит: придуманное ожидание навсегда — хуже', async () => {
+    const res = await scanOf('## Backlog\n- [ ] **BL-062** · Работа — делать. `size:S` `sp:2` `deps:BL-999`')
+    expect(res.items.map((t: any) => t.id)).toEqual(['BL-062'])
+  })
+})
+
+describe('длинное название не повод для отказа: абзац карточки режется, а не выбрасывается', () => {
+  it('строка реестра в форме 02.09 ДОХОДИТ ДО ОЧЕРЕДИ: ворота её принимают', async () => {
+    const { items, notReady } = await scanOf(`## Backlog\n${LONG_LINE}`)
+    expect(items).toHaveLength(1)
+    expect(notReady).toEqual([])
+    // до починки ровно здесь ворота отвечали «название: N знаков при потолке 200»
+    expect(() => validateTask(items[0])).not.toThrow()
+  })
+
+  it('заголовок — первая фраза карточки, остальное уходит в описание', async () => {
+    const { items } = await scanOf(`## Backlog\n${LONG_LINE}`)
+    const task = items[0] as any
+    expect(task.title).toBe(LONG_HEAD)
+    expect(task.title.length).toBeLessThanOrEqual(CAP_TITLE)
+    // ни одного слова не потеряно: обстоятельства и замер лежат в описании
+    expect(task.description).toContain('ЗАМЕРЕНО 02.09')
+    expect(task.description).toContain('окно недели 7%')
+    // …и срочность, объявленная строкой, доехала вместе с ней
+    expect(task.priority).toBe(queuePriority({ size: 'M', priority: 'urgent' }))
+  })
+
+  it('приписка в голове строки — не заголовок: он берётся после неё, а сама она едет в описание', () => {
+    const cut = headlineOf(
+      `(ЗАКРЫТА ЧАСТЬ 02.09: половина работы уже слита, ${'подробности приёмки; '.repeat(12)}) · ` +
+        'НАСТОЯЩЕЕ НАЗВАНИЕ КАРТОЧКИ ЗАГЛАВНЫМИ (обстоятельство). ЗАМЕРЕНО: дальше подробности.',
+    )
+    expect(cut.title).toBe('НАСТОЯЩЕЕ НАЗВАНИЕ КАРТОЧКИ ЗАГЛАВНЫМИ')
+    expect(cut.tail).toContain('ЗАКРЫТА ЧАСТЬ 02.09')
+  })
+
+  it('первая фраза сама длиннее потолка — режется по слову и говорит об этом многоточием', () => {
+    const cut = headlineOf(`${'длинноеслово '.repeat(40)}конец фразы.`)
+    expect(cut.title.length).toBeLessThanOrEqual(CAP_TITLE)
+    expect(cut.title.endsWith('…')).toBe(true)
+    expect(cut.tail).toContain('конец фразы')
+  })
+
+  it('тире ВНУТРИ приписной скобки не делит строку: заголовком становится название, не обрывок', () => {
+    // Замерено живым прогоном: у карточки с приписной скобкой в голове первое тире попадало
+    // внутрь скобки, и в очередь ехал обрывок «(ЧАСТЬ СЕЛА 02.09: работа флота abc1234».
+    const [item] = parseBacklogContent(
+      '## Backlog\n- [ ] **BL-042** · (ЧАСТЬ СЕЛА 02.09: работа флота abc1234 — слито def5678) · ' +
+        'НАСТОЯЩЕЕ НАЗВАНИЕ КАРТОЧКИ — и пояснение за структурным тире. `size:S` `sp:2`',
+    )
+    expect(item.title).toBe('(ЧАСТЬ СЕЛА 02.09: работа флота abc1234 — слито def5678) · НАСТОЯЩЕЕ НАЗВАНИЕ КАРТОЧКИ')
+    expect(item.description).toBe('и пояснение за структурным тире.')
+    // …а обычная строка делится ровно там же, где делилась всегда
+    const [plain] = parseBacklogContent('## Backlog\n- [ ] **BL-043** · Название — пояснение. `sp:2`')
+    expect(plain.title).toBe('Название')
+    expect(plain.description).toBe('пояснение.')
+  })
+
+  it('короткая строка не трогается вовсе: разбор — лечение длины, а не вторая грамматика', () => {
+    expect(headlineOf('Обычное короткое название. И вторая фраза.')).toEqual({
+      title: 'Обычное короткое название. И вторая фраза.',
+      tail: '',
+    })
+  })
+
+  it('обещание длиннее потолка режется по пунктам автора, а не отбрасывается', async () => {
+    const { items, notReady } = await scanOf(`## Backlog\n${HUGE_PROMISE_LINE}`)
+    expect(notReady).toEqual([])
+    const task = items[0] as any
+    // до починки эта строка отвечала «признаки успеха: N знаков при потолке 2000» и не ехала
+    expect(Array.isArray(task.acceptance)).toBe(true)
+    expect(task.acceptance.length).toBeGreaterThanOrEqual(3)
+    expect(task.acceptance.some((s: string) => s.startsWith('(а)'))).toBe(true)
+    expect(task.acceptance.some((s: string) => s.startsWith('(б)'))).toBe(true)
+    expect(task.acceptance.some((s: string) => s.startsWith('(в)'))).toBe(true)
+    for (const item of task.acceptance) expect(item.length).toBeLessThanOrEqual(CAP_TEXT)
+    expect(() => validateTask(task)).not.toThrow()
+  })
+
+  it('обещание без единого маркера подрезается вслух, а не выбрасывается', () => {
+    const out = promiseOf('сплошной текст без пунктов, '.repeat(120))
+    expect(typeof out).toBe('string')
+    expect((out as string).length).toBeLessThanOrEqual(CAP_TEXT)
+    expect((out as string).endsWith('…')).toBe(true)
+  })
+})
+
+describe('строка скана несёт проект того реестра, из которого её прочитали', () => {
+  it('проект назван — он на строке; не назван — строка о нём молчит, а не выдумывает', async () => {
+    const withProject = await scanOf(TRIAGE_FIXTURE, { project: 'sma-dev' })
+    expect(withProject.items.every((t: any) => t.project === 'sma-dev')).toBe(true)
+    expect(() => validateTask(withProject.items[0])).not.toThrow()
+
+    const without = await scanOf(TRIAGE_FIXTURE)
+    expect(without.items.every((t: any) => t.project === undefined)).toBe(true)
   })
 })
 

@@ -151,6 +151,7 @@ import { createBuildArgs } from './runner/build-args.mjs'
 import { mirrorPersonalLayer } from './runner/personal-layer.mjs'
 import { workerReadiness, poolReadiness } from './runner/readiness.mjs'
 import { runMerge } from '../../scripts/sma/lib/merge-gate.mjs'
+import { createLanding } from '../../scripts/sma/lib/landing.mjs'
 import { runMergeSmokeAsync } from '../../scripts/sma/lib/merge-smoke.mjs'
 
 /**
@@ -1423,7 +1424,44 @@ export function createDaemon(o = {}) {
         // in the runner's own words.
         mergeTestRunner,
         // approve runs the EXISTING serialized merge verb LOCALLY — never a push.
-        verbRunner: (m) => runMerge({ ...m, execGit, runTests: mergeTestRunner }),
+        //
+        // ═══ И ЭТО ТЕПЕРЬ ПОСАДКА, А НЕ ОДНО СЛИЯНИЕ ═══════════════════════════════════
+        //
+        // Кнопка сливала ветку и на этом заканчивалась: числа продукта — значок прогона в
+        // обоих README, измеренная квитанция и числа карты — оставались снятыми на дереве
+        // РАБОТНИКА, а вершина после слияния становилась другим деревом. Сторож чисел краснел
+        // сразу после нажатия, и человек доводил приёмку пятью командами в терминале.
+        //
+        // Обе половины посадки собраны здесь и живут ОДНИМ замыканием на одно нажатие:
+        // прогонятель (гнать полный набор или довериться квитанции, снятой ровно на этом
+        // дереве) и штамп (довести числа до вершины отдельным коммитом явными путями). Общее
+        // замыкание — это память между ними: штампу нужно знать, что решил прогонятель и куда
+        // он положил отчёт, а ритуалу слияния эти поля не касаются вовсе.
+        //
+        // ДЫМОВОЙ ПРОГОНЯТЕЛЬ ОСТАЁТСЯ — запасным. Дерево без полного набора (чужая копия,
+        // одноразовый репозиторий) не должно получить от посадки «здесь красное»: там
+        // отвечает тот же смок, что отвечал всегда.
+        verbRunner: async (m) => {
+          const at = m.cwd ?? repoDir
+          const landing = createLanding({ cwd: at, execGit, fallbackRunner: mergeTestRunner })
+          const merged = await runMerge({ ...m, execGit, runTests: landing.runTests })
+          // Штампуют только СОСТОЯВШЕЕСЯ слияние: отказ не двигал вершины, а «сводить было
+          // нечего» не приносило в дерево ни одной строки, которую стоило бы перемерять.
+          if (!merged || merged.merged !== true || merged.alreadyUpToDate === true) return merged
+          let landed = null
+          try {
+            landed = landing.stamp({ cwd: at })
+          } catch (err) {
+            // FAIL-OPEN, как у всего в этом ряду: незаштампованные числа — это повод сказать
+            // человеку словами, а не превратить состоявшееся слияние в ложное «не принято».
+            landed = { stamped: false, committed: false, reason: String((err && err.message) || err) }
+          }
+          return {
+            ...merged,
+            landing: landed,
+            ...(merged.receipt ? { receipt: { ...merged.receipt, landing: landed } } : {}),
+          }
+        },
         // «Дом системы»: the updater behind POST /api/update/run. A SEPARATE name from
         // `verbRunner` above on purpose — one door's collaborator is not the other's, and a
         // shared generic runner would be a request path that can name a command.
@@ -1521,6 +1559,10 @@ export function createDaemon(o = {}) {
             execGit: (args, opts = {}) => execGit(args, { cwd: opts.cwd ?? backlogRoot() }),
             clock,
             fsImpl: o.fsImpl ?? { readFileSync },
+            // ЧЕЙ ЭТО BACKLOG.md, СКАН ЗНАЕТ — и это единственный момент, когда владелец строки
+            // ещё известен. Без штампа строка рождается бесхозной, и сито проекта на экране
+            // «Сегодня» прячет готовую работу, которая по нему не проходит.
+            project: connectedProjectId() ?? undefined,
           })
         } finally {
           // stamped even when the scan threw: an attempt is an attempt, and only stamping

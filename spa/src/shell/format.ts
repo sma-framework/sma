@@ -218,7 +218,12 @@ const STATUS_WORDS: Record<TaskStatus, string> = {
   claimed: 'взята в работу',
   running: 'в работе',
   awaiting_approval: 'ждёт решения',
-  approving: 'принимается',
+  // ЗА ЭТИМ СЛОВОМ ЖИВЁТ ПОСАДКА, А НЕ МГНОВЕНИЕ. Дверь приёмки сводит ветку, при
+  // необходимости прогоняет ПОЛНЫЙ набор по сведённому дереву и штампует числа — это минуты,
+  // и всё это время строка стояла со словом «принимается», которое человек читал как
+  // «принято». Слово названо действием в настоящем времени, а сколько оно длится — говорит
+  // `landingWords` рядом.
+  approving: 'сажаю, идёт прогон',
   approved: 'принято',
   returned: 'возвращена',
   completed: 'готово',
@@ -357,4 +362,67 @@ export function approvalRefusal(out: { ok?: boolean; reason?: string } | null | 
   if (out && out.ok) return null
   const said = out && typeof out.reason === 'string' ? out.reason.trim() : ''
   return said || 'Работа не принята, а причина не названа — посмотрите журнал демона.'
+}
+
+/**
+ * СКОЛЬКО ДЛИТСЯ ПОСАДКА, СКАЗАННОЕ ОДИН РАЗ И В ОДНОМ МЕСТЕ.
+ *
+ * Полный набор этого дерева идёт минутами. Число здесь — не обещание секундомера, а порядок
+ * величины, ради которого человек не идёт перезагружать окно: «нажалось и висит» и «идёт
+ * прогон, это минуты» — разные состояния, и второе обязано быть сказано.
+ */
+export const LANDING_RUN_ESTIMATE_MIN = 10
+
+/**
+ * landingWords(status) — что стоит под строкой, пока идёт посадка, и `null` во всякое другое
+ * время. Отдельно от `statusWord`, потому что значок статуса — это одно слово, а человеку
+ * нужна ещё и оценка времени; склеенные в одну строку, они не поместились бы ни в значок, ни
+ * в строку ленты.
+ */
+export function landingWords(status: TaskStatus | null | undefined): string | null {
+  if (status !== 'approving') return null
+  return `сажаю: свожу с вершиной и гоняю набор — это до ~${LANDING_RUN_ESTIMATE_MIN} мин, карточка обновится сама`
+}
+
+/**
+ * approvalOutcome(out) — ЧЕМ КОНЧИЛАСЬ ПОСАДКА, словами и с тоном.
+ *
+ * Успех до сих пор не говорил ничего: принятая работа уходила из «Ждут вашего решения», и
+ * это считалось ответом экрана. С посадкой этого мало — за одним нажатием теперь стоит второе
+ * дело: сошлись ли числа вершины и гонялся ли ради этого набор. Человеку, который перестал
+ * делать это руками, надо СКАЗАТЬ, что оно сделано, — иначе он пойдёт проверять в терминал,
+ * то есть ровно туда, откуда его уводили.
+ *
+ * Своих фраз об отказе помощник не сочиняет: слова отказа приезжают от двери (`approvalRefusal`).
+ */
+export function approvalOutcome(
+  out:
+    | {
+        ok?: boolean
+        reason?: string
+        landing?: { stamped?: boolean; committed?: boolean; ran?: boolean; tests?: number | null; files?: number | null; badgeViolations?: number | null; numbersViolations?: number | null; reason?: string } | null
+      }
+    | null
+    | undefined,
+): { ok: boolean; text: string } {
+  const refused = approvalRefusal(out)
+  if (refused) return { ok: false, text: refused }
+  const landing = (out && out.landing) || null
+  if (!landing) return { ok: true, text: 'Принято и слито.' }
+  if (landing.stamped !== true) {
+    return {
+      ok: false,
+      text: `Слито, но числа вершины не проштампованы: ${landing.reason ?? 'причина не названа'}.`,
+    }
+  }
+  const left = (landing.badgeViolations ?? 0) + (landing.numbersViolations ?? 0)
+  const counted =
+    typeof landing.tests === 'number' && typeof landing.files === 'number'
+      ? ` — ${landing.tests} тестов / ${landing.files} файлов`
+      : ''
+  const how = landing.ran ? ', набор прогнан здесь' : ', набор не гонялся заново — квитанция описывала это же дерево'
+  if (left > 0) {
+    return { ok: false, text: `Слито и заштамповано${counted}, но сторожа насчитали ${left} замечани(й) — посмотрите вершину.` }
+  }
+  return { ok: true, text: `Принято, main зелёный${counted}${how}.` }
 }

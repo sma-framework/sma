@@ -70,25 +70,37 @@ describe('the merge verb proves itself, and its self-test is actually run', () =
 
 describe('every live call site of the ritual is answered — each by its OWN claim', () => {
   /**
-   * SITE 1 — the daemon's door closure. There is NO await here, and there must not be: the
-   * line RETURNS the ritual's call, and the awaiting belongs to whoever called the closure.
-   * The claim is therefore a PAIR — the closure hands the result back rather than swallowing
-   * it, AND the door that invokes the closure awaits it.
+   * SITE 1 — the daemon's door closure, and it is a BLOCK rather than a line now: the door
+   * does the whole LANDING, of which the ritual is the first half. It used to be a one-line
+   * arrow returning the ritual's call; the awaiting has moved INSIDE the closure because the
+   * second half — stamping the tip's numbers — cannot start until the merge commit exists.
+   *
+   * The claim is therefore a set: the ritual is called and AWAITED, its answer is handed back
+   * rather than dropped, the runner the composition root resolves is still reachable from the
+   * call, and the door that invokes the closure awaits it.
    */
-  it('site 1 — the door closure RETURNS the ritual, and the door that calls it awaits', () => {
+  it('site 1 — the door closure awaits the ritual, hands its answer back, and the door awaits the closure', () => {
     // FOUR different collaborators in that file are called `verbRunner`, and only ONE of them
     // is the merge ritual — matching on the name alone lands on a runner of command-line verbs
-    // belonging to another door entirely. The line is identified by what it CALLS.
-    const line = DAEMON_MAIN.split('\n').find((l) => l.includes('verbRunner:') && l.includes('runMerge')) ?? ''
-    expect(line, 'the door closure that calls the merge ritual was not found at all').toContain('runMerge')
-    // it RETURNS the call — an arrow with a body that hands the value back, not a statement
-    // that starts it and drops the answer on the floor.
-    expect(line).toMatch(/=>\s*runMerge\(/)
+    // belonging to another door entirely. The block is identified by what it CALLS.
+    const lines = DAEMON_MAIN.split('\n')
+    const at = lines.findIndex((l) => /verbRunner:\s*async/.test(l))
+    expect(at, 'the door closure that calls the merge ritual was not found at all').toBeGreaterThan(-1)
+    const closure = lines.slice(at, at + 40).join('\n')
+    expect(closure, 'the block found is not the one that calls the ritual').toMatch(/\brunMerge\(\{/)
+    // it WAITS for the ritual — a promise in hand makes `merged.merged !== true` true forever,
+    // and every acceptance would silently skip the stamp it exists to make.
+    expect(closure, 'the ritual is called without waiting for its answer').toMatch(/await\s+runMerge\(/)
+    // …and it hands the answer back rather than dropping it on the floor.
+    expect(closure, 'the closure swallows the ritual answer instead of returning it').toMatch(/return\s+merged/)
+    // …and the second half is there at all: a door that merges without stamping leaves the
+    // tip red on the numbers guard, which is the whole defect this closure was widened for.
+    expect(closure, 'the door merges and never stamps — the landing is half-wired').toMatch(/landing\.stamp\(/)
     // …and it hands the ritual a runner PRODUCTION has. This claim is an ADDITION, not a
     // replacement: the line used to pass an injection slot through, and on a daemon built the
     // way production builds it that slot is empty — the gate ran nothing and said so in the
     // receipt, while every reading test stayed green.
-    expect(line, 'the ritual is handed a test runner the composition root resolves').toContain('mergeTestRunner')
+    expect(closure, 'the ritual is handed a test runner the composition root resolves').toContain('mergeTestRunner')
     // …and the caller in the approval door awaits the closure. This is where the answer is
     // read; adding an await to the closure above would be editing the wrong line entirely.
     const callerLine = FRONT_SERVER.split('\n').find((l) => l.includes('deps.verbRunner(')) ?? ''
