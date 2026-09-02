@@ -3035,7 +3035,7 @@ function deriveWaves(rows, holds, { machineId } = {}) {
  *   project?: string,                     // optional filter — narrows tasks, never the lists
  *   hubReachable?: boolean,               // hub-probe seam; absent = true
  *   aggregator?: (payload:object)=>object, // hub-only federation merge; absent = local only
- *   inFlight?: {size:()=>number},         // ДОМ ИДУЩИХ ПОПЫТОК — сколько мест занято прямо сейчас
+ *   inFlight?: {size:()=>number, held?:()=>Array<{taskId:string|null,workerId:string|null}>}, // ДОМ ИДУЩИХ ПОПЫТОК — сколько мест занято прямо сейчас и кем
  *   configOnDisk?: ()=>object|null,       // ФАЙЛ НАСТРОЕК С ДИСКА — против копии, по которой демон живёт
  * }} deps
  * @returns {Promise<object>}
@@ -3439,7 +3439,7 @@ export async function deriveState(deps = {}) {
   // (`deps.inFlight.size()`), тем же счётом, по которому тик отказывает в месте; общее — из
   // `concurrencyCap`, тем же чтением настройки, по которому он этот отказ выносит. Пересчитать
   // занятость по карточкам работников было бы вторым мнением: карточка говорит, что у
-  // работника в руках строка очереди, а место занимает ПРОХОД ТИКА — и как раз тогда, когда
+  // работника в руках строка очереди, а место занимает ЖИВОЙ РЕБЁНОК — и как раз тогда, когда
   // потолок начнёт себя вести не так, как думает человек, эти два счёта и разойдутся.
   //
   // ЗАНЯТО — `null`, А НЕ НОЛЬ, когда дома не передали. Ноль читается как «мест полно, всё
@@ -3448,6 +3448,25 @@ export async function deriveState(deps = {}) {
   const seatsTotal = concurrencyCap(config)
   const seatsBusy =
     deps.inFlight && typeof deps.inFlight.size === 'function' ? deps.inFlight.size() : null
+  // ── И РАСХОЖДЕНИЕ СО СПИСКОМ РАБОТНИКОВ НАЗЫВАЕТСЯ, А НЕ ОСТАВЛЯЕТСЯ ЧЕЛОВЕКУ ──
+  //
+  // Доска показывала «мест занято 4» рядом со списком, в котором работали двое, и разницу
+  // объяснить было нечем: человек читает такое как ошибку экрана, идёт чинить экран и не идёт
+  // туда, где авария. Она была не в экране — за двумя лишними местами шли ЖИВЫЕ сессии, не
+  // привязанные ни к одной карточке: строку сняли между захватом и запуском, процесс стартовал
+  // следом и час работал невидимым. Правило «счётчик и список выведены из одного места» уже
+  // записано на карточках работников; здесь оно распространяется на места.
+  //
+  // ЧТО СЧИТАЕТСЯ. Место, которое НАЗВАЛО задачу (жетон, взятый до захвата, ещё ничего не
+  // называет и потому не считается), но чьей задачи нет ни в одних руках на этой доске. Одна
+  // выдача состояния может застать секунду между «работник выбран» и «работник записан в
+  // строку» — тогда число честно скажет «одна попытка вне списка» и погаснет следующим опросом.
+  // Это не ложная тревога: в ту секунду попытка действительно не видна ни на одной карточке, а
+  // ровно из таких секунд и вырос час невидимой работы.
+  const seatsHeld = deps.inFlight && typeof deps.inFlight.held === 'function' ? deps.inFlight.held() : null
+  const tasksInHands = new Set(workers.map((w) => w.taskId).filter((id) => typeof id === 'string' && id !== ''))
+  const seatsUnlisted =
+    seatsHeld === null ? null : seatsHeld.filter((s) => s.taskId && !tasksInHands.has(s.taskId)).length
   // ── «РАБОТНИКОВ N» — ЭТО ПУЛ ОЧЕРЕДИ, А НЕ ДЛИНА СПИСКА В КОНФИГЕ ──
   //
   // Доска говорила «работников 44», когда задачи разбирали шестеро: `workersCfg.length` считал
@@ -3496,6 +3515,7 @@ export async function deriveState(deps = {}) {
     windowsOpen,
     seatsBusy,
     seatsTotal,
+    seatsUnlisted,
   }
 
   // ── the settings read models — the SAME route, a fuller payload ──

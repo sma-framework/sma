@@ -149,6 +149,10 @@ import { namedPaths, missingPaths } from './tree-probe.mjs'
 import { collectDiagnostics } from './diagnostics.mjs'
 import { projectEntry, codeTreeOf, planningHomeOf, pipelineMaxTurns } from '../config.mjs'
 import { taskTurnCap, burnedTurnCapsOf, TURN_SIZE_LABELS } from '../policy/turn-budget.mjs'
+// ОДНО ВЫРАЖЕНИЕ О СМЕРТИ РЕБЁНКА — общее с тиком. Дверь отмены отвечает человеку тем же
+// наблюдением, которым дом идущих попыток отдаёт место: два написания одного факта уже
+// разошлись однажды, и стоило это вставшего конвейера при свободном работнике.
+import { confirmProcessGone } from '../queue/in-flight.mjs'
 // NOTE: только ПРЕДИКАТ формы идентификатора сессии импортируется из сборщика аргументов —
 // чистая функция без состояния и без выхода наружу. Спавн этой дверью не заводится: она
 // спрашивает то же правило, каким пользуется запуск, чтобы не завести второго мнения о том,
@@ -4037,16 +4041,23 @@ const defaultNap = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * still marked stopped is an attempt still unwinding, and a handle that is gone is an attempt
  * that finished. Nothing new is registered to learn this — a second bookkeeping of the same
  * fact is a second truth, and the two would drift.
+ *
+ * И ЭТО ЖЕ НАБЛЮДЕНИЕ ОТДАЁТ МЕСТО. Дверь отвечала «попытка закрылась», а дом идущих попыток
+ * продолжал считать её идущей: наблюдение было одно, но написано в двух файлах, и здешнее
+ * написание про места не знало. Замерено: два таких ответа — и тик три минуты подряд отказывал
+ * очереди по потолку при двух живых попытках из четырёх мест. Теперь ответ человеку и
+ * освобождение места — ОДНО выражение (`confirmProcessGone`), поэтому «закрылась» на экране и
+ * «место свободно» в тике не могут разойтись.
  */
 async function waitForAttemptClose({ registry, taskId, deps }) {
   if (!registry || typeof registry.wasStopped !== 'function') return false
   const nap = typeof deps.sleep === 'function' ? deps.sleep : defaultNap
   const looks = Math.max(1, Math.ceil(CANCEL_ATTEMPT_CLOSE_WAIT_MS / CANCEL_ATTEMPT_POLL_MS))
   for (let i = 0; i < looks; i += 1) {
-    if (registry.wasStopped(taskId) !== true) return true
+    if (confirmProcessGone(deps, taskId)) return true
     await nap(CANCEL_ATTEMPT_POLL_MS)
   }
-  return registry.wasStopped(taskId) !== true
+  return confirmProcessGone(deps, taskId)
 }
 
 /**
@@ -4066,7 +4077,17 @@ async function waitForAttemptClose({ registry, taskId, deps }) {
  *   attemptClosed — true when the attempt finished unwinding inside the cap, false when the
  *                   cap ran out (the row is still closed — the terminal is not negotiable),
  *                   and null when there was nothing to kill, because «did not close» and
- *                   «there was nothing to close» are not the same statement.
+ *                   «there was nothing to close» are not the same statement. И это же «true»
+ *                   ОТДАЁТ МЕСТО в доме идущих попыток — одним выражением, а не согласованной
+ *                   парой: пока их было двое, дверь говорила «закрылась», а тик той же секундой
+ *                   отказывал очереди по потолку.
+ *
+ * И «УБИТЬ БЫЛО НЕЧЕГО» БОЛЬШЕ НЕ ЗНАЧИТ «НИЧЕГО НЕ БУДЕТ». Между решением очереди выдать
+ * задачу и первым кадром работника лежит провизия копии; слово, сказанное внутри этого окна,
+ * закрывало строку и не убивало никого, а сессия стартовала следом и жила невидимой — час,
+ * замерено. Реестр ручек теперь помнит такую остановку короткий названный срок и исполняет её
+ * при рождении хода (см. `createTurnRegistry`). Ответ при этом не меняется: `killed:false`
+ * по-прежнему честно говорит, что в ЭТУ секунду живого ребёнка не было.
  *   cancelled     — the queue closed the row. False is an honest «there was nothing to stop»:
  *                   the queue cannot tell an unknown task from one that is already finished,
  *                   and inventing that distinction here would be a distinction the storage
