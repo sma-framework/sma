@@ -824,8 +824,15 @@ export function renderCoverage(coverage) {
  * Matched case-insensitively and by whole name, so `token` and `access_token` are caught
  * while `tokenizer` or `secretary` are not — over-redaction costs the reader the very
  * detail the receipt exists to give.
+ *
+ * ONE LIST, TWO READERS. The anchored form judges a parameter that has already been parsed
+ * out of an address (redactUrl); the scanning form hunts the same names inside ordinary prose
+ * (redactText). Two hand-kept lists would drift, and the day they drifted one of the two ways
+ * out of this engine would be standing open while the other looked closed.
  */
-const SECRET_PARAM_RE = /^(?:token|access[_-]?token|id[_-]?token|refresh[_-]?token|auth|authorization|api[_-]?key|apikey|key|secret|client[_-]?secret|password|passwd|pwd|sig|signature|session)$/i
+const SECRET_PARAM_SOURCE =
+  'token|access[_-]?token|id[_-]?token|refresh[_-]?token|auth|authorization|api[_-]?key|apikey|key|secret|client[_-]?secret|password|passwd|pwd|sig|signature|session'
+const SECRET_PARAM_RE = new RegExp(`^(?:${SECRET_PARAM_SOURCE})$`, 'i')
 
 /** What replaces a credential — a word, so the reader sees a removal rather than a gap. */
 export const REDACTED = 'REDACTED'
@@ -868,6 +875,37 @@ export function redactUrl(u) {
     // not an address this runtime can parse — hand it back untouched rather than lose it
     return u
   }
+}
+
+/**
+ * The same credential names, hunted inside PROSE rather than inside a parsed address.
+ *
+ * A separator (`?`, `&`, `;` or `#`) immediately before the name is what makes this a whole-name
+ * match without a lookbehind: `?tokenizer=fast` never matches, because the name has to be followed
+ * by `=`. The value runs to the first character that cannot be inside one — whitespace, a further
+ * separator, a quote, a bracket. A DOT IS DELIBERATELY NOT A TERMINATOR: a JWT is three dot-joined
+ * parts, and stopping at the first dot would publish two thirds of it.
+ */
+const SECRET_IN_TEXT_RE = new RegExp(`([?&;#])(${SECRET_PARAM_SOURCE})=([^\\s&#"'\`<>\\\\)\\]}]*)`, 'gi')
+
+/**
+ * redactText(text) — every credential-carrying address inside a piece of TEXT, destroyed.
+ *
+ * WHY A SECOND REDACTOR HAD TO EXIST. redactUrl is handed an address, and it is handed one at
+ * every point this engine records a URL of its own. But a driver failure is not an address — it
+ * is a SENTENCE with an address inside it («net::ERR_CONNECTION_REFUSED at http://…/?token=…»),
+ * because a browser driver quotes the full target it was working against as a matter of course.
+ * That sentence then travels everywhere the engine speaks: into a finding's prose, onto stdout,
+ * and from there into whatever records the process's output. Measured on a live run: the receipt
+ * was masked exactly as designed while the very same token stood bare one line below it, inside
+ * the failure that produced the receipt.
+ *
+ * NEVER THROWS, and touches nothing but a credential's value. Unlike redactUrl it does not care
+ * whether the string parses as an address — prose is the case it exists for.
+ */
+export function redactText(text) {
+  if (typeof text !== 'string' || text === '') return text
+  return text.replace(SECRET_IN_TEXT_RE, (_match, separator, name) => `${separator}${name}=${REDACTED}`)
 }
 
 /** Первые восемь байт всякого PNG. Файл, который на них кончается, — подпись без картинки. */
