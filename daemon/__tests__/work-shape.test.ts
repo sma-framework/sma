@@ -78,6 +78,46 @@ describe('ui-drive', () => {
 })
 `
 
+/**
+ * ТОТ ЖЕ ПРОВОД-ТЕСТ ИЗ ДРУГОЙ ВЕТКИ ДЕРЕВА: тест лежит в `daemon/__tests__`, а запускает скрипт
+ * из `scripts/sma`. От каталога теста и его предков такую цель не найти — путь собран из кусков
+ * `join(...)`, и собрать его обратно позволено только запуску. Каталог и имя цели здесь
+ * параметры: ими и проверяется, что признак запуска РЕШАЕТ вердикт, а не украшает его.
+ */
+const crossTreeSpawnSrc = (dir: string[], file: string) => `
+import { spawnSync } from 'node:child_process'
+import { join, resolve } from 'node:path'
+import { describe, it, expect } from 'vitest'
+
+const ROOT = resolve(__dirname, '..', '..')
+const TARGET = join(ROOT, ${dir.map((d) => `'${d}'`).join(', ')}, '${file}')
+const FAILING = join(__dirname, 'fixtures', 'failing-ui-driver.mjs')
+
+describe('вывод', () => {
+  it('не показывает учётные данные', () => {
+    const res = spawnSync(process.execPath, [TARGET, '--driver', FAILING], { encoding: 'utf8' })
+    expect(res.stdout).not.toContain('s3cret')
+  })
+})
+`
+
+/** Тот же файл о том же скрипте, но его никто не ЗАПУСКАЕТ — только читают с диска. */
+const CROSS_TREE_READ_SRC = `
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { describe, it, expect } from 'vitest'
+
+const ROOT = resolve(__dirname, '..', '..')
+const TARGET = join(ROOT, 'scripts', 'sma', 'ui-drive.mjs')
+const FAILING = join(__dirname, 'fixtures', 'failing-ui-driver.mjs')
+
+describe('вывод', () => {
+  it('не показывает учётные данные', () => {
+    expect(readFileSync(TARGET, 'utf8')).not.toContain(FAILING)
+  })
+})
+`
+
 /** Тот же запуск, но продукта в нём нет: работа запускает ТОЛЬКО собственный новый файл. */
 const SPAWN_OWN_ONLY_SRC = `
 import { spawnSync } from 'node:child_process'
@@ -223,6 +263,43 @@ describe('подключение продукта — не только import: 
     expect(hit!.files).toEqual(['scripts/sma/__tests__/own.test.ts'])
   })
 
+  // ─── ЗАПУСК РЕШАЕТ ВЕРДИКТ: тест из daemon/__tests__ спавнит скрипт из scripts/sma ───
+
+  /** Копия, в которой есть и запускаемый скрипт продукта, и его тёзки вне правил запуска. */
+  const CROSS_TREE = (p: string) =>
+    p === 'scripts/sma/ui-drive.mjs' || p === 'scripts/sma/ui-drive.json' || p === 'fixtures/ui-drive.mjs'
+
+  const crossEntries = [
+    { status: 'A', path: 'daemon/__tests__/ui-drive-output.test.ts' },
+    { status: 'A', path: 'daemon/__tests__/fixtures/failing-ui-driver.mjs' },
+  ]
+  const crossVerdict = (src: string) =>
+    selfReferentialTests({
+      entries: crossEntries,
+      readFile: (p: string) => (p.endsWith('.test.ts') ? src : 'process.exit(1)'),
+      pathExists: (p: string) => CROSS_TREE(p),
+    })
+
+  it('спавн скрипта из ДРУГОЙ ветки дерева проходит: путь собирается из кусков join()', () => {
+    expect(crossVerdict(crossTreeSpawnSrc(['scripts', 'sma'], 'ui-drive.mjs'))).toBeNull()
+  })
+
+  it('тот же файл БЕЗ запуска — только чтение — не проходит: собирать путь позволено запуску', () => {
+    expect(crossVerdict(CROSS_TREE_READ_SRC)!.files).toEqual(['daemon/__tests__/ui-drive-output.test.ts'])
+  })
+
+  it('запуск НЕЗАПУСКАЕМОГО не проходит: снимок рядом со скриптом связью не становится', () => {
+    expect(crossVerdict(crossTreeSpawnSrc(['scripts', 'sma'], 'ui-drive.json'))!.files).toEqual([
+      'daemon/__tests__/ui-drive-output.test.ts',
+    ])
+  })
+
+  it('запуск МИМО каталогов продукта не проходит: собранный путь — догадка, и якорь обязателен', () => {
+    expect(crossVerdict(crossTreeSpawnSrc(['fixtures'], 'ui-drive.mjs'))!.files).toEqual([
+      'daemon/__tests__/ui-drive-output.test.ts',
+    ])
+  })
+
   it('правленый существующий тест продукта снимает вопрос со ВСЕЙ работы', () => {
     expect(
       selfReferentialTests({
@@ -241,21 +318,55 @@ describe('подключение продукта — не только import: 
     ).toBeNull()
   })
 
-  it('правленый тест, которого не прочесть, снимает вопрос: судить нечем', () => {
-    expect(
-      selfReferentialTests({
-        entries: [
-          { status: 'A', path: 'notes/proba-potolka.md' },
-          { status: 'A', path: 'scripts/sma/__tests__/notes-proba-potolka.test.ts' },
-          { status: 'M', path: 'scripts/sma/__tests__/ui-drive.test.ts' },
-        ],
-        readFile: (p: string) => {
-          if (p.endsWith('ui-drive.test.ts')) throw new Error('EACCES')
-          return p.endsWith('.test.ts') ? SELF_TEST_SRC : '# проба'
-        },
-        pathExists: () => false,
-      }),
-    ).toBeNull()
+  it('правленый тест, которого НЕ ПРОЧЕСТЬ, сторож не разоружает: нечитаемое не оправдывает', () => {
+    const hit = selfReferentialTests({
+      entries: [
+        { status: 'A', path: 'notes/proba-potolka.md' },
+        { status: 'A', path: 'scripts/sma/__tests__/notes-proba-potolka.test.ts' },
+        { status: 'M', path: 'scripts/sma/__tests__/ui-drive.test.ts' },
+      ],
+      readFile: (p: string) => {
+        if (p.endsWith('ui-drive.test.ts')) throw new Error('EACCES')
+        return p.endsWith('.test.ts') ? SELF_TEST_SRC : '# проба'
+      },
+      pathExists: () => false,
+    })
+    // Обвинение стоит на ПРОЧИТАННОМ добавленном тесте; непрочитанный файл ничего не удостоверяет.
+    expect(hit!.files).toEqual(['scripts/sma/__tests__/notes-proba-potolka.test.ts'])
+  })
+
+  it('УДАЛЁННЫЙ тест сторож не разоружает: удалённого файла в копии нет вовсе', () => {
+    // Замерено на ревью 02.09.2026: заметка о себе плюс ЛЮБОЕ удаление теста — и вся работа
+    // проходила гейт, потому что строка удаления читалась как «работа правит тест продукта».
+    const hit = selfReferentialTests({
+      entries: [
+        { status: 'A', path: 'notes/proba-potolka.md' },
+        { status: 'A', path: 'scripts/sma/__tests__/notes-proba-potolka.test.ts' },
+        { status: 'D', path: 'daemon/__tests__/gone.test.ts' },
+      ],
+      readFile: (p: string) => {
+        if (p.endsWith('gone.test.ts')) throw new Error('ENOENT')
+        return p.endsWith('.test.ts') ? SELF_TEST_SRC : '# проба'
+      },
+      pathExists: () => false,
+    })
+    expect(hit!.files).toEqual(['scripts/sma/__tests__/notes-proba-potolka.test.ts'])
+  })
+
+  it('ПЕРЕЕЗД теста голосом не считается — работа его не переписывала, а перенесла', () => {
+    const hit = selfReferentialTests({
+      entries: [
+        { status: 'A', path: 'notes/proba-potolka.md' },
+        { status: 'A', path: 'scripts/sma/__tests__/notes-proba-potolka.test.ts' },
+        { status: 'R100', path: 'daemon/__tests__/ui-drive.test.ts', from: 'daemon/__tests__/drive.test.ts' },
+      ],
+      readFile: (p: string) => {
+        if (p.endsWith('ui-drive.test.ts')) return EXISTING_PRODUCT_TEST_SRC
+        return p.endsWith('.test.ts') ? SELF_TEST_SRC : '# проба'
+      },
+      pathExists: () => false,
+    })
+    expect(hit!.files).toEqual(['scripts/sma/__tests__/notes-proba-potolka.test.ts'])
   })
 
   it('правленый файл, который тестом НЕ является, обвинения не снимает', () => {
