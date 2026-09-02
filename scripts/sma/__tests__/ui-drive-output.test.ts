@@ -87,6 +87,18 @@ describe('the token a driver error quotes never reaches the run output', () => {
     expect(JSON.parse(journal).url).toBe(MASKED)
   })
 
+  it('a throw the run never awaited is printed by the runtime — and still through the mask', () => {
+    const { stdout, stderr, status } = drive('listener')
+
+    // Драйвер зовёт своих слушателей из своего таймера: такое исключение не проходит ни через
+    // один await прогона, и рантайм печатает его САМ, мимо потока процесса. Замерено: маска,
+    // поставленная на поток, этот выход не видит, и адрес с ключом уходит голым.
+    expect(status).toBe(3)
+    expect(stdout).toContain('NOT RUN')
+    expect(stdout).toContain(`navigation watchdog fired while on ${MASKED}`)
+    expect(`${stdout}${stderr}`).not.toContain(TOKEN)
+  })
+
   it('an exception nobody caught leaves through the same mask, whole', () => {
     const { stdout, stderr, status } = drive('screenshot')
 

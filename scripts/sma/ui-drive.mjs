@@ -102,6 +102,27 @@ maskStream(process.stdout)
 maskStream(process.stderr)
 
 /**
+ * ═══════ THE ONE PRINTER THAT DOES NOT USE THE STREAM: THE RUNTIME'S OWN ═══════
+ *
+ * A mask on the stream covers every line this process writes — and node writes the report of a
+ * throw NOBODY CAUGHT past the stream object entirely, straight at the file descriptor. That is
+ * not a hypothetical corner: a browser driver calls its own listeners from its own timers, so a
+ * failure raised inside one is awaited by nothing here, and its text is exactly the sentence this
+ * whole file exists to hold — the full address, query string and all.
+ *
+ * So the two ways out of the process that skip the stream are taken over and sent back through it.
+ * The run is NOT RUN either way, with the same words and the same exit code a crash always had: a
+ * mask that swallowed the failure would trade a published credential for a run that lied.
+ */
+const fatal = (err) => {
+  const text = err instanceof Error ? err.message : String(err)
+  process.stdout.write(`SMA ui-drive: NOT RUN — ${text.split('\n')[0]}\n  This is not a pass.\n`)
+  process.exit(3)
+}
+process.on('uncaughtException', fatal)
+process.on('unhandledRejection', fatal)
+
+/**
  * Press every control the page exposes and record what broke — the part of QA that is
  * mechanical, and therefore belongs to a script rather than to a model's attention span.
  *
