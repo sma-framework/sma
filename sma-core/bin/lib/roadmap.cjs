@@ -677,10 +677,10 @@ function cmdRoadmapAnnotateDependencies(cwd, phaseNum, raw) {
         const planPath = node_path_1.default.join(node_path_1.default.resolve(cwd, phaseInfo.directory), planFile);
         try {
             const content = node_fs_1.default.readFileSync(planPath, 'utf-8');
-            const fm = extractFrontmatter(content);
+            const fm = extractFrontmatter(content, planPath);
             const wave = parseInt(fm.wave, 10) || 1;
             const planId = planFile.replace(/-PLAN\.md$/i, '').replace(/PLAN\.md$/i, '');
-            const truths = parseMustHavesBlock(content, 'truths') || [];
+            const truths = parseMustHavesBlock(content, 'truths', planPath) || [];
             planData.push({ planFile, planId, wave, truths });
         }
         catch { /* skip unreadable plans */ }

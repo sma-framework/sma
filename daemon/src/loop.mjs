@@ -112,7 +112,7 @@ import { dirname, join } from 'node:path'
 
 import { pipelineEnabled, pipelineMaxTurns, projectEntry, codeTreeOf, planningHomeOf } from './config.mjs'
 import { taskTurnCap, burnedTurnCapsOf, turnKindOf, emptyTurnKinds } from './policy/turn-budget.mjs'
-import { resolveExpireMs, batchWorkerOf, waveAddressOf, isBatchParent, batchItemsOf, batchDecisionsOf, brokenItemOf, batchLetGoOf, latestRowPerId, claimRefusal, FAIL_REASONS, failureAwaitsAPerson, awaitsAutoRetry, autoRetryDueAt, autoRetriesSpent, AUTO_RETRY_LIMIT, ATTEMPTS_EXHAUSTED, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
+import { resolveExpireMs, batchWorkerOf, waveAddressOf, isBatchParent, batchItemsOf, batchDecisionsOf, brokenItemOf, batchLetGoOf, latestRowPerId, claimRefusal, FAIL_REASONS, endingAwaitsAPerson, awaitsAutoRetry, autoRetryDueAt, autoRetriesSpent, AUTO_RETRY_LIMIT, ATTEMPTS_EXHAUSTED, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
@@ -935,7 +935,15 @@ function lessonCheck(deps, task, workDir, lesson) {
   try {
     parsed = parseNote(String(io.readFileSync(file, 'utf8')), { file: path })
   } catch (err) {
-    return { ok: false, reason: `заметка урока не читается: ${String((err && err.message) || err)}` }
+    // ФАЙЛ ЕСТЬ, А ПРОЧЁЛ ЕГО НЕ РАЗБОР, А ИСКЛЮЧЕНИЕ — И ЭТО НЕ МОЛЧАНИЕ РАБОТНИКА. Работник
+    // прошёл конвейер, черновик лежит в копии; упал НАШ разбор. Слово «нет урока» отправило бы
+    // человека требовать от работника то, что он уже сделал, а чинить надо здесь — поэтому
+    // отказ помечается как инструментальный и наверху получает своё слово исхода.
+    return {
+      ok: false,
+      toolBroke: `разбор заметки урока упал на ${path}: ${String((err && err.message) || err)}`,
+      reason: `заметка урока не читается: ${String((err && err.message) || err)}`,
+    }
   }
   const fm = parsed && parsed.frontmatter
   if (!fm || parsed.schemaVersion !== 2) return { ok: false, reason: `заметка урока не в схеме корпуса: ${path}` }
@@ -1256,6 +1264,7 @@ function turnRecordOf(args, lines) {
  *   nothing left + window filled   → 'context_exhausted' (the run that ran out of room)
  *   no receipt + nonzero exit      → 'agent_error'      (the worker crashed)
  *   no receipt + exit 0            → 'no_receipt'        (claimed done, never certified)
+ *   green receipt + broken tool    → 'close_tool_broken' (OUR closing instrument crashed)
  *   green receipt + no note        → 'no_journal'       (certified, never explained)
  *   anything else                  → 'agent_error'
  * A marker (when present) BEATS the receipt — the worker gave the sharper reason. The
@@ -1286,10 +1295,10 @@ function turnRecordOf(args, lines) {
  * it replaces «нет квитанции» / «ошибка работника», which sent a person to fix work that had
  * simply run out of room. The remedy is a smaller task, and only this word offers it.
  *
- * @param {{spawnError?:any, providerAbort?:object|null, turnCapHit?:object|null, contextExhausted?:object|null, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean}} [o]
+ * @param {{spawnError?:any, providerAbort?:object|null, turnCapHit?:object|null, contextExhausted?:object|null, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean, closeToolError?:string|null}} [o]
  * @returns {string}
  */
-export function classifyFailure({ spawnError, providerAbort, turnCapHit, contextExhausted, exitCode, receipt, workerMarker, journalComplete, lessonComplete, envUnfit } = {}) {
+export function classifyFailure({ spawnError, providerAbort, turnCapHit, contextExhausted, exitCode, receipt, workerMarker, journalComplete, lessonComplete, envUnfit, closeToolError } = {}) {
   if (spawnError) return 'runtime_offline'
   if (providerAbort) return 'provider_error'
   if (turnCapHit) return 'turns_exhausted'
@@ -1305,6 +1314,13 @@ export function classifyFailure({ spawnError, providerAbort, turnCapHit, context
     if (contextExhausted) return 'context_exhausted'
     return Number.isFinite(exitCode) && exitCode !== 0 ? 'agent_error' : 'no_receipt'
   }
+  // ОТКАЗ НАШЕГО ИНСТРУМЕНТА СТОИТ ВЫШЕ ОБЕИХ ПРОПАЖ, И ЭТО ВЕСЬ СМЫСЛ СЛОВА. Записку и урок
+  // закрывает инструмент; когда падает ОН, «нет записки» и «нет урока» — не наблюдения, а
+  // обвинения работника, который всё сделал. Проверяется только поверх ЗЕЛЁНОЙ квитанции: без
+  // неё судить нечего, и закон пропавшей квитанции остаётся сильнее (та же выправка, что у
+  // пары no_journal / no_lesson ниже). Отдельно от provider_error и turns_exhausted выше:
+  // те двое — про прогон, оборванный снаружи работы, а этот — про наш собственный код.
+  if (receipt.verdict === 'green' && closeToolError) return 'close_tool_broken'
   if (receipt.verdict === 'green' && journalComplete === false) return 'no_journal'
   // THE OLDER OMISSION IS THE SHARPER ONE. An attempt that left neither note nor lesson reads
   // 'no_journal': the note explains the work a person is about to accept, and the lesson is
@@ -1942,15 +1958,33 @@ function attemptStamp(deps, task, { from, to, actor, envelope } = {}) {
 }
 
 /**
- * writeJournal(deps, entry) — append one decision-journal layer through the injected sink.
- * FAIL-OPEN by construction: an unwritable or absent journal never changes an outcome.
+ * writeJournal(deps, entry) → what the JOURNAL INSTRUMENT did with this layer.
+ * FAIL-OPEN by construction: an unwritable or absent journal never wedges a tick.
+ *
+ * НО И НЕ МОЛЧА. Раньше исключение сюда входило и здесь же кончалось: слой не ложился на диск,
+ * попытка шла дальше, и никто — ни тик, ни человек — не узнавал, что журнал сломан. Возврат
+ * называет три РАЗНЫХ случая одним словом каждый: `'written'` — слой лёг; `'absent'` — шва
+ * журнала у этого демона нет вовсе (сборка без реестра, это не поломка); `'broken'` — сток
+ * БРОСИЛ, то есть инструмент закрытия попытки сломан здесь и сейчас. Судит эти слова
+ * вызывающий; сама запись по-прежнему ничего не решает.
+ *
+ * @returns {'written'|'absent'|'broken'}
  */
 function writeJournal(deps, entry) {
-  if (typeof deps.decisionJournal !== 'function') return
+  if (typeof deps.decisionJournal !== 'function') return 'absent'
   try {
     deps.decisionJournal(entry)
-  } catch {
-    /* the journal never wedges a tick */
+    return 'written'
+  } catch (err) {
+    // NEVER SILENT: журнал не стоит попытки, но сломанный журнал стоит строки в логе — иначе
+    // «записка есть» и «записки на диске нет» расходятся, и узнать об этом неоткуда.
+    writeLog(deps, {
+      type: 'journal-error',
+      taskId: entry && entry.taskId,
+      layer: entry && entry.layer,
+      error: String((err && err.message) || err),
+    })
+    return 'broken'
   }
 }
 
@@ -3357,21 +3391,31 @@ async function invokeVerb(verbRunner, verb, args, cwd) {
 }
 
 /**
- * recordApproachNote(deps, task, note) → did THIS attempt leave a note?
- * Appends the approach layer when it did. The answer is about the NOTE, not about the
- * journal's disk: an unwritable journal must not fail a worker that did explain itself.
+ * recordApproachNote(deps, task, note) → `{noted, toolBroke}` — did THIS attempt leave a note,
+ * and did the instrument that files it survive?
+ *
+ * Appends the approach layer when there is one. `noted` is about the NOTE, not about the
+ * journal's disk: an unwritable journal must not fail a worker that did explain itself — that
+ * law is unchanged and is why the two answers are separate. `toolBroke` carries the second
+ * fact, which used to be thrown away here: the note existed, the instrument REFUSED it, and
+ * the journal a person opens afterwards is empty through no fault of the worker's.
  * The note text is DATA — it is stored capped by the normalizer, and any later prompt that
  * shows it must fence it.
+ *
+ * @returns {{noted:boolean, toolBroke:string|null}}
  */
 function recordApproachNote(deps, task, note) {
-  if (!note || !note.approach) return false
-  writeJournal(deps, {
+  if (!note || !note.approach) return { noted: false, toolBroke: null }
+  const wrote = writeJournal(deps, {
     taskId: task.id,
     attempt: task.attempt,
     layer: 'approach',
     payload: note,
   })
-  return true
+  return {
+    noted: true,
+    toolBroke: wrote === 'broken' ? 'журнал попытки отказал на слое записки о подходе' : null,
+  }
 }
 
 /** Detect a worker final-output marker among the collected stream lines (soft protocol). */
@@ -5267,7 +5311,8 @@ export async function tick(deps = {}) {
       // frame, and a second pass over raw lines would find neither.
       const markerLines = markerLinesFrom(streamLines, ['APPROACH_', 'LESSON_', 'MOOT'])
       const note = parseApproachNote(markerLines)
-      const noteWritten = recordApproachNote(deps, task, note)
+      const noteRecord = recordApproachNote(deps, task, note)
+      const noteWritten = noteRecord.noted
       // «ПРЕДМЕТА НЕТ» — читается ЗДЕСЬ, из того же развёрнутого потока и тем же протоколом
       // мягких маркеров, что записка и урок. Судит его не парсер: ниже дверь ответа сперва
       // доказывает, что попытка ничего не тронула, а потом демон проверяет улику у git.
@@ -5279,6 +5324,14 @@ export async function tick(deps = {}) {
       // its own markers and produces a draft rather than an attempt at work.
       const lessonEval = lessonCheck(deps, task, workDir, parseLessonMarker(markerLines))
       const lessonOk = lessonEval.ok === true
+      // ЧЕЙ ЭТО ОТКАЗ — СВЕДЁН В ОДНО МЕСТО, ОДИН РАЗ. Закрытие попытки держат два инструмента:
+      // журнал подхода и разбор заметки урока. Падение ЛЮБОГО из них — про наш код, а не про
+      // работника, и ниже оно обязано звучать одним словом исхода, а не двумя обвинениями.
+      const closeToolError = noteRecord.toolBroke ?? (lessonEval.toolBroke || null)
+      if (closeToolError) {
+        appendLine(`[sma] инструмент закрытия отказал: ${closeToolError}`)
+        writeLog(deps, { type: 'close-tool-broken', taskId: task.id, attempt: task.attempt ?? null, detail: closeToolError })
+      }
       // NEVER SILENT: the verdict rides the attempt's own transcript, so a red row can be
       // explained without opening this file.
       appendLine(
@@ -5422,8 +5475,14 @@ export async function tick(deps = {}) {
         // person, and demanding a lesson from an unfinished round would throw away the whole
         // position over a step the worker never got to.
         const lessonReason = parked || lessonOk ? null : 'no_lesson'
+        // ОТКАЗ ИНСТРУМЕНТА ПОДМЕНЯЕТ СЛОВО, НО НИКОГДА НЕ СОЗДАЁТ ОТКАЗА. Он отвечает на
+        // вопрос «чей это провал» тогда, когда провал УЖЕ есть; работу, прошедшую гейт,
+        // сломанный журнал не съедает — этим починка и отличается от поломки, ради которой
+        // она сделана.
+        const omission = noteWritten ? lessonReason : 'no_journal'
         const reason =
-          infraReason ?? (gate.receiptRef ? (noteWritten ? lessonReason : 'no_journal') : gate.reason)
+          infraReason ??
+          (gate.receiptRef ? (omission && closeToolError ? 'close_tool_broken' : omission) : gate.reason)
         if (reason) {
           // ЧЕМ ОТКАЗАЛ ГЕЙТ И НА ЧЁМ В ПОСЛЕДНИЙ РАЗ СПОТКНУЛАСЬ ПОПЫТКА — одной строкой, и
           // едет она ДАЛЬШЕ журнала оператора: на строку реестра, а оттуда на карточку. Имя
@@ -5704,6 +5763,10 @@ export async function tick(deps = {}) {
           workerMarker: marker,
           journalComplete: noteWritten,
           lessonComplete: lessonOk,
+          // ЧЕЙ ЭТО ПРОВАЛ. Передаётся ВСЕГДА, а судит его классификатор: он подставляет своё
+          // слово только там, где иначе прозвучало бы обвинение работника в пропаже, и не
+          // трогает ни один конец, названный до записки (обрыв, потолок, маркер, красное).
+          closeToolError,
           envUnfit,
         })
         if (envUnfit) {
@@ -6057,7 +6120,7 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
   // unwrapped first (`approachLinesFrom`) exactly as the code path does. Reading the frames
   // raw meant the note was never found and a green draft still failed «нет записки».
   const forgeNote = parseApproachNote(approachLinesFrom(streamLines))
-  const noteWritten = recordApproachNote(deps, task, forgeNote)
+  const { noted: noteWritten } = recordApproachNote(deps, task, forgeNote)
 
   // The forge lane creates an attempt, so the forge lane owes a MEMORY layer like any other —
   // and it owes it here, above every exit below, for the same reason the code lane writes it
@@ -6354,30 +6417,50 @@ async function completeTask(deps, task, { receiptRef, branch, diffStat, route, n
     await adapter.complete(task.id, { ...closing, afterSweep: true })
   }
   if (ledger && typeof ledger.recordAttempt === 'function') {
-    ledger.recordAttempt({
-      taskId: task.id,
-      attempt: task.attempt,
-      provider: route && route.provider,
-      outcome: 'completed',
-      // WHEN THE WORK BEGAN. The ledger has always had a place for this and nobody ever
-      // filled it, so the card showed «начат —» and «сколько заняло: работа ещё не
-      // начиналась» underneath a FINISHED attempt. Duration is not a decoration: it is the
-      // first thing a person asks of work they did not watch.
-      ...(Number.isFinite(startedAt) ? { startedAt: new Date(startedAt).toISOString() } : {}),
-      receiptRef,
-      // The session this attempt ran in. `undefined` when the stream never named one (a
-      // preflight door completes with no worker at all) — the allowlist loop then omits the
-      // key entirely, so a row without a session says so by ABSENCE, never by an empty string.
-      sessionId: sessionId ?? undefined,
-      endedAt: new Date(now).toISOString(),
-      // THE COPY THIS ATTEMPT RAN IN — see the same block on failTask below: it is written
-      // on BOTH outcomes or it is worth nothing.
-      ...worktreeFields(worktree),
-      // И СКОЛЬКО ХОДОВ ЭТО СТОИЛО — на обоих исходах по той же причине. Попытка, которая
-      // уложилась, — единственная мерка, с которой человек может сравнить ту, что не влезла.
-      ...turnFields(turns),
-      ...attemptStamp(deps, task, { from, to: from ? 'PRODUCED' : undefined, actor: 'worker', envelope }),
-    })
+    // ═══ РАБОТА УЖЕ ЗАВЕРШЕНА — ЗАПИСЬ О НЕЙ БОЛЬШЕ НЕ СМЕЕТ ЕЁ ОТМЕНИТЬ ═════════════════
+    //
+    // Строка очереди закрыта строчкой выше: `adapter.complete` уже прошёл, работа принята,
+    // ветка на месте. Реестр здесь — НАБЛЮДЕНИЕ за этой работой, и до сих пор он звался
+    // голым: брошенное им исключение уходило наружу, мимо `writeAttemptOutcome` и отчёта, в
+    // общий улов тика — а тот честно объявлял ЗАВЕРШЁННУЮ попытку `runtime_offline` и
+    // отправлял задачу на перевыдачу. Зелёная работа с квитанцией превращалась в «среда
+    // недоступна», следующая попытка делала её заново и умирала на той же строке.
+    // Дверь срыва по соседству обёрнута ровно от этого с прошлой фазы; здесь обёртки не было,
+    // и потому она стоила дороже — там терялась ПРИЧИНА, здесь терялась РАБОТА.
+    try {
+      ledger.recordAttempt({
+        taskId: task.id,
+        attempt: task.attempt,
+        provider: route && route.provider,
+        outcome: 'completed',
+        // WHEN THE WORK BEGAN. The ledger has always had a place for this and nobody ever
+        // filled it, so the card showed «начат —» and «сколько заняло: работа ещё не
+        // начиналась» underneath a FINISHED attempt. Duration is not a decoration: it is the
+        // first thing a person asks of work they did not watch.
+        ...(Number.isFinite(startedAt) ? { startedAt: new Date(startedAt).toISOString() } : {}),
+        receiptRef,
+        // The session this attempt ran in. `undefined` when the stream never named one (a
+        // preflight door completes with no worker at all) — the allowlist loop then omits the
+        // key entirely, so a row without a session says so by ABSENCE, never by an empty string.
+        sessionId: sessionId ?? undefined,
+        endedAt: new Date(now).toISOString(),
+        // THE COPY THIS ATTEMPT RAN IN — see the same block on failTask below: it is written
+        // on BOTH outcomes or it is worth nothing.
+        ...worktreeFields(worktree),
+        // И СКОЛЬКО ХОДОВ ЭТО СТОИЛО — на обоих исходах по той же причине. Попытка, которая
+        // уложилась, — единственная мерка, с которой человек может сравнить ту, что не влезла.
+        ...turnFields(turns),
+        ...attemptStamp(deps, task, { from, to: from ? 'PRODUCED' : undefined, actor: 'worker', envelope }),
+      })
+    } catch (err) {
+      // NEVER SILENT, И НИКОГДА НЕ ЦЕНОЙ РАБОТЫ: строка реестра потеряна, работа — нет.
+      writeLog(deps, {
+        type: 'ledger-error',
+        taskId: task.id,
+        reason: 'close_tool_broken',
+        error: String((err && err.message) || err),
+      })
+    }
   }
   // HOW THE TRY ENDED, into the attempt's own directory. Written here rather than at the point
   // the rest of the record was written because THIS is where the outcome is first known.
@@ -6519,7 +6602,11 @@ async function failTask(deps, task, { reason, failureDetail, receiptRef, branch,
   // attempt's work to yet a third worker while the second is still doing it — and on the
   // parking door a stranger's word would CLOSE that running attempt with nothing behind it.
   // The token names the attempt that is really ending; the queue refuses a foreign one out loud.
-  const awaitsPerson = failureAwaitsAPerson(reason)
+  // …И ОДИН ИЗ КОНЦОВ ТЕПЕРЬ СПРАШИВАЕТСЯ О СТРОКЕ, А НЕ ТОЛЬКО О СЛОВЕ. Отказ нашего
+  // инструмента закрытия имеет право на ОДИН повтор: первое падение бывает случайным. Второе
+  // с тем же словом — стена, и `endingAwaitsAPerson` (тот же файл словаря, то же правило)
+  // отправляет строку на паркующую дверь вместо третьей оплаченной попытки.
+  const awaitsPerson = endingAwaitsAPerson(reason, task)
   if (awaitsPerson && typeof adapter.parkForPerson !== 'function') {
     // AN ADAPTER WITHOUT THE PARKING DOOR SAYS SO OUT LOUD. It then keeps the old behaviour —
     // the retryable door and its two re-issues — because a tick that threw here would lose the

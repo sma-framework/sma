@@ -463,6 +463,10 @@ describe('constants — taxonomy', () => {
       // why there is none. Named apart from no_journal because the two omissions ask a person
       // for different things — the note explains THIS work, the lesson feeds the next one
       'no_lesson',
+      // and the word for when the omission above is OURS: the note and the lesson are filed by
+      // INSTRUMENTS, and a crashed instrument turns both of the two words above into an
+      // accusation against a worker who did everything asked of him
+      'close_tool_broken',
       // the documentary counterpart of no_receipt: a stage whose product is prose said done
       // and left no document — the file is absent from the phase directory, or uncommitted
       'no_artifact',

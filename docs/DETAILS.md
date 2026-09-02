@@ -1117,6 +1117,16 @@ reached the step, and the **Creator's** own lane, which drafts definitions rathe
 the work. A written document and an answer-only run are **not** exempt — work in words teaches
 exactly as much.
 
+**And a third word stands above both, for when the omission is ours.** The note and the lesson
+are filed by INSTRUMENTS — the attempt journal, the corpus note parser, the attempt ledger. When
+one of those crashes, `no_journal` and `no_lesson` stop being observations and become accusations
+against a worker who did everything asked. Such an ending is named **`close_tool_broken`** —
+«the closing instrument broke: nothing to do with the worker» — and it obeys two rules that keep
+it honest. It **never creates a refusal**: it only renames one the gate had already decided, so
+work that passed the gate is not thrown away because a journal could not be written. And it buys
+**one** re-issue instead of the usual two, because a crash that repeats with the same word is a
+wall rather than an accident, and the third paid attempt would end exactly where the second did.
+
 **Why through the pipeline and not straight to a file.** The last condition is the point of the
 whole step. `sma memory write` is twelve steps of scrubbing, contradiction checks and a verdict,
 and what it produces is a **draft**, not a corpus entry. So a lesson is a proposal until you
