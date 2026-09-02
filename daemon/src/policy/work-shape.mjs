@@ -51,6 +51,24 @@ function isTestFile(path) {
 }
 
 /**
+ * ВСЕ тесты работы, а не только новые: `{path, added}` по каждому тестовому файлу в diff.
+ * Правленый тест продукта — такой же голос работы, как и добавленный, и судить работу
+ * пофайлово значит не услышать его вовсе.
+ */
+function changedTests(entries, added) {
+  const out = []
+  if (!Array.isArray(entries)) return out
+  for (const e of entries) {
+    if (!e || typeof e !== 'object') continue
+    const path = normalize(e.path)
+    if (!path || !isTestFile(path)) continue
+    if (out.some((t) => t.path === path)) continue
+    out.push({ path, added: added.includes(path) })
+  }
+  return out
+}
+
+/**
  * Спецификаторы модулей, которые файл ПОДКЛЮЧАЕТ. Три формы, которыми их пишут:
  * `from '...'`, `require('...')` и голый `import '...'` (он же динамический `import('...')`).
  */
@@ -71,27 +89,118 @@ function refersTo(literal, path) {
 }
 
 /**
+ * ЗАПУСК ФАЙЛА ПРОЦЕССОМ — второй способ подключить продукт, и до 02.09.2026 распознаватель
+ * его не видел. Тест, который берёт настоящий скрипт дерева, запускает его дочерним процессом
+ * с подставным окружением и читает stdout/stderr/файлы, — провод-тест высшей пробы: он краснеет
+ * от любой поломки запускаемого. Ни одного `import` при этом в нём может не быть.
+ */
+const RUN_CALL_RE = /\b(?:spawnSync|spawn|execFileSync|execFile|execSync|exec|fork)\s*\(/
+
+/** Что вообще можно запустить процессом: скрипт дерева, а не README и не снимок. */
+const RUNNABLE_EXT_RE = /\.(?:mjs|cjs|js|jsx|ts|tsx|sh|bash|py)$/
+
+/**
+ * Где литерал лежит НА САМОМ ДЕЛЕ: сам по себе или рядом с тестом, который его назвал.
+ *
+ * Путь к запускаемому скрипту тест почти никогда не пишет одной строкой — он собирает его
+ * `join(ROOT, 'scripts', 'sma', 'ui-drive.mjs')`, и в исходнике остаётся голое имя файла.
+ * Мерить такое имя от корня копии значит не найти ничего и объявить работу самозамкнутой,
+ * хотя она запускает соседний файл продукта. Поэтому имя примеряется к каталогу самого теста
+ * и всем его предкам — ровно там, куда тест и целится. Возвращает НАЙДЕННЫЙ путь (он идёт в
+ * слова отказа) или null. Никогда не бросает.
+ */
+function locateInTree(literal, from, exists) {
+  const tries = [literal]
+  let dir = from.includes('/') ? from.slice(0, from.lastIndexOf('/')) : ''
+  while (dir) {
+    tries.push(`${dir}/${literal}`)
+    dir = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : ''
+  }
+  for (const candidate of tries) {
+    try {
+      if (exists(candidate) === true) return candidate
+    } catch {
+      /* нечитаемое дерево не обвиняет */
+    }
+  }
+  return null
+}
+
+/**
+ * productLink(text, from, added, exists) → {kind, target} | null — ЧЕМ этот тест держится за
+ * продукт. Три способа, и любого одного довольно:
+ *   `import`  — подключает модуль дерева (относительный, абсолютный или `#`-спецификатор);
+ *   `run`     — запускает файл дерева процессом (`spawn`/`spawnSync`/`execFile`/`fork`/…);
+ *   `speaks`  — называет путь, который в копии есть и этой работой не добавлен.
+ * Ни один из трёх не может быть удовлетворён файлом, добавленным этой же работой.
+ */
+function productLink(text, from, added, exists) {
+  IMPORT_RE.lastIndex = 0
+  for (let m = IMPORT_RE.exec(text); m; m = IMPORT_RE.exec(text)) {
+    const spec = String(m[2] || '')
+    if (spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('#')) return { kind: 'import', target: spec }
+  }
+
+  const runs = RUN_CALL_RE.test(text)
+  LITERAL_RE.lastIndex = 0
+  for (let m = LITERAL_RE.exec(text); m; m = LITERAL_RE.exec(text)) {
+    const lit = normalize(m[2])
+    if (!lit || !PATHISH_RE.test(lit)) continue
+    if (added.some((a) => refersTo(lit, a))) continue // свой же файл продуктом не считается
+    const there = locateInTree(lit, from, exists)
+    if (!there) continue
+    return { kind: runs && RUNNABLE_EXT_RE.test(lit) ? 'run' : 'speaks', target: there }
+  }
+  return null
+}
+
+/** Пути, добавленные этой же работой, на которые тест ссылается. Сырьё для слов отказа. */
+function selfReferences(text, added) {
+  const out = []
+  LITERAL_RE.lastIndex = 0
+  for (let m = LITERAL_RE.exec(text); m; m = LITERAL_RE.exec(text)) {
+    const lit = normalize(m[2])
+    if (!lit || !PATHISH_RE.test(lit)) continue
+    const own = added.find((a) => refersTo(lit, a))
+    if (own && !out.includes(own)) out.push(own)
+  }
+  return out
+}
+
+/**
  * selfReferentialTests({entries, readFile, pathExists}) → {files, detail} | null
  *
- * ТЕСТ, КОТОРЫЙ ГОВОРИТ ТОЛЬКО О СЕБЕ. Добавленный этой же работой тестовый файл называется
- * самозамкнутым, когда ВСЕ ТРИ верны:
- *   1. он не подключает НИ ОДНОГО модуля продукта — только пакеты и встроенные модули. Это
- *      первое условие спасает нормальную работу: новый модуль со своим тестом — самый обычный
- *      вид правки, и его тест импортирует то, что проверяет. Проверка поведения — разговор о
- *      продукте, чем бы файл ни был помечен в diff;
- *   2. он называет хотя бы один путь. Тест, не назвавший ни одного файла и ничего не
- *      подключивший, распознаватель не судит вовсе — обвинять по молчанию нечем;
- *   3. КАЖДЫЙ названный им путь — путь, добавленный ЭТОЙ ЖЕ работой. Тест, который читает
- *      README или существующий рецепт, говорит о продукте: такой файл был до работы, и
- *      сломать его можно чем-то, кроме самого теста.
+ * ГОВОРИТ ЛИ РАБОТА О ПРОДУКТЕ ИЛИ ТОЛЬКО О СЕБЕ. Вопрос задаётся РАБОТЕ ЦЕЛИКОМ, а не
+ * каждому новому файлу по отдельности: тесты одной попытки — один голос, и хватает одного
+ * теста, держащегося за продукт, чтобы работа перестала быть разговором о самой себе.
+ *
+ * ТРИ СПОСОБА ДЕРЖАТЬСЯ ЗА ПРОДУКТ, и любого одного довольно (`productLink`):
+ *   1. ПОДКЛЮЧАЕТ модуль дерева — обычная работа: новый модуль со своим тестом импортирует то,
+ *      что проверяет;
+ *   2. ЗАПУСКАЕТ файл дерева процессом и читает, что тот напечатал и написал. Замерено
+ *      02.09.2026: тест запускал настоящий скрипт продукта через `spawnSync` с подставным
+ *      падающим драйвером и читал его stdout — провод-тест высшей пробы, — а распознаватель
+ *      смотрел на одни `import`ы и отклонил готовую зелёную работу;
+ *   3. НАЗЫВАЕТ путь, который в копии есть и этой работой не добавлен: такой файл был до
+ *      работы, и сломать его можно чем-то, кроме самого теста.
+ *
+ * КАКИЕ ТЕСТЫ СПРАШИВАЮТСЯ: все тестовые файлы diff'а. Правленый тест продукта — тоже голос
+ * работы: правя существующий тест, работа говорит о том, что было до неё.
+ *
+ * САМОЗАМКНУТЫМ называется ДОБАВЛЕННЫЙ тест, который не держится за продукт ни одним из трёх
+ * способов и при этом называет хотя бы один путь — и каждый названный им путь добавлен этой же
+ * работой. Тест, не назвавший ни одного файла и ничего не подключивший, не судится вовсе:
+ * обвинять по молчанию нечем.
  *
  * ЧТО СЧИТАЕТСЯ НАЗВАННЫМ ПУТЁМ, и здесь проходит вся граница честности: литерал, который
- * либо совпал с добавленным путём, либо РЕАЛЬНО СУЩЕСТВУЕТ в копии. Строка вроде `'1.0'`
- * формально похожа на имя файла, но ничему на диске не соответствует — и она не считается
- * ни за, ни против. Иначе случайная версия в строке разоружала бы весь распознаватель.
+ * либо совпал с добавленным путём, либо РЕАЛЬНО СУЩЕСТВУЕТ в копии — сам по себе или рядом с
+ * тестом, который его назвал (`locateInTree`). Строка вроде `'1.0'` формально похожа на имя
+ * файла, но ничему на диске не соответствует — и она не считается ни за, ни против. Иначе
+ * случайная версия в строке разоружала бы весь распознаватель.
  *
- * FAIL-OPEN на каждом шаге: нечитаемый файл пропускается молча, отсутствие читателя даёт
- * пустой ответ. Никогда не бросает.
+ * FAIL-OPEN на каждом шаге: нечитаемый добавленный файл пропускается молча, нечитаемый
+ * ПРАВЛЕНЫЙ тест снимает вопрос целиком (чем работа держится за продукт — неизвестно, а
+ * обвинять по непрочитанному нечем), отсутствие читателя даёт пустой ответ. Никогда не бросает.
  *
  * @param {{entries?:Array<{status:string,path:string}>, readFile?:(p:string)=>string|null, pathExists?:(p:string)=>boolean}} o
  * @returns {{files:string[], detail:string}|null}
@@ -101,67 +210,39 @@ export function selfReferentialTests({ entries, readFile, pathExists } = {}) {
   if (!added.length || typeof readFile !== 'function') return null
   const exists = typeof pathExists === 'function' ? pathExists : () => false
 
-  const files = []
-  const reasons = []
-  for (const path of added) {
-    if (!isTestFile(path)) continue
-
+  const suspects = []
+  for (const test of changedTests(entries, added)) {
     let text
     try {
-      text = readFile(path)
+      text = readFile(test.path)
     } catch {
-      continue // нечитаемый файл — не улика
+      text = null
     }
-    if (typeof text !== 'string' || !text) continue
-
-    // (1) подключает ли он продукт. Относительный или абсолютный спецификатор — это код
-    // дерева; голое имя пакета и `node:` — это чужой код, о продукте он ничего не говорит.
-    let importsProduct = false
-    IMPORT_RE.lastIndex = 0
-    for (let m = IMPORT_RE.exec(text); m; m = IMPORT_RE.exec(text)) {
-      const spec = String(m[2] || '')
-      if (spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('#')) {
-        importsProduct = true
-        break
-      }
+    if (typeof text !== 'string' || !text) {
+      if (!test.added) return null // правленый тест, которого не прочесть, — судить нечем
+      continue // нечитаемый добавленный файл — не улика
     }
-    if (importsProduct) continue
 
-    // (2)+(3) о каких файлах он говорит.
-    const selfRefs = []
-    let speaksOfProduct = false
-    LITERAL_RE.lastIndex = 0
-    for (let m = LITERAL_RE.exec(text); m; m = LITERAL_RE.exec(text)) {
-      const lit = normalize(m[2])
-      if (!lit || !PATHISH_RE.test(lit)) continue
-      const own = added.find((a) => refersTo(lit, a))
-      if (own) {
-        if (!selfRefs.includes(own)) selfRefs.push(own)
-        continue
-      }
-      let there = false
-      try {
-        there = exists(lit) === true
-      } catch {
-        there = false
-      }
-      if (there) {
-        speaksOfProduct = true
-        break
-      }
-    }
-    if (speaksOfProduct || !selfRefs.length) continue
+    if (productLink(text, test.path, added, exists)) return null // работа держится за продукт
+    if (!test.added) continue // правленый тест ни за что не держится — но и не улика против
 
-    files.push(path)
-    reasons.push(`${path} → ${selfRefs.join(', ')}`)
+    const selfRefs = selfReferences(text, added)
+    if (selfRefs.length) suspects.push({ path: test.path, selfRefs })
   }
 
-  if (!files.length) return null
+  if (!suspects.length) return null
   return {
-    files,
+    files: suspects.map((s) => s.path),
     detail:
-      `тест говорит только о файлах, добавленных этой же работой, и не подключает ни одного модуля продукта ` +
-      `(${reasons.join(' · ')}) — покраснеть он может лишь от самого себя`,
+      `${suspects
+        .map(
+          (s) =>
+            `${s.path}: все названные им пути добавлены этой же работой (${s.selfRefs.join(', ')}), ` +
+            `ни одного модуля продукта он не подключает и ни одного файла продукта не запускает`,
+        )
+        .join(' · ')} — покраснеть такой тест может лишь от самого себя. ` +
+      `ВЫХОД: подключите проверяемое (import модуля продукта) ЛИБО запустите файл продукта процессом ` +
+      `и проверьте его вывод; если предмета работы нет — закройте задачу словами и уликой, а не тестом`,
   }
 }
 
