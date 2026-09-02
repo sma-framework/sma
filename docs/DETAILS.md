@@ -509,6 +509,25 @@ words each release was announced in — fix lists included, because a release no
 was broken is worth nothing to the person who hit it. Where a release's mechanism has its own
 canonical document, this history links to it instead of reprinting it.
 
+### 5.8.0 — the conveyor tells the truth about itself
+
+A broad hardening of the fleet conveyor, shipped as one release after two days of live running.
+What is repeatable now repeats itself — with a ceiling, a doubling pause and a log line per
+repeat. A worker syncs its branch with the trunk before handing over, the queue refuses to hand
+out two works whose declared files collide, and a merge refusal names the conflicting files
+instead of a command failure. Work that finds its subject already done ends first-class —
+«moot», with evidence the daemon re-checks itself — and a test that speaks only about files its
+own work added reddens the gate. The dependency store of the main tree is guarded against
+cleanups that follow links; the liveness watchdog kills what it declares dead and never frees a
+seat while the process lives. The window learned conversations as a list, a remote-work screen
+that explains and verifies rather than installs, and one waiting language — a full-screen field
+of slow concentric rings under the words that say what is running and for how long. The Codex
+lane stopped lying to itself: a sandbox this machine cannot enforce is refused in words before
+any process exists, the trail of the one elevated setup is sown into every task's fresh home so
+the writing sandbox is real there, and every attempt records the full command line it was
+started with — «could not» and «did not» stay different sentences. And the badge is measured
+only at the tip it stamps.
+
 ### 5.7.1 — the release gate that can be satisfied
 
 Four honest repairs to the predictions-lint leg of the release ritual — the slow leg that lints
