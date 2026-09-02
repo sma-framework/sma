@@ -87,9 +87,16 @@ async function main(argv) {
   return res.code
 }
 
+// КОД ВОЗВРАТА ВЫСТАВЛЯЕТСЯ ПОЛЕМ, А НЕ `process.exit`. Замерено 02.09.2026 на подъёме,
+// который наконец заработал: `process.exit()` рядом с только что запущенным дитём роняет сам
+// node на утверждении libuv («!(handle->flags & UV_HANDLE_CLOSING)», src/win/async.c), и
+// удачный перезапуск возвращал 127 — то есть команда, которая ВСЁ СДЕЛАЛА, отчитывалась
+// провалом. Поле доносит тот же код, а цикл событий закрывается сам: дитя отпущено `unref`.
 main(process.argv.slice(2))
-  .then((code) => process.exit(code))
+  .then((code) => {
+    process.exitCode = code
+  })
   .catch((err) => {
     say(`команда не отработала: ${String((err && err.stack) || err)}`)
-    process.exit(exitCodeFor('refused'))
+    process.exitCode = exitCodeFor('refused')
   })
