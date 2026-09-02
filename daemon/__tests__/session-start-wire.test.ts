@@ -23,12 +23,22 @@
  *   (4) тумблер, снятый ПОКА попытка готовилась, останавливает её ДО спавна: процесса не
  *       существует вовсе, а на карточке стоит названная причина.
  *
+ * И ХВОСТ ТОГО ЖЕ ЗАМЕРА, дописанный после разбора сдачи: у каждой из трёх починок нашлась
+ * вторая половина, без которой первая делает новую болезнь.
+ *
+ *   (5) дом задачи с временным каталогом внутри теперь УХОДИТ вместе с попыткой. Общий каталог
+ *       машины чистила система; свой не чистил никто, и лечение старта сессии превратилось в
+ *       каталог на задачу навсегда;
+ *   (6) приказ ДЕРЕВУ не отдаётся по номеру УЖЕ ВЫШЕДШЕГО ребёнка: номера система
+ *       переиспользует, и «этот и всё, что он породил» ушло бы в чужое дерево;
+ *   (7) отказ по тумблеру не оставляет отведённую копию и ветку сиротами.
+ *
  * Тик настоящий, git настоящий, леджер читается настоящим читателем с диска. Платформа
  * инжектируется, поэтому ветка Windows гоняется на любой машине.
  */
 
 import { describe, it, expect, afterAll } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -36,7 +46,7 @@ import { join } from 'node:path'
 import { tick, steeredSpawn, sessionStartRecord, workerSwitchedOffNow } from '../src/loop.mjs'
 import { spawnWorker, killProcessTree } from '../src/runner/spawn.mjs'
 import { createBuildArgs } from '../src/runner/build-args.mjs'
-import { codexHomeFor, codexTempFor, buildCodexArgs } from '../src/runner/args.mjs'
+import { codexHomeFor, codexTempFor, buildCodexArgs, discardCodexHome } from '../src/runner/args.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { createMemoryQueue, REASON_LABELS, failureAwaitsAPerson } from '../src/queue/adapter.mjs'
 import { recordAttempt, readAttempts, createAttemptLogWriter } from '../src/queue/attempt-ledger.mjs'
@@ -130,10 +140,17 @@ const GREEN_REVERIFY = {
  * `duringProvisioning` — рука человека, вмешавшаяся ПОКА попытка готовится: верб отведения
  * копии зовётся между маршрутом и спавном, то есть ровно в ту паузу, в которую 02.09.2026 сняли
  * тумблер.
+ *
+ * `realCopy` — отводить копию НАСТОЯЩИМ каталогом по тому пути, который назвал сам тик (и убирать
+ * его, когда тик прикажет). Для вопроса «осталась ли копия» подделка, отвечающая чужим путём,
+ * не годится по построению: она отвечала бы из того самого допущения, которое проверяется.
+ * `reusedCopy` — копия досталась от прошлой попытки: её коммиты чужие, и трогать её нельзя.
  */
 async function runTick(
   over: {
     realComposer?: boolean
+    realCopy?: boolean
+    reusedCopy?: boolean
     platform?: string
     lines?: string[]
     firstFrameAfterMs?: number
@@ -141,7 +158,12 @@ async function runTick(
   } = {},
 ) {
   const accountDir = mkDir('sma-sessionstart-acct-')
-  const projectDir = mkDir('sma-sessionstart-proj-')
+  // Проект лежит ВНУТРИ своего одноразового каталога, а не прямо во временном каталоге машины:
+  // копии задач отводятся СОСЕДОМ основного дерева, и без этой вложенности сосед оказался бы
+  // общим временным каталогом.
+  const projectRoot = mkDir('sma-sessionstart-root-')
+  const projectDir = join(projectRoot, 'project')
+  mkdirSync(projectDir, { recursive: true })
   const ledgerDir = mkDir('sma-sessionstart-ledger-')
   const copy = makeCopy()
   const workDir = copy.dir
@@ -157,6 +179,8 @@ async function runTick(
   await adapter.enqueue(backlogTask())
   const logged: Record<string, unknown>[] = []
   const spawned: Record<string, unknown>[] = []
+  const atSpawn: { home: boolean | null; temp: boolean | null }[] = []
+  const verbCalls: string[] = []
   const lines = over.lines ?? [codexSaid(`${NOTE}\n${LESSON}`)]
 
   const config: Record<string, unknown> = {
@@ -209,21 +233,34 @@ async function runTick(
         })
       : fakeArgs,
     verbRunner: async (_bin: string, argsArray: string[]) => {
+      verbCalls.push(argsArray.slice(1).join(' '))
       const verb = argsArray[1]
       if (verb === 'preflight') return { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) }
       if (verb === 'worktree') {
+        const sub = argsArray[2]
+        if (sub === 'remove') {
+          // ЕДИНСТВЕННАЯ РУКА, КОТОРАЯ УДАЛЯЕТ КОПИЮ, — верб проекта. Здесь он подделан, но
+          // удаляет ровно тот каталог, который назвал тик: проверяется его ПРИКАЗ.
+          rmSync(argsArray[3], { recursive: true, force: true })
+          return { code: 0, stdout: JSON.stringify({ ok: true, branch: 'wt/BL-1' }) }
+        }
         // ЗДЕСЬ, ВНУТРИ ПОДГОТОВКИ КОПИИ, И ЕСТЬ ТА ПАУЗА. Отведение копии — настоящая работа
         // на диске; в бою она занимает секунды, и человек, снимающий тумблер, попадает именно
         // сюда.
         if (over.duringProvisioning) over.duringProvisioning({ worker, config })
+        // Путь копии называет САМ ТИК (`--path`), и настоящий каталог заводится по нему же.
+        const at = argsArray.indexOf('--path')
+        const path = over.realCopy && at >= 0 ? argsArray[at + 1] : workDir
+        if (over.realCopy && at >= 0) mkdirSync(path, { recursive: true })
         return {
           code: 0,
           stdout: JSON.stringify({
             ok: true,
-            path: workDir,
+            path,
             branch: 'wt/BL-1',
             expectedBase: copy.base,
             materialized: [],
+            ...(over.reusedCopy ? { reused: true } : {}),
           }),
         }
       }
@@ -232,6 +269,11 @@ async function runTick(
     },
     spawnWorker: (spec: Record<string, unknown>) => {
       spawned.push(spec)
+      // ЧТО БЫЛО НА ДИСКЕ В МОМЕНТ ЗАПУСКА, а не после закрытия попытки. Дом задачи живёт ровно
+      // столько, сколько идёт попытка: спросить о нём после тика — значит спросить об уборке, а
+      // не о том, с чем стартовал процесс. Оба вопроса нужны, и это первый из них.
+      const env = (spec.env ?? {}) as Record<string, string>
+      atSpawn.push({ home: env.CODEX_HOME ? existsSync(env.CODEX_HOME) : null, temp: env.TEMP ? existsSync(env.TEMP) : null })
       // МОЛЧАНИЕ ПЕРЕД ПЕРВЫМ СЛОВОМ — то самое, что песочница тратит на раздачу прав.
       if (over.firstFrameAfterMs) c.advance(over.firstFrameAfterMs)
       for (const l of lines) (spec.onLine as (l: string) => void)?.(l)
@@ -246,14 +288,26 @@ async function runTick(
 
   const res = await tick(deps)
   const rows = readAttempts(ledgerDir, 'BL-1')
-  return { res, row: rows[rows.length - 1], logged, spawned, worker, accountDir, workDir }
+  return {
+    res,
+    row: rows[rows.length - 1],
+    logged,
+    spawned,
+    atSpawn,
+    verbCalls,
+    worker,
+    accountDir,
+    workDir,
+    // Где копия ЭТОЙ задачи должна была бы лежать — тем же выражением, каким её называет тик.
+    copyPath: join(projectRoot, '.sma-worktrees', 'wt-BL-1'),
+  }
 }
 
 // ═══════════ (1) TEMP ЗАДАЧИ ДОЕЗЖАЕТ ДО СПАВНА ════════════════════════════════════════════
 
 describe('песочнице выдаётся Temp этой задачи, а не общий каталог машины', () => {
   it('окружение, с которым тик ПРАВДА спавнит, называет Temp внутри дома задачи — и он есть на диске', async () => {
-    const { spawned, worker } = await runTick({ realComposer: true })
+    const { spawned, atSpawn, worker } = await runTick({ realComposer: true })
 
     expect(spawned).toHaveLength(1) // процесс был — значит и окружение было
     const env = spawned[0].env as Record<string, string>
@@ -261,8 +315,10 @@ describe('песочнице выдаётся Temp этой задачи, а н�
     // ПРОВОД: не «функция умеет собрать путь», а «этим путём запущен процесс».
     expect(env.TEMP).toBe(codexTempFor(home))
     expect(env.TMP).toBe(codexTempFor(home))
-    // И НАЗВАННЫЙ КАТАЛОГ СДЕЛАН. Названный и не сделанный отправил бы процесс обратно в общий.
-    expect(existsSync(String(env.TEMP))).toBe(true)
+    // И НАЗВАННЫЙ КАТАЛОГ СДЕЛАН — СПРОШЕНО В МОМЕНТ ЗАПУСКА. Названный и не сделанный отправил
+    // бы процесс обратно в общий. После тика этого каталога уже нет (см. блок об уборке ниже),
+    // поэтому вопрос задаётся там, где на него есть осмысленный ответ.
+    expect(atSpawn[0].temp).toBe(true)
   })
 
   it('это дерево — своё и пустое: раздавать права по нему нечего', async () => {
@@ -271,6 +327,58 @@ describe('песочнице выдаётся Temp этой задачи, а н�
     // Каталог задачи, а не общий каталог пользователя, — вся суть починки одним утверждением.
     expect(String(env.TEMP).replace(/\\/g, '/')).toContain('codex-tasks/BL-1')
     expect(String(env.TEMP)).not.toBe(tmpdir())
+  })
+})
+
+// ═══════════ (5) ДОМ ЗАДАЧИ УХОДИТ ВМЕСТЕ С ПОПЫТКОЙ ══════════════════════════════════════
+
+describe('дом задачи убирается, когда попытка закрылась', () => {
+  it('дом с временным каталогом внутри жив в момент запуска — и его нет после закрытия попытки', async () => {
+    const { atSpawn, worker, res } = await runTick({ realComposer: true })
+
+    // Попытка дошла до конца обычной дорогой — уборка не куплена ценой сорванного прогона.
+    expect(res.failed).toBeFalsy()
+    const home = codexHomeFor({ account: worker.account, taskId: 'BL-1' })
+    // БЫЛ, когда стартовал процесс…
+    expect(atSpawn[0].home).toBe(true)
+    expect(atSpawn[0].temp).toBe(true)
+    // …И НЕ ОСТАЛСЯ. Раньше здесь копился каталог на задачу навсегда: общий Temp чистит система,
+    // а этот не чистил никто.
+    expect(existsSync(home)).toBe(false)
+  })
+
+  it('на провале — тоже: после отказа по тумблеру дома задачи нет, и уборка названа в журнале', async () => {
+    const { res, logged, worker } = await runTick({
+      realComposer: true,
+      duringProvisioning: ({ worker: w }) => {
+        w.enabled = false
+      },
+    })
+
+    expect(res.failed).toMatchObject({ reason: 'worker_switched_off' })
+    // Дом чеканит сборка команды, а отказ по тумблеру стоит ПЕРЕД ней — значит чеканить было
+    // нечего, и убирать нечего. Правда, которую здесь важно зафиксировать: каталога нет ни в
+    // каком виде, ни как остаток попытки, ни как остаток отказа.
+    expect(existsSync(codexHomeFor({ account: worker.account, taskId: 'BL-1' }))).toBe(false)
+    expect(logged.some((e) => e.type === 'task.refused' && e.reason === 'worker_switched_off')).toBe(true)
+  })
+
+  it('убирается ТОЛЬКО дом задачи: дом счёта и всё, что рядом, этой руке не принадлежат', () => {
+    const acct = mkDir('sma-sessionstart-discard-')
+    const home = join(acct, 'codex-tasks', 'T-9')
+    mkdirSync(join(home, 'sub'), { recursive: true })
+    writeFileSync(join(home, 'auth.json'), '{}', 'utf8')
+
+    // Чужое имя задачи — не наш каталог, даже если он лежит там же.
+    expect(discardCodexHome({ home, taskId: 'T-8' }).removed).toBe(false)
+    expect(existsSync(home)).toBe(true)
+    // Дом СЧЁТА, поданный как дом задачи, не удаляется вовсе: предпоследний сегмент не тот.
+    expect(discardCodexHome({ home: acct, taskId: 'T-9' }).removed).toBe(false)
+    expect(existsSync(acct)).toBe(true)
+    // А свой — уходит целиком, вместе с тем, что внутри.
+    expect(discardCodexHome({ home, taskId: 'T-9' }).removed).toBe(true)
+    expect(existsSync(home)).toBe(false)
+    expect(existsSync(acct)).toBe(true)
   })
 })
 
@@ -329,6 +437,70 @@ describe('отмена живой попытки добивает и помощ�
     } as never)
     h.kill()
     expect(killed).toEqual(['одиночный pid'])
+  })
+
+  /** Ребёнок, который умеет умереть: обработчики запоминаются, чтобы позвать их руками. */
+  const dyingChild = (pid: number, killed: string[]) => {
+    const handlers: Record<string, ((...a: unknown[]) => void)[]> = {}
+    return {
+      child: {
+        pid,
+        stdin: { write: () => {}, end: () => {} },
+        stdout: { on: () => {} },
+        on: (ev: string, fn: (...a: unknown[]) => void) => {
+          ;(handlers[ev] ||= []).push(fn)
+        },
+        kill: () => killed.push('одиночный pid'),
+      },
+      exit: () => (handlers.exit ?? []).forEach((fn) => fn(0, null)),
+    }
+  }
+
+  it('ребёнок уже вышел — приказа не отдаёт никто: номер процесса система переиспользует', () => {
+    const killed: string[] = []
+    const treeOrders: number[] = []
+    const dying = dyingChild(4242, killed)
+    const h = spawnWorker({
+      bin: 'codex',
+      args: [],
+      cwd: '/tmp/копия',
+      env: {},
+      spawnImpl: () => dying.child,
+      killTreeImpl: ({ pid }: { pid: number }) => {
+        treeOrders.push(pid)
+        return true
+      },
+    } as never)
+
+    expect(h.alive()).toBe(true)
+    dying.exit() // ОС сообщила о смерти ребёнка — с этой секунды номер принадлежит не нам
+    expect(h.alive()).toBe(false)
+
+    h.kill()
+    // ПРИКАЗА НЕТ ВОВСЕ. «Этот и всё, что он породил» по чужому номеру снесло бы дерево того,
+    // кто занял номер после нас, — а окно между выходом ребёнка и закрытием попытки занимают
+    // ворота, квитанция и переповерка, то есть секунды.
+    expect(treeOrders).toEqual([])
+    expect(killed).toEqual([])
+  })
+
+  it('живого ребёнка та же ручка гасит по-прежнему — тишина куплена не ценой отмены', () => {
+    const killed: string[] = []
+    const treeOrders: number[] = []
+    const dying = dyingChild(4242, killed)
+    const h = spawnWorker({
+      bin: 'codex',
+      args: [],
+      cwd: '/tmp/копия',
+      env: {},
+      spawnImpl: () => dying.child,
+      killTreeImpl: ({ pid }: { pid: number }) => {
+        treeOrders.push(pid)
+        return true
+      },
+    } as never)
+    h.kill()
+    expect(treeOrders).toEqual([4242])
   })
 
   it('на Windows приказ — «этот и всё, что он породил»; на других системах он честно не отдаётся', () => {
@@ -473,6 +645,41 @@ describe('работник, выключенный пока попытка го�
     const { res, spawned } = await runTick()
     expect(spawned).toHaveLength(1)
     expect(res.failed).toBeFalsy()
+  })
+
+  it('копия, отведённая под эту попытку, отзывается вместе с отказом — сиротой не остаётся', async () => {
+    const { res, spawned, verbCalls, copyPath, logged } = await runTick({
+      realCopy: true,
+      duringProvisioning: ({ worker }) => {
+        worker.enabled = false
+      },
+    })
+
+    expect(res.failed).toMatchObject({ reason: 'worker_switched_off' })
+    expect(spawned).toHaveLength(0)
+    // Копия была отведена по-настоящему — и её больше нет: раньше она оставалась на диске
+    // вместе с веткой, а следующая попытка получала её ПЕРЕИСПОЛЬЗОВАННОЙ.
+    expect(verbCalls.some((c) => c.startsWith('worktree provision'))).toBe(true)
+    expect(verbCalls.some((c) => c.startsWith('worktree remove') && c.includes('--delete-branch'))).toBe(true)
+    expect(existsSync(copyPath)).toBe(false)
+    expect(logged.some((e) => e.type === 'task.worktree_discarded')).toBe(true)
+  })
+
+  it('а копию ПРОШЛОЙ попытки тот же отказ не трогает: там чужие коммиты', async () => {
+    const { res, verbCalls, copyPath, logged } = await runTick({
+      realCopy: true,
+      reusedCopy: true,
+      duringProvisioning: ({ worker }) => {
+        worker.enabled = false
+      },
+    })
+
+    expect(res.failed).toMatchObject({ reason: 'worker_switched_off' })
+    // Снятие ветки унесло бы с диска работу, за которую уже заплатили. Такую копию убирает
+    // только суточный обход — и только через сутки после закрытия задачи.
+    expect(verbCalls.some((c) => c.startsWith('worktree remove'))).toBe(false)
+    expect(existsSync(copyPath)).toBe(true)
+    expect(logged.some((e) => e.type === 'task.worktree_kept')).toBe(true)
   })
 
   it('состав читается В МОМЕНТ ВОПРОСА, а не с сохранённой ссылки на прошлый список', () => {
