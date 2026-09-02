@@ -25,15 +25,27 @@
  *      этого один посторонний упрёк аудитора отправлял человеку уже пересобранную карту;
  *  11. строка ЗАМЕРА (бейдж прогона, квитанция) — единственная непустая база, которая
  *      разводится без человека: числа измерены на двух разных деревьях, слитого не видел ни
- *      один прогон, и своя сторона берётся не как правая, а как одна из двух устаревших. Без
+ *      один прогон, и сторона вершины берётся не как правая, а как одна из двух устаревших. Без
  *      этого одна строка бейджа отказывала склейке НА ВЕСЬ README — а перештамповывает бейдж
- *      КАЖДАЯ работа этого дома. Исключение узкое: бейдж версии и рукописное рядом — человеку.
+ *      КАЖДАЯ работа этого дома. Исключение узкое: бейдж версии — человеку;
+ *  12. строки замера ВЫЧИТАЮТСЯ из секции, а не судят её целиком: пункт, честно дописанный
+ *      рядом с бейджем, живёт, а спор о РУКОПИСНОЙ строке по-прежнему уходит человеку — и
+ *      уходит ПОИМЁННО, номером строки и её началом, а не фразой «обе стороны правили
+ *      существующие строки», по которой спор искали в README глазами;
+ *  13. сторона вершины зависит от НАПРАВЛЕНИЯ: у посадки это `ours`, у сведения ветки —
+ *      `theirs`. «Своя» сторона в двери сведения означала сторону ВЕТКИ, и бейдж конфликтовал
+ *      заново на каждом движении main.
  *
  * Швы: execGit / io / run — подделки. Ни настоящего git, ни настоящего диска, ни одной
  * настоящей команды пересборки.
  */
 
 import { describe, it, expect } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   conflictedFiles,
@@ -49,6 +61,7 @@ import {
   mechanicalPaths,
   isMechanicalPath,
   measuredLinePatterns,
+  isMeasuredLine,
   hasConflictMarkers,
   CONFLICT_FILES_CAP,
   MECHANICAL_DEFAULTS,
@@ -56,6 +69,9 @@ import {
 } from '../lib/branch-sync.mjs'
 
 const NUL = String.fromCharCode(0)
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const PRODUCT_ROOT = join(HERE, '..', '..', '..')
 
 /** Подделка git: пишет вызовы и отвечает по сценарию (строка или бросок). */
 function fakeGit(script: Record<string, any> = {}) {
@@ -188,7 +204,11 @@ describe('склейка дописанного — обе стороны ост
     const text = ['<<<<<<< HEAD', 'моя правка', '||||||| base', 'то, что было', '=======', 'чужая правка', '>>>>>>> main'].join('\n')
     const out = unionResolve(text)
     expect(out.text).toBeNull()
-    expect(out.reason).toContain('существующие строки')
+    expect(out.reason).toContain('спор о содержании')
+    // ОТКАЗ НАЗЫВАЕТ СТРОКУ, А НЕ КЛАСС СОБЫТИЯ: номер в размеченном файле и её начало.
+    expect(out.reason).toContain('строка 4')
+    expect(out.reason).toContain('то, что было')
+    expect(out.disputed).toEqual([{ line: 4, text: 'то, что было' }])
   })
 
   it('разметка без базы не разводится вовсе — доказать безопасность нечем', () => {
@@ -216,11 +236,24 @@ describe('секция чистого замера — устарела у об�
   const section = (ours: string, base: string, theirs: string) =>
     ['<<<<<<< HEAD', ours, '||||||| base', base, '=======', theirs, '>>>>>>> main'].join('\n')
 
-  it('бейдж прогона с обеих сторон → берётся своя, секция засчитана как замер', () => {
+  it('бейдж прогона с обеих сторон → берётся сторона вершины, секция засчитана как замер', () => {
     const out = unionResolve(section(badge(6156), badge(6054), badge(6100)), { measuredLines: lines })
     expect(out.text).toBe(badge(6156))
     expect(out.measured).toBe(1)
     expect(hasConflictMarkers(out.text as string)).toBe(false)
+  })
+
+  // У ПОСАДКИ ВЕРШИНА — `ours`, У СВЕДЕНИЯ ВЕТКИ — `theirs`, и это не вкус, а направление
+  // слияния. Пока здесь всегда бралась «своя» сторона, в двери сведения это значило сторону
+  // ВЕТКИ: бейдж ветки оставался своим, вершина уезжала, и та же строка конфликтовала снова на
+  // КАЖДОМ движении main — ровно та жалоба, ради которой этот замок и поставлен.
+  it('сторона вершины объявляется звонящим: у сведения ветки это theirs', () => {
+    const out = unionResolve(section(badge(6156), badge(6054), badge(6100)), {
+      measuredLines: lines,
+      trunkSide: 'theirs',
+    })
+    expect(out.text).toBe(badge(6100))
+    expect(out.measured).toBe(1)
   })
 
   it('в одном файле и абзац, и бейдж → развелось ВСЁ, а раньше отказывало всё', () => {
@@ -246,15 +279,53 @@ describe('секция чистого замера — устарела у об�
     const ver = (v: string) => `  <img src="https://img.shields.io/badge/version-${v}-3B82F6">`
     const out = unionResolve(section(ver('5.7.2'), ver('5.7.0'), ver('5.7.1')), { measuredLines: lines })
     expect(out.text).toBeNull()
-    expect(out.reason).toContain('существующие строки')
+    expect(out.reason).toContain('спор о содержании')
+    expect(out.reason).toContain('version-5.7.0')
   })
 
-  it('рукописная строка, заехавшая в секцию с бейджем, возвращает её человеку целиком', () => {
+  /**
+   * ДОПИСАННЫЙ ПУНКТ, ЗАЕХАВШИЙ В СЕКЦИЮ С БЕЙДЖЕМ, — НЕ СПОР, И ЭТО ЗАМЕРЕНО ЖИВЫМ ПРОГОНОМ.
+   *
+   * До 02.09.2026 секция судилась целиком: «все три стороны обязаны быть замером». Одна честно
+   * дописанная строка рядом с бейджем отказывала склейке НА ВЕСЬ README, и две посадки подряд
+   * (02.09, 22:21 и 22:36) вернули оба README со словами «обе стороны правили существующие
+   * строки» — при том что спорила ровно строка `<img … badge/tests-…>`, которую посадка всё
+   * равно перештамповывает. Теперь строки замера ВЫЧИТАЮТСЯ, и судится остаток базы.
+   */
+  it('дописанное рядом с бейджем живёт: замер берётся с вершины, пункт остаётся', () => {
     const out = unionResolve(
       section(`${badge(6156)}\nи моя правка рядом`, badge(6054), badge(6100)),
+      { measuredLines: lines, trunkSide: 'theirs' },
+    )
+    expect(out.text).toBe([badge(6100), 'и моя правка рядом'].join('\n'))
+    expect(out.measured).toBe(1)
+  })
+
+  it('дописали обе стороны рядом с бейджем → живут ОБА куска, а бейдж один', () => {
+    const out = unionResolve(
+      section(`${badge(6156)}\nмой пункт`, badge(6054), `${badge(6100)}\nсоседний пункт`),
+      { measuredLines: lines },
+    )
+    expect(out.text).toBe([badge(6156), 'мой пункт', 'соседний пункт'].join('\n'))
+    expect(out.measured).toBe(1)
+  })
+
+  it('сторона, УБРАВШАЯ бейдж, приняла решение — и оно не разводится молча', () => {
+    const out = unionResolve(section('просто строка', badge(6054), badge(6100)), { measuredLines: lines })
+    expect(out.text).toBeNull()
+    expect(out.reason).toContain('убрала или удвоила')
+  })
+
+  it('спор о РУКОПИСНОЙ строке рядом с бейджем → человеку, и строка названа номером', () => {
+    const out = unionResolve(
+      section(`${badge(6156)}\nмоя редакция пункта`, `${badge(6054)}\nстарый пункт`, `${badge(6100)}\nчужая редакция пункта`),
       { measuredLines: lines },
     )
     expect(out.text).toBeNull()
+    expect(out.reason).toContain('старый пункт')
+    expect(out.reason).toContain('строка 6')
+    // …и человеку сказано, что бейдж тут ни при чём — иначе он пойдёт чинить не то.
+    expect(out.reason).toContain('спорят не они')
   })
 })
 
@@ -822,5 +893,137 @@ describe('keepConflict — спор остаётся в дереве, и из н
   it('копии нет → честный отказ, а не бросок', () => {
     expect(abortSync({ cwd: '', execGit: () => '' })).toMatchObject({ ok: false, aborted: false })
     expect(unresolvedMergeHint('/copy')).toContain('/copy')
+  })
+})
+
+/**
+ * СТРОКА ЗНАЧКА ЖИВЁТ В НАСТОЯЩИХ README, А НЕ В ОБРАЗЦЕ ИЗ ТЕСТА.
+ *
+ * Образец `measured.lines` — это утверждение О ПРОДУКТЕ: «вот эта строка в этих двух файлах
+ * разводится без человека». Тест, сверяющий образец с самодельной строкой, зеленеет и тогда,
+ * когда шапка README переписана и образец больше ни во что не попадает — то есть ровно тогда,
+ * когда он и должен краснеть. Поэтому строка берётся С ДИСКА, из обоих README.
+ */
+describe('значок прогона обоих README опознаётся объявленным образцом', () => {
+  const patterns = measuredLinePatterns(MECHANICAL_DEFAULTS)
+
+  for (const file of ['README.md', 'README.ru.md']) {
+    it(`${file}: строка значка тестов — замер, а строка значка версии — нет`, () => {
+      const lines = readFileSync(join(PRODUCT_ROOT, file), 'utf8').split('\n')
+      const badgeLine = lines.find((l) => /badge\/tests-/.test(l))
+      const versionLine = lines.find((l) => /badge\/version-/.test(l))
+      expect(badgeLine, `в ${file} нет строки значка тестов`).toBeTruthy()
+      expect(versionLine, `в ${file} нет строки значка версии`).toBeTruthy()
+      expect(isMeasuredLine(badgeLine as string, patterns)).toBe(true)
+      // Выпуск ОБЪЯВЛЯЮТ, а не измеряют: этот значок остаётся спором о содержании.
+      expect(isMeasuredLine(versionLine as string, patterns)).toBe(false)
+    })
+  }
+})
+
+/**
+ * ПРОВОД ОТ ПРАВИЛА ДО РАБОЧЕЙ КОПИИ: НАСТОЯЩИЙ git, НАСТОЯЩИЙ ДИСК, НАСТОЯЩЕЕ СЛИЯНИЕ.
+ *
+ * Всё выше меряется на подделках, а подделка отвечает то, что ей велели. Жалоба же, из которой
+ * выросла эта починка, — про живое дерево: 02.09.2026, две посадки подряд отказаны на обоих
+ * README, пока спорила одна строка значка. Здесь та же дорога проходится целиком — от
+ * `MECHANICAL_DEFAULTS` до файла, который останется в копии после сведения.
+ */
+describe('сведение ветки с вершиной в НАСТОЯЩЕЙ копии — значок не мешает, а спор называется', () => {
+  const badge = (n: number) => `  <img src="https://img.shields.io/badge/tests-${n}%2F${n}-3CC0A0" alt="tests ${n}/${n}">`
+  const readme = (n: number, items: string[]) =>
+    ['<p align="center">', badge(n), '</p>', '', '# SMA', '', ...items, ''].join('\n')
+
+  /** Копия с вершиной `main` и веткой `feat`, отведённой от одной и той же базы. */
+  function copy(): { repo: string; git: (a: string[]) => string } {
+    const repo = mkdtempSync(join(tmpdir(), 'sma-sync-badge-'))
+    const git = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' })
+    git(['init', '-q', '-b', 'main'])
+    git(['config', 'user.email', 'suite@example.invalid'])
+    git(['config', 'user.name', 'suite'])
+    git(['config', 'commit.gpgsign', 'false'])
+    return { repo, git }
+  }
+
+  it('ветка со своим значком и НОВЫМ пунктом + main с другим значком → сведено, пункт жив', async () => {
+    const { repo, git } = copy()
+    const base = ['- пункт один', '- пункт два']
+    for (const f of ['README.md', 'README.ru.md']) writeFileSync(join(repo, f), readme(6054, base), 'utf8')
+    writeFileSync(join(repo, 'test-receipt.json'), '{"tests":6054}\n', 'utf8')
+    git(['add', '--', 'README.md', 'README.ru.md', 'test-receipt.json'])
+    git(['commit', '-q', '--no-verify', '-m', 'база'])
+
+    git(['checkout', '-q', '-b', 'feat'])
+    for (const f of ['README.md', 'README.ru.md']) {
+      writeFileSync(join(repo, f), readme(7000, [...base, '- пункт ветки']), 'utf8')
+    }
+    writeFileSync(join(repo, 'test-receipt.json'), '{"tests":7000}\n', 'utf8')
+    git(['add', '--', 'README.md', 'README.ru.md', 'test-receipt.json'])
+    git(['commit', '-q', '--no-verify', '-m', 'работа ветки'])
+
+    git(['checkout', '-q', 'main'])
+    for (const f of ['README.md', 'README.ru.md']) writeFileSync(join(repo, f), readme(6600, base), 'utf8')
+    writeFileSync(join(repo, 'test-receipt.json'), '{"tests":6600}\n', 'utf8')
+    git(['add', '--', 'README.md', 'README.ru.md', 'test-receipt.json'])
+    git(['commit', '-q', '--no-verify', '-m', 'вершина уехала'])
+    git(['checkout', '-q', 'feat'])
+
+    const res = await syncWithTrunk({ cwd: repo, trunk: 'main' })
+    expect(res.ok, JSON.stringify(res)).toBe(true)
+    expect(res.synced).toBe(true)
+    // Ни одного неразведённого файла — человека не позвали ни разу.
+    expect(git(['diff', '--name-only', '--diff-filter=U'])).toBe('')
+    // Вершина ОКАЗАЛАСЬ В РОДИТЕЛЯХ: собранное руками содержимое графу о сведении не говорит.
+    expect(git(['rev-list', '--count', 'HEAD..main']).trim()).toBe('0')
+
+    for (const f of ['README.md', 'README.ru.md']) {
+      const text = readFileSync(join(repo, f), 'utf8')
+      expect(text, `${f}: пункт ветки не пережил сведения`).toContain('- пункт ветки')
+      expect(text, `${f}: пункты вершины не пережили сведения`).toContain('- пункт два')
+      // Значок взят СО СТОРОНЫ ВЕРШИНЫ: иначе та же строка спорит снова на каждом движении main.
+      expect(text).toContain('tests-6600')
+      expect(text).not.toContain('<<<<<<<')
+    }
+    // Квитанция и значок — с ОДНОЙ стороны: `badge --check` сверяет README именно с квитанцией.
+    expect(readFileSync(join(repo, 'test-receipt.json'), 'utf8')).toContain('6600')
+    expect((res.notes || []).join(' ')).toContain('перештампуйте')
+  })
+
+  it('ветка правила ТОТ ЖЕ пункт, что и main → отказ, и он называет спорные СТРОКИ', async () => {
+    const { repo, git } = copy()
+    const base = ['- пункт один', '- пункт два']
+    for (const f of ['README.md', 'README.ru.md']) writeFileSync(join(repo, f), readme(6054, base), 'utf8')
+    git(['add', '--', 'README.md', 'README.ru.md'])
+    git(['commit', '-q', '--no-verify', '-m', 'база'])
+
+    git(['checkout', '-q', '-b', 'feat'])
+    for (const f of ['README.md', 'README.ru.md']) {
+      writeFileSync(join(repo, f), readme(7000, ['- пункт один', '- пункт два, как его видит ветка']), 'utf8')
+    }
+    git(['add', '--', 'README.md', 'README.ru.md'])
+    git(['commit', '-q', '--no-verify', '-m', 'ветка переписала пункт'])
+
+    git(['checkout', '-q', 'main'])
+    for (const f of ['README.md', 'README.ru.md']) {
+      writeFileSync(join(repo, f), readme(6600, ['- пункт один', '- пункт два, как его видит вершина']), 'utf8')
+    }
+    git(['add', '--', 'README.md', 'README.ru.md'])
+    git(['commit', '-q', '--no-verify', '-m', 'вершина переписала пункт'])
+    git(['checkout', '-q', 'feat'])
+
+    const res = await syncWithTrunk({ cwd: repo, trunk: 'main' })
+    expect(res.ok).toBe(false)
+    expect(res.conflict).toBe(true)
+    expect(res.remaining).toContain('README.md')
+    expect(res.remaining).toContain('README.ru.md')
+    const said = (res.notes || []).join(' ')
+    // ОТКАЗ НАЗЫВАЕТ СТРОКУ, А НЕ КЛАСС СОБЫТИЯ.
+    expect(said).toContain('спор о содержании')
+    expect(said).toContain('строка ')
+    expect(said).toContain('пункт два')
+    // …и НЕ валит вину на значок: его секция здесь развелась сама, спорит рукописный пункт.
+    expect(said).not.toContain('badge/tests-')
+    // Дерево цело: несведённая ветка лучше половинчатого слияния, которое выглядит готовым.
+    expect(git(['diff', '--name-only', '--diff-filter=U'])).toBe('')
   })
 })
