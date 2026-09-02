@@ -145,8 +145,32 @@ export function summarizeRedRun(output) {
   return { failedTest, failureDetail: detail.length ? detail.join('\n') : null }
 }
 
+/**
+ * outputTail(output, lines) — ПОСЛЕДНИЕ строки чужого вывода, без краски и без рамок.
+ *
+ * У упавшего прогона причина стоит в начале блока — её достаёт `summarizeRedRun`. У упавшей
+ * СБОРКИ всё наоборот: инструмент печатает свой ход целиком, а говорит о поломке последними
+ * строками. Поэтому вторая мерка, а не второй разбор: та же чистка от краски и от рамок, то
+ * же обрезание строки по длине — отказ читают глазами, а не грепом.
+ *
+ * @param {string} output — то, что напечатал ребёнок (оба потока)
+ * @param {number} [lines] — сколько последних строк удержать
+ * @returns {string} — пустая строка, если удерживать было нечего
+ */
+export function outputTail(output, lines = DETAIL_LINES * 2) {
+  const text = String(output ?? '').replace(ANSI_RE, '')
+  const kept = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !FRAME_RE.test(line))
+  return kept
+    .slice(-Math.max(1, lines))
+    .map((line) => line.slice(0, LINE_CAP))
+    .join('\n')
+}
+
 /** Вывод, приехавший с упавшего ребёнка: оба потока, в порядке «сперва обычный». */
-function saidBy(err) {
+export function saidBy(err) {
   const out = err && err.stdout != null ? String(err.stdout) : ''
   const errText = err && err.stderr != null ? String(err.stderr) : ''
   return `${out}${out && errText ? '\n' : ''}${errText}`

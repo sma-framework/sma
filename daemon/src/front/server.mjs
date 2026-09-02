@@ -130,6 +130,9 @@ import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 // СКОЛЬКО ИМЁН КОНФЛИКТА ПОКАЗЫВАТЬ — потолок один на весь продукт и живёт там, где живёт сам
 // словарь конфликта. Второе число здесь однажды разошлось бы с тем, от которого считается «ещё N».
 import { CONFLICT_FILES_CAP as MERGE_CONFLICT_FILES_SHOWN } from '../../../scripts/sma/lib/branch-sync.mjs'
+// Код отказа сборки окна берётся у ритуала, а не пишется здесь второй раз: одно слово, один
+// хозяин — иначе дверь и квитанция однажды назовут одну беду двумя разными именами.
+import { SPA_BUILD_FAILED_CODE } from '../../../scripts/sma/lib/merge-gate.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
 import { writeWaveHold, WAVE_ACTIONS } from '../queue/wave-holds.mjs'
 import { BATCH_DECISIONS, parseReceiptProof, projectOf } from './state.mjs'
@@ -1984,6 +1987,28 @@ function refusalClass(m) {
     return {
       reasonCode: 'env_broken',
       reason: said || 'слияние не выполнено: среда прогона сломана — тесты не запускались, чинится в основном дереве',
+    }
+  }
+
+  // ОКНО НЕ СОБРАЛОСЬ — И ЭТО ТОЖЕ НЕ ТЕСТЫ. Посадка пересобирает раздачу окна на сведённом
+  // дереве до прогона; сборка, которая не прошла, останавливает слияние ДО первого теста.
+  // Раньше такой отказ приезжал как «тесты красные, имя теста не названо» — человек шёл
+  // искать упавший тест, которого не существовало, а чинить надо было сборку. Хвост вывода
+  // сборщика едет к глазам: причина живёт в последних строках и больше нигде.
+  if (m.spaBuildFailed === true) {
+    const tail =
+      typeof m.failureDetail === 'string' && m.failureDetail.trim()
+        ? m.failureDetail
+            .split('\n')
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .join(' · ')
+        : null
+    return {
+      reasonCode: SPA_BUILD_FAILED_CODE,
+      reason:
+        'слияние не выполнено: окно не собралось на сведённом дереве — тесты не запускались, чинится сборка. ' +
+        (tail ? `Хвост сборки: ${tail}` : 'Сборщик не сказал ни строки — смотрите вывод сборки'),
     }
   }
 
