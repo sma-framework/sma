@@ -2358,9 +2358,11 @@ export interface ApproveResult {
   landing?: {
     stamped?: boolean
     committed?: boolean
-    /** Гонялся ли полный набор ЗДЕСЬ, или квитанция работника описывала это же дерево. */
+    /**
+     * Гонялся ли полный набор ЗДЕСЬ. Ложь значит «квитанция работника описывала это же
+     * дерево» — второго поля об одном факте окну не нужно, и оно бы разошлось с первым.
+     */
     ran?: boolean
-    reusedReceipt?: boolean
     sha?: string | null
     tests?: number | null
     files?: number | null
