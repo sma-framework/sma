@@ -410,6 +410,14 @@ export const FAIL_REASONS = Object.freeze([
   'worker_process_gone',
   'attempt_lifetime_exceeded',
   'window_exhausted',
+  // ПОПРАВКА ЧЕЛОВЕКА ОБОРВАЛА ХОД У РАБОТНИКА, КОТОРОМУ ЕЁ НЕ ВРУЧИТЬ НА ЖИВОМ ХОДУ. Дверь
+  // «перебить сейчас» убивает ребёнка на всякой полосе, но возобновить сессию можно не на
+  // всякой: у стороннего вендора поправке остаётся ровно одна дорога — задание СЛЕДУЮЩЕГО
+  // захода. Значит попытка обязана кончиться перевыдаваемым концом, иначе слово, честно
+  // лежащее на диске, не поедет никогда (замерено 01.09: ход убит, задача умерла пустой).
+  // Отдельно от agent_error и no_receipt: с работой ничего не случилось, её прервали — и
+  // карточка, назвавшая это ошибкой работника, послала бы человека чинить собственное слово.
+  'redirect_restart',
   // THE FOUR THE DISPATCHER DECIDES BEFORE A PROCESS EXISTS. `fail()` throws on a word it
   // does not carry, so a tick that finally tells the truth about a route would take the
   // whole tick down with it unless the truth is admitted here first.
@@ -645,6 +653,7 @@ export const REASON_LABELS = Object.freeze({
   worker_process_gone: 'процесс работника завершился — задача перевыдана',
   attempt_lifetime_exceeded: 'попытка переросла предел жизни (4 ч) — перевыдана',
   window_exhausted: 'окно подписки исчерпано',
+  redirect_restart: 'ход оборван вашей поправкой — задача перевыдана, поправка едет в задании следующего захода',
   wait_for_window: 'нет свободного окна — ждёт окна подписки, платный канал не задействован',
   budget_stop: 'остановлено бюджетом: месячный лимит платного канала выбран',
   api_cap_unset: 'нет окна, платный канал не настроен — задача ждёт окна подписки',
