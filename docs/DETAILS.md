@@ -732,6 +732,20 @@ it. The scene hands the run engine a receipts root of its own (`SMA_UI_RECEIPTS`
 does **not** take it away at teardown; `ui-drive` prints the receipt's absolute path on its last
 line. Run standalone, the engine still writes to `.planning/ui-reviews/` exactly as before.
 
+**And the key never rides out with the failure.** The window the engine is pointed at stands behind
+a token, so the address it is handed carries one — and the receipt has masked that address since the
+day receipts were found publishing it. That was half a door. A driver failure is not an address: it
+is a *sentence* with an address inside it, because a browser quotes the full target it was
+navigating to when it reports a timeout or a refused connection. That sentence goes where no
+receipt redaction reaches — onto the process's own output, and from there into the log of whoever
+launched the run. Measured on a live run: the receipt was masked exactly as designed while the same
+token stood bare one line below it, inside the failure that produced the receipt. So the mask now
+stands on the **exit** rather than at each writer: everything `ui-drive` says out loud — its own
+lines, the driver's lines, the text of any exception, caught or not — and everything it writes to
+disk passes through it, and there is no way to print past it. Only the credential's *value* is
+replaced; the address, the ordinary parameters and the error's own words survive, because a receipt
+nobody can follow trades one defect for another.
+
 That sideways measurement follows the CONTENT, not the document. A window that carries its minimum
 width on a container inside the page measures perfectly clean at phone width while most of the
 screen lies past the edge — so the finding names the box that holds the content and how many pixels

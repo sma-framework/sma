@@ -61,6 +61,7 @@ import {
   parseSteps,
   readiness,
   receiptsRoot,
+  redactText,
   redactUrl,
   renderReceipt,
   resolveDriveViewport,
@@ -69,6 +70,57 @@ import {
   verdict,
   worstOverflow,
 } from './lib/ui-drive.mjs'
+
+/**
+ * ═════════════ THE MASK STANDS ON THE EXIT, NOT AT EACH WRITER ═════════════
+ *
+ * The receipt has masked the address it was pointed at since the day that leak was found, and
+ * that turned out to be half a door. A driver failure is a SENTENCE with the full address inside
+ * it — the browser quotes where it was going, query string and all — and such a sentence does not
+ * go to the receipt at all: it goes to this process's stdout, and from there into the log of
+ * whoever launched the run. Closing that one write, then the next one, means keeping the list of
+ * every place this file speaks in somebody's head; the first new error message re-opens the door.
+ *
+ * So the mask sits on the exit itself. Everything this process says out loud — its own lines, the
+ * driver's lines, the text of any exception, caught or not — passes through it, and there is no
+ * way to print past it. It costs one scan per chunk of output and removes the whole class.
+ *
+ * BYTES THAT WERE NOT TOUCHED TRAVEL AS THEY CAME: a buffer is re-encoded only when a credential
+ * was actually found in it, so a multi-byte character split across two chunks does not pay for a
+ * scan that found nothing.
+ */
+function maskStream(stream) {
+  const write = stream.write.bind(stream)
+  stream.write = (chunk, encoding, callback) => {
+    const text = typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : null
+    const safe = text === null ? null : redactText(text)
+    if (safe === null || safe === text) return write(chunk, encoding, callback)
+    return write(safe, 'utf8', typeof encoding === 'function' ? encoding : callback)
+  }
+}
+maskStream(process.stdout)
+maskStream(process.stderr)
+
+/**
+ * ═══════ THE ONE PRINTER THAT DOES NOT USE THE STREAM: THE RUNTIME'S OWN ═══════
+ *
+ * A mask on the stream covers every line this process writes — and node writes the report of a
+ * throw NOBODY CAUGHT past the stream object entirely, straight at the file descriptor. That is
+ * not a hypothetical corner: a browser driver calls its own listeners from its own timers, so a
+ * failure raised inside one is awaited by nothing here, and its text is exactly the sentence this
+ * whole file exists to hold — the full address, query string and all.
+ *
+ * So the two ways out of the process that skip the stream are taken over and sent back through it.
+ * The run is NOT RUN either way, with the same words and the same exit code a crash always had: a
+ * mask that swallowed the failure would trade a published credential for a run that lied.
+ */
+const fatal = (err) => {
+  const text = err instanceof Error ? err.message : String(err)
+  process.stdout.write(`SMA ui-drive: NOT RUN — ${text.split('\n')[0]}\n  This is not a pass.\n`)
+  process.exit(3)
+}
+process.on('uncaughtException', fatal)
+process.on('unhandledRejection', fatal)
 
 /**
  * Press every control the page exposes and record what broke — the part of QA that is
@@ -613,14 +665,19 @@ async function main() {
     { origin }
   )
   const v = verdict(findings, { ran: true })
-  const receipt = renderReceipt({ url, steps: parsed.steps, shots, findings, verdict: v, startedAt, coverage })
+  // THE DISK IS AN EXIT TOO. The stream mask covers what this process says; a file is written
+  // past it, and a finding's prose carries whatever the driver put in its error message. So the
+  // same mask runs over the finished text of both artifacts — the credential is removed on
+  // whichever exit it reaches, rather than on the exits somebody remembered to list.
+  const receipt = redactText(renderReceipt({ url, steps: parsed.steps, shots, findings, verdict: v, startedAt, coverage }))
   writeFileSync(join(outDir, 'RUN.md'), receipt)
   // BOTH HALVES OF THE RECEIPT, OR NEITHER. The prose and the machine-readable journal are
   // one artifact in two files, and they are committed together; redacting only the prose
-  // would leave the credential sitting in the JSON right beside it.
+  // would leave the credential sitting in the JSON right beside it. The mask replaces a VALUE
+  // with a word and adds no character JSON would have to escape, so the journal stays parseable.
   writeFileSync(
     join(outDir, 'run.json'),
-    `${JSON.stringify({ url: redactUrl(url), startedAt, verdict: v, coverage, findings, shots }, null, 2)}\n`,
+    redactText(`${JSON.stringify({ url: redactUrl(url), startedAt, verdict: v, coverage, findings, shots }, null, 2)}\n`),
   )
 
   // ABSOLUTE, always. The relative form read fine from the shell it was launched in and

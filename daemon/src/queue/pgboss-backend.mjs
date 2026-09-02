@@ -130,7 +130,7 @@ import {
   UTF8,
 } from './encoding.mjs'
 import { countTerminalOutcomes, recordAttempt } from './attempt-ledger.mjs'
-import { APPROVAL_TABLE, AWAITING_APPROVAL, ensureApprovalTable, markAwaitingApproval } from './approval-store.mjs'
+import { APPROVAL_TABLE, AWAITING_APPROVAL, CLOSED_BY_PERSON, ensureApprovalTable, markAwaitingApproval } from './approval-store.mjs'
 import { applyTransition } from './state-machine.mjs'
 import { defaultEnvelope } from './capability-envelope.mjs'
 import { attemptIdFor } from '../front/journal.mjs'
@@ -1589,6 +1589,12 @@ export function createPgBossQueue({
     const data = r.data || {}
     const retries = r.retry_count ?? 0
     const output = r.output || {}
+    // ПОСЛЕДНЕЕ СЛОВО ЧЕЛОВЕКА О ЭТОЙ СТРОКЕ, если оно сказано (`closeWithWords`). Живёт в
+    // СВОЁМ поле, а не подменяет собой конец работы: чем кончилась работа — факт задания, а
+    // «эту работу делать не будут, потому что устарело» — решение человека, и на карточке
+    // это два разных предложения.
+    const closed = r.approval_status === CLOSED_BY_PERSON ? { reason: r.closed_reason ?? null, note: r.returned_note ?? null } : null
+    const status = statusOf(r)
     return {
       id: data.id,
       source: data.source,
@@ -1602,7 +1608,9 @@ export function createPgBossQueue({
       ...(typeof data.project === 'string' && data.project ? { project: data.project } : {}),
       title: data.title,
       priority: data.priority ?? r.priority ?? 0,
-      status: statusOf(r),
+      status,
+      // ЗАКРЫТО СЛОВАМИ — своим полем, и только когда слово сказано.
+      ...(closed ? { closedByPerson: closed } : {}),
       // the stage envelope, carried exactly as the reference backend carries it — see the
       // note there: a phase stage is recognised by this object and never by its title
       ...(data.data ? { data: data.data } : {}),
@@ -1650,7 +1658,16 @@ export function createPgBossQueue({
       claimedAt: r.started_on == null ? null : (data.claimedAt ?? r.started_on),
       leaseRenewedAt: r.started_on ?? null,
       completedAt: r.completed_on ?? null,
-      failure_reason: output.reason ?? exhaustedReasonOf(r, output),
+      // ЗАКРЫТАЯ РУКОЙ КРАСНАЯ СТРОКА ГОВОРИТ ОБ ЭТОМ ТЕМ ЖЕ СЛОВОМ, ЧТО И ОСТАНОВЛЕННАЯ.
+      // Это не украшение карточки, а тормоз: `stoppedByAPerson` — единственное предложение,
+      // которым весь продукт отвечает на «решил ли здесь человек», и его спрашивают автоповтор
+      // и перевыдача. Оставить прежнюю причину значило бы, что очередь через минуту сама
+      // поставит заново работу, которую человек только что закрыл словами, — то же самое, на
+      // чём 01.09 сгорели три параллельных процесса по одной строке. ЧТО ИМЕННО он сказал,
+      // едет рядом в `closedByPerson`: слово об исходе не заменяет собой причину срыва, а
+      // объясняет, чьей рукой строка закрыта.
+      failure_reason:
+        closed && status === 'failed' ? 'manual' : (output.reason ?? exhaustedReasonOf(r, output)),
     }
   }
 
@@ -1671,7 +1688,7 @@ export function createPgBossQueue({
   const JOB_COLUMNS = `j.id, j.name, j.priority, j.data, j.state, j.retry_count,
          j.created_on, j.started_on, j.completed_on, j.output`
   const LIST_WITH_APPROVAL = `SELECT ${JOB_COLUMNS},
-              a.status AS approval_status, a.returned_note, a.merge_receipt
+              a.status AS approval_status, a.returned_note, a.merge_receipt, a.closed_reason
          FROM pgboss.job j
          LEFT JOIN ${APPROVAL_TABLE} a ON a.id = (j.data->>'id')
         WHERE j.name = ANY($1)`

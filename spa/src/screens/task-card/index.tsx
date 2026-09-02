@@ -8,6 +8,7 @@ import type { TimerState } from '../../shell/live-timer'
 import {
   useApprove,
   useAttemptQuery,
+  useCloseTaskWithWords,
   useDecideToolTicket,
   useDiffQuery,
   useCancelTask,
@@ -22,6 +23,7 @@ import type {
   AttemptDigest,
   AttemptLog as AttemptLogPayload,
   AttemptRole,
+  ClosingReason,
   TaskAttempt,
   TaskStatus,
   WaitingTicket,
@@ -46,6 +48,7 @@ import { openSystemConsole, useTellConsoleContext } from '../../shell/console-co
 import { openScreen, useOpenedWith } from '../../shell/navigation'
 import { useComposerDraft } from '../../shell/useComposerDraft'
 import { AttemptTimeline } from './AttemptTimeline'
+import { canCloseWithWords, closingNeedsWords, CLOSING_OPTIONS } from './close'
 import { DiffSummary, DiffText } from './DiffView'
 import { JournalSection } from './JournalSection'
 import { LiveFlow } from './LiveFlow'
@@ -842,8 +845,17 @@ export function Screen() {
   const approve = useApprove()
   const returnTask = useReturnTask()
   const setWords = useTaskWords(taskId)
+  const closeTask = useCloseTaskWithWords(taskId)
 
   const [returning, setReturning] = useState(false)
+  /**
+   * ЗАКРЫТЬ СЛОВАМИ — второе действие строки, стоящей на человеке, и оно раскрывается так же,
+   * как возврат: сначала выбор исхода и слова, и только потом нажатие. Решение из одной кнопки
+   * здесь было бы закрытием работы одним промахом пальца.
+   */
+  const [closingOpen, setClosingOpen] = useState(false)
+  const [closeReason, setCloseReason] = useState<ClosingReason | null>(null)
+  const [closeNote, setCloseNote] = useState('')
   /** Слово об остановке — на уровне КАРТОЧКИ: руль исчезает вместе с состоянием «в работе». */
   const [stopWord, setStopWord] = useState<string | null>(null)
   const [note, setNote] = useState('')
@@ -1067,6 +1079,37 @@ export function Screen() {
     )
   }
 
+  /**
+   * ПОСЛЕДНЕЕ СЛОВО О РАБОТЕ, КОТОРУЮ ДЕЛАТЬ НЕ БУДУТ.
+   *
+   * Требование слов у «сделано иначе» проверяется ЗДЕСЬ ТОЖЕ, хотя судит всё равно дверь: она
+   * ответит 400, и человек прочтёт отказ уже ПОСЛЕ нажатия — а сказать ему это можно до него.
+   * Второй судья при этом не заводится: окно повторяет правило двери, а не пишет своё.
+   */
+  const doClose = () => {
+    if (!closeReason) {
+      setProblem('Выберите, чем эта работа кончается: устарело, предмета нет или сделано иначе.')
+      return
+    }
+    const text = closeNote.trim()
+    if (closingNeedsWords(closeReason) && text.length === 0) {
+      setProblem('«Сделано иначе» без sha или причины нечем перепроверить — назовите их.')
+      return
+    }
+    setProblem(null)
+    closeTask.mutate(
+      { taskId: taskId as string, reason: closeReason, ...(text === '' ? {} : { note: text }) },
+      {
+        onSuccess: () => {
+          setClosingOpen(false)
+          setCloseReason(null)
+          setCloseNote('')
+        },
+        onError: (err) => setProblem(refusalWords(err)),
+      },
+    )
+  }
+
   return (
     <section className="flex min-w-0 flex-1 flex-col">
       <header className="sticky top-0 z-30 flex h-[58px] flex-none items-center gap-3.5 border-b border-bd bg-head px-7 backdrop-blur-[10px]">
@@ -1105,6 +1148,23 @@ export function Screen() {
             className="flex-none rounded-[9px] border border-bd2 px-4 py-2 text-[12px] text-tx2 hover:text-tx disabled:opacity-60"
           >
             Вернуть
+          </button>
+        ) : null}
+        {/* ВТОРОЙ ВЫХОД У СТРОКИ, СТОЯЩЕЙ НА ЧЕЛОВЕКЕ. «Вернуть» покупает ещё один заход; а
+            строке, чей предмет устарел, которой предмета нет вовсе или которая сделана другим
+            путём, до сих пор нечем было сказать это из окна — отмена берёт только живое, и
+            строки стояли в столбике ожидания неделями. */}
+        {canCloseWithWords(status) ? (
+          <button
+            type="button"
+            onClick={() => {
+              setClosingOpen(true)
+              setProblem(null)
+            }}
+            disabled={busy || closeTask.isPending}
+            className="flex-none rounded-[9px] border border-bd2 px-4 py-2 text-[12px] text-tx2 hover:text-tx disabled:opacity-60"
+          >
+            Закрыть словами
           </button>
         ) : null}
       </header>
@@ -1383,6 +1443,71 @@ export function Screen() {
                       className="rounded-lg bg-blue px-4 py-2 text-[11.5px] font-semibold text-white hover:bg-blue-d disabled:opacity-60"
                     >
                       {returnTask.isPending ? 'Возвращаю…' : 'Вернуть с комментарием'}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {/* ЗАКРЫТЬ СЛОВАМИ: исход выбирается из закрытого словаря двери, текст — свой.
+                  Подпись под каждым исходом объясняет, ЧТО он означает: три слова без
+                  объяснения — это выбор наугад по работе, которую после него не вернуть
+                  нажатием. */}
+              {closingOpen ? (
+                <div className="mb-5 flex flex-col gap-2.5 rounded-[11px] border border-bd2 bg-surf p-3.5">
+                  <div className="text-[11px] font-semibold tracking-[0.04em] text-tx3 uppercase">
+                    Чем эта работа кончается
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    {CLOSING_OPTIONS.map((o) => (
+                      <button
+                        key={o.id}
+                        type="button"
+                        onClick={() => {
+                          setCloseReason(o.id)
+                          setProblem(null)
+                        }}
+                        className={`rounded-[9px] border px-3 py-2 text-left text-[12px] ${
+                          closeReason === o.id ? 'border-blue bg-blue-s text-tx' : 'border-bd bg-input text-tx2 hover:text-tx'
+                        }`}
+                      >
+                        <span className="block font-semibold">{o.label}</span>
+                        <span className="mt-0.5 block text-[11px] leading-[1.4] text-tx3">{o.detail}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <textarea
+                    value={closeNote}
+                    onChange={(e) => setCloseNote(e.target.value)}
+                    placeholder={
+                      closingNeedsWords(closeReason)
+                        ? 'Обязательно: sha коммита или причина — чем это сделано'
+                        : 'Не обязательно: чем это закрыто, одной строкой'
+                    }
+                    rows={2}
+                    className="w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2.5 text-[12.5px] text-tx outline-none focus:border-blue"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setClosingOpen(false)
+                        setProblem(null)
+                      }}
+                      className="rounded-lg border border-bd2 px-3.5 py-2 text-[11.5px] text-tx2 hover:text-tx"
+                    >
+                      Отмена
+                    </button>
+                    <button
+                      type="button"
+                      onClick={doClose}
+                      disabled={closeTask.isPending}
+                      className="rounded-lg bg-blue px-4 py-2 text-[11.5px] font-semibold text-white hover:bg-blue-d disabled:opacity-60"
+                    >
+                      {/* НЕ ТЕ ЖЕ СЛОВА, ЧТО У КНОПКИ НАВЕРХУ, И НАРОЧНО: та ОТКРЫВАЕТ выбор,
+                          эта ЗАКРЫВАЕТ работу. Две одинаково подписанные кнопки на одном
+                          экране — это две кнопки, о которых человек спрашивает «какая из
+                          них?», и один из ответов стоит ему работы. */}
+                      {closeTask.isPending ? 'Закрываю…' : 'Закрыть работу словами'}
                     </button>
                   </div>
                 </div>

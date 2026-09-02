@@ -266,8 +266,15 @@ describe('server.mjs — the closed SIXTY-FOUR-route table', () => {
   // person NAME one by hand. Until they existed the window opened a NEW conversation almost
   // every time it was opened — fifty replies had scattered across fifteen threads — showed
   // every thread of a project as one unbroken feed, and offered no way back into an earlier one.
-  it('the frozen table has EXACTLY sixty-eight routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(68)
+  // RE-FREEZE REVISION (02.09.2026): + POST /api/task/close — the LAST WORD about work that
+  // will not be done: obsolete, no subject, done another way. A row standing on a person had
+  // exactly one button — «вернуть в очередь» — which buys another paid attempt at the same
+  // wall; the stop door takes only LIVE work and answered «nothing to stop»; the words door
+  // refuses a task whose work is over; and the return door itself answered «race lost» on a
+  // row parked at the turn ceiling, which never had an approval row to CAS at all. Four rows
+  // stood in the waiting column for three days with no way to clear them from the window.
+  it('the frozen table has EXACTLY sixty-nine routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(69)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 
