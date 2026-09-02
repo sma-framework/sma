@@ -75,6 +75,8 @@ import {
   ALLOWED_ATTEMPT_KEYS,
   createAttemptLogWriter,
   readAttemptLog,
+  closureOf,
+  foldAttemptRows,
 } from '../src/queue/attempt-ledger.mjs'
 import { defaultEnvelope, envelopeHash } from '../src/queue/capability-envelope.mjs'
 import { applyTransition, STATE_MACHINE_VERSION, idempotencyKey } from '../src/queue/state-machine.mjs'
@@ -845,11 +847,19 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     // после уборки копии восстановить неоткуда, — поэтому всё, что тянется назад ЗА точку
     // вставки, сдвинулось ровно на единицу и перезакреплено в своих случаях, а хвостовые
     // указатели (`runDir`/`parity`, тройка ходов, `conflictsWith`) НЕ ДВИНУЛИСЬ.
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(40)
+    //
+    // RE-PINNED ONCE MORE, reason in words: строка получила `closed` — ЧТО РЕШИЛ ЧЕЛОВЕК и
+    // когда. Реестр знал о попытках и не знал о РЕШЕНИЯХ: минуту приёмки окно выводило из следа
+    // уборки, то есть из следствия, а строка очереди о закрытии карточки смертна (архив по сроку
+    // хранения) — и обход беклога ставил принятую работу заново. Имя вставлено СРАЗУ ПЕРЕД
+    // `memoryHarvest`, в блок самой приёмки («что решили», потом «что вынесли из копии»), —
+    // поэтому хвостовые указатели за точкой вставки НЕ ДВИНУЛИСЬ, а всё, что тянется назад ЗА
+    // неё, сдвинулось ровно на единицу и перезакреплено в своих случаях.
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(41)
     expect(ALLOWED_ATTEMPT_KEYS.at(-1)).toBe('conflictsWith')
     expect(ALLOWED_ATTEMPT_KEYS.slice(-4, -1)).toEqual(['turnCap', 'turnsUsed', 'turnKinds'])
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(40) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(41) // no duplicate name
   })
 
   /**
@@ -899,6 +909,56 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     expect(Object.hasOwn(readAttempts(dir, 'BL-NOHARVEST')[0], 'memoryHarvest')).toBe(false)
   })
 
+  /**
+   * ЧТО РЕШИЛ ЧЕЛОВЕК — СТРОКОЙ РЕЕСТРА, А НЕ ВЫВОДОМ ИЗ СЛЕДА УБОРКИ.
+   *
+   * Реестр знал о попытках и не знал о решениях: минуту приёмки читали по `cleanup.by ===
+   * 'approve'` — по СЛЕДСТВИЮ, которого может не быть (сбор памяти запретил сносить копию,
+   * копии не было вовсе), — а строка очереди о закрытии карточки смертна: pg-boss уносит
+   * законченную работу в архив по сроку хранения. Отсюда и воскресение принятой работы в
+   * очереди: спросить «эту карточку закрывали?» было НЕКОГО.
+   *
+   * Строка решения — того же подхода, и на ней НЕТ ни `outcome`, ни `endedAt`: свёртка не имеет
+   * права ни переписать то, чем попытка кончилась, ни растянуть её длительность до минуты
+   * решения. Тот же закон, что у `cleanup` и `memoryHarvest`.
+   */
+  it('carries closed — минуту решения человека, отдельной строкой того же подхода', () => {
+    expect(ALLOWED_ATTEMPT_KEYS).toContain('closed')
+    // «Что решили» стоит впереди «что вынесли из копии»: сначала факт, потом его последствия.
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-9, -7)).toEqual(['closed', 'memoryHarvest'])
+
+    recordAttempt(dir, { taskId: 'BL-CLOSE', attempt: 2, outcome: 'completed', endedAt: '2026-08-31T11:03:00.000Z' })
+    const closed = { at: '2026-08-31T11:12:00.000Z', by: 'approve', merged: true, mergeSha: 'b'.repeat(40) }
+    recordAttempt(dir, { taskId: 'BL-CLOSE', attempt: 2, closed })
+
+    const rows = readAttempts(dir, 'BL-CLOSE')
+    expect(rows).toHaveLength(2)
+    expect(rows[1].closed).toEqual(closed)
+    // строка РЕШЕНИЯ не притворяется строкой попытки
+    expect(Object.hasOwn(rows[1], 'outcome')).toBe(false)
+    expect(Object.hasOwn(rows[1], 'endedAt')).toBe(false)
+    // …и свёртка по-прежнему говорит, чем попытка кончилась и когда
+    const [folded] = foldAttemptRows(rows)
+    expect(folded.outcome).toBe('completed')
+    expect(folded.endedAt).toBe('2026-08-31T11:03:00.000Z')
+
+    // ЧИТАТЕЛЬ: один вопрос, один ответ — и последнее слово, потому что работу возвращают и
+    // принимают заново.
+    expect(closureOf(rows)).toEqual(closed)
+    const later = { at: '2026-09-01T09:00:00.000Z', by: 'approve', merged: true }
+    recordAttempt(dir, { taskId: 'BL-CLOSE', attempt: 3, closed: later })
+    expect(closureOf(readAttempts(dir, 'BL-CLOSE'))).toEqual(later)
+
+    // НИКТО НЕ ЗАКРЫВАЛ — это `null`, и обломок записи закрытием не считается: карточка,
+    // закрытая по мусору в файле, не открывается уже никогда.
+    recordAttempt(dir, { taskId: 'BL-OPEN', attempt: 1, outcome: 'completed' })
+    expect(closureOf(readAttempts(dir, 'BL-OPEN'))).toBe(null)
+    expect(closureOf([{ taskId: 'x', attempt: 1, closed: { by: 'approve' } }] as any)).toBe(null)
+    for (const bad of [null, undefined, 'nonsense', 42, [null], [{ closed: 'yes' }]] as any[]) {
+      expect(() => closureOf(bad)).not.toThrow()
+    }
+  })
+
   // Order is part of the contract: everything that was here before keeps its index, and the
   // six copy fields sit at the tail. A reader that pinned an older row's shape is untouched.
   it('carries the six copy fields, then what the attempt changed, then the two about the session', () => {
@@ -910,14 +970,16 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     // И ЕЩЁ НА ОДИН, по той же причине и с тем же правилом: `spawn` вставлено сразу ЗА
     // `mcpConfig`, к фактам о самой сессии, — значит всё, что впереди него, отодвинулось от
     // конца ровно на единицу. Хвост за точкой вставки не двигался.
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-21, -15)).toEqual(COPY_KEYS)
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-15, -11)).toEqual(CHANGED_KEYS)
+    // И ЕЩЁ НА ОДИН, по тому же правилу: `closed` вставлено перед `memoryHarvest`, то есть
+    // ПОЗАДИ этих трёх блоков, — значит все они отодвинулись от конца ровно на единицу.
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-22, -16)).toEqual(COPY_KEYS)
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-16, -12)).toEqual(CHANGED_KEYS)
     // Сдвинулось на один: `failureDetail` дописано сразу за `receiptRef`, впереди этого имени.
     expect(ALLOWED_ATTEMPT_KEYS.slice(0, 19)[18]).toBe('reconstructed')
     // What the account actually held when this attempt ran, which servers it was given — and
     // WHAT IT WAS STARTED WITH. All three are facts about the session that the sweep of the
     // copy makes unrecoverable, which is exactly why they live on the durable row.
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-11, -8)).toEqual(['personalLayer', 'mcpConfig', 'spawn'])
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-12, -9)).toEqual(['personalLayer', 'mcpConfig', 'spawn'])
   })
 
   /**
@@ -1727,6 +1789,11 @@ describe('the ledger keeps its stated disciplines', () => {
         // because the queue library counts no finished and no broken work, so the board's two
         // most-read numbers have to come from the record that does.
         'countTerminalOutcomes',
+        // …и ещё один ЧИСТЫЙ читатель: закрывали ли эту карточку и когда. Он смотрит на строки,
+        // уже прочитанные кем-то другим, и не открывает ничего — дисциплина «журнал не
+        // переписывают» им не задета. Спрашивают его обход беклога (ставить ли строку файла в
+        // работу снова) и всякий, кому нужна минута РЕШЕНИЯ, а не след уборки.
+        'closureOf',
       ].sort(),
     )
     for (const forbidden of ['unlinkSync', 'rmSync', 'writeFileSync', 'truncateSync']) {
