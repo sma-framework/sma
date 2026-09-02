@@ -132,14 +132,29 @@ export function tailLiftLog(path, { maxLines = 12, maxChars = 1200, readFile = f
  * было исключения, ловить было нечего. Слушатель здесь делает два дела сразу — кладёт причину
  * в журнал и снимает необработанное событие, которое иначе убило бы сам сторож: `'error'` без
  * подписчика бросает в пустой стек, и сторожить после этого стало бы некому.
+ *
+ * ВЫХОД ЗАПИСЫВАЕТСЯ ВСЕГДА, ВКЛЮЧАЯ НУЛЕВОЙ. Здесь стояло `if (code || signal)` — «успех
+ * молчит», — и ровно этот успех оказался провалом: 02.09.2026 виндовая обёртка трижды выходила
+ * с кодом 0 за миллисекунды, не выполнив ни строки, и условие проглатывало единственный факт,
+ * который был. Смерть за секунды с нулём в руке — не тишина, а улика, поэтому в журнал уходят и
+ * код, и время жизни: подъём, который «удался» за 20 мс, не поднимал ничего.
+ *
+ * КТО ДЕТАЧИТСЯ, РЕШАЕТ САМА КОМАНДА (`lift.detached`), а не это место. На Windows
+ * `detached` — это DETACHED_PROCESS, то есть «консоли не давать», и PowerShell 5.1 без консоли
+ * не стартует вовсе; там отделение покупает не флаг, а промежуточный запускальщик. Значение по
+ * умолчанию — `true`: команда без своего мнения ведёт себя как раньше.
  */
-export function spawnLiftLogged({ spawn, lift, logDir, at }) {
+export function spawnLiftLogged({ spawn, lift, logDir, at, now = Date.now }) {
   const { stdio, log, close } = openLiftLog(logDir, { at })
-  noteLift(log, `── подъём: ${lift.cmd} ${lift.args.join(' ')} (cwd ${lift.cwd})`)
-  const child = spawn(lift.cmd, lift.args, { cwd: lift.cwd, detached: true, stdio, windowsHide: true })
+  const detached = lift.detached ?? true
+  noteLift(log, `── подъём: ${lift.cmd} ${lift.args.join(' ')} (cwd ${lift.cwd}, detached ${detached})`)
+  const started = now()
+  const child = spawn(lift.cmd, lift.args, { cwd: lift.cwd, detached, stdio, windowsHide: true })
+  if (child && child.pid) noteLift(log, `процесс запуска: pid ${child.pid}`)
   child.on('error', (err) => noteLift(log, `ЗАПУСК НЕ СОСТОЯЛСЯ: ${String((err && err.message) || err)}`))
   child.on('exit', (code, signal) => {
-    if (code || signal) noteLift(log, `процесс запуска завершился: код ${code ?? '—'}${signal ? `, сигнал ${signal}` : ''}`)
+    const lived = Math.max(0, now() - started)
+    noteLift(log, `процесс запуска завершился: код ${code ?? '—'}${signal ? `, сигнал ${signal}` : ''}, прожил ${lived} мс`)
   })
   child.unref()
   close()
