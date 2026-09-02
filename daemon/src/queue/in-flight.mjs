@@ -87,9 +87,29 @@ export function concurrencyCap(config) {
  * @returns {number|null} число работников, или null — списка нет, считать нечего
  */
 export function workerSeats(config) {
+  const list = seatWorkers(config)
+  return list == null ? null : list.length
+}
+
+/**
+ * КТО ИМЕННО МОЖЕТ ДЕРЖАТЬ ПОПЫТКУ — те же работники, поимённо.
+ *
+ * ОДНО СЛОВО «КТО РАБОТНИК», А НЕ ДВА. Счёт мест выше и проверка «все ли уже заняты» в тике
+ * задают ОДИН вопрос, и до этой функции отвечали на него по-разному: счёт вычитал верхушку, а
+ * проверка занятости считала её обычным работником — то есть ждала, пока попытку возьмёт тот,
+ * кто задач не берёт вовсе, и потому не срабатывала никогда. Число и список обязаны выходить из
+ * одного выражения: разойдясь, они разойдутся молча и в разные стороны.
+ *
+ * `null` — «списка нет, считать нечего» (см. fail-open у seatCeiling); пустой массив невозможен
+ * по построению: список из одних выключенных даёт пустой ответ, а не молчание.
+ *
+ * @param {object} config
+ * @returns {object[]|null} работники, способные держать попытку, или null — списка нет
+ */
+export function seatWorkers(config) {
   const list = config && Array.isArray(config.workers) ? config.workers : null
   if (!list || list.length === 0) return null
-  return list.filter((w) => w && w.enabled !== false && !isOrchestrator(w)).length
+  return list.filter((w) => w && w.enabled !== false && !isOrchestrator(w))
 }
 
 /**
