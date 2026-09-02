@@ -39,6 +39,8 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import {
   createLanding,
   receiptCoversTree,
+  runSpaBuild,
+  SPA_BUILD_SCRIPT,
   SPA_NO_SCRIPT_NOTE,
   SPA_UNTOUCHED_NOTE,
   STAMP_PATHS,
@@ -551,6 +553,42 @@ describe('посадка пересобирает окно: слияние → �
       rmSync(repo.home, { recursive: true, force: true })
     }
   }, 120000)
+
+  /**
+   * СБОРЩИК — ЭТО ТА ЖЕ КОМАНДА, ЧТО НАБИРАЕТ ЧЕЛОВЕК. Дверь, собирающая окно чем-то своим,
+   * однажды соберёт его иначе, чем оно собирается руками, и разницу увидит только браузер.
+   * Шов здесь один — запуск ребёнка; всё остальное настоящее.
+   */
+  it('сборка зовётся именем команды из package.json, а упавший сборщик отдаёт код выхода и хвост', () => {
+    const calls: any[] = []
+    const green: any = runSpaBuild({
+      cwd: '/дерево',
+      exec: (file: string, args: string[], opts: any) => {
+        calls.push({ file, args, cwd: opts.cwd })
+        return ''
+      },
+    })
+    expect(green.built).toBe(true)
+    expect(Number.isFinite(green.ms), 'время сборки обязано быть измерено').toBe(true)
+    expect(calls).toHaveLength(1)
+    expect([calls[0].file, ...calls[0].args].join(' ')).toContain(`run ${SPA_BUILD_SCRIPT}`)
+    expect([calls[0].file, ...calls[0].args].join(' ')).toMatch(/^npm/)
+    expect(calls[0].cwd, 'собирать надо СВЕДЁННОЕ дерево, а не то, где стоит процесс').toBe('/дерево')
+
+    const red: any = runSpaBuild({
+      cwd: '/дерево',
+      exec: () => {
+        const err: any = new Error('Command failed: npm run build:spa')
+        err.status = 2
+        err.stdout = '> sma-spa@0.0.0 build\n> tsc --noEmit && vite build\n'
+        err.stderr = 'src/App.tsx(4,1): error TS1005: ")" expected.\n'
+        throw err
+      },
+    })
+    expect(red.built).toBe(false)
+    expect(red.exitCode).toBe(2)
+    expect(red.tail, 'причина сборки живёт в последних строках и больше нигде').toContain('TS1005')
+  })
 
   it('дерево без команды сборки окна слиянию не отказывает — собирать там нечем и не за что', async () => {
     // Установленная копия и одноразовый репозиторий окна не собирают вовсе: `makeRepo` —

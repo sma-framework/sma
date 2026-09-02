@@ -179,6 +179,12 @@ export function hasSpaBuildScript({ cwd, readFile } = {}) {
  * на Windows включена, как это уже сделано у проверяющего значка (badge.mjs). Подстановки в
  * команде нет: оба слова — литералы этого файла, а дерево едет отдельным полем `cwd`.
  *
+ * ПОЧЕМУ НА WINDOWS КОМАНДА ЕДЕТ ОДНОЙ СТРОКОЙ, А НЕ МАССИВОМ. Оболочка там обязательна, а
+ * массив аргументов РЯДОМ С ОБОЛОЧКОЙ Node объявил устаревшим: он их не экранирует, а только
+ * склеивает, и каждый вызов печатал бы предупреждение в журнал демона — шум, который однажды
+ * станет поломкой. Склеиваем сами, и склеивать нечего: оба слова — литералы этого файла,
+ * дерево едет отдельным полем `cwd`, и ни одна чужая строка в команду не попадает.
+ *
  * Вывод ЛОВИТСЯ и обрезается до хвоста: у сборки причина стоит в последних строках, и отказ
  * без них — это «сломалось» без единого слова о том, где.
  */
@@ -187,16 +193,17 @@ export function runSpaBuild(o = {}) {
   const exec = typeof o.exec === 'function' ? o.exec : execFileSync
   const timeoutMs = Number.isFinite(o.timeoutMs) ? o.timeoutMs : SPA_BUILD_TIMEOUT_MS
   const startedAt = Date.now()
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+  const shell = process.platform === 'win32'
+  const npm = shell ? 'npm.cmd' : 'npm'
   try {
-    exec(npm, ['run', SPA_BUILD_SCRIPT], {
+    exec(shell ? `${npm} run ${SPA_BUILD_SCRIPT}` : npm, shell ? [] : ['run', SPA_BUILD_SCRIPT], {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
       maxBuffer: CAPTURE_CAP_BYTES,
       timeout: timeoutMs,
       windowsHide: true,
-      shell: process.platform === 'win32',
+      shell,
     })
     return { built: true, ms: Date.now() - startedAt }
   } catch (err) {
