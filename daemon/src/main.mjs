@@ -1558,6 +1558,10 @@ export function createDaemon(o = {}) {
             execGit: (args, opts = {}) => execGit(args, { cwd: opts.cwd ?? backlogRoot() }),
             clock,
             fsImpl: o.fsImpl ?? { readFileSync },
+            // ЧЕЙ ЭТО BACKLOG.md, СКАН ЗНАЕТ — и это единственный момент, когда владелец строки
+            // ещё известен. Без штампа строка рождается бесхозной, и сито проекта на экране
+            // «Сегодня» прячет готовую работу, которая по нему не проходит.
+            project: connectedProjectId() ?? undefined,
           })
         } finally {
           // stamped even when the scan threw: an attempt is an attempt, and only stamping

@@ -4200,6 +4200,16 @@ async function runIntake(deps, now, result) {
       }
     }
     if (known.length > 0 && typeof journal === 'function') journal({ type: 'intake-known', ids: known })
+    // ОТКАЗ СКАНА НАЗЫВАЕТСЯ ВСЛУХ — рядом с «эту уже брали» и по той же причине. Строку,
+    // отвергнутую воротами, журнал получал сам (enqueue бросает, и это поймано выше), а строка,
+    // не дошедшая до ворот, не попадала никуда: обход молчал о ней и в журнале, и на экране.
+    // Доска читает те же слова через deriveBacklog — это вторая половина одной правды, для
+    // человека, который в журнал не смотрит.
+    if (typeof journal === 'function') {
+      for (const line of notReady) {
+        journal({ type: 'intake-not-ready', taskId: line && line.id, reason: line && line.reason })
+      }
+    }
     result.intake = { scannedAt: now, enqueued, known, notReady }
   } catch (err) {
     if (typeof journal === 'function') journal({ type: 'intake-error', error: String((err && err.message) || err) })

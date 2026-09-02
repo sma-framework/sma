@@ -2775,6 +2775,12 @@ export interface BacklogRow {
   id: string
   title: string
   ageLine: string
+  /** Первая фраза строки — то, чем она поедет в очередь заголовком. Считает демон, не окно. */
+  headline: string
+  /** Число, на котором строка встанет в очереди: срочность строки, размер — вторым ключом. */
+  priority: number
+  /** Почему часовой скан её не берёт, словами человека. Пусто — возьмёт. */
+  notReady: string
 }
 
 export interface Backlog {

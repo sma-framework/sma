@@ -6191,6 +6191,13 @@ function handleBacklog({ res, config, deps }) {
  * The row is minted like every other roster task (`R-<epochMs>`, source `roster`, DoR-exempt
  * because a person pressed it) and goes through the SAME `validateTask` gate: this door adds no
  * second way into the queue.
+ *
+ * THE TRIAGE THE LINE ALREADY CARRIES RIDES WITH IT. The words are the line's own FIRST PHRASE
+ * (`row.headline`, cut by the same function the hourly scan cuts by) rather than the whole
+ * annotated paragraph, and the urgency the line declares (`priority:critical|urgent|high`,
+ * `row.priority`) becomes the number the row stands at in the queue. Both are computed once, in
+ * the intake module, and read here — a door doing its own triage would be a second triage, and
+ * a line promoted by hand would then queue differently from the same line taken by the scan.
  */
 async function handleBacklogPromote({ req, res, config, deps }) {
   const adapter = deps.adapter
@@ -6214,13 +6221,26 @@ async function handleBacklogPromote({ req, res, config, deps }) {
   const row = (Array.isArray(rows) ? rows : []).find((r) => r && r.id === id)
   if (!row) return send404(res)
 
-  const typed = typeof b.title === 'string' && b.title.trim() !== '' ? b.title.trim() : row.title
+  // Слова строки, если человек не перепечатал свои: ПЕРВАЯ ФРАЗА карточки, а не весь абзац.
+  // Абзац целиком заголовком не помещался, и ворота отказывали — это и есть тот отказ.
+  const words = typeof row.headline === 'string' && row.headline !== '' ? row.headline : row.title
+  const typed = typeof b.title === 'string' && b.title.trim() !== '' ? b.title.trim() : words
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   // The identifier rides in front of the text so a queue row can be read back to the line it
   // came from. Both halves are the project's own words — nothing is composed by this file.
   // The stamp rides here for the same reason it rides on the roster button: a line becoming
   // work belongs to the project whose backlog it was read out of — see doorProject.
-  const task = { id: `R-${clock()}`, source: 'roster', ...doorProject(config), title: queueTitleFor(id, typed), lane }
+  const task = {
+    id: `R-${clock()}`,
+    source: 'roster',
+    ...doorProject(config),
+    title: queueTitleFor(id, typed),
+    lane,
+    // Срочность, объявленная самой строкой, — ТЕМ ЖЕ числом, каким её считает часовой скан.
+    // Размер внутри него по-прежнему второй ключ, поэтому мелкая работа, поставленная рукой,
+    // встаёт там же, где встала бы взятая сканом: две постановки одной строки — одно место.
+    ...(typeof row.priority === 'number' ? { priority: row.priority } : {}),
+  }
   let norm
   try {
     norm = validateTask(task)
