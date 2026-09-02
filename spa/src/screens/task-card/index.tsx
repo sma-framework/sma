@@ -29,7 +29,7 @@ import type {
 import {
   acceptanceList,
   accentFor,
-  approvalRefusal,
+  approvalOutcome,
   attemptsLabel,
   clockLabel,
   hoursLabel,
@@ -848,6 +848,13 @@ export function Screen() {
   const [stopWord, setStopWord] = useState<string | null>(null)
   const [note, setNote] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
+  /**
+   * ЧЕМ КОНЧИЛАСЬ ПОСАДКА, когда она кончилась ХОРОШО. Отдельно от `problem`, потому что тон
+   * — часть содержания: «принято, main зелёный» и «слияние не прошло» не могут стоять на
+   * экране одной краской. Молчание успеха годилось, пока за кнопкой было одно слияние; теперь
+   * за ней ещё и прогон со штампом, и человек обязан УЗНАТЬ, что руками доделывать нечего.
+   */
+  const [landed, setLanded] = useState<string | null>(null)
   const [diffOpen, setDiffOpen] = useState(false)
   const [rolesOpen, setRolesOpen] = useState(true)
   const [editingWords, setEditingWords] = useState(false)
@@ -1021,12 +1028,21 @@ export function Screen() {
 
   const doApprove = () => {
     setProblem(null)
+    setLanded(null)
     approve.mutate(
       { taskId, machine: machineToSend },
       {
         // ОТВЕТИЛА — НЕ ЗНАЧИТ ПРИНЯЛА. Дверь отвечает 200 с `ok:false`, поэтому обработчик
         // ошибки ниже на отказе не срабатывает вовсе: молчание после нажатия шло отсюда.
-        onSuccess: (out) => setProblem(approvalRefusal(out)),
+        //
+        // …И «ПРИНЯЛА» ТЕПЕРЬ ТОЖЕ ГОВОРИТСЯ. За дверью стоит посадка целиком: свод, при
+        // необходимости полный прогон и штамп чисел вершины. Итог обеих половин приезжает в
+        // ответе, и обе стороны итога — успех и отказ — становятся словами на экране.
+        onSuccess: (out) => {
+          const said = approvalOutcome(out)
+          setProblem(said.ok ? null : said.text)
+          setLanded(said.ok ? said.text : null)
+        },
         onError: (err) => setProblem(refusalWords(err)),
       },
     )
@@ -1064,6 +1080,7 @@ export function Screen() {
         <span className="flex-1" />
         <LiveTimer state={timerState} since={timerSince} />
         {problem ? <span className="flex-none text-[11.5px] text-err-tx">{problem}</span> : null}
+        {landed ? <span className="flex-none text-[11.5px] text-ok-tx">{landed}</span> : null}
         {canApprove ? (
           <button
             type="button"
