@@ -116,12 +116,17 @@ import { resolveExpireMs, batchWorkerOf, waveAddressOf, isBatchParent, batchItem
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
+// «МОЖНО ЛИ МНЕ ТРОГАТЬ ЭТОТ КАТАЛОГ» — ОДИН ВОПРОС И ОДИН ОТВЕТ НА ВЕСЬ ДЕМОН. Тик отзывает
+// копию, которую сам же только что отвёл (отказ по тумблеру), а обход уборки и сбор памяти
+// спрашивают о копиях, отведённых кем-то месяц назад. Три места, решающих это порознь, разойдутся
+// молча — и разойдутся ровно в ту сторону, где удаляется каталог, о котором никто не думал.
+import { insideCopiesDir } from './queue/worktree-cleanup.mjs'
 // Метла журнала срывов — и `causeOf` рядом с ней: дверь, пишущая об обрыве поставщика в момент
 // события, берёт слово реестра ТОЙ ЖЕ функцией, что и метла, а не вторым его вычислением.
 import { sweepBugJournal, causeOf } from './queue/bug-journal.mjs'
 // Потолок мест читает ДОМ ИДУЩИХ ПОПЫТОК, а не тик: одно чтение настройки на весь демон —
 // его же спрашивает дверь состояния, чтобы назвать человеку «занято X из N».
-import { concurrencyCap, seatCeiling, confirmProcessGone } from './queue/in-flight.mjs'
+import { concurrencyCap, seatCeiling, seatWorkers, confirmProcessGone } from './queue/in-flight.mjs'
 // ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
 // belongs to the module that owns the row's key list, and a second copy of the number here
 // would be a second ceiling waiting to drift away from the first.
@@ -187,6 +192,7 @@ import {
   buildMcpConfigFile,
   isResumableSessionId,
   codexHomeFor,
+  discardCodexHome,
   codexSandboxFor,
   codexWorkspaceWriteOutlook,
   codexSandboxRefusal,
@@ -3508,6 +3514,79 @@ async function invokeVerb(verbRunner, verb, args, cwd) {
 }
 
 /**
+ * discardFreshCopy — отозвать копию, которую ЭТА попытка только что отвела и НЕ ИСПОЛЬЗОВАЛА.
+ *
+ * ЗАЧЕМ ЭТО ВООБЩЕ ЕСТЬ. Копия отводится до того, как задаётся последний вопрос перед запуском, —
+ * иначе этот вопрос нечего было бы задавать позже маршрута (см. workerSwitchedOffNow). Значит
+ * между отведением и отказом лежит дорога, на которой копия уже есть, а процесса не будет
+ * никогда. Каталог с рабочим деревом и ветка, отведённые ни для чего, — это не «немного мусора»:
+ * следующая попытка получит ПЕРЕИСПОЛЬЗОВАННУЮ копию, а переиспользованная копия отвечает вербу
+ * иначе, чем свежая (базы нет, вершина — сама ветка). Отзывается ровно то, что эта попытка
+ * создала, и ровно тогда, когда стало ясно, что оно не понадобится.
+ *
+ * И ТОЛЬКО СВЕЖАЯ. `reused` — это чужая работа: копия, доставшаяся от прошлой попытки, несёт её
+ * коммиты, а снятие ветки унесло бы их с диска. Такую копию не трогает никто, кроме суточного
+ * обхода, и то через сутки после закрытия задачи.
+ *
+ * ГАРД ПУТИ — ТОТ ЖЕ, ЧТО У ОБХОДА (insideCopiesDir), и по той же причине: путь приходит из
+ * ОТВЕТА внешнего верба, а уходит в команду удаления. Верб откажет и сам, но отказ на нашей
+ * стороне означает, что для чужого пути он даже не запускался.
+ *
+ * Ничего не бросает: `invokeVerb` фейл-открыт, а неудачная уборка — это строка в журнале.
+ */
+async function discardFreshCopy(deps, verbRunner, { taskId, wt, path, branch, provisionDir } = {}) {
+  if (!path || typeof verbRunner !== 'function') return
+  if (wt && wt.reused === true) {
+    writeLog(deps, {
+      type: 'task.worktree_kept',
+      taskId,
+      branch,
+      detail: 'копия досталась от прошлой попытки и несёт её работу — отзыву не подлежит, её уберёт суточный обход',
+    })
+    return
+  }
+  if (!insideCopiesDir(path)) {
+    writeLog(deps, { type: 'task.worktree_discard_refused', taskId, branch, detail: `путь вне каталога копий: ${path}` })
+    return
+  }
+  const res = await invokeVerb(verbRunner, 'worktree', ['remove', path, '--force', '--delete-branch', '--json'], provisionDir)
+  const ok = res && res.ok === true
+  writeLog(deps, {
+    type: ok ? 'task.worktree_discarded' : 'task.worktree_discard_error',
+    taskId,
+    branch,
+    detail: ok
+      ? `копия отведена и не понадобилась — отозвана вместе с веткой (${path})`
+      : `копию отозвать не удалось, на диске осталось: ${String((res && (res.error || res.message)) || 'верб не ответил')}`,
+  })
+}
+
+/**
+ * discardCodexTaskHome — убрать дом задачи полосы codex, когда попытка закрылась.
+ *
+ * ЗАЧЕМ ЗДЕСЬ, А НЕ У ТОГО, КТО ДОМ СОЗДАЁТ. Создаёт его сборщик аргументов, а знает, что попытка
+ * КОНЧИЛАСЬ, только тик — и знает это на всех трёх исходах сразу: успех, провал и снятая рука
+ * человека выходят через один и тот же `finally`. Уборка, повешенная на счастливую дорогу,
+ * пропустила бы ровно те попытки, после которых мусора больше всего.
+ *
+ * ФЕЙЛ-ОПЕН И ВСЛУХ: неубранный каталог не меняет исхода попытки, но и не остаётся молчанием —
+ * иначе о накоплении узнают так же, как узнали в этот раз: по месту на диске.
+ */
+function dropCodexTaskHome(deps, { home, taskId } = {}) {
+  if (!home || !taskId) return
+  const res = discardCodexHome({ home, taskId, fsImpl: deps.fsImpl })
+  if (res.removed) {
+    writeLog(deps, { type: 'task.codex_home_discarded', taskId, detail: `дом задачи убран вместе с её временным каталогом (${home})` })
+    return
+  }
+  writeLog(deps, {
+    type: 'task.codex_home_discard_error',
+    taskId,
+    detail: `дом задачи остался на диске (${home}): ${res.reason}`,
+  })
+}
+
+/**
  * recordApproachNote(deps, task, note) → `{noted, toolBroke}` — did THIS attempt leave a note,
  * and did the instrument that files it survive?
  *
@@ -4465,8 +4544,13 @@ export async function tick(deps = {}) {
    * появляется (обе точки запуска — код и кузница), и читается ровно один раз, в `finally`.
    * Пустое поле `sessionOf` — «процесса не было или он не назвал сессии»: тогда закрывать
    * нечего, и молчание здесь честнее догадки.
+   *
+   * ТУТ ЖЕ ЕДЕТ И ДОМ ЗАДАЧИ полосы codex — по той же логике и в тот же `finally`. Он тоже
+   * появляется в момент сборки команды на обеих дверях, тоже обязан исчезнуть на ЛЮБОМ исходе
+   * (успех, провал, снятая рука человека), и тоже читается ровно один раз. Пустое поле —
+   * «дома не чеканили»: полоса не codex, либо до сборки команды дело не дошло.
    */
-  const attemptWindow = { sessionOf: null, cwd: null, taskId: null }
+  const attemptWindow = { sessionOf: null, cwd: null, taskId: null, codexHome: null }
 
   // (0) IS THE CONVEYOR SWITCHED ON? Asked FIRST, before the sweep and before the intake,
   // because «off» here means the machine does nothing at all — not «claims nothing». The
@@ -4644,7 +4728,11 @@ export async function tick(deps = {}) {
     // словом: не «мест нет», а «все работники уже ведут попытку».
     if (inFlight && typeof inFlight.workers === 'function') {
       const busyNow = inFlight.workers()
-      const enabled = (Array.isArray(config.workers) ? config.workers : []).filter((w) => w && w.enabled !== false)
+      // КТО ЗДЕСЬ РАБОТНИК — СПРАШИВАЕТСЯ ТЕМ ЖЕ СЛОВОМ, ЧТО И У СЧЁТА МЕСТ. Своё выражение
+      // стояло тут и считало верхушку обычным работником: проверка ждала, пока попытку возьмёт
+      // тот, кто задач не берёт ни при каком порядке строк конфига, — и потому не срабатывала
+      // никогда, а рубеж, написанный ради человеческого слова «все работники заняты», молчал.
+      const enabled = seatWorkers(config) ?? []
       if (enabled.length > 0 && enabled.every((w) => busyNow.has(w.id))) {
         writeLog(deps, {
           type: 'tick.all_workers_busy',
@@ -4803,6 +4891,14 @@ export async function tick(deps = {}) {
       // ЗАПИСЬ О ГОНКЕ ОСТАЁТСЯ. Она — единственный след того, что проверка и маршрут разошлись,
       // и по ней это разойдение считают; молчаливый возврат выглядел бы как задача, которая
       // «почему-то стоит».
+      //
+      // …И ВОЗВРАЩАЕТСЯ ОНА С ОТСРОЧКОЙ, А НЕ В ГОЛОВУ ОЧЕРЕДИ. Срок ставит сама очередь (см.
+      // RELEASE_DEFER_MS): порядок выдачи — приоритет и время постановки, а возврат ни того ни
+      // другого не двигает, поэтому без отсрочки следующий проход брал бы ТУ ЖЕ строку, получал
+      // тот же ответ и возвращал её снова — пока занят закреплённый за ней работник, а это
+      // минуты. Строки за ней не поехали бы вовсе, и каждый оборот стоил бы захвата, записи в
+      // хранилище и двух кадров живого потока. Тик срока не называет: «на сколько откладывать»
+      // — правило хранилища, и второе его написание здесь разошлось бы с первым.
       if (route && route.reasonCode === 'worker_busy') {
         writeLog(deps, {
           type: 'task.route_busy_race',
@@ -4827,6 +4923,13 @@ export async function tick(deps = {}) {
             detail: 'очередь не приняла возврат — строку подберёт сторож живости',
           })
         }
+        // ВОЗВРАЩЁННАЯ СТРОКА НЕ СЧИТАЕТСЯ ВЗЯТОЙ ЭТИМ ПРОХОДОМ. `claimed` отвечает на вопрос
+        // «что этот проход взял в работу» — по нему считают, что тик делал (loop.test.ts:
+        // `if (res.claimed) ran.push(res.claimed)`), — а строка, отданная обратно, к концу
+        // прохода снова ждёт работника. Оставленная здесь, она бы удваивала счёт работы: та же
+        // задача была бы «взята» и этим проходом, и тем, который её действительно поведёт.
+        // Сам факт возврата не теряется — он назван своим ключом, и таск в нём поимённо.
+        delete result.claimed
         result.releasedToQueue = { taskId: task.id, reason: 'worker_busy', ok: released }
         return result
       }
@@ -5277,6 +5380,12 @@ export async function tick(deps = {}) {
           reason: switchedOff.reason,
           detail: switchedOff.detail,
         })
+        // И КОПИЯ, ОТВЕДЁННАЯ ПОД ЭТУ ПОПЫТКУ, ОТЗЫВАЕТСЯ ВМЕСТЕ С ОТКАЗОМ. Рука человека попала
+        // внутрь подготовки — значит копия уже есть, а процесса не будет: оставленная, она
+        // достанется следующей попытке ПЕРЕИСПОЛЬЗОВАННОЙ и утащит с собой всё, чем
+        // переиспользованная копия отличается от свежей. Отзывается только то, что отвела эта
+        // попытка (см. discardFreshCopy).
+        await discardFreshCopy(deps, verbRunner, { taskId: task.id, wt, path: workDir, branch, provisionDir })
         await failTask(deps, task, {
           reason: switchedOff.reason,
           branch,
@@ -5310,6 +5419,13 @@ export async function tick(deps = {}) {
         // exists — the parking gate inside the child reads both out of its environment.
         ...gateSpawnOptions(deps, config, task),
       })
+      // ДОМ ЗАДАЧИ ЧЕКАНИТСЯ СБОРКОЙ КОМАНДЫ — и с этой строки за ним есть кому прийти. Путь
+      // берётся из ОКРУЖЕНИЯ, с которым правда спавнят: второе вычисление того же пути отвечало
+      // бы на вопрос «где дом ДОЛЖЕН быть», а убирать надо тот, который сделан. Держатель
+      // заполняется ДО спавна, потому что между сборкой и запуском лежат дороги, уносящие
+      // попытку в исключение мимо всякой уборки; читателем остаётся один `finally` тика.
+      attemptWindow.taskId = task.id
+      attemptWindow.codexHome = (spec.env && spec.env.CODEX_HOME) || null
       // ЧЕМ ЭТА ПОПЫТКА ЗАПУЩЕНА — НА ДОЛГОВЕЧНУЮ СТРОКУ, И ПРЯМО ЗДЕСЬ, ГДЕ КОМАНДА ТОЛЬКО
       // ЧТО СОБРАНА. Ниже лежит дюжина дорог, и та, что уносит попытку в отказ, обязана унести
       // с собой и командную строку: именно у отказавшей попытки спрашивают, под какой границей
@@ -6088,6 +6204,16 @@ export async function tick(deps = {}) {
     } catch {
       /* уборка никогда не решает судьбу попытки — верб уже фейл-открыт, это второй пояс */
     }
+    // И ДОМ ЗАДАЧИ УБИРАЕТСЯ ВСЕГДА — по той же причине и в том же месте. Он чеканится на каждую
+    // задачу и держит внутри временный каталог песочницы; общий каталог машины чистит система, а
+    // этот не чистил никто, и после переезда Temp внутрь дома мусор стал копиться на задачу
+    // навсегда. Оба README обещали, что дом «уходит вместе с задачей», — вот дверь, на которой
+    // это происходит.
+    try {
+      dropCodexTaskHome(deps, { home: attemptWindow.codexHome, taskId: attemptWindow.taskId })
+    } catch {
+      /* фейл-опен второго пояса: неубранный каталог не переписывает исход попытки */
+    }
   }
 }
 
@@ -6319,6 +6445,9 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
       reason: switchedOff.reason,
       detail: switchedOff.detail,
     })
+    // И КОПИЯ ОТЗЫВАЕТСЯ ТЕМ ЖЕ ВЫРАЖЕНИЕМ, ЧТО И НА ПУТИ КОДА: у кузницы та же пауза, та же рука
+    // человека внутри неё и та же оставленная копия, которая достанется повтору переиспользованной.
+    await discardFreshCopy(deps, verbRunner, { taskId: task.id, wt, path: worktreePath, branch, provisionDir })
     await failTask(deps, task, {
       reason: switchedOff.reason,
       branch,
@@ -6355,6 +6484,11 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
   // без командной строки на ней вопрос «работник не мог или не стал» остаётся без ответа ровно
   // так же, как он остался 01.09.2026.
   worktreeRow.spawn = spawnRecordOf(spec)
+  // И ДОМ ЗАДАЧИ — ТЕМ ЖЕ ВЫРАЖЕНИЕМ, ЧТО НА ПУТИ КОДА, И В ТОТ ЖЕ ДЕРЖАТЕЛЬ. Забытая вторая
+  // дверь спавна — мина, которую этот файл уже разминировал дважды задним числом; дом, убранный
+  // на одной полосе и копящийся на другой, был бы третьим разом.
+  attemptWindow.taskId = task.id
+  attemptWindow.codexHome = (spec.env && spec.env.CODEX_HOME) || null
   spec.prompt = buildForgePrompt({
     kind,
     description: task.forge && task.forge.description,

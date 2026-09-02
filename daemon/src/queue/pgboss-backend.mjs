@@ -119,6 +119,8 @@ import {
   mintAttemptToken,
   attemptTokenIsStale,
   refuseStaleAttempt,
+  // «На сколько откладывается возвращённая строка» — одно число и одно правило на оба хранилища
+  deferMsOf,
 } from './adapter.mjs'
 import {
   QueueEncodingError,
@@ -741,6 +743,15 @@ export function createPgBossQueue({
    * being reconciled. The statement itself is idempotent: a piece already on the clock is not
    * matched by it.
    *
+   * ОТПУСКАЕТСЯ ТОЛЬКО СВОЁ УДЕРЖАНИЕ — та самая далёкая дата, которой держат кусок, ждущий
+   * черёда, и ничего кроме неё. Здесь стояло «всё, что отложено на будущее», и это стирало
+   * ЧУЖУЮ выдержку: кусок сборки — самая частая работа, закреплённая за одним работником, то
+   * есть ровно та, ради которой заведена короткая отсрочка возврата; а перед каждой выборкой он
+   * подходит сюда под все условия разом (`queued`, не родитель, черёд пришёл, никем не держим).
+   * Свежая отсрочка снималась первым же проходом, и карусель, от которой она спасает,
+   * продолжалась именно на закреплённом элементе. Тем же условием ограждена и пауза библиотеки
+   * перед повтором: правило, ничего не знающее о чужой выдержке, не вправе её отменять.
+   *
    * FAIL-OPEN. A release that cannot run costs this pass its batch progress — the next claim
    * tries again — and never the claim of ordinary work, which is why it can never throw here.
    */
@@ -756,8 +767,8 @@ export function createPgBossQueue({
       try {
         await runSql(
           `UPDATE pgboss.job SET start_after = now()
-             WHERE data->>'id' = $1 AND state = 'created' AND start_after > now()`,
-          [item.id],
+             WHERE data->>'id' = $1 AND state = 'created' AND start_after >= $2`,
+          [item.id, HELD_UNTIL],
         )
       } catch (err) {
         log(`batch piece ${item.id} not released: ${maskError(err)}`)
@@ -798,10 +809,16 @@ export function createPgBossQueue({
           // ОСВОБОЖДАЕТ ТОЛЬКО ТО, ЧЕГО НЕ ДЕРЖИТ НИКТО. Раньше здесь стояло «кроме партии», и
           // третье правило удержания (занятые файлы) молча отменялось бы этой же строкой:
           // одна дверь откладывает, другая тут же возвращает, и работа уезжает всё равно.
+          //
+          // …И ТОЛЬКО СВОЁ УДЕРЖАНИЕ — по той самой далёкой дате, тем же условием, что у правила
+          // занятых файлов ниже. «Отложено вообще» — это не «отложено остановленной волной»:
+          // короткую отсрочку возврата (`releaseClaim`) ставит очередь, и снятая здесь она
+          // вернула бы карусель — строку, вернувшуюся после гонки, следующий же проход брал бы
+          // снова. Правило, ничего не знающее о чужой выдержке, не вправе её отменять.
           await runSql(
             `UPDATE pgboss.job SET start_after = now()
-               WHERE data->>'id' = $1 AND state = 'created' AND start_after > now()`,
-            [r.id],
+               WHERE data->>'id' = $1 AND state = 'created' AND start_after >= $2`,
+            [r.id, HELD_UNTIL],
           )
         }
       } catch (err) {
@@ -988,11 +1005,22 @@ export function createPgBossQueue({
    * ЖЕТОН СПРАШИВАЕТСЯ, как и у всех дверей, закрывающих чужую попытку: вернуть в очередь
    * строку, которую сейчас ведёт другой работник, — значит отнять у него работу.
    *
+   * И ОДНО ИСКЛЮЧЕНИЕ ИЗ «НЕ ТРОГАЕТ НИЧЕГО»: `start_after` СДВИГАЕТСЯ НА КОРОТКИЙ СРОК. Возврат
+   * кладёт строку туда, откуда её взяли, — а берут голову очереди; пока причина возврата жива
+   * (закреплённый за строкой работник ведёт другую работу), следующий проход брал бы ТУ ЖЕ строку
+   * и возвращал её снова, а стоящие за ней не поехали бы вовсе. Здесь для этого не нужно ни поля,
+   * ни фильтра: `start_after` — собственная колонка pg-boss, и её `AND start_after < now()` стоит
+   * в каждом плане выборки. Сколько ждать — говорит очередь одним числом на оба хранилища
+   * (`RELEASE_DEFER_MS`, и там же почему тридцать секунд).
+   *
+   * СЧЁТ ВОЗВРАТОВ ЖИВЁТ В НАГРУЗКЕ, рядом с самой работой, а не в памяти демона: демон
+   * перезапускается, а вопрос «почему эта строка стоит третий раз подряд» задают именно тогда.
+   *
    * @param {string} taskId
-   * @param {{attemptToken?:string}} [opts]
+   * @param {{attemptToken?:string, deferMs?:number}} [opts]
    * @returns {Promise<boolean>} true, когда взятая строка найдена и возвращена
    */
-  async function releaseClaim(taskId, { attemptToken } = {}) {
+  async function releaseClaim(taskId, { attemptToken, deferMs } = {}) {
     if (typeof taskId !== 'string' || taskId === '') return false
     const job = await resolveActiveJob(taskId)
     if (!job) return false
@@ -1000,9 +1028,11 @@ export function createPgBossQueue({
     await runSql(
       `UPDATE pgboss.job
           SET state = 'created', started_on = NULL,
-              data = data - 'workerId' - 'attemptToken' - 'claimedAt' - 'claimedAtRetry'
+              start_after = now() + make_interval(secs => $2::float8),
+              data = (data - 'workerId' - 'attemptToken' - 'claimedAt' - 'claimedAtRetry')
+                     || jsonb_build_object('releaseCount', COALESCE((data->>'releaseCount')::int, 0) + 1)
         WHERE id = $1 AND state = 'active'`,
-      [job.id],
+      [job.id, deferMsOf(deferMs) / 1000],
     )
     return true
   }
@@ -1602,6 +1632,11 @@ export function createPgBossQueue({
       // one already in a hand, or finished in one, reports the try the claim mark names.
       attempt: attemptNumberOf(data, retries, { unclaimed: WAITING_STATES.includes(r.state) }),
       coalesceCount: coalesce.get(data.id) ?? 1,
+      // СКОЛЬКО РАЗ СТРОКУ ВОЗВРАЩАЛИ, НЕ НАЧАВ ПОПЫТКИ — зеркально эталонному бэкенду и из того
+      // же места, куда его пишет возврат: из нагрузки самой строки. Ноль там, где не возвращали
+      // ни разу, и у всякой строки, поставленной до появления счёта, — отсутствие возвратов есть
+      // число, а не молчание.
+      releaseCount: Number(data.releaseCount) || 0,
       // Who holds this task, as written into the payload by claimNext — pg-boss itself
       // records nothing about the fetching worker. `null` here now means «nobody has
       // claimed it», which is what every reader already assumed it meant.

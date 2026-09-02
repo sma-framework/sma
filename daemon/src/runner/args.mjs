@@ -78,7 +78,7 @@
  * at the top take an injectable `fsImpl`, so tests touch no real home. Zero deps.
  */
 
-import { copyFileSync as fsCopyFileSync, cpSync as fsCpSync, existsSync as fsExistsSync, mkdirSync as fsMkdirSync } from 'node:fs'
+import { copyFileSync as fsCopyFileSync, cpSync as fsCpSync, existsSync as fsExistsSync, mkdirSync as fsMkdirSync, rmSync as fsRmSync } from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
 
 import { atomicWriteJson, atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
@@ -642,6 +642,14 @@ export function codexSandboxFor(allowedTools) {
 export const CODEX_WINDOWS_SANDBOX_MARKER = join('.sandbox', 'setup_marker.json')
 
 /**
+ * Каталог, внутри которого живут дома задач, — ОДНО написание на три читателя: тот, кто дом
+ * собирает, тот, кто его убирает, и гард уборки, который отказывается трогать что-либо снаружи.
+ * Второе написание того же имени означало бы, что дом чеканится там, куда уборке смотреть не
+ * позволено, и узналось бы это молчаливым «не наш каталог» через месяц накопленного мусора.
+ */
+const CODEX_TASKS_DIR = 'codex-tasks'
+
+/**
  * codexHomeFor({account, taskId, homedir}) → СВЕЖИЙ дом ЭТОЙ задачи, одним выражением.
  *
  * ОДНО ВЫРАЖЕНИЕ, ТРИ ЧИТАТЕЛЯ, И ЭТО ВЕСЬ СМЫСЛ. Дом называет окружение спавна, создаёт его
@@ -656,7 +664,48 @@ export const CODEX_WINDOWS_SANDBOX_MARKER = join('.sandbox', 'setup_marker.json'
 export function codexHomeFor({ account, taskId, homedir } = {}) {
   if (!account || typeof account !== 'object') throw new Error('codexHomeFor: an account is required')
   if (!taskId) throw new Error('codexHomeFor: a taskId is required — the home is per task')
-  return join(expandHome(account.configDir, homedir), 'codex-tasks', String(taskId))
+  return join(expandHome(account.configDir, homedir), CODEX_TASKS_DIR, String(taskId))
+}
+
+/**
+ * discardCodexHome({home, taskId, fsImpl}) → `{removed, reason}`: убрать дом ЭТОЙ задачи, когда
+ * попытка закрылась.
+ *
+ * ЧТО БЫЛО ОБЕЩАНО И ЧЕГО НЕ ДЕЛАЛОСЬ. Дом чеканится заново на каждую задачу, и внутрь него
+ * переехал временный каталог песочницы — ровно затем, чтобы обход прав шёл по пустому дереву, а
+ * не по общему каталогу машины. У переезда есть вторая половина, которой не было: ОБЩИЙ каталог
+ * чистит сама система, а этот не чистит никто. То есть лечение старта сессии оставляло после
+ * каждой попытки каталог с логином, конфигом, следом установки песочницы и всем, что сессия
+ * успела записать во временный, — навсегда и на задачу. Оба README всё это время говорили, что
+ * дом «уходит вместе с задачей»; теперь это правда, а не намерение.
+ *
+ * ГАРД — НЕ ФОРМАЛЬНОСТЬ: сюда приходит путь ИЗ ОКРУЖЕНИЯ УЖЕ ЗАПУЩЕННОГО ПРОЦЕССА, а уходит он
+ * в рекурсивное удаление. Удаляется только каталог, СОБРАННЫЙ ТЕМ ЖЕ ВЫРАЖЕНИЕМ, что и дом
+ * задачи: последний сегмент — имя этой задачи, предпоследний — каталог домов. Дом счёта, каталог
+ * настроек и что угодно ещё этой рукой не трогается вовсе. Пути с обоими разделителями — на
+ * Windows приходят оба.
+ *
+ * НИКОГДА НЕ БРОСАЕТ. Зовёт это закрытие попытки, и попытка от неудачной уборки не меняет своего
+ * исхода: неубранный каталог — это строка в журнале, а не второй провал поверх первого.
+ *
+ * @param {{home?:string, taskId?:string, fsImpl?:object}} [args]
+ * @returns {{removed:boolean, reason:string}}
+ */
+export function discardCodexHome({ home, taskId, fsImpl } = {}) {
+  const dir = typeof home === 'string' && home.trim() !== '' ? home : null
+  if (!dir) return { removed: false, reason: 'no-home' }
+  if (!taskId) return { removed: false, reason: 'no-task' }
+  const segments = dir.split(/[\\/]+/).filter(Boolean)
+  const last = segments[segments.length - 1]
+  const parent = segments[segments.length - 2]
+  if (last !== String(taskId) || parent !== CODEX_TASKS_DIR) return { removed: false, reason: 'not-a-task-home' }
+  const rmFn = (fsImpl && fsImpl.rmSync) || fsRmSync
+  try {
+    rmFn(dir, { recursive: true, force: true })
+    return { removed: true, reason: 'removed' }
+  } catch (err) {
+    return { removed: false, reason: String((err && err.message) || err) }
+  }
 }
 
 /** Песочница, которую эта машина обещала, но не исполнит — названа, чтобы отказ был словами. */
