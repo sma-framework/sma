@@ -12,8 +12,19 @@ import { NewTaskForm } from './NewTaskForm'
 import { UnitCard } from './UnitCard'
 import { UnitRow } from './UnitRow'
 import { WaitCard } from './WaitCard'
-import { BOARD_COLUMNS, COLUMN_WORD, buildBoard, buildUnits, countColumns, splitByProject } from './units'
-import type { BoardColumn, WorkUnit } from './units'
+import { DoneList } from './DoneList'
+import {
+  BOARD_COLUMNS,
+  COLUMN_WORD,
+  buildBoard,
+  buildUnits,
+  countColumns,
+  doneRowIndex,
+  doneUnfoldRow,
+  doneView,
+  splitByProject,
+} from './units'
+import type { BoardColumn, DoneTab, WorkUnit } from './units'
 
 /**
  * «Задачи» — вся работа в один взгляд: столбики по стадиям, единица работы — карточка.
@@ -93,8 +104,15 @@ const COLUMN_TONE: Record<BoardColumn, string> = {
  *
  * Столбик закрытого растёт без конца и вытолкнул бы работающие столбики вверх экрана, поэтому
  * он свёрнут в счётчик. Но свёрнутый наглухо, он читался бы как «там ничего не происходит»,
- * поэтому последние карточки остаются: видно, ЧЕМ именно закрылось. Порядок единиц ставит
- * «не получилось» впереди «готово» — значит неудача не прячется под счётчиком.
+ * поэтому последние карточки остаются: видно, ЧЕМ именно закрылось.
+ *
+ * ЧТО ИМЕННО «ПОСЛЕДНИЕ» — ТЕПЕРЬ ВОПРОС КО ВРЕМЕНИ. Прежде эти две брались из общего порядка
+ * списка, а он идёт по состоянию: «не получилось» стоит в нём выше «готово», и в столбике
+ * висели два самых КРАСНЫХ, а не два самых свежих (замер 02.09: срывы 26.08 и 28.08 над сотней
+ * принятых работ). Порядок здесь считает `doneView` — по отметке закрытия.
+ *
+ * И СВЁРНУТОЕ БОЛЬШЕ НЕ ЗАПЕРТО: остальное открывается кнопкой рядом, а не подписывается
+ * надписью «свёрнуты», за которой нет двери.
  */
 const DONE_SHOWN = 2
 
@@ -122,6 +140,13 @@ export function Screen() {
   const [openBatch, setOpenBatch] = useState<string | null>(null)
   /** Раскрыта ли группа строк с неизвестным проектом. Свёрнута — но её заголовок виден всегда. */
   const [unknownOpen, setUnknownOpen] = useState(false)
+  /** Раскрыт ли полный список закрытой работы — полосой под доской, во всю ширину. */
+  const [doneOpen, setDoneOpen] = useState(false)
+  /** Какую половину закрытого смотрят и какими словами её ищут. */
+  const [doneTab, setDoneTab] = useState<DoneTab>('all')
+  const [doneQuery, setDoneQuery] = useState('')
+  /** С какой строки человек пришёл в полный список: она раскрывается сразу. */
+  const [doneFocus, setDoneFocus] = useState<string | null>(null)
 
   /*
    * ЭКРАН, ОТКРЫТЫЙ СРАЗУ НА ФОРМЕ.
@@ -194,6 +219,24 @@ export function Screen() {
   // расхождение как ошибку экрана.
   const board = useMemo(() => buildBoard(units), [units])
   const counts = useMemo(() => countColumns(units), [units])
+
+  /*
+   * ДВА ЧТЕНИЯ СТОЛБИКА «ГОТОВО», И ОБА — ОДНА И ТА ЖЕ ПРОЕКЦИЯ.
+   *
+   * Свёрнутый столбик показывает закрытое БЕЗ сита: сито и поиск живут в раскрытой полосе, и
+   * столбик, молча показывающий отфильтрованное при спрятанных органах фильтра, — это экран,
+   * который не объясняет, почему на нём мало строк. Полоса же показывает ровно то, о чём её
+   * попросили. Считает оба одна функция: два способа отобрать закрытое разошлись бы в первый
+   * же день.
+   */
+  const doneUnits = useMemo(() => board.find((c) => c.key === 'done')?.units ?? [], [board])
+  const doneHead = useMemo(() => doneView({ units: doneUnits, tab: 'all', query: '', now: Date.now() }), [doneUnits])
+  const doneFull = useMemo(
+    () => doneView({ units: doneUnits, tab: doneTab, query: doneQuery, now: Date.now() }),
+    [doneUnits, doneTab, doneQuery],
+  )
+  /** Ряды закрытой работы по номеру — тем же одним чтением состояния, что и всё остальное. */
+  const doneIndex = useMemo(() => doneRowIndex(data?.done ?? []), [data])
 
   /**
    * РАБОТА, ЧЕЙ ПРОЕКТ НЕИЗВЕСТЕН — та же проекция, отдельной группой.
@@ -291,6 +334,24 @@ export function Screen() {
     if (unit.target.screen === 'phase') setOpenPhase(unit.target.id)
     else if (unit.target.screen === 'batch') setOpenBatch(unit.target.id)
     else setSelectedId(unit.target.id)
+  }
+
+  /**
+   * КЛИК ПО ЗАКРЫТОЙ КАРТОЧКЕ ОТКРЫВАЕТ ИСТОРИЮ РАБОТЫ, А НЕ ПАНЕЛЬ ЗАДАЧИ.
+   *
+   * Панель задачи отвечает на вопрос «что с этой строкой ДЕЛАТЬ» — принять, вернуть, закрыть
+   * словами, — а у закрытой строки этот вопрос уже решён. Спрашивают о ней другое: что обещали,
+   * кто принял, чем доказано, — и отвечает на это окно готовой работы, до которого с доски не
+   * было дороги вовсе. Единица, чьего ряда в `done[]` нет (фаза, сборка), открывается как
+   * открывалась: своей карточкой.
+   */
+  const openDoneUnit = (unit: WorkUnit) => {
+    if (doneUnfoldRow(unit, doneIndex) === null) {
+      openUnit(unit)
+      return
+    }
+    setDoneFocus(unit.id)
+    setDoneOpen(true)
   }
 
   // Фаза раскрыта — это тот же экран, просто вглубь. Крошка «Задачи» и кнопка возврата ведут
@@ -451,30 +512,86 @@ export function Screen() {
           <div className="flex items-start gap-3">
             {board.map((col) => (
               <div key={col.key} className="flex min-w-0 flex-1 flex-col gap-2">
-                <div className="flex items-baseline gap-1.5 px-0.5">
-                  <span className="text-[10px] font-semibold tracking-[0.05em] text-tx2 uppercase">{col.title}</span>
-                  <span className={`text-[11px] font-semibold tabular-nums ${COLUMN_TONE[col.key]}`}>
-                    {col.units.length}
-                  </span>
-                </div>
+                {/* ЗАГОЛОВОК «ГОТОВО» — ДВЕРЬ, А НЕ ПОДПИСЬ. Дверь в полный список стоит здесь
+                    ВСЕГДА, а не только когда что-то свёрнуто: сито, поиск и архив нужны и на
+                    двух строках, а заголовок, открывающийся через раз, человек не запоминает
+                    как дверь вовсе. */}
+                {col.key === 'done' ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDoneFocus(null)
+                      setDoneOpen((v) => !v)
+                    }}
+                    aria-expanded={doneOpen}
+                    className="flex items-baseline gap-1.5 px-0.5 text-left hover:text-tx"
+                  >
+                    <span className="text-[10px] font-semibold tracking-[0.05em] text-tx2 uppercase">{col.title}</span>
+                    <span className={`text-[11px] font-semibold tabular-nums ${COLUMN_TONE[col.key]}`}>
+                      {col.units.length}
+                    </span>
+                    {/* Дверь названа СЛОВАМИ, а не одной галочкой: галочка у заголовка
+                        читается как «свернуть столбик», и человек, которому нужен список,
+                        её не нажимает. */}
+                    <span className="text-[10px] text-tx3">{doneOpen ? 'свернуть список' : 'весь список'}</span>
+                  </button>
+                ) : (
+                  <div className="flex items-baseline gap-1.5 px-0.5">
+                    <span className="text-[10px] font-semibold tracking-[0.05em] text-tx2 uppercase">{col.title}</span>
+                    <span className={`text-[11px] font-semibold tabular-nums ${COLUMN_TONE[col.key]}`}>
+                      {col.units.length}
+                    </span>
+                  </div>
+                )}
 
-                {col.key === 'you'
-                  ? col.units.map((unit) => (
-                      <WaitCard key={`${unit.kind}:${unit.id}`} unit={unit} onOpen={openUnit} />
-                    ))
-                  : (col.key === 'done' ? col.units.slice(0, DONE_SHOWN) : col.units).map((unit) => (
-                      <UnitCard key={`${unit.kind}:${unit.id}`} unit={unit} onOpen={openUnit} />
-                    ))}
+                {col.key === 'you' ? (
+                  col.units.map((unit) => <WaitCard key={`${unit.kind}:${unit.id}`} unit={unit} onOpen={openUnit} />)
+                ) : col.key === 'done' ? (
+                  doneHead.rows
+                    .slice(0, DONE_SHOWN)
+                    .map((unit) => <UnitCard key={`${unit.kind}:${unit.id}`} unit={unit} onOpen={openDoneUnit} />)
+                ) : (
+                  col.units.map((unit) => <UnitCard key={`${unit.kind}:${unit.id}`} unit={unit} onOpen={openUnit} />)
+                )}
 
+                {/* «ЕЩЁ N» — КНОПКА. Надписью здесь стояло ровно то же число, и за ним не было
+                    двери: сто девяносто шесть закрытых работ считались, но не открывались. */}
                 {col.key === 'done' && col.units.length > DONE_SHOWN ? (
-                  <span className="px-0.5 text-[10.5px] text-tx3">
-                    ещё {col.units.length - DONE_SHOWN} — свёрнуты
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDoneFocus(null)
+                      setDoneOpen(true)
+                    }}
+                    className="px-0.5 text-left text-[10.5px] text-tx2 underline decoration-dotted underline-offset-2 hover:text-tx"
+                  >
+                    ещё {col.units.length - DONE_SHOWN} — показать
+                  </button>
                 ) : null}
               </div>
             ))}
           </div>
         )}
+
+        {/*
+          ПОЛНЫЙ СПИСОК ЗАКРЫТОЙ РАБОТЫ — ПОД ДОСКОЙ И ВО ВСЮ ШИРИНУ.
+          Столбик шириной в седьмую часть экрана не вмещает окно готовой работы, а увозить
+          человека на отдельный экран значило бы потерять, откуда он пришёл, — ровно та болезнь,
+          которую эта папка уже лечила у фазы и у сборки.
+        */}
+        {doneOpen ? (
+          <DoneList
+            view={doneFull}
+            index={doneIndex}
+            tab={doneTab}
+            onTab={setDoneTab}
+            query={doneQuery}
+            onQuery={setDoneQuery}
+            focus={doneFocus}
+            onOpen={openUnit}
+            onClose={() => setDoneOpen(false)}
+          />
+        ) : null}
 
         {/*
           ГРУППА «ПРОЕКТ НЕИЗВЕСТЕН» — словами, не подстановкой.
