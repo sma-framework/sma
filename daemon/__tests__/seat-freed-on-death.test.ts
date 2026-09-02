@@ -240,6 +240,63 @@ describe('снятая дверью попытка отдаёт своё мес�
       'место освободилось — ждавшая строка обязана поехать следующим же проходом',
     ).toBe(1)
   })
+
+  /**
+   * ДВА ПРАВИЛА О МЕСТЕ ЖИВУТ ВМЕСТЕ, И ЭТО НЕ СОВПАДЕНИЕ ИХ КОДА.
+   *
+   * Одно говорит, СКОЛЬКО мест раздаётся: не больше, чем работников, — иначе строка берётся
+   * при всех занятых и уезжает занятому (один работник, две живые сессии). Другое говорит,
+   * КОГДА место возвращается: в момент подтверждённой смерти процесса, а не в конце прохода.
+   * Правила сходятся на одном жетоне, и сходятся они здесь: потолок объявлен вчетверо больше
+   * числа работников, поэтому границу держит ИМЕННО счёт работников, — и освобождает её
+   * ИМЕННО смерть процесса. Сломай любое из двух, и это дело покраснеет.
+   */
+  it('мест не больше, чем работников, — и освобождает их смерть процесса, а не конец прохода', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300_000 })
+    await adapter.enqueue(queuedTask())
+
+    const house = createInFlight()
+    const turns = createTurnRegistry()
+    const seat = house.reserve(4)
+    house.name(seat, 'R-1788000000001', 'max-1')
+    let alive = true
+    turns.register('R-1788000000001', () => (alive = false), () => alive)
+
+    let spawns = 0
+    // Потолок — четыре, работник — ОДИН. По потолку место ещё есть; по работникам его нет.
+    const busy = tickDeps({
+      adapter,
+      clockObj: c,
+      config: { maxConcurrentAttempts: 4 },
+      spawnWorker: fakeWorker({ onSpawn: () => (spawns += 1) }),
+      deps: { inFlight: house, attemptTurns: turns },
+    })
+    const idle: any = await tick(busy.deps)
+    expect(idle.concurrencyCap, 'границу держит счёт работников, а не объявленный потолок').toMatchObject({
+      inFlight: 1,
+      cap: 4,
+      seats: 1,
+    })
+    expect(spawns, 'единственный работник ведёт попытку — второй ей взяться неоткуда').toBe(0)
+
+    const front = createFrontServer({
+      config: { token: TOKEN },
+      deps: { adapter, attemptTurns: turns, inFlight: house, sleep: async () => {} },
+    })
+    await cancel(front, 'R-1788000000001')
+
+    const free = tickDeps({
+      adapter,
+      clockObj: c,
+      config: { maxConcurrentAttempts: 4 },
+      spawnWorker: fakeWorker({ onSpawn: () => (spawns += 1) }),
+      deps: { inFlight: house, attemptTurns: turns },
+    })
+    await tick(free.deps)
+
+    expect(spawns, 'работник освободился смертью своего процесса — очередь обязана поехать').toBe(1)
+  })
 })
 
 describe('место отдаётся на смерти ребёнка, а не после ворот', () => {
