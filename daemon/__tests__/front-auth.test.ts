@@ -953,6 +953,28 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
       expect(out.reason).not.toMatch(/тесты красные/i)
     })
 
+    /**
+     * ОКНО, А НЕ ТЕСТЫ. Посадка пересобирает раздачу окна на сведённом дереве ДО прогона —
+     * иначе гейт свежести раздачи краснеет на каждой ветке, тронувшей исходник окна. Сборка,
+     * которая не прошла, останавливает слияние ДО первого теста; 02.09.2026 такой отказ
+     * приезжал как «тесты красные, имя теста не названо», и человек шёл искать упавший тест,
+     * которого не существовало.
+     */
+    it('несобравшееся окно названо сборкой, а не красными тестами', async () => {
+      const out = await refuse('R-90f', () => ({
+        merged: false,
+        refused: true,
+        spaBuildFailed: true,
+        testsPassed: null,
+        failureDetail: 'src/main.tsx(12,3): error TS1005: ")" expected.\nvite build failed',
+      }))
+      expect(out.ok).toBe(false)
+      expect(out.reasonCode).toBe('spa_build_failed')
+      expect(out.reason).toMatch(/окно не собралось/i)
+      expect(out.reason, 'хвост сборки — единственное место, где живёт причина').toContain('TS1005')
+      expect(out.reason).not.toMatch(/тесты.*красн/i)
+    })
+
     it('конфликт слияния назван конфликтом', async () => {
       const out = await refuse('R-91', {
         ok: false,
