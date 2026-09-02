@@ -112,6 +112,12 @@ function copyLines(attempt: TaskAttempt): string[] {
     lines.push(ms >= 1000 ? `подготовлена за ${(ms / 1000).toFixed(1)} с` : `подготовлена за ${ms} мс`)
   }
 
+  // СКОЛЬКО СЕССИЯ СОБИРАЛАСЬ, ПРЕЖДЕ ЧЕМ ЗАГОВОРИТЬ — рядом с «подготовлена за», потому что
+  // это вторая половина того же ожидания: копия готовится здесь, песочница раздаёт права там,
+  // и человек, глядя на молчащую попытку, до сих пор не мог отличить одно от другого.
+  const start = attempt.sessionStart
+  if (start && typeof start.words === 'string' && start.words) lines.push(start.words)
+
   if (Array.isArray(attempt.materialized)) lines.push(...materializedWords(attempt.materialized))
 
   const cleanup = attempt.cleanup

@@ -1891,6 +1891,51 @@ function codexSandboxBlocker(deps, task, route, envelope) {
 }
 
 /**
+ * workerSwitchedOffNow(deps, route) → `{reason, detail}`, если тумблер РОВНО СЕЙЧАС снят, иначе
+ * `null`. Спрашивается в МОМЕНТ ЗАПУСКА, а не в момент маршрута, и в этом весь смысл.
+ *
+ * ЧТО СЛОМАНО БЕЗ ЭТОГО, замерено 02.09.2026. Тумблер работника читался там, где решался
+ * маршрут, — и на этом чтение заканчивалось. А между маршрутом и первым процессом лежит
+ * настоящая работа: копия отводится настоящим git, зеркало личного слоя пишет файлы на диск,
+ * дом задачи засевается, каталог прогона создаётся. Это секунды, а на нагруженной машине —
+ * десятки секунд. Человек, снявший тумблер в эту паузу, видел, как ВЫКЛЮЧЕННЫЙ работник всё
+ * равно берёт задачу: две секунды после «выключить» — и чужая полоса уехала в сессию, которую
+ * потом снимали рукой, а задачу переставляли заново. Со стороны это выглядит как «тумблер не
+ * работает», и никакая запись нигде не говорила обратного.
+ *
+ * ПОЧЕМУ ЭТО НЕ ЛЕЧИТСЯ ВТОРЫМ ФИЛЬТРОМ В МАРШРУТИЗАТОРЕ. Маршрутизатор честно читает состав в
+ * ту секунду, когда его спрашивают, и ошибки в нём нет вовсе: ошибка в том, что между ЕГО
+ * секундой и секундой спавна проходит время, а решение живёт от первой до второй. Лечится это
+ * только повторным вопросом — тем же самым, заданным там, где он наконец имеет цену.
+ *
+ * СОСТАВ ЧИТАЕТСЯ ИЗ `deps.config` В МОМЕНТ ВЫЗОВА и никуда не запоминается: дверь тумблера
+ * подменяет `config.workers` целым новым списком, поэтому всякий, кто снял этот список раньше,
+ * держит в руках прошлое. Ссылку на список эта функция не сохраняет ни на строку.
+ *
+ * ПЛАТНЫЙ КАНАЛ ТУМБЛЕРА НЕ ИМЕЕТ: маршрут без работника (`useApiFallback`) возвращает `null` —
+ * выключать там нечего, и отказ был бы выдуманным.
+ *
+ * @param {object} deps
+ * @param {{workerId?:(string|null)}} route
+ * @returns {{reason:string, detail:string}|null}
+ */
+export function workerSwitchedOffNow(deps, route) {
+  const workerId = route && typeof route.workerId === 'string' ? route.workerId : null
+  if (!workerId) return null
+  const workers = deps && deps.config && Array.isArray(deps.config.workers) ? deps.config.workers : []
+  const held = workers.find((w) => w && w.id === workerId) ?? null
+  if (held && held.enabled !== false) return null
+  return {
+    reason: 'worker_switched_off',
+    // ДВА СЛУЧАЯ, РАЗЛИЧЁННЫЕ СЛОВАМИ, потому что человек делал два разных движения: снял
+    // тумблер — или убрал работника из состава совсем.
+    detail: held
+      ? `работника «${workerId}» выключили, пока эта попытка готовилась, — процесс не запускается, работа возвращается в очередь`
+      : `работника «${workerId}» убрали из состава, пока эта попытка готовилась, — процесс не запускается, работа возвращается в очередь`,
+  }
+}
+
+/**
  * attemptStamp(deps, task, {from, to, actor, envelope}) → the stamp fields THIS FILE can
  * truthfully compute for one attempt row (fleet invariant six — the attempt stamp is
  * fixed at creation; see docs/FLEET-INVARIANTS.md).
@@ -3676,6 +3721,39 @@ async function parkStoppedWaves(deps, holds) {
 }
 
 /**
+ * sessionStartRecord({spawnedAt, firstLineAt}) → `{ms, words}` — СКОЛЬКО СЕССИЯ СОБИРАЛАСЬ,
+ * ПРЕЖДЕ ЧЕМ СКАЗАТЬ ПЕРВОЕ СЛОВО, сказанное так, чтобы это читал человек.
+ *
+ * ЗАЧЕМ ЭТО ВООБЩЕ ПИШЕТСЯ. Снаружи у идущей попытки есть ровно один признак жизни — её вывод,
+ * и до первого кадра любая пауза выглядит одинаково: «работник молчит N минут». Но эти паузы
+ * разной природы. Полоса codex перед первым словом раздаёт песочнице право записи по каждому
+ * писаемому корню, и на общем Temp машины это занимало минуты — процесс при этом совершенно
+ * здоров и делает ровно то, что должен (замерено 02.09.2026: четыре минуты в одном запуске,
+ * семнадцать в другом). Человек у окна в эти минуты решает, снимать попытку или ждать, и до сих
+ * пор решал вслепую: «ещё готовит песочницу» и «повис» были для него одним и тем же молчанием.
+ *
+ * ЧИСЛО И СЛОВА ВМЕСТЕ, А НЕ ВМЕСТО. `ms` — измерение, по которому две попытки можно сравнить
+ * («до правки — минуты, после — секунды»); `words` — то, что читается на карточке без пересчёта
+ * в голове. Одно без другого здесь бесполезно: голое число нужно уметь прочитать, голая фраза
+ * не складывается в замер.
+ *
+ * КАДРА НЕ БЫЛО — ЭТО ТОЖЕ ОТВЕТ, и он говорится вслух. `ms: null` плюс фраза о том, что голоса
+ * не было: ноль прочитался бы как «заговорила мгновенно» — ровно наоборот к правде.
+ *
+ * @param {{spawnedAt?:number, firstLineAt?:(number|null)}} [args]
+ * @returns {{ms:(number|null), words:string}}
+ */
+export function sessionStartRecord({ spawnedAt, firstLineAt } = {}) {
+  if (!Number.isFinite(spawnedAt) || !Number.isFinite(firstLineAt) || firstLineAt < spawnedAt) {
+    return { ms: null, words: 'первого кадра не было — сессия так и не подала голоса' }
+  }
+  const ms = firstLineAt - spawnedAt
+  const sec = Math.round(ms / 1000)
+  const said = sec < 60 ? `${sec} с` : `${Math.floor(sec / 60)} мин ${sec % 60} с`
+  return { ms, words: `от запуска до первого слова сессии — ${said}` }
+}
+
+/**
  * runSpawn(spawnWorker, spec, onLine) — await a worker child to exit, collecting a spawn
  * failure as spawnError. Resolves {code, signal, spawnError}. The child is driven entirely
  * through the injected spawnWorker (spawn.mjs in production).
@@ -3686,20 +3764,41 @@ async function parkStoppedWaves(deps, holds) {
  * after this function has already returned, so it arrives through onError. Only the first of
  * the two was ever collected, which is how a binary missing from the child's PATH took the
  * whole daemon down instead of failing one task.
+ *
+ * ── И ЧЕТВЁРТОЕ ЧИСЛО: КОГДА СЕССИЯ ЗАГОВОРИЛА ────────────────────────────────────────────
+ *
+ * `firstLineAt` — минута ПЕРВОЙ строки, пришедшей из ребёнка, и ничего больше. Между спавном и
+ * ней лежит подготовка, о которой снаружи не знает никто: полоса codex перед первым словом
+ * раздаёт право записи по каждому писаемому корню, и на общем Temp машины это занимало минуты
+ * (замерено 02.09.2026 — четыре в одном запуске, семнадцать в другом). Для человека у окна
+ * такая пауза неотличима от повисшего работника, и разница между «ещё готовит песочницу» и
+ * «молчит вторую минуту» до сих пор не была записана НИГДЕ.
+ *
+ * ЗАМЕРЯЕТСЯ ЗДЕСЬ, А НЕ В ЧИТАТЕЛЕ ПОТОКА, потому что это вопрос о ПРОЦЕССЕ, а не о смысле
+ * его строк: разбор кадров начинается позже и умеет пропускать то, что не понял, — а «ребёнок
+ * подал голос» верно для любой строки, включая ту, которую разборщик выбросит.
+ *
+ * КАДРА НЕ БЫЛО — `null`, а не ноль: ноль прочитался бы как «заговорила мгновенно», и это была
+ * бы ровно та ложь, ради устранения которой поле заводится.
  */
-function runSpawn(spawnWorker, spec, onLine) {
+function runSpawn(spawnWorker, spec, onLine, now = () => Date.now()) {
   return new Promise((resolve) => {
     let settled = false
+    let firstLineAt = null
     const done = (v) => {
       if (!settled) {
         settled = true
-        resolve(v)
+        resolve({ ...v, firstLineAt })
       }
+    }
+    const watchedLine = (line) => {
+      if (firstLineAt === null) firstLineAt = now()
+      if (onLine) onLine(line)
     }
     try {
       spawnWorker({
         ...spec,
-        onLine,
+        onLine: watchedLine,
         onExit: ({ code, signal } = {}) => done({ code: code ?? null, signal: signal ?? null, spawnError: null }),
         onError: (err) => done({ code: null, signal: null, spawnError: err }),
       })
@@ -5033,6 +5132,32 @@ export async function tick(deps = {}) {
       // WHAT WOKE THIS ATTEMPT, decided before the array is built rather than patched onto it
       // afterwards — see wakeSpawnOptions: a person's return continues the session it is a
       // remark about, a timer never does, and the refusal is the builder's own long-standing one.
+      // ── ТУМБЛЕР — В МОМЕНТ ЗАПУСКА, А НЕ В МОМЕНТ МАРШРУТА ──────────────────────
+      // Всё, что стоит выше этой строки, заняло время: копия, зеркало, реестр серверов. Тумблер
+      // читался до всего этого — и выключенный работник всё равно доходил до процесса (см.
+      // workerSwitchedOffNow). Здесь вопрос задаётся последний раз, ПЕРЕД сборкой команды: она
+      // уже чеканит дом задачи на диске, и отказ после неё стоил бы каталога ни за что.
+      const switchedOff = workerSwitchedOffNow(deps, route)
+      if (switchedOff) {
+        writeLog(deps, {
+          type: 'task.refused',
+          taskId: task.id,
+          workerId: route.workerId,
+          reason: switchedOff.reason,
+          detail: switchedOff.detail,
+        })
+        await failTask(deps, task, {
+          reason: switchedOff.reason,
+          branch,
+          route,
+          now: now(),
+          envelope,
+          from: fleetState,
+          worktree: worktreeRow,
+        })
+        result.failed = { taskId: task.id, reason: switchedOff.reason, detail: switchedOff.detail }
+        return result
+      }
       const wake = wakeSpawnOptions(deps, task)
       const spec = buildArgs(task, route, {
         ...SPAWN_OPTIONS,
@@ -5160,7 +5285,12 @@ export async function tick(deps = {}) {
         promptCarried = readPendingRedirects({ dataDir: config.dataDir, taskId: task.id, fsImpl: deps.fsImpl })
         if (promptCarried.length) spec.prompt = `${spec.prompt ?? ''}\n\n${correctionsPreamble(promptCarried)}`
       }
-      let exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: workDir, env: spec.env, prompt: spec.prompt }, onLine)
+      let exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: workDir, env: spec.env, prompt: spec.prompt }, onLine, now)
+      // СКОЛЬКО ЭТА СЕССИЯ СОБИРАЛАСЬ — на строку попытки, словами (см. sessionStartRecord).
+      // Пишется СРАЗУ после первого запуска, а не после цикла продолжений: замеряется старт, а
+      // продолжение стартует в уже готовой песочнице и ответило бы на другой вопрос.
+      worktreeRow = worktreeRow || {}
+      worktreeRow.sessionStart = sessionStartRecord({ spawnedAt: attemptStartedAt, firstLineAt: exit.firstLineAt })
       if (promptCarried.length && exit.spawnError === null) {
         markConsumed({ dataDir: config.dataDir, taskId: task.id, ids: promptCarried.map((p) => p.id), clock: now, fsImpl: deps.fsImpl })
         // WHICH ROAD THE WORD TOOK, said in the journal rather than inferred from silence.
@@ -6037,6 +6167,31 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
   // inside the child, so the «Создатель» could not write the very draft file the exit gate
   // then failed it for not committing: «ошибка работника», with no way to see why.
   const kind = task.forge && task.forge.kind
+  // ТУМБЛЕР — В МОМЕНТ ЗАПУСКА, ТЕМ ЖЕ ВЫРАЖЕНИЕМ, ЧТО И НА ПУТИ КОДА. У кузницы та же пауза
+  // между маршрутом и процессом (копия, зеркало, реестр серверов) и тот же человек, снимающий
+  // тумблер внутри неё; полоса, где этот вопрос не задан, — это ровно та полоса, на которой
+  // выключенный работник продолжит брать работу.
+  const switchedOff = workerSwitchedOffNow(deps, route)
+  if (switchedOff) {
+    writeLog(deps, {
+      type: 'task.refused',
+      taskId: task.id,
+      workerId: route.workerId,
+      reason: switchedOff.reason,
+      detail: switchedOff.detail,
+    })
+    await failTask(deps, task, {
+      reason: switchedOff.reason,
+      branch,
+      route,
+      now: now(),
+      envelope,
+      from: fleetState,
+      worktree: worktreeRow,
+    })
+    result.failed = { taskId: task.id, reason: switchedOff.reason, detail: switchedOff.detail }
+    return result
+  }
   // THE SAME ONE FUNCTION the code path above calls — not a second list of fields that
   // happens to say the same thing today. The last time these two points each carried their
   // own copy of this decision, one of them was updated and this one was not, and the lane
@@ -6094,8 +6249,11 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
   // WHEN THIS ATTEMPT STARTED — captured where the process really begins, so a subscription
   // attempt books a duration instead of counting from epoch zero.
   const attemptStartedAt = now()
-  const exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine)
+  const exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine, now)
   if (deps.attemptTurns) deps.attemptTurns.done(task.id)
+  // СКОЛЬКО СОБИРАЛАСЬ СЕССИЯ — на строку попытки и здесь: у кузницы тот же спавн, то же
+  // молчание до первого кадра и тот же человек у окна.
+  worktreeRow.sessionStart = sessionStartRecord({ spawnedAt: attemptStartedAt, firstLineAt: exit.firstLineAt })
 
   // WHAT THE SESSION ITSELF REPORTED joins what the mirror wrote, on ONE key. The mirror
   // says what was PUT INTO the account; the init frame says what the session actually
@@ -6512,6 +6670,10 @@ function worktreeFields(worktree) {
     // ключа означает «процесса не было вовсе» (отказ до спавна), и это не то же самое,
     // что запуск, о котором мы не записали команду.
     spawn: worktree.spawn ?? undefined,
+    // И СКОЛЬКО ПОПЫТКА СОБИРАЛАСЬ, ПРЕЖДЕ ЧЕМ ЗАГОВОРИТЬ — по той же причине, что и строка
+    // выше: вопрос «работник повис или ещё готовит песочницу» задают ПОСЛЕ, когда поток
+    // свёрнут, а копия выметена. Отсутствие ключа означает «процесса не было вовсе».
+    sessionStart: worktree.sessionStart ?? undefined,
     // WHERE THE EVIDENCE OF THIS TRY LIVES. The row is the durable record, so it names the
     // directory rather than leaving it to be guessed from an id and a convention. `parity` is
     // the verdict of the checking tool, written back beside it; until it is computed the key
