@@ -552,6 +552,14 @@ describe('constants — taxonomy', () => {
       // сменится), а это не пройдёт: пока человек не включит или не заведёт такого работника,
       // повтор даст тот же ответ, потратив на него оплаченную попытку
       'role_unavailable',
+      // THE SWITCH WAS FLIPPED WHILE THE ATTEMPT WAS GETTING READY. Between the routing
+      // decision and the first process there is real work — a copy checked out with real git,
+      // the personal layer mirrored onto disk, the task home seeded — and a person who
+      // switched the worker off inside that pause watched a disabled worker take the task
+      // anyway. Named apart from role_unavailable, which waits for a person because NOBODY
+      // holds the role: here one named worker is off and the rest of the roster is intact, so
+      // the row is re-issued and whoever is enabled picks it up
+      'worker_switched_off',
       // the re-issues ran out: the row was handed back as many times as it was allowed to be,
       // and the queue closed it rather than spending another paid attempt on the same work.
       // Named apart from timeout — a lease timing out is what STARTS a re-issue and is

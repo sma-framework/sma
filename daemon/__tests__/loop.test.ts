@@ -3382,6 +3382,62 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
     expect(worker.window.closedUntil).toBeDefined()
   })
 
+  /**
+   * ═════ ОДИН КАДР — ОДНО ЧТЕНИЕ ВСЕЙ ПОДПИСКИ, А НЕ ТОЛЬКО НАЗВАННОГО ОКНА ═════════════
+   *
+   * 02.09.2026 основатель спросил, почему доска говорит про неделю 67 %, когда его собственный
+   * терминал говорит 7 %. Ответ: недельное окно обновлялось ТОЛЬКО тогда, когда поставщик его
+   * НАЗЫВАЛ (`rateLimitType: "seven_day"`) — это предупреждение, оно приходит раз в сутки и
+   * реже. А в каждом кадре, рядом, ехал `unifiedWindows` с долей обоих окон сразу, и его никто
+   * не открывал. Строка ниже взята из ленты дословно: она называет ПЯТИЧАСОВОЕ окно, и неделя
+   * в ней есть только в этом блоке.
+   *
+   * Кадр идёт через настоящий тик и заканчивается там, куда смотрит человек, — в выдаче экрана.
+   */
+  it('a frame that names only the five-hour window still refreshes the WEEK — the unified block is read', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-unified-'))
+    dirs.push(dataDir)
+    const WEEK_RESETS_AT_SEC = RESETS_AT_SEC + 3 * 24 * 60 * 60
+    const now = RESETS_AT_SEC * 1000 - 60 * 60 * 1000
+    const unified = JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status: 'allowed',
+        resetsAt: RESETS_AT_SEC,
+        rateLimitType: 'five_hour',
+        overageStatus: 'rejected',
+        overageDisabledReason: 'out_of_credits',
+        isUsingOverage: false,
+        unifiedWindows: {
+          five_hour: { utilization: 0.18, resetsAt: RESETS_AT_SEC },
+          seven_day: { utilization: 0.07, resetsAt: WEEK_RESETS_AT_SEC },
+        },
+      },
+      uuid: 'f0b6a5a9-4f75-497c-8cd8-dea9901217e2',
+      session_id: '718f1fa9-9947-4be0-86fe-369f876f266a',
+    })
+
+    await tickWith(unified, dataDir, now)
+
+    const payload = await deriveState({
+      adapter: { async list() { return [] } },
+      windows: (account: any) => windowState({ account, clock: () => now, dataDir }),
+      config: { workers: [{ id: 'max-2', lane: 'prod', account: { name: 'max-2' } }], machineId: 'self' },
+      clock: () => now,
+    })
+
+    const [account] = payload.spend.accounts
+    // The window the frame NAMED, with the fraction the unified block carried for it
+    expect(account.fiveHour.status).toBe('open')
+    expect(account.fiveHour.pct).toBe(18)
+    // AND THE ONE IT DID NOT NAME — this is the whole case
+    expect(account.week.status).toBe('open')
+    expect(account.week.pct).toBe(7)
+    expect(account.week.resetsAt).toBe(new Date(WEEK_RESETS_AT_SEC * 1000).toISOString())
+    // …dated, because a number with no hour on it is read as «now»
+    expect(account.week.observedAt).toBe(new Date(now).toISOString())
+  })
+
   it('a machine that has heard nothing says so — no reading is ever invented as a zero', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-quiet-'))
     dirs.push(dataDir)
@@ -3395,8 +3451,8 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
     })
 
     const [account] = payload.spend.accounts
-    expect(account.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null })
-    expect(account.week).toEqual({ status: 'unknown', resetsAt: null, pct: null })
+    expect(account.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
+    expect(account.week).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
   })
 })
 

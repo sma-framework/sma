@@ -1363,11 +1363,17 @@ describe('POST /api/chat/stop — the door', () => {
     expect(idle.statusCode).toBe(200)
     expect(JSON.parse(idle.body)).toEqual({ stopped: false })
 
+    // ХОД БЕРЁТСЯ НОВЫЙ, И ЭТО НЕ КОСМЕТИКА. Остановка неизвестного хода теперь ЗАПОМИНАЕТСЯ
+    // на короткий срок: ход мог ещё не родиться (между «отправить» и регистрацией лежит
+    // запуск), и первая же регистрация под тем именем исполняет сказанное вместо того, чтобы
+    // оставить живую сессию, за которой никто не стоит. Имя хода клиент чеканит на каждую
+    // отправку заново, поэтому в жизни второй регистрации под снятым именем не бывает — а
+    // здесь она была артефактом дела.
     let killed = 0
-    chatTurns.register('ct-x-1234', () => {
+    chatTurns.register('ct-x-5678', () => {
       killed += 1
     })
-    const live = await hit(front, { method: 'POST', url: '/api/chat/stop', headers: stopHeaders(), body: { turnId: 'ct-x-1234' } })
+    const live = await hit(front, { method: 'POST', url: '/api/chat/stop', headers: stopHeaders(), body: { turnId: 'ct-x-5678' } })
     expect(live.statusCode).toBe(200)
     expect(JSON.parse(live.body)).toEqual({ stopped: true })
     expect(killed).toBe(1)

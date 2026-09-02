@@ -475,7 +475,14 @@ export function forge(input: { kind: DraftKind; description: string; slugHint?: 
  */
 export const STOCK_TEAM_TARGET = '__stock-team__'
 
-/** Switch one helper on or off. The reserved id above switches the whole shipped team. */
+/**
+ * The reserved id that means «the roles the conveyor calls by itself» — the executors and the
+ * planner. Same door, same request shape; the daemon owns WHICH roles those are, so this side
+ * never carries a list of names that could quietly stop matching the button's own caption.
+ */
+export const STOCK_PIPELINE_TARGET = '__stock-pipeline__'
+
+/** Switch one helper on or off. The reserved ids above switch the shipped team, or its core. */
 export function toggleAgent(id: string, enabled: boolean): Promise<ToggleResult> {
   return postJson<ToggleResult>('/api/agent/toggle', { id, enabled })
 }

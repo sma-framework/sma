@@ -533,6 +533,12 @@ function queueUnit(row: QueueRow, awaiting: boolean): WorkUnit {
   const held = row.idleReason === 'files_busy' ? heldWords(row.heldBy) : null
   const idle = held ?? (row.idleReason ? IDLE_WORDS[row.idleReason] : null)
   const waited = waitWords(row.agedForHours)
+  // ЧЕМ ЭТА РАБОТА ОБЪЯВЛЕНА — И ЧТО ЕЙ ЗА ЭТО ДОСТАНЕТСЯ. Строка без единого признака успеха
+  // объявлена мелкой и уйдёт в процесс с базовым потолком ходов; число считает дверь (своё
+  // здесь было бы вторым мнением о том, с чем работник уйдёт в процесс), а окно ставит его в ту
+  // же строчку, где стоит место в очереди, — потому что это ровно тот миг, когда обещание ещё
+  // можно дописать одним нажатием.
+  const promiseless = row.noPromise ? `без обещания: потолок ${row.noPromise.cap}` : null
   return {
     id: row.id,
     kind: 'inline',
@@ -542,7 +548,9 @@ function queueUnit(row: QueueRow, awaiting: boolean): WorkUnit {
       ? 'ждёт вашего решения'
       : row.status === 'returned'
         ? 'возвращена вами'
-        : `в очереди · место ${row.position}`,
+        : promiseless
+          ? `в очереди · место ${row.position} · ${promiseless}`
+          : `в очереди · место ${row.position}`,
     next: awaiting
       ? waited
         ? `Ждёт вас ${waited}: открыть и принять или вернуть с комментарием`

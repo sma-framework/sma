@@ -143,22 +143,36 @@ function KpiPill({ value, label, tone }: { value: number; label: string; tone: s
  *
  * НЕЧЕМ СКАЗАТЬ — НЕ ГОВОРИМ. `seatsBusy === null` (демон без дома идущих попыток) не рисует
  * ничего: ноль здесь прочитался бы как «все места свободны», то есть как измерение.
+ *
+ * И РАСХОЖДЕНИЕ СО СПИСКОМ РАБОТНИКОВ НАЗЫВАЕТСЯ ЗДЕСЬ ЖЕ, РЯДОМ С ЧИСЛОМ. «Занято 4 из 4» над
+ * списком, в котором работают двое, человек читает как ошибку экрана — и идёт чинить экран
+ * вместо аварии. Она была не в экране: за лишними местами шли живые сессии, не привязанные ни к
+ * одной карточке, и одна из них проработала час невидимой. Число считает демон одним выражением
+ * над теми же карточками, которые нарисованы ниже, — экран его только произносит.
  */
-function SeatsPill({ busy, total }: { busy: number | null; total: number }) {
+function SeatsPill({ busy, total, unlisted }: { busy: number | null; total: number; unlisted: number | null }) {
   if (busy === null || !Number.isFinite(total)) return null
   const full = busy >= total
+  const hidden = typeof unlisted === 'number' && unlisted > 0
+  const loud = full || hidden
 
   return (
     <div
       className={`flex flex-none items-baseline gap-2 rounded-[9px] border px-3.5 py-1.5 shadow-panel ${
-        full ? 'border-warn-s bg-warn-s' : 'border-bd bg-card'
+        loud ? 'border-warn-s bg-warn-s' : 'border-bd bg-card'
       }`}
-      title="Сколько задач демон ведёт одновременно. Пока все места заняты, следующая задача ждёт."
+      title={
+        hidden
+          ? 'Столько идущих попыток не показывает ни одна карточка ниже. Такая попытка занимает место, но за ней не стоит работник в списке — её видно на карточке задачи, и остановить её можно там.'
+          : 'Сколько задач демон ведёт одновременно. Пока все места заняты, следующая задача ждёт.'
+      }
     >
-      <span className={`text-[13px] font-semibold tabular-nums ${full ? 'text-warn-tx' : 'text-tx'}`}>
+      <span className={`text-[13px] font-semibold tabular-nums ${loud ? 'text-warn-tx' : 'text-tx'}`}>
         {`занято ${busy} из ${total}`}
       </span>
-      <span className="text-[11.5px] text-tx2">{full ? 'мест — новые задачи ждут' : 'мест'}</span>
+      <span className="text-[11.5px] text-tx2">
+        {hidden ? `мест · ${unlisted} вне списка работников` : full ? 'мест — новые задачи ждут' : 'мест'}
+      </span>
     </div>
   )
 }
@@ -304,7 +318,11 @@ export function Screen() {
             tone={p.tone}
           />
         ))}
-        <SeatsPill busy={data?.kpis?.seatsBusy ?? null} total={data?.kpis?.seatsTotal ?? Number.NaN} />
+        <SeatsPill
+          busy={data?.kpis?.seatsBusy ?? null}
+          total={data?.kpis?.seatsTotal ?? Number.NaN}
+          unlisted={data?.kpis?.seatsUnlisted ?? null}
+        />
       </header>
 
       {state.isError ? (
