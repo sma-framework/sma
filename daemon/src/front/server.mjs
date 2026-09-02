@@ -115,6 +115,10 @@ import { CHAT_STAGES, proposeBreakdown, proposeWords, SNAPSHOT_EVENT_CAP, STATUS
 import { createQuestions, findPhaseDir, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
+// КАКУЮ РОЛЬ ДЕРЖИТ РАБОТНИК — спрашивается у того же чистого словаря, у которого её спрашивает
+// применитель. Дверь считает ответ про НАБОР, названный на кнопке; свой список имён здесь стал
+// бы вторым мнением о том, кого эта кнопка включила.
+import { isPipelineRole, roleOf } from '../policy/worker-role.mjs'
 import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS, REDIRECT_MODE_LABELS, attemptIdFor } from './journal.mjs'
 import {
@@ -205,6 +209,14 @@ const ATTEMPT_ID_RE = /^[A-Za-z0-9._-]{1,64}(#\d{1,4})?$/
  * STOCK_TEAM_TARGET, and harness.test.ts asserts the two never drift apart.
  */
 export const STOCK_TEAM_TARGET = '__stock-team__'
+
+/**
+ * The SECOND reserved target on that same door: «switch on the roles the conveyor itself calls»
+ * — the executors and the planner. Declared here for the same reason its neighbour is, it is
+ * the same literal as harness.mjs's STOCK_PIPELINE_TARGET, and harness.test.ts asserts the two
+ * never drift apart.
+ */
+export const STOCK_PIPELINE_TARGET = '__stock-pipeline__'
 
 /**
  * The reserved POST /api/approve target PREFIX meaning «apply the migration proposal for one
@@ -2893,6 +2905,11 @@ async function handleForge({ req, res, config, deps }) {
  * size is the guard invariant; a «switch the team on» route would have had to move it. So the
  * whole team is addressed the way one agent is — same validation, same applier posture, same
  * refusal shape, same harness.updated hint — and the table did not move.
+ *
+ * There are TWO reserved targets now, and the second one is the narrow act:
+ * STOCK_PIPELINE_TARGET switches on only the roles the conveyor calls by itself. It rides the
+ * same door by the same trick and costs the table nothing either. What comes back names the
+ * scope, so the window can say what it just did in the words of the button that was pressed.
  */
 async function handleAgentToggle({ req, res, config, deps }) {
   if (typeof deps.applyAgentToggle !== 'function') return send501(res)
@@ -2902,17 +2919,23 @@ async function handleAgentToggle({ req, res, config, deps }) {
   if (rejectUnknownKeys(res, b, new Set(['id', 'enabled']))) return undefined
   if (typeof b.id !== 'string' || !ID_RE.test(b.id)) return send400(res, 'invalid id')
   if (typeof b.enabled !== 'boolean') return send400(res, 'enabled must be a boolean')
-  if (b.id === STOCK_TEAM_TARGET) {
+  if (b.id === STOCK_TEAM_TARGET || b.id === STOCK_PIPELINE_TARGET) {
     if (typeof deps.applyStockTeamToggle !== 'function') return send501(res)
+    const scope = b.id === STOCK_PIPELINE_TARGET ? 'pipeline' : 'all'
     try {
       // BOTH directories: `repoDir` is the tree the applier READS the installed roster from,
       // and `configIo` carries the write seam — including the launchDir baseline, which is
       // never the served repoDir.
-      const next = deps.applyStockTeamToggle({ config, enabled: b.enabled, repoDir: deps.repoDir, ...configIo(deps) })
+      const next = deps.applyStockTeamToggle({ config, enabled: b.enabled, scope, repoDir: deps.repoDir, ...configIo(deps) })
       refreshWorkers(config, next)
-      const touched = (next && next.workers ? next.workers : []).filter((w) => w && w.stockDigest !== undefined)
+      // Сколько работников теперь несёт поставочную отметку — и, для узкого действия, сколько
+      // из них КОНВЕЙЕРНЫХ. Роль читается тем же словарём, каким её отбирал применитель:
+      // число в ответе обязано быть числом про тот же набор, что назван на кнопке.
+      const touched = (next && next.workers ? next.workers : []).filter(
+        (w) => w && w.stockDigest !== undefined && (scope === 'all' || isPipelineRole(roleOf(w))),
+      )
       emitSafe(deps, { event: 'harness.updated' })
-      return sendJson(res, 200, { ok: true, stockTeam: { enabled: b.enabled, agents: touched.length } })
+      return sendJson(res, 200, { ok: true, stockTeam: { enabled: b.enabled, scope, agents: touched.length } })
     } catch (err) {
       return applierError(res, err)
     }

@@ -1,13 +1,13 @@
 import { useState } from 'react'
-import { isNotReady, STOCK_TEAM_TARGET } from '../../api/client'
+import { isNotReady, STOCK_PIPELINE_TARGET, STOCK_TEAM_TARGET } from '../../api/client'
 import { useHarnessQuery, useToggleAgent } from '../../api/queries'
 import type { AgentCard, AgentSource, AgentStore, StockTeamCard } from '../../api/types'
-import { OPEN_SCREEN_EVENT } from '../../shell/navigation'
-import type { OpenScreenDetail } from '../../shell/navigation'
+import { openScreen } from '../../shell/navigation'
 import { accentFor, initialOf } from '../../shell/format'
 import { DraftCard } from './DraftCard'
 import { ForgeDialog } from './ForgeDialog'
 import { ModelDialog } from './ModelDialog'
+import { roleWords } from './role-words'
 
 /**
  * «Агенты» — the forge, with its lid off: who is on the roster, what is still a draft, and
@@ -239,8 +239,19 @@ function WorkerRow({ agent, roster }: { agent: AgentCard; roster: readonly Agent
   )
 }
 
-/** One member of the team that arrived — or one the user brought. Read only; the switch is one, and it is below. */
+/**
+ * One member of the team that arrived — or one the user brought. Read only; the switches are
+ * above, and there are two of them now.
+ *
+ * ═══════════ И КАЖДАЯ ВЫКЛЮЧЕННАЯ КАРТОЧКА ОБЪЯСНЯЕТ САМА СЕБЯ ═══════════════════════════
+ *
+ * Раньше карточка говорила «выключен» — и всё. Тридцать с лишним таких строк человек читает
+ * как поломку: в соседнем окне те же по виду работники ждут работы. Теперь под каждой стоят
+ * две фразы — КТО ставит этой роли задачи и ЧТО изменится от включения, — и обе собраны из
+ * фактов, приехавших с демона считанными (`role`, `pipeline`), а не угаданы здесь по имени.
+ */
 function StockRow({ member }: { member: StockTeamCard }) {
+  const words = roleWords(member)
   return (
     <article
       className={`flex items-start gap-3 rounded-[12px] border border-bd bg-card px-[15px] py-2.5 shadow-panel ${
@@ -274,6 +285,14 @@ function StockRow({ member }: { member: StockTeamCard }) {
           >
             {STORE_LABEL[member.source] ?? member.source}
           </span>
+          {member.pipeline ? (
+            <span
+              title="Эту роль зовёт сам конвейер: без неё работа не едет"
+              className="rounded-full border border-bd2 px-2 py-[2px] text-[10px] text-blue"
+            >
+              конвейер
+            </span>
+          ) : null}
           {member.forked ? (
             <span className="rounded-full bg-warn-s px-2 py-[2px] text-[10px] text-warn-tx">изменён Вами</span>
           ) : null}
@@ -285,6 +304,12 @@ function StockRow({ member }: { member: StockTeamCard }) {
         {member.description ? (
           <div className="mt-[3px] text-[11.5px] leading-[1.5] text-tx2">{member.description}</div>
         ) : null}
+
+        {/* Кто ставит задачи — говорится всегда; что даст включение — пока роль выключена. */}
+        <div className="mt-[3px] text-[11px] leading-[1.5] text-tx3">
+          {words.assignedBy}
+          {member.enabled ? null : <> {words.onEnable}</>}
+        </div>
 
         {/* One line for two different things now — an unreadable file and a shadowed twin —
             and both are said in the daemon's own words rather than re-titled here, because a
@@ -319,6 +344,20 @@ function StockRow({ member }: { member: StockTeamCard }) {
  * served the pre-toggle one) and it is fixed there. What is fixed HERE is the second half,
  * which is a defect in its own right: a silent no-op. The outcome is stated either way now —
  * a refusal in red, and a plain confirmation of what moved when there was none.
+ *
+ * ═══════════ ГЛАВНОЕ ДЕЙСТВИЕ — УЗКОЕ, А «ВКЛЮЧИТЬ ВСЕХ» ОТОШЛО НА ВТОРОЕ МЕСТО ═══════════
+ *
+ * Одна синяя кнопка «Включить команду (35)» была единственным ответом на «почему всё серое», и
+ * ответ этот неверный: специалиста поднимает фаза изнутри своей работы, поэтому тридцать
+ * включённых специалистов не двигают ни одной задачи — зато оставляют конфиг, про который никто
+ * потом не помнит, что он сам включал. Владелец 02.09 сказал ровно про этот разрыв: «в агентах
+ * выключено, и я не понимаю вообще почему».
+ *
+ * Поэтому главной стала УЗКАЯ кнопка — включить тех, кого зовёт сам конвейер (исполнители и
+ * планировщик), — и она отдельным зарезервированным адресом на той же двери. «Включить всех»
+ * осталась, но выглядит тем, чем является: редким действием рядом с обычным. Кого именно
+ * считает узкая кнопка, решает ДЕМОН (`pipeline` на карточке) — здесь этот набор не собирается
+ * заново, иначе подпись на кнопке и её действие однажды разъедутся молча.
  */
 function StockTeamSection({
   team,
@@ -332,6 +371,8 @@ function StockTeamSection({
   const toggle = useToggleAgent()
   const [problem, setProblem] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<string | null>(null)
+  /** Какая из двух кнопок сейчас идёт — чтобы «Минуту…» стояло на нажатой, а не на обеих. */
+  const [acting, setActing] = useState<string | null>(null)
 
   const shipped = team.filter((m) => m.origin === 'sma')
   const own = team.filter((m) => m.origin === 'yours')
@@ -340,26 +381,40 @@ function StockTeamSection({
   const forked = shipped.filter((m) => m.forked).length
   const updates = shipped.filter((m) => m.stockUpdate === 'available').length
 
-  const flipTeam = () => {
+  /** Те, кого зовёт сам конвейер. Признак приезжает решённым — здесь он только читается. */
+  const pipeline = shipped.filter((m) => m.pipeline)
+  const pipelineOn = pipeline.filter((m) => m.enabled).length
+  const pipelineReady = pipeline.length > 0 && pipelineOn === pipeline.length
+
+  const flip = (target: string, turningOn: boolean, whole: boolean) => {
     setProblem(null)
     setOutcome(null)
-    const turningOn = !allOn
+    setActing(target)
     toggle.mutate(
-      { id: STOCK_TEAM_TARGET, enabled: turningOn },
+      { id: target, enabled: turningOn },
       {
         onSuccess: (result) => {
+          setActing(null)
           const touched = result?.stockTeam?.agents
           const many = typeof touched === 'number' ? ` Затронуто работников: ${touched}.` : ''
+          if (!whole) {
+            setOutcome(`Конвейер включён: исполнители и планировщик берут работу.${many}`)
+            return
+          }
           setOutcome(turningOn ? `Команда включена.${many}` : `Команда выключена.${many}`)
         },
-        onError: (err) =>
+        onError: (err) => {
+          setActing(null)
           setProblem(
             isNotReady(err)
               ? 'Переключение пока не работает — дверь не отвечает.'
-              : turningOn
-                ? 'Включить команду не удалось. Всё осталось как было.'
-                : 'Выключить команду не удалось. Всё осталось как было.',
-          ),
+              : !whole
+                ? 'Включить конвейер не удалось. Всё осталось как было.'
+                : turningOn
+                  ? 'Включить команду не удалось. Всё осталось как было.'
+                  : 'Выключить команду не удалось. Всё осталось как было.',
+          )
+        },
       },
     )
   }
@@ -398,38 +453,68 @@ function StockTeamSection({
   return (
     <div>
       <div className="mb-2 text-[10px] font-semibold tracking-[0.1em] text-tx3 uppercase">Команда SMA</div>
+      {/*
+        ДВА ОКНА — ДВА РАЗНЫХ ВОПРОСА, И ЭТО НАКОНЕЦ СКАЗАНО ВСЛУХ. Здесь — что ПРИЕХАЛО с
+        установкой, включённое и выключенное; на доске «Команда» — кто уже берёт работу. Человек,
+        видевший тут «выключено» напротив тридцати имён, а там живых работников, читал разницу
+        как ошибку окна. Ошибки не было: не было фразы.
+      */}
+      <div className="mb-3.5 max-w-[720px] text-[11.5px] leading-[1.6] text-tx3">
+        Здесь — все роли, что приехали вместе с установкой, включённые и выключенные. На доске
+        «Команда» — только включённые, те, кто уже берёт работу. Разные списки в двух окнах — это
+        разные вопросы, а не расхождение.
+      </div>
 
       {/* The switch, as a panel and not as a word in a corner — see the note above. */}
       <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-3 rounded-[14px] border border-bd2 bg-surf px-[18px] py-4 shadow-panel">
         <div className="min-w-[260px] flex-1">
           <div className="flex flex-wrap items-baseline gap-2.5">
             <span className="text-[15px] font-semibold text-tx">
-              {allOn ? 'Команда включена' : on > 0 ? 'Команда включена не вся' : 'Команда выключена'}
+              {pipelineReady ? 'Конвейер включён' : 'Конвейер не включён'}
             </span>
             <span className="text-[12.5px] text-tx2 tabular-nums">
-              включено {on} из {shipped.length}
+              включено {on} из {shipped.length}, из них конвейерных {pipelineOn} из {pipeline.length}
             </span>
           </div>
           <div className="mt-1 max-w-[620px] text-[12px] leading-[1.6] text-tx2">
-            {allOn
-              ? 'Все работники, приехавшие вместе с SMA, включены и могут брать задачи.'
-              : 'Одно нажатие включает их всех сразу. Ничего не скачивается — включаются те файлы, что уже лежат на диске.'}
+            {/*
+              ПОЧЕМУ ОНИ ВЫКЛЮЧЕНЫ — сказано здесь, а не выведено человеком из серых строк.
+              Роли приезжают с установкой выключенными по правилу: ничего не включается без
+              решения владельца. Это не то же самое, что «в команде они ждут работы», — там
+              доска ВКЛЮЧЁННЫХ, и два окна отвечают на два разных вопроса.
+            */}
+            {pipelineReady
+              ? 'Исполнители и планировщик включены — очередь есть кому разбирать. Остальные роли ждут своей фазы: их поднимает работа изнутри себя, поимённо.'
+              : 'Роли приезжают выключенными: без Вашего решения SMA не включает ничего. Чтобы работа поехала, нужны только те, кого зовёт сам конвейер, — исполнители и планировщик. Остальных поднимает фаза поимённо, и включать их заранее незачем.'}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={flipTeam}
-          disabled={toggle.isPending || shipped.length === 0}
-          className={`h-[42px] flex-none rounded-[10px] px-6 text-[14px] font-semibold whitespace-nowrap disabled:opacity-60 ${
-            allOn ? 'border border-bd2 bg-card text-tx hover:bg-row-hover' : 'bg-blue-d text-white hover:bg-blue'
-          }`}
-        >
-          {toggle.isPending
-            ? 'Минуту…'
-            : allOn
-              ? `Выключить команду (${shipped.length})`
-              : `Включить команду (${shipped.length})`}
-        </button>
+        <div className="flex flex-none flex-col items-stretch gap-2">
+          {/* ГЛАВНОЕ ДЕЙСТВИЕ — узкое. «Включить всех» стоит рядом и выглядит второстепенным. */}
+          <button
+            type="button"
+            onClick={() => flip(STOCK_PIPELINE_TARGET, true, false)}
+            disabled={toggle.isPending || pipeline.length === 0 || pipelineReady}
+            className="h-[42px] rounded-[10px] bg-blue-d px-6 text-[14px] font-semibold whitespace-nowrap text-white hover:bg-blue disabled:opacity-60"
+          >
+            {toggle.isPending && acting === STOCK_PIPELINE_TARGET
+              ? 'Минуту…'
+              : pipelineReady
+                ? 'Нужные уже включены'
+                : `Включить тех, кто нужен сейчас (${pipeline.length})`}
+          </button>
+          <button
+            type="button"
+            onClick={() => flip(STOCK_TEAM_TARGET, !allOn, true)}
+            disabled={toggle.isPending || shipped.length === 0}
+            className="rounded-[9px] border border-bd2 bg-card px-6 py-2 text-[12px] whitespace-nowrap text-tx2 hover:text-tx disabled:opacity-60"
+          >
+            {toggle.isPending && acting === STOCK_TEAM_TARGET
+              ? 'Минуту…'
+              : allOn
+                ? `Выключить всех (${shipped.length})`
+                : `Включить всех (${shipped.length})`}
+          </button>
+        </div>
       </div>
 
       {problem ? (
@@ -446,8 +531,32 @@ function StockTeamSection({
       <div className="mb-3.5 text-[11.5px] leading-[1.6] text-tx3">
         Это те, кто приехал вместе с SMA: {shipped.length}.
         {forked > 0 ? ` Изменено Вами: ${forked}.` : ''}
-        {updates > 0 ? ` Есть новая версия у: ${updates}.` : ''}
       </div>
+
+      {/*
+        «ЕСТЬ НОВАЯ ВЕРСИЯ У: N» БЫЛО КОНЦОМ ФРАЗЫ, А НЕ ДОРОГОЙ. Число стояло в серой строке
+        рядом с двумя другими числами и не вело никуда: человек узнавал, что описания устарели,
+        и оставался с этим один. Новые версии описаний привозит ОБЫЧНЫЙ УСТАНОВЩИК — тот же,
+        что ставил SMA, — и он уже есть в окне, на «Доме системы». Поэтому строка стала дверью
+        туда, а не сообщением. Само обновление отсюда не запускается намеренно: оно пишет в
+        установку целиком, спрашивает подтверждение и говорит, чего не тронет, — и место, где
+        это сказано, одно.
+      */}
+      {updates > 0 ? (
+        <div className="mb-3.5 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-[10px] border border-bd2 bg-card px-3.5 py-2.5">
+          <span className="flex-1 text-[11.5px] leading-[1.6] text-tx2">
+            Есть новая версия у: {updates}. Новые описания привозит обычный установщик — тот же, что ставил SMA.
+            Ваши изменённые файлы он не переписывает молча.
+          </span>
+          <button
+            type="button"
+            onClick={() => openScreen({ screen: 'system' })}
+            className="flex-none rounded-[8px] border border-bd2 px-[13px] py-1.5 text-[11.5px] whitespace-nowrap text-tx2 hover:border-blue hover:text-blue"
+          >
+            Обновить установщиком
+          </button>
+        </div>
+      ) : null}
 
       <div className="flex flex-col gap-2.5">
         {shipped.map((m) => (
@@ -494,10 +603,6 @@ export function Screen() {
   const swarm = agents.filter((a) => !a.executor)
 
   const enabled = agents.filter((a) => a.enabled).length
-
-  const openScreen = (detail: OpenScreenDetail) => {
-    window.dispatchEvent(new CustomEvent<OpenScreenDetail>(OPEN_SCREEN_EVENT, { detail }))
-  }
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">

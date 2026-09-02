@@ -116,7 +116,15 @@ import { resolveConfigPath, writeConfig } from '../config.mjs'
 // КТО ИЗ НИХ ИСПОЛНИТЕЛЬ — спрашивается у того, кто по этому же признаку выбирает маршрут.
 // Экран и маршрутизатор обязаны читать роль ОДНИМ выражением: разойдясь, они начнут по-разному
 // отвечать на один вопрос, и человек перестанет верить обоим.
-import { isExecutor, roleOf } from '../policy/worker-role.mjs'
+import {
+  EXECUTOR_ROLE,
+  isExecutor,
+  isPipelineRole,
+  normalizeRole,
+  PIPELINE_ROLES,
+  roleFromDefinitionPath,
+  roleOf,
+} from '../policy/worker-role.mjs'
 import { telegramLinkView } from '../telegram/pairing.mjs'
 
 // ── named errors ──
@@ -444,6 +452,23 @@ export function findSkillFile({ skillId, repoDir, fsImpl, env = process.env, hom
  */
 export const STOCK_TEAM_TARGET = '__stock-team__'
 
+/**
+ * The SECOND reserved target on the same door: «switch on the roles the conveyor itself calls»
+ * — the executors and the planner (policy/worker-role.mjs owns that list, and owns it once).
+ *
+ * WHY A SECOND TARGET AND NOT A SECOND ROUTE. The route table is frozen and its size is the
+ * guard invariant; this is the STOCK_TEAM_TARGET trick applied a second time, for the same
+ * reason and at the same cost — none. It passes server.mjs's ID_RE unchanged and cannot collide
+ * with an installed definition, because the installer only ever writes `sma-*.md`.
+ *
+ * WHY IT EXISTS AT ALL. «Включить команду (35)» was the only act on this screen, and it is the
+ * wrong DEFAULT: a specialist is raised by a phase from inside its own work, so switching on
+ * thirty-odd of them moves no task one step closer. The act a person standing in front of a
+ * fresh install actually wants is the narrow one — make the queue workable — and it is now the
+ * one the window offers first.
+ */
+export const STOCK_PIPELINE_TARGET = '__stock-pipeline__'
+
 /** Where a definition came from: shipped with SMA, or the user's own. */
 export const STOCK_ORIGINS = Object.freeze(['sma', 'yours'])
 
@@ -572,11 +597,24 @@ function toolsOf(fm) {
   return []
 }
 
+/**
+ * roleOfDefinition(id, worker) → роль, которую держит ЭТО описание.
+ *
+ * Тем же выражением, каким её читает маршрутизатор, и в том же порядке источников: рука
+ * человека в профиле — потом имя файла, которое И ЕСТЬ имя роли, — потом исполнитель. Карточка
+ * без профиля (описание приехало, но включено ещё не было) роль всё равно называет: иначе окно
+ * не смогло бы сказать про выключенного, кто он, — а это и есть то, чего человеку не хватало.
+ */
+function roleOfDefinition(id, worker) {
+  return (worker ? normalizeRole(worker.role) : null) ?? roleFromDefinitionPath(id) ?? EXECUTOR_ROLE
+}
+
 /** One stock-team card. Explicit-pick: no body, no path, no env value — ever. */
 function stockEntry({ id, source, content, pristine, worker }) {
   const { frontmatter: fm } = readFrontmatter(content)
   const shipped = pristine != null
   const forked = shipped ? definitionDigest(content) !== definitionDigest(pristine) : false
+  const role = roleOfDefinition(id, worker)
   let stockUpdate = 'not-shipped'
   if (shipped) {
     const baseline = worker && typeof worker.stockDigest === 'string' ? worker.stockDigest : null
@@ -593,6 +631,12 @@ function stockEntry({ id, source, content, pristine, worker }) {
     origin: shipped ? 'sma' : 'yours',
     forked,
     stockUpdate,
+    // КТО ЭТА РОЛЬ И ЗОВЁТ ЛИ ЕЁ КОНВЕЙЕР — приезжает СЧИТАННЫМ, тем же выражением, каким
+    // роль читает маршрутизатор и каким её отбирает выключатель конвейера. Окно, решающее
+    // это у себя, стало бы вторым мнением: кнопка включала бы один набор, а подпись под ней
+    // обещала бы другой, и разошлись бы они молча.
+    role,
+    pipeline: isPipelineRole(role),
     problem: fm
       ? null
       : 'файл определения не разобран: нет рамки frontmatter в начале файла — карточка показана по имени файла',
@@ -660,8 +704,13 @@ function scanAgentStores({ config, repoDir, fsImpl, env, homedir }) {
  * A definition that fails to parse comes back with a named `problem` — the scan is never
  * broken by one bad file, and a missing agents directory is an empty list, not a throw.
  *
+ * Each card also carries the ROLE the definition holds and whether the conveyor calls that role
+ * without being asked (`pipeline`). Both are read with the router's own expression, so the
+ * window can say WHO a switched-off card is and WHO would give it work — the two facts a person
+ * looking at thirty-odd greyed rows has no other way to learn.
+ *
  * @param {{config?:object, repoDir?:string, fsImpl?:object, env?:object, homedir?:Function}} [args]
- * @returns {Array<{id:string, title:string, description:string, tools:string[], enabled:boolean, source:string, origin:string, forked:boolean, stockUpdate:string, problem:(string|null)}>}
+ * @returns {Array<{id:string, title:string, description:string, tools:string[], enabled:boolean, source:string, origin:string, forked:boolean, stockUpdate:string, role:string, pipeline:boolean, problem:(string|null)}>}
  */
 export function readStockTeam({ config, repoDir, fsImpl, env = process.env, homedir = osHomedir } = {}) {
   return scanAgentStores({ config, repoDir, fsImpl, env, homedir }).team
@@ -920,13 +969,22 @@ export function applyAgentToggle({ config, id, enabled, repoDir, launchDir, fsIm
  * the recorded baseline alone — the answer to «what did I last accept» does not change
  * because a switch moved.
  *
- * @param {{config:object, enabled:boolean, repoDir?:string, launchDir?:string, fsImpl?:object, env?:object, homedir?:Function}} args
+ * `scope` NARROWS the same act to the roles the conveyor itself calls — the executors and the
+ * planner — and it defaults to the whole shipped roster, so every existing caller keeps the
+ * behaviour it had. The narrow act exists because it is the one a person on a fresh install
+ * actually needs: it makes the queue workable without switching on thirty specialists nobody
+ * asked for and nobody will remember switching on. Which roles those are is NOT decided here —
+ * `isPipelineRole` decides it, the same dictionary the read model labels the cards with, so the
+ * button and its own caption can never come to mean two different sets.
+ *
+ * @param {{config:object, enabled:boolean, scope?:('all'|'pipeline'), repoDir?:string, launchDir?:string, fsImpl?:object, env?:object, homedir?:Function}} args
  * @returns {object} the updated config
  */
-export function applyStockTeamToggle({ config, enabled, repoDir, launchDir, fsImpl, env = process.env, homedir = osHomedir }) {
+export function applyStockTeamToggle({ config, enabled, scope = 'all', repoDir, launchDir, fsImpl, env = process.env, homedir = osHomedir }) {
   if (!config || !Array.isArray(config.workers)) {
     throw new UnknownProfileError('applyStockTeamToggle: config.workers required')
   }
+  const pipelineOnly = scope === 'pipeline'
   const shipped = []
   const seen = new Set()
   for (const { source, path, pristine } of agentStorePaths({ repoDir, env, homedir })) {
@@ -939,6 +997,10 @@ export function applyStockTeamToggle({ config, enabled, repoDir, launchDir, fsIm
       seen.add(id)
       const pristineText = readFileSafe(join(pristine, name), fsImpl)
       if (pristineText == null) continue // the user's own agent — not part of the shipped team
+      // Роль читается ИЗ ИМЕНИ ФАЙЛА, то есть оттуда же, откуда её читает карточка в окне:
+      // отбор кнопки «включить тех, кто нужен сейчас» обязан совпадать с тем, что эта кнопка
+      // о себе говорит, а совпадать он может только пока источник у обоих один.
+      if (pipelineOnly && !isPipelineRole(roleFromDefinitionPath(id))) continue
       shipped.push({
         id,
         content,
@@ -952,7 +1014,9 @@ export function applyStockTeamToggle({ config, enabled, repoDir, launchDir, fsIm
       .map((s) => s.path)
       .join(' and ')
     throw new MissingDefinitionFileError(
-      `no installed SMA definitions in ${looked} — nothing to switch on until the install put them there (two-step activation)`,
+      pipelineOnly
+        ? `no installed SMA definitions for the conveyor roles (${PIPELINE_ROLES.join(', ')}) in ${looked} — nothing to switch on until the install put them there (two-step activation)`
+        : `no installed SMA definitions in ${looked} — nothing to switch on until the install put them there (two-step activation)`,
     )
   }
 
