@@ -372,11 +372,33 @@ describe('restart — the door is the verdict', () => {
   it('the lift is the SUPERVISOR’S own, per platform — never a third way to start', () => {
     const win = liftCommand({ platform: 'win32', smaHome: 'C:/sma' })
     expect(win.cmd).toBe('powershell')
-    expect(win.args.join(' ')).toContain('start-daemon-windows.ps1') // the Scheduled Task's target
+    expect(win.args.join(' ')).toContain('lift-daemon-windows.ps1') // the launcher that starts the Scheduled Task's target
 
     const mac = liftCommand({ platform: 'darwin', smaHome: '/Users/worker/sma', nodeBin: '/opt/homebrew/bin/node' })
     expect(mac.cmd).toBe('/opt/homebrew/bin/node')
     expect(mac.args[0]).toContain(join('daemon', 'src', 'main.mjs')) // the plist's ProgramArguments
+  })
+
+  it('the Windows lift is NOT detached, and the launcher it names is a file that ships', () => {
+    // Detachment on Windows is DETACHED_PROCESS — «no console» — and PowerShell 5.1 cannot
+    // start without one: measured three times on 02.09.2026, the child exited 0 in
+    // milliseconds having run nothing, and the daily lift log held the «lifting» line and
+    // silence after it. So the command itself carries the answer, and the answer is `false`
+    // here and `true` where a node composition root is being started.
+    const win = liftCommand({ platform: 'win32', smaHome: 'C:/sma' })
+    expect(win.detached).toBe(false)
+    expect(liftCommand({ platform: 'darwin', smaHome: '/sma' }).detached).toBe(true)
+    expect(liftCommand({ platform: 'linux', smaHome: '/sma' }).detached).toBe(true)
+
+    // A launcher named but not shipped is a lift that dies with ENOENT on the real machine,
+    // which is exactly the class of failure this whole file exists to keep out.
+    const repoRoot = fileURLToPath(new URL('../..', import.meta.url))
+    const named = liftCommand({ platform: 'win32', smaHome: repoRoot }).args.at(-3) as string
+    expect(existsSync(named)).toBe(true)
+    // …and it must be the launcher, which is what starts the wrapper — not the wrapper itself.
+    const launcher = readFileSync(named, 'utf8')
+    expect(launcher).toContain('Start-Process')
+    expect(launcher).toContain('start-daemon-windows.ps1')
   })
 })
 

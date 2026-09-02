@@ -438,17 +438,38 @@ function secs(ms) {
  * targets, which brings up the queue Postgres, ensures the queue database and only then runs
  * the composition root. Everywhere else it is `node daemon/src/main.mjs` — the exact
  * ProgramArguments of the launchd agent (com.sma.daemon.plist).
+ *
+ * ═════════ WHO DETACHES, AND WHY WINDOWS ANSWERS THAT DIFFERENTLY ════════════════
+ * `detached` travels WITH the command because it is a property of the thing being started,
+ * not a habit of whoever starts it. Detachment is what lets the caller report and exit while
+ * the daemon lives on, and for a node composition root the flag does exactly that.
+ *
+ * For PowerShell it does the opposite, and the failure is silent. On Windows libuv turns
+ * `detached` into DETACHED_PROCESS — the kernel is told the child must have NO console — and
+ * Windows PowerShell 5.1 cannot start without one. Measured on this machine 02.09.2026, three
+ * lifts in a row: the process was created, exited 0 in milliseconds, ran not one line of the
+ * script, and wrote nothing to stdout, stderr or its own log. `daemon-lift-<day>.log` held the
+ * «lifting» line and then silence; the door never opened. The identical spawn WITHOUT the flag
+ * runs the script and captures every line.
+ *
+ * So on Windows the lift is one hop longer and NOT detached: a short-lived launcher
+ * (`supervisor/lift-daemon-windows.ps1`) that starts the real wrapper hidden, with its streams
+ * redirected to files, reports its pid and echoes the first lines of the boot back into the
+ * lift log. The daemon's independence comes from that hidden start, and Windows does not kill
+ * a child when its parent exits — so the daemon outlives the launcher exactly as it used to
+ * outlive the caller.
  */
 export function liftCommand({ platform = process.platform, smaHome = SMA_HOME, nodeBin = process.execPath } = {}) {
   if (platform === 'win32') {
-    const script = join(smaHome, 'supervisor', 'start-daemon-windows.ps1')
+    const launcher = join(smaHome, 'supervisor', 'lift-daemon-windows.ps1')
     return {
       cmd: 'powershell',
-      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-SmaHome', smaHome],
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher, '-SmaHome', smaHome],
       cwd: smaHome,
+      detached: false,
     }
   }
-  return { cmd: nodeBin, args: [join(smaHome, 'daemon', 'src', 'main.mjs')], cwd: smaHome }
+  return { cmd: nodeBin, args: [join(smaHome, 'daemon', 'src', 'main.mjs')], cwd: smaHome, detached: true }
 }
 
 /**

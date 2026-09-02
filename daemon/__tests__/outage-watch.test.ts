@@ -669,6 +669,70 @@ describe('журнал запусков — вывод подъёма попад
     }
   })
 
+  it('решение «отделять ли» едет ВМЕСТЕ с командой и доезжает до самого spawn', () => {
+    // Провод, которого не было. Отделение стояло здесь константой `detached: true`, и на
+    // Windows это DETACHED_PROCESS — «консоли не давать». PowerShell 5.1 без консоли не
+    // стартует: замерено 02.09.2026 трижды — процесс создан, вышел с нулём за миллисекунды,
+    // не выполнив ни строки скрипта, и не написал ни слова никуда. Значение из команды должно
+    // доезжать до вызова, иначе развилка вычислена и не подключена.
+    const logDir = scratchLogDir()
+    const seen: Array<Record<string, unknown>> = []
+    const fakeSpawn = (_cmd: string, _args: string[], opts: Record<string, unknown>) => {
+      seen.push(opts)
+      return { pid: 4242, on() { return this }, unref() {} }
+    }
+    spawnLiftLogged({
+      spawn: fakeSpawn as never,
+      lift: { cmd: 'powershell', args: ['-File', 'lift-daemon-windows.ps1'], cwd: '.', detached: false },
+      logDir,
+      at: new Date(T0),
+    })
+    spawnLiftLogged({
+      spawn: fakeSpawn as never,
+      lift: { cmd: 'node', args: ['main.mjs'], cwd: '.', detached: true },
+      logDir,
+      at: new Date(T0),
+    })
+    // Команда без своего мнения ведёт себя как раньше — старые вызовы не меняют поведения.
+    spawnLiftLogged({
+      spawn: fakeSpawn as never,
+      lift: { cmd: 'node', args: ['main.mjs'], cwd: '.' },
+      logDir,
+      at: new Date(T0),
+    })
+    expect(seen.map((o) => o.detached)).toEqual([false, true, true])
+  })
+
+  it('выход запуска попадает в журнал ДАЖЕ с нулевым кодом — смерть за миллисекунды это улика', () => {
+    // `if (code || signal)` глотал ровно тот случай, ради которого журнал заводился: обёртка
+    // выходила с нулём, не сделав ничего. Теперь в журнале и код, и время жизни, и pid.
+    const logDir = scratchLogDir()
+    const handlers: Record<string, (...a: unknown[]) => void> = {}
+    const fakeSpawn = () => ({
+      pid: 777,
+      on(ev: string, fn: (...a: unknown[]) => void) {
+        handlers[ev] = fn
+        return this
+      },
+      unref() {},
+    })
+    let clock = 1000
+    const { log } = spawnLiftLogged({
+      spawn: fakeSpawn as never,
+      lift: { cmd: 'powershell', args: ['-File', 'start-daemon-windows.ps1'], cwd: '.', detached: true },
+      logDir,
+      at: new Date(T0),
+      now: () => clock,
+    })
+    clock = 1020
+    handlers.exit(0, null)
+
+    const tail = tailLiftLog(log)
+    expect(tail).toContain('pid 777')
+    expect(tail).toContain('код 0')
+    expect(tail).toContain('20 мс')
+  })
+
   it('файла нет — пустая строка, а не бросок: журнал это удобство, а не условие подъёма', () => {
     expect(tailLiftLog(join(scratchLogDir(), 'нет-такого.log'))).toBe('')
     expect(tailLiftLog('')).toBe('')

@@ -55,6 +55,28 @@ host-agnostic by design; the OS binding is a thin supervisor layer only).
   looping. The output of every lift lands in `daemon-lift-<day>.log` beside the daemon's log, on
   every platform: `lift-log.mjs` owns that one spawn for both the watchdog and `daemon-control.mjs`,
   because where the output goes is a property of the lift and not of each caller.
+- **On Windows the lift is one hop longer, because «detached» there means «no console»:**
+  `lift-daemon-windows.ps1`. Detachment is what lets the caller report and exit while the daemon
+  lives on, and for a node composition root the flag does exactly that; on Windows libuv turns it
+  into DETACHED_PROCESS, the kernel is told the child must have NO console, and Windows PowerShell
+  5.1 cannot start without one. Measured 02.09.2026, three lifts in a row: the process was created,
+  exited 0 in milliseconds, ran not one line of `start-daemon-windows.ps1` and wrote nothing to
+  stdout, stderr or any log — `daemon-lift-<day>.log` held the «lifting» line and silence. So the
+  Windows lift is NOT detached: a short-lived launcher starts the real wrapper hidden, with its two
+  streams redirected to `daemon-lift-<stamp>.out.log` / `.err.log`, prints the pid and echoes the
+  first lines of the boot back into the daily lift log. The daemon's independence comes from that
+  hidden start — Windows does not kill a child when its parent exits. Which platform detaches is
+  carried by the lift command itself (`liftCommand`), so the choice cannot drift apart from the
+  spawn that acts on it. And the exit of a lift is now logged ALWAYS, code 0 included, with how
+  long it lived: a start that «succeeded» in twenty milliseconds is the evidence, and the old
+  «success is silent» condition swallowed exactly it.
+- **`lift-drill.mjs` proves that path on a real machine without stopping anything**
+  (`node supervisor/lift-drill.mjs`). The failure above is invisible to unit tests by nature — it
+  is not in the decision to lift, it is in how the operating system creates the process — so the
+  drill calls the very same `liftCommand` + `spawnLiftLogged` a restart calls, and fails unless the
+  lift log ends up holding a pid and lines from the wrapper itself. It leaves a live daemon alone:
+  the wrapper's first act is to look at the door and stand down when somebody is already serving.
+  What it therefore does NOT cover is the cold start, which needs a closed door.
 - **And a daemon that is ALIVE can still be dead to everyone outside it.** Measured: the process
   was up (56 MB, CPU running) while `GET /` hung to the timeout three probes in a row, and the jam
   held for ten minutes with the watchdog running. The watchdog was not broken — it declared the
