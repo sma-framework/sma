@@ -185,6 +185,7 @@ import {
   codexSandboxFor,
   codexWorkspaceWriteOutlook,
   codexSandboxRefusal,
+  codexGitWritableRoot,
 } from './runner/args.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
@@ -362,6 +363,49 @@ function gateSpawnOptions(deps, config, task) {
     }
   }
   return runDir || redirectsFile ? { gate: { runDir: runDir ?? undefined, redirectsFile: redirectsFile ?? undefined } } : {}
+}
+
+/**
+ * copyWriteSpawnOptions(deps, workDir) → `{writableRoots}` — ЕДИНСТВЕННЫЙ КАТАЛОГ СНАРУЖИ
+ * КОПИИ, БЕЗ КОТОРОГО РАБОТА В НЕЙ НЕ ЗАКАНЧИВАЕТСЯ КОММИТОМ.
+ *
+ * ЧТО СЛОМАНО БЕЗ ЭТОГО. Полоса codex ходит в песочнице `workspace-write`: она открывает на
+ * запись РАБОЧИЙ КАТАЛОГ и ничего больше. А копия попытки — это РАБОЧЕЕ ДЕРЕВО git: её `.git`
+ * не каталог, а файл-указатель, и индекс, ссылки, объекты лежат в основном репозитории,
+ * СНАРУЖИ копии. Поэтому сессия честно правит файлы и упирается в запрет на `git add`, а гейт
+ * закрывает попытку как «нет квитанции» — на карточке виноват работник, который сделал всё,
+ * что мог. Замерено 01.09.2026; решение основателя 02.09.2026: кодекс — работник уровня
+ * Опуса/Фейбла и делает всё идентично, а соседняя полоса ходит вообще без песочницы.
+ *
+ * ГРАНИЦА НЕ СНИМАЕТСЯ, В НЕЁ ВНОСИТСЯ ОДИН КАТАЛОГ. `danger-full-access` для этого не
+ * годится и структурно отклонён сборщиком аргументов; здесь называется ровно git-каталог этой
+ * копии, и больше ничего.
+ *
+ * СПРАШИВАЕТСЯ У GIT, А НЕ ВЫВОДИТСЯ ИЗ РАСКЛАДКИ КАТАЛОГОВ. Где лежит git-каталог копии,
+ * знает только git: у обычного клона это `.git` внутри, у рабочего дерева — путь в основной
+ * репозиторий. Ответ приводится к абсолютному одним выражением (codexGitWritableRoot), тем же
+ * на обеих дверях спавна.
+ *
+ * FAIL-OPEN, НО ВСЛУХ. Git молчит или его нет — спавн идёт прежним (полоса Claude этот список
+ * не читает вовсе, и отказ убил бы её ни за что), а промах ложится в журнал: молчание здесь
+ * вернуло бы ровно ту попытку без квитанции, ради которой всё это и написано.
+ */
+function copyWriteSpawnOptions(deps, workDir) {
+  if (typeof deps.execGit !== 'function') return {}
+  if (typeof workDir !== 'string' || workDir.trim() === '') return {}
+  let common = ''
+  try {
+    common = String(deps.execGit(['rev-parse', '--git-common-dir'], { cwd: workDir }) || '').trim()
+  } catch (err) {
+    writeLog(deps, { type: 'task.copy_git_dir_unknown', workDir, error: String((err && err.message) || err) })
+    return {}
+  }
+  const root = codexGitWritableRoot({ workDir, gitCommonDir: common })
+  if (!root) {
+    writeLog(deps, { type: 'task.copy_git_dir_unknown', workDir, error: 'git не назвал общий каталог копии' })
+    return {}
+  }
+  return { writableRoots: [root] }
 }
 
 /**
@@ -4818,6 +4862,9 @@ export async function tick(deps = {}) {
         ...continuationSpawnOptions(deps, config, task, wake),
         ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
         ...envelopeSpawnOptions(envelope),
+        // КУДА ЭТА ПОПЫТКА СДАЁТСЯ — в границу запуска, а не только в промпт. Копия попытки
+        // это рабочее дерево git, её git-каталог лежит СНАРУЖИ; см. copyWriteSpawnOptions.
+        ...copyWriteSpawnOptions(deps, workDir),
         // The attempt directory and the correction file, created and named BEFORE the process
         // exists — the parking gate inside the child reads both out of its environment.
         ...gateSpawnOptions(deps, config, task),
@@ -5749,6 +5796,10 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
     // Тот же список сгоревших потолков, что и на пути кода: два места, где живёт одно правило,
     // однажды разойдутся, а одно выражение — нет.
     burnedTurnCaps: turnBudget.burnedCaps,
+    // И ТА ЖЕ ГРАНИЦА ЗАПИСИ. У кузницы своей квитанции нет, но черновик она КОММИТИТ — а
+    // git-каталог копии лежит снаружи рабочего каталога ровно так же. Одно выражение на обе
+    // двери: вторая дверь спавна уже дважды оставалась без того, что получила первая.
+    ...copyWriteSpawnOptions(deps, worktreePath),
     // The SAME one function the code path calls — see its own note about the last time these
     // two points each carried a private copy of a spawn decision.
     ...gateSpawnOptions(deps, config, task),

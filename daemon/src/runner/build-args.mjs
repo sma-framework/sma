@@ -465,6 +465,17 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
         // собирается ТЕМ ЖЕ выражением, каким тик заранее считает, ляжет ли посев
         // (codexSandboxSourceFor): две сборки одного пути — это страж и посев про разные дома.
         sandboxSource: codexSandboxSourceFor({ account: worker.account, homedir }) ?? undefined,
+        // ── И КАТАЛОГ, В КОТОРЫЙ ЭТА РАБОТА СДАЁТСЯ ─────────────────────────────
+        //
+        // `workspace-write` открывает на запись РАБОЧИЙ КАТАЛОГ и ничего больше, а копия
+        // задачи — рабочее дерево git: её `.git` это файл-указатель, а индекс, ссылки и
+        // объекты лежат в основном репозитории, СНАРУЖИ копии. Сессия поэтому честно правила
+        // файлы и не могла их закоммитить, а гейт закрывал попытку как «нет квитанции» —
+        // на карточке виноват работник (замерено 01.09.2026). Список приносит ТИК: только он
+        // знает, где стоит копия этой попытки; этот файл не имеет своей руки к git и не
+        // должен её заводить. Тик не назвал ничего — секции в конфиге не будет, и дом выйдет
+        // ровно прежним.
+        writableRoots: Array.isArray(options.writableRoots) ? options.writableRoots : undefined,
         fsImpl,
       })
       // ASKED OF THE ENVIRONMENT THE CHILD WILL ACTUALLY HAVE, not of the daemon's own: those
