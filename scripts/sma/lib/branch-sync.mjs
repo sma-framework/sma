@@ -228,6 +228,47 @@ export function matchesPattern(path, pattern) {
 }
 
 /**
+ * mechanicalPaths(rules) → образцы путей, которые развод снимает БЕЗ человека, одним списком.
+ *
+ * Собран из тех же правил, по которым разводится слияние: дописываемые файлы (`union`), файлы
+ * чисел замера (`measured.files`) и пересобираемые артефакты (`regenerate[].files`). Отдельного
+ * перечня здесь нет намеренно — второй список тех же имён разошёлся бы с первым в первый же
+ * день, когда правила пополнят с одной стороны.
+ *
+ * Строки замера (`measured.lines`) сюда не входят: это ОТДЕЛЬНЫЕ СТРОКИ внутри рукописных
+ * файлов, а не файлы, и объявить по ним весь файл механическим значило бы соврать о чужих
+ * абзацах.
+ */
+export function mechanicalPaths(rules = MECHANICAL_DEFAULTS) {
+  const out = []
+  const add = (p) => {
+    if (typeof p !== 'string' || p === '') return
+    if (!out.includes(p)) out.push(p)
+  }
+  if (rules && Array.isArray(rules.union)) for (const p of rules.union) add(p)
+  if (rules && rules.measured && Array.isArray(rules.measured.files)) for (const p of rules.measured.files) add(p)
+  if (rules && Array.isArray(rules.regenerate)) {
+    for (const rule of rules.regenerate) {
+      if (rule && Array.isArray(rule.files)) for (const p of rule.files) add(p)
+    }
+  }
+  return out
+}
+
+/**
+ * isMechanicalPath(path, rules) → правда, если этот путь развод снимает сам.
+ *
+ * Спрашивают об этом не только слияние. Очередь спрашивает то же самое, решая, стоит ли из-за
+ * файла придерживать работу: держать имеет смысл там, где спор пришлось бы разводить человеку,
+ * а файл, который разводится механически, стоит ровно ноль человеческого времени.
+ */
+export function isMechanicalPath(path, rules = MECHANICAL_DEFAULTS) {
+  const p = String(path ?? '').replace(/\\/g, '/')
+  if (!p) return false
+  return mechanicalPaths(rules).some((pattern) => matchesPattern(p, pattern))
+}
+
+/**
  * conflictedFiles({cwd, execGit}) → `{answered, files, count, reason}` — что именно git считает
  * неразведённым ПРЯМО СЕЙЧАС, во время незавершённого слияния.
  *

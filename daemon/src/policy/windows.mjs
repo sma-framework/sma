@@ -11,10 +11,11 @@
  *        "overageStatus":"rejected","overageDisabledReason":"out_of_credits",
  *        "isUsingOverage":false}}
  *
- * Three facts and no fourth: WHICH window, WHETHER it is still letting work through, and
- * WHEN it resets. There is no fraction of the window spent. There never was one on this
- * stream, and no other programmatic source has one either — the interactive `/status`
- * command is a command of the interface and cannot be called from here.
+ * At the top level: WHICH window, WHETHER it is still letting work through, and WHEN it resets.
+ * There is no fraction of the window spent up there — but the same frame carries a
+ * `unifiedWindows` block naming BOTH windows with the fraction spent in each, and that block is
+ * read (see runner/stream.mjs). Until it was, the weekly window was refreshed only on the rare
+ * frame that NAMED it — about once a day — and the board showed a week nineteen hours stale.
  *
  * WHY THERE IS NO PERCENTAGE HERE ANY MORE. The screen showed «0%» on a subscription that was
  * being spent all day, and it got there by TWO roads that both ended in a zero:
@@ -174,13 +175,22 @@ function factOf(rec, keys, clock) {
     const resetMs = toMs(one.resetsAt)
     if (!Number.isFinite(resetMs) || resetMs <= clock()) continue
     const util = Number(one.utilization)
+    const said = typeof one.status === 'string' && one.status.trim() ? one.status.trim() : null
     return {
       status: readingSaysExhausted(one) ? 'exhausted' : 'open',
       resetsAt: resetMs,
-      // Present ONLY when the vendor sent a fraction. It does not today; the field is here so
-      // that the day it does, the number on the glass is its number and nobody's arithmetic.
+      // Present ONLY when the vendor sent a fraction — which it does, for BOTH windows, in the
+      // unified block of every rate-limit frame. The number on the glass is its number and
+      // nobody's arithmetic; null still means it said nothing.
       pct: Number.isFinite(util) ? Math.max(0, Math.min(100, Math.round(util * 100))) : null,
       observedAt: typeof one.at === 'string' ? one.at : null,
+      // THE VENDOR'S HEALTH WORD, VERBATIM, and only where it really said one. A reading taken
+      // out of the unified block carries a fraction and a reset and no word at all — it is
+      // measurement, not permission — so `said` is absent there, and the one thing that turns
+      // on it (lifting a standing refusal, below) refuses to fire on a silence. Absent rather
+      // than null for the same reason `source` is: a field appears where there is something in
+      // it. See the `source` note in windowState.
+      ...(said ? { said } : {}),
     }
   }
   return UNKNOWN
@@ -230,6 +240,37 @@ function fromTerminal(fact) {
 }
 
 /**
+ * Of two readings of THE SAME SUBSCRIPTION, the one taken later — whichever mouth said it.
+ *
+ * The rule used to be «the account's own reading always wins, a borrowed one may only fill a
+ * silence», and on 02.09.2026 that turned into a board a day out of date: the account's own
+ * weekly reading said 67 % from nineteen hours earlier, a reading of the very same plan taken
+ * two minutes earlier said 7 %, and the older one held the screen because it was ours. Provenance
+ * is not recency. Once both readings are established to be about one subscription — and
+ * `terminalRecordFor` establishes exactly that, by config directory or by the account uuid each
+ * side reads out of its own files — the later reading is simply the current one.
+ *
+ * THE ONE EXCEPTION IS A REFUSAL, and it is the exception the whole model is built around. A
+ * window this account was itself refused stays refused until the vendor's own «allowed» about
+ * that window lifts it (see standingClose): a fresher measurement from another mouth is a
+ * fraction spent, not permission to work, and letting it re-open a shut window would send the
+ * router at a subscription that is going to refuse it.
+ *
+ * A borrowed reading that cannot be dated loses to an own reading that can — an undatable
+ * reading cannot be shown to be the later one, and «later» is the entire claim being made.
+ */
+function fresherOf(own, borrowed) {
+  if (own.status === 'exhausted') return own
+  if (borrowed.status === 'unknown') return own
+  if (own.status === 'unknown') return fromTerminal(borrowed)
+  const theirs = borrowed.observedAt ? Date.parse(borrowed.observedAt) : NaN
+  if (!Number.isFinite(theirs)) return own
+  const ours = own.observedAt ? Date.parse(own.observedAt) : NaN
+  if (Number.isFinite(ours) && ours >= theirs) return own
+  return fromTerminal(borrowed)
+}
+
+/**
  * windowState({account, clock, dataDir, fsImpl}) → what is known about this account's windows.
  *
  * `fiveHour` and `week` are ALWAYS present and always carry a `status` of `open`, `exhausted`
@@ -246,9 +287,9 @@ function fromTerminal(fact) {
  * measurement; it was permission to say whose it was. `configDir` is that permission (see
  * config-dir.mjs): the daemon spawns this account's sessions with that directory, the status
  * line records the directory it is signed into, and a match is identity rather than
- * resemblance. So an UNKNOWN window — and only an unknown one — is filled from the terminal
- * snapshot when the two directories are the same, and the fact says `source: 'terminal'` so
- * every screen downstream can name where its number came from.
+ * resemblance. So a window is filled from the terminal snapshot when the two sides are the same
+ * subscription, and the fact says `source: 'terminal'` so every screen downstream can name
+ * where its number came from.
  *
  * AND ONE SUBSCRIPTION HAS TWO DOORS. The person's terminal signs in through the default
  * directory; the fleet signs into the SAME subscription through the separate directory the
@@ -259,11 +300,16 @@ function fromTerminal(fact) {
  * same subscription — identity of the same kind, read from each side's own files, never a
  * human-kept list of pairs to treat as equal and never a match on reset times that coincide.
  *
- * WHAT IS NOT DONE HERE. The account's OWN reading is never displaced, on either signal: it is
- * about this account by construction, and a refusal it carries must outrank a friendlier
- * reading of the same plan. Where neither signal matches, or either side has no identity to
- * offer, nothing is attributed and the window keeps saying «unknown» — which is what a plan
- * nobody measured looks like.
+ * AND OF TWO READINGS OF ONE PLAN, THE LATER ONE IS THE CURRENT ONE. «Ours always wins» held
+ * the board a day out of date on 02.09.2026 — the account's own week said 67 % from nineteen
+ * hours before, a reading of that same plan taken two minutes before said 7 %, and the stale
+ * number stood because it was ours. Provenance is not recency, and once identity is established
+ * the hour decides (see fresherOf). A REFUSAL is the exception: a window this account was
+ * refused stays refused until the vendor's own «allowed» about that window lifts it.
+ *
+ * WHAT IS NOT DONE HERE. Where neither signal matches, or either side has no identity to offer,
+ * nothing is attributed and the window keeps saying «unknown» — which is what a plan nobody
+ * measured looks like.
  *
  * @param {{
  *   account: (string|{name:string, configDir?:string}),
@@ -288,13 +334,15 @@ export function windowState({ account, clock = Date.now, dataDir, fsImpl } = {})
   }
   const state = { accountName, ...own }
 
-  // The terminal snapshot fills what this account has not heard about — but only when it is a
-  // reading of THIS account's subscription, and only into a window that is otherwise silent.
-  if (dataDir && (state.fiveHour.status === 'unknown' || state.week.status === 'unknown')) {
+  // The terminal snapshot answers for this subscription too — when it IS this subscription.
+  // It fills what this account has not heard about, and it also OUTRANKS an own reading it was
+  // taken after: two readings of one plan are ranked by their hour, not by which mouth said
+  // them (see fresherOf). A refusal is the one thing it may not touch.
+  if (dataDir) {
     const terminal = terminalRecordFor(configDirOf(account), dataDir, fsImpl)
     if (terminal) {
-      if (state.fiveHour.status === 'unknown') state.fiveHour = fromTerminal(factOf(terminal, FIVE_HOUR_KEYS, clock))
-      if (state.week.status === 'unknown') state.week = fromTerminal(factOf(terminal, WEEK_KEYS, clock))
+      state.fiveHour = fresherOf(state.fiveHour, factOf(terminal, FIVE_HOUR_KEYS, clock))
+      state.week = fresherOf(state.week, factOf(terminal, WEEK_KEYS, clock))
     }
   }
 
@@ -341,7 +389,18 @@ function standingClose(rec, own, clock) {
   const fact = own[window]
   const seenMs = fact && fact.observedAt ? Date.parse(fact.observedAt) : NaN
   const closedMs = typeof rec.closedAt === 'string' ? Date.parse(rec.closedAt) : NaN
-  const lifted = fact && fact.status === 'open' && Number.isFinite(seenMs) && Number.isFinite(closedMs) && seenMs > closedMs
+  // AND IT SAID «ALLOWED» IN SO MANY WORDS. Most readings now come out of the unified block,
+  // which carries a fraction and a reset and no health word — read as permission, a routine
+  // measurement taken a second after a refusal would re-open a subscription the vendor is still
+  // refusing, and the next attempt would be spent learning what was already known. A silence
+  // does not lift a refusal; only the vendor's own «allowed» about that window does.
+  const lifted =
+    fact &&
+    fact.status === 'open' &&
+    typeof fact.said === 'string' &&
+    Number.isFinite(seenMs) &&
+    Number.isFinite(closedMs) &&
+    seenMs > closedMs
   return lifted ? null : { window, resetMs }
 }
 
@@ -478,7 +537,8 @@ export function markWindowClosed({ dataDir, accountName, resetAt, limitType, clo
  * key changed.
  *
  * WHAT MAKES A READING STORABLE: a window name and a reset time. NOT a utilization — the
- * vendor does not send one. It used to be required, and the requirement did NOT reject the
+ * vendor sends one in the unified block and nowhere else, so a reading that came off the top of
+ * a frame still has none. It used to be required, and the requirement did NOT reject the
  * readings: `Number(null)` is 0 and 0 is finite, so every real reading passed the guard and was
  * filed as «0% of this window is spent». That is worse than dropping it would have been — the
  * screen then showed a MEASURED-looking zero, sourced to the provider, for a quantity the

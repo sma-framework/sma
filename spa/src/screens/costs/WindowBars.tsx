@@ -1,5 +1,12 @@
 import type { SpendAccount } from '../../api/types'
-import { WINDOW_UNKNOWN_HINT, clockLabel, windowWords } from '../../shell/format'
+import {
+  WINDOW_STALE_HINT,
+  WINDOW_UNKNOWN_HINT,
+  clockLabel,
+  readingAgeWords,
+  readingIsStale,
+  windowWords,
+} from '../../shell/format'
 
 /**
  * WindowBars — the subscription windows, first on the screen and first for a reason.
@@ -25,20 +32,37 @@ import { WINDOW_UNKNOWN_HINT, clockLabel, windowWords } from '../../shell/format
  * Nothing is computed here. Every word comes off the one reading.
  */
 
-/** One window, in the words the whole window uses for it. */
+/**
+ * One window, in the words the whole window uses for it — and WHEN it was measured.
+ *
+ * The age is not decoration. A percentage with no hour beside it is read as «сейчас», and on
+ * 02.09.2026 that is precisely how a weekly window measured nineteen hours earlier stood here
+ * saying 67 % while the person's own terminal said 7 %: nothing on the row distinguished a
+ * reading taken a minute ago from one taken yesterday. Now the number carries its own hour, in
+ * words, and past an hour the words are marked — a stale reading that says it is stale is a
+ * fact, a stale reading that looks fresh is a claim.
+ */
 function WindowCell({ label, fact }: { label: string; fact: SpendAccount['fiveHour'] }) {
   const words = windowWords(fact)
   const unknown = fact?.status !== 'open' && fact?.status !== 'exhausted'
+  const age = unknown ? null : readingAgeWords(fact?.observedAt)
+  const stale = !unknown && readingIsStale(fact?.observedAt)
   return (
     <span
       className="flex min-w-0 items-center gap-[7px]"
-      title={unknown ? WINDOW_UNKNOWN_HINT : undefined}
-      aria-label={`${label}: ${words.text}`}
+      title={unknown ? WINDOW_UNKNOWN_HINT : stale ? WINDOW_STALE_HINT : undefined}
+      aria-label={`${label}: ${words.text}${age ? ` · чтение ${age}` : ''}`}
     >
       <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${words.dot}`} />
       <span className={`truncate text-[12.5px] ${words.muted ? 'text-tx3' : 'text-tx2'}`}>{words.text}</span>
       {typeof fact?.pct === 'number' ? (
         <span className="flex-none text-[12px] text-tx3 tabular-nums">{Math.round(fact.pct)}%</span>
+      ) : null}
+      {age ? (
+        <span className={`flex-none text-[11.5px] whitespace-nowrap ${stale ? 'text-warn-tx' : 'text-tx3'}`}>
+          · {age}
+          {stale ? ' · устарело' : ''}
+        </span>
       ) : null}
     </span>
   )
@@ -51,7 +75,8 @@ export function WindowBars({ accounts }: { accounts: SpendAccount[] }) {
       <p className="m-0 mb-4 text-[11.5px] leading-[1.55] text-tx3">
         Поставщик сообщает: какое окно, принимает ли оно работу и когда сбросится. Процент
         израсходованного он присылает не всегда — где его не было, здесь не стоит цифры, а не
-        стоит ноль.
+        стоит ноль. Рядом с числом — когда его измерили: старше часа помечено, потому что
+        процент без часа читается как «сейчас».
       </p>
 
       {accounts.length === 0 ? (

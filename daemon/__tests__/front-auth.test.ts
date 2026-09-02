@@ -925,6 +925,39 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
       expect(out.reason).toContain('AssertionError')
     })
 
+    /**
+     * …И ГДЕ ЭТО ЧИТАТЬ. Отказ отсылал к выводу прогона, а вывода не было НИГДЕ: отчёт
+     * полного набора писался во временный каталог и умирал вместе с отказом (02.09.2026,
+     * первая ночная приёмка). Полный прогон при живых соседних сессиях умеет краснеть ложно,
+     * и отличить такой красный от настоящего можно только по отчёту — значит, путь к нему
+     * обязан стоять в самом отказе, рядом с именами.
+     */
+    it('красный отказ называет ВСЕ упавшие тесты и путь к сохранённому отчёту', async () => {
+      const out = await refuse('R-90f', () => ({
+        merged: false,
+        refused: true,
+        testsPassed: false,
+        failedTest: 'scripts/sma/__tests__/landing.test.ts > посадка > Test 5',
+        failedTests: [
+          'scripts/sma/__tests__/landing.test.ts > посадка > Test 5',
+          'daemon/__tests__/broken-import.test.ts',
+        ],
+        savedReport: '/var/sma/data/landing/R-90f-2026-09-02T18-58-00-000Z.json',
+      }))
+      expect(out.reasonCode).toBe('tests_red')
+      expect(out.reason).toContain('landing.test.ts')
+      expect(out.reason, 'второй упавший тест потерялся по дороге к глазам').toContain('broken-import.test.ts')
+      expect(out.reason, 'путь к отчёту не доехал — читать отказ по-прежнему негде').toContain(
+        '/var/sma/data/landing/R-90f-2026-09-02T18-58-00-000Z.json',
+      )
+    })
+
+    it('красный отказ без сохранённого отчёта говорит, что отчёта нет, а не молчит', async () => {
+      const out = await refuse('R-90g', () => ({ merged: false, refused: true, testsPassed: false }))
+      expect(out.reasonCode).toBe('tests_red')
+      expect(out.reason).toMatch(/отчёта прогона не сохранилось/i)
+    })
+
     it('красный отказ без имени теста честно говорит, что имени не назвали', async () => {
       const out = await refuse('R-90e', () => ({ merged: false, refused: true, testsPassed: false }))
       expect(out.reasonCode).toBe('tests_red')

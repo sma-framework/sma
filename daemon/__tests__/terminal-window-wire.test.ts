@@ -205,11 +205,13 @@ describe('the terminal window reading — provider stdin all the way to /api/sta
       status: 'open',
       resetsAt: '2026-08-12T16:19:00.000Z',
       pct: 7,
+      observedAt: '2026-08-12T13:07:00.000Z',
     })
     expect(payload.spend.terminal.week).toEqual({
       status: 'open',
       resetsAt: '2026-08-17T15:07:00.000Z',
       pct: 58,
+      observedAt: '2026-08-12T13:07:00.000Z',
     })
     expect(payload.spend.terminal.observedAt).toBe('2026-08-12T13:07:00.000Z')
   })
@@ -232,12 +234,14 @@ describe('the terminal window reading — provider stdin all the way to /api/sta
       status: 'open',
       resetsAt: '2026-08-12T16:19:00.000Z',
       pct: 7,
+      observedAt: '2026-08-12T13:07:00.000Z',
       source: 'terminal', // said by another mouth, and the payload says so
     })
     expect(worker.window.week).toEqual({
       status: 'open',
       resetsAt: '2026-08-17T15:07:00.000Z',
       pct: 58,
+      observedAt: '2026-08-12T13:07:00.000Z',
       source: 'terminal',
     })
     // the «Аккаунты»/«Расходы» row rides the same read
@@ -257,8 +261,8 @@ describe('the terminal window reading — provider stdin all the way to /api/sta
     const payload = await stateFrom(dataDir, NOW, ACCOUNT_DIR)
 
     // «нет данных» — and NOT a zero, which would read as «the quota is free»
-    expect(payload.workers[0].window.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null })
-    expect(payload.workers[0].window.week).toEqual({ status: 'unknown', resetsAt: null, pct: null })
+    expect(payload.workers[0].window.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
+    expect(payload.workers[0].window.week).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
     // …while the terminal's own block still states the reading, under its own name
     expect(payload.spend.terminal.fiveHour.pct).toBe(7)
   })
@@ -280,8 +284,8 @@ describe('the terminal window reading — provider stdin all the way to /api/sta
 
   it('an account nothing has been heard about anywhere still says «нет данных», never zero', async () => {
     const payload = await stateFrom(mkDataDir(), NOW, ACCOUNT_DIR) // no snapshot, no account file
-    expect(payload.workers[0].window.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null })
-    expect(payload.workers[0].window.week).toEqual({ status: 'unknown', resetsAt: null, pct: null })
+    expect(payload.workers[0].window.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
+    expect(payload.workers[0].window.week).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
   })
 
   /**
@@ -343,10 +347,84 @@ describe('the terminal window reading — provider stdin all the way to /api/sta
       status: 'open',
       resetsAt: '2026-08-12T16:19:00.000Z',
       pct: 7,
+      observedAt: '2026-08-12T13:07:00.000Z',
       source: 'terminal', // said by another mouth, and the payload still says so
     })
     expect(win.week.pct).toBe(58)
     expect(win.week.source).toBe('terminal')
+  })
+
+  /**
+   * ═══════════ ДВА ЧТЕНИЯ ОДНОЙ ПОДПИСКИ РАНЖИРУЮТСЯ ПО ЧАСУ, А НЕ ПО РОДУ ═══════════
+   *
+   * 02.09.2026, живой замер: собственное недельное чтение счёта — 67 %, снято накануне в 15:38;
+   * чтение ТОЙ ЖЕ подписки строкой состояния терминала — 7 %, снято двумя минутами раньше
+   * запроса. Доска трижды сказала «67 %», потому что правило было «своё не вытесняется никогда»,
+   * а чужое пускалось только в молчащее окно. Происхождение — это не свежесть: когда обе стороны
+   * уже опознаны как одна подписка, спор решает час съёмки.
+   */
+  it('a FRESHER reading of the same subscription outranks a stale reading of the account\'s own', async () => {
+    const dataDir = mkDataDir()
+    const terminalDir = mkConfigDir(ONE_SUBSCRIPTION)
+    const fleetDir = mkConfigDir(ONE_SUBSCRIPTION)
+    const YESTERDAY = NOW - 19 * 60 * 60 * 1000
+
+    // the account's OWN weekly reading, taken nineteen hours ago and still inside its window
+    markWindowObserved({
+      dataDir,
+      accountName: 'local-1',
+      observation: {
+        limitType: 'seven_day',
+        status: 'allowed_warning',
+        utilization: 0.67,
+        resetsAt: Date.parse('2026-08-17T15:07:00.000Z'),
+      },
+      clock: () => YESTERDAY,
+    })
+    // and a reading of THAT SAME PLAN through the other door, taken now
+    recordTerminalWindows({
+      rateLimits: parseStatusStdin(VENDOR_STDIN).rateLimits,
+      dataDir,
+      clock: () => NOW,
+      env: { CLAUDE_CONFIG_DIR: terminalDir },
+    })
+
+    const win = (await stateFrom(dataDir, NOW, fleetDir)).workers[0].window
+    expect(win.week.pct).toBe(58) // the later reading, not the older one
+    expect(win.week.observedAt).toBe('2026-08-12T13:07:00.000Z')
+    expect(win.week.source).toBe('terminal') // and the screen still names whose word it is
+  })
+
+  /**
+   * И РОВНО ОДНО ИСКЛЮЧЕНИЕ: ОТКАЗ. Свежее измерение чужими устами — это доля израсходованного,
+   * а не разрешение работать. Снимает отказ только собственное «разрешено» поставщика по тому же
+   * окну; иначе маршрут погонит работника на подписку, которая ему откажет, и попытка уйдёт на
+   * выяснение уже известного.
+   */
+  it('but a REFUSAL is not lifted by a fresher reading — only by the vendor\'s own «allowed»', async () => {
+    const dataDir = mkDataDir()
+    const terminalDir = mkConfigDir(ONE_SUBSCRIPTION)
+    const fleetDir = mkConfigDir(ONE_SUBSCRIPTION)
+
+    markWindowObserved({
+      dataDir,
+      accountName: 'local-1',
+      observation: { limitType: 'seven_day', status: 'rejected', resetsAt: Date.parse('2026-08-17T15:07:00.000Z') },
+      clock: () => NOW - 60 * 60 * 1000,
+    })
+    recordTerminalWindows({
+      rateLimits: parseStatusStdin(VENDOR_STDIN).rateLimits,
+      dataDir,
+      clock: () => NOW, // an hour LATER than the refusal, and it changes nothing
+      env: { CLAUDE_CONFIG_DIR: terminalDir },
+    })
+
+    const payload = await stateFrom(dataDir, NOW, fleetDir)
+    const win = payload.workers[0].window
+    expect(win.week.status).toBe('exhausted')
+    expect(win.week.pct).toBeNull() // not dressed up with somebody else's number
+    expect(win.week.source).toBeUndefined()
+    expect(payload.workers[0].presence).toBe('ждёт окно')
   })
 
   it('does NOT reach an account whose directory names a DIFFERENT subscription', async () => {
@@ -360,8 +438,8 @@ describe('the terminal window reading — provider stdin all the way to /api/sta
 
     const payload = await stateFrom(dataDir, NOW, mkConfigDir(ANOTHER_SUBSCRIPTION))
 
-    expect(payload.workers[0].window.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null })
-    expect(payload.workers[0].window.week).toEqual({ status: 'unknown', resetsAt: null, pct: null })
+    expect(payload.workers[0].window.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
+    expect(payload.workers[0].window.week).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
   })
 
   /** Two absences are two absences. An account nobody can name is not the account on screen. */
@@ -395,8 +473,8 @@ describe('the terminal window reading — provider stdin all the way to /api/sta
       env: { CLAUDE_CONFIG_DIR: mkConfigDir(null) },
     })
     const payload = await stateFrom(neither, NOW, mkConfigDir(null))
-    expect(payload.workers[0].window.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null })
-    expect(payload.workers[0].window.week).toEqual({ status: 'unknown', resetsAt: null, pct: null })
+    expect(payload.workers[0].window.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
+    expect(payload.workers[0].window.week).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
   })
 
   /**
@@ -436,8 +514,8 @@ describe('the terminal window reading — provider stdin all the way to /api/sta
     const payload = await stateFrom(dataDir, NOW + 6 * 24 * 60 * 60 * 1000)
 
     expect(payload.spend.terminal.observed).toBe(true)
-    expect(payload.spend.terminal.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null })
-    expect(payload.spend.terminal.week).toEqual({ status: 'unknown', resetsAt: null, pct: null })
+    expect(payload.spend.terminal.fiveHour).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
+    expect(payload.spend.terminal.week).toEqual({ status: 'unknown', resetsAt: null, pct: null, observedAt: null })
     // the screen has to say WHEN, so the moment survives the expiry
     expect(payload.spend.terminal.observedAt).toBe('2026-08-12T13:07:00.000Z')
   })
@@ -447,8 +525,8 @@ describe('the terminal window reading — provider stdin all the way to /api/sta
     expect(payload.spend.terminal).toEqual({
       observed: false,
       observedAt: null,
-      fiveHour: { status: 'unknown', resetsAt: null, pct: null },
-      week: { status: 'unknown', resetsAt: null, pct: null },
+      fiveHour: { status: 'unknown', resetsAt: null, pct: null, observedAt: null },
+      week: { status: 'unknown', resetsAt: null, pct: null, observedAt: null },
     })
   })
 

@@ -101,10 +101,44 @@ describe('spawnWorker (excavate safe-child contract — shell disabled, DI)', ()
     expect(exit).toEqual({ code: 0, signal: null })
   })
 
-  it('returns a handle with pid + a working kill()', () => {
+  // ГАСИТСЯ ДЕРЕВО, А НЕ ОДИН pid. Пишущая песочница поднимает собственного помощника, и
+  // отмена, гасившая только запущенный процесс, оставляла его жить с мёртвым родителем
+  // (замерено живьём: ещё три минуты процессорного времени на права для закрытой работы).
+  // Системный приказ инжектируется — сьют не имеет права трогать процессы этой машины.
+  it('returns a handle with pid + a kill() that ends the TREE, not the one process', () => {
     const child = makeFakeChild()
-    const handle = spawnWorker({ bin: 'x', args: [], cwd: '/', env: {}, prompt: '', spawnImpl: () => child })
+    const treeOrders: number[] = []
+    const handle = spawnWorker({
+      bin: 'x',
+      args: [],
+      cwd: '/',
+      env: {},
+      prompt: '',
+      spawnImpl: () => child,
+      killTreeImpl: ({ pid }: any) => {
+        treeOrders.push(pid)
+        return true
+      },
+    } as any)
     expect(handle.pid).toBe(4242)
+    handle.kill()
+    expect(treeOrders).toEqual([4242])
+    // Родителя не трогали ПЕРВЫМ: дерево обходится по записям о родителе, и убитый родитель
+    // оставил бы помощника сиротой, которого уже не с чего найти.
+    expect(child.killed).toBe(false)
+  })
+
+  it('a tree that cannot be ordered down falls back to the single process — cancel never stops working', () => {
+    const child = makeFakeChild()
+    const handle = spawnWorker({
+      bin: 'x',
+      args: [],
+      cwd: '/',
+      env: {},
+      prompt: '',
+      spawnImpl: () => child,
+      killTreeImpl: () => false,
+    } as any)
     handle.kill()
     expect(child.killed).toBe(true)
   })

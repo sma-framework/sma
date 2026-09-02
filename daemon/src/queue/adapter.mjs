@@ -218,10 +218,17 @@
  * tests; the randomness is NOT injected, because a test that could predict a token would be
  * certifying a fence with a hole in it. The contract suite reads the vitest API from
  * globalThis (test.globals) — NO top-level vitest import, so the production daemon can
- * import this module without dev dependencies.
+ * import this module without dev dependencies. The one non-builtin import is a LOCAL module —
+ * the merge-side list of paths that resolve without a human — imported so the queue and the
+ * merge ritual answer «is this file mechanical?» from one place; it adds no npm dependency.
  */
 
 import { randomBytes } from 'node:crypto'
+
+// ЧТО РАЗВОДИТСЯ БЕЗ ЧЕЛОВЕКА — спрошено у той самой стороны, которая это и разводит на
+// приёмке. Список один на дерево; свой перечень тех же имён здесь разошёлся бы с ним в первый
+// же день, и очередь начала бы держать работы из-за файлов, спор о которых снимает машина.
+import { isMechanicalPath } from '../../../scripts/sma/lib/branch-sync.mjs'
 
 // ── constants (the closed vocabularies) ──
 
@@ -442,6 +449,17 @@ export const FAIL_REASONS = Object.freeze([
   // про СОСТАВ: подождать нельзя, оно само не пройдёт, и повтор стоил бы оплаченной попытки
   // на тот же отказ. Поэтому же оно единственное из пяти, что ждёт человека (AWAITS_A_PERSON).
   'role_unavailable',
+  // И ШЕСТОЕ — ТУМБЛЕР, СНЯТЫЙ ПОКА ПОПЫТКА ГОТОВИЛАСЬ. Между решением маршрута и первым
+  // процессом лежат секунды и минуты настоящей работы: копия отводится настоящим git, зеркало
+  // личного слоя пишет файлы, дом задачи засевается. Человек, снявший тумблер в эту паузу,
+  // видит, как выключенный работник ВСЁ РАВНО берёт задачу, — замерено 02.09.2026: две секунды
+  // после «выключить», и задача чужой полосы уехала в сессию, которую пришлось снимать рукой.
+  //
+  // ОТДЕЛЬНО ОТ `role_unavailable`, хотя причина у них одного корня. Там роли не держит НИКТО,
+  // и повтор бессмыслен — строка ждёт человека. Здесь выключен ОДИН названный работник, а
+  // остальной состав цел: перевыдача — это ровно то, что нужно, работу возьмёт тот, кто
+  // включён. Поэтому слово ПОВТОРЯЕМОЕ и в AWAITS_A_PERSON его нет.
+  'worker_switched_off',
   // THE RE-ISSUES RAN OUT. Not the worker's failure and not an outage: the row was handed
   // back as many times as it was allowed to be, and the queue closed it rather than spending
   // another paid attempt on the same work. See ATTEMPTS_EXHAUSTED above.
@@ -744,7 +762,9 @@ export const REASON_LABELS = Object.freeze({
   day_priority_protected: 'активные часы основателя — его счёт защищён, задача ждёт',
   role_unavailable:
     'некому взять: работника с нужной ролью на этой машине нет — включите такого или переставьте роль на задаче',
-  [ATTEMPTS_EXHAUSTED]: 'попытки исчерпаны — очередь больше не перевыдаёт эту работу',
+  worker_switched_off:
+    'работника выключили, пока попытка готовилась, — процесса не было, работа вернулась в очередь',
+  [ATTEMPTS_EXHAUSTED]:'попытки исчерпаны — очередь больше не перевыдаёт эту работу',
   personal_layer_error: 'личный слой не перенесён в аккаунт работника — запускать было нельзя',
   manual: 'остановлено вручную',
   already_decided:
@@ -1619,6 +1639,15 @@ export const DECLARED_FILES_CAP = 40
  * `files` на самой задаче, если она когда-нибудь появится, читается первой и отменяет разбор
  * текста: объявленное явно всегда сильнее вычитанного.
  *
+ * ШТАМПЫ НЕ ОБЪЯВЛЯЮТСЯ. Файл, спор о котором развод снимает механически — оба README, карта
+ * графа, квитанция прогона, индекс памяти, — из этого списка выпадает, и вопрос о нём задаётся
+ * той самой стороне, которая его и разводит (`isMechanicalPath`), а не второму перечню тех же
+ * имён. Причина не в аккуратности, а в замере: закон дома велит КАЖДОЙ карточке, меняющей
+ * продукт, назвать оба README, поэтому по штампам пересекаются все работы со всеми — очередь,
+ * честно исполняя правило, выстраивала весь флот в одну линию (замерено 02.09.2026: одиннадцать
+ * строк, свободный работник, ни одного захвата). Держать имеет смысл там, где спор пришлось бы
+ * разводить человеку; здесь его разводит машина, а числа штампов посадка ставит заново сама.
+ *
  * ПОЧЕМУ РАВЕНСТВО, А НЕ БЛИЗОСТЬ. Пересечение считается ТОЧНЫМ совпадением пути. Слово,
  * похожее на путь, но путём не бывшее, тогда просто ни с чем не совпадает и никого не
  * придерживает — цена ошибки разбора равна нулю. Догадка «эти двое, наверное, про один
@@ -1638,6 +1667,9 @@ export function declaredFiles(row) {
       .replace(/^\.\//, '')
       .trim()
     if (!clean || clean.length > 200) return
+    // Штамп объявленным не считается — ни разобранный из текста, ни названный явно: удержание
+    // по нему стоит человеческого времени ровно ноль, а очереди — всей её параллельности.
+    if (isMechanicalPath(clean)) return
     if (!out.includes(clean) && out.length < DECLARED_FILES_CAP) out.push(clean)
   }
   // ОБЪЯВЛЕННОЕ ЯВНО — первым и вместо разбора текста.
@@ -2741,6 +2773,37 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return true
   }
 
+  /**
+   * releaseClaim(taskId, {attemptToken}) — СТРОКА ВОЗВРАЩАЕТСЯ В ОЧЕРЕДЬ, И ПОДХОД НЕ СЧИТАЕТСЯ.
+   *
+   * ЗАЧЕМ ЭТА ДВЕРЬ ЕСТЬ ОТДЕЛЬНО ОТ СРЫВА И ОТ ПЕРЕВЫДАЧИ. Захват в этой очереди — это выборка,
+   * и до сих пор у взятой строки было ровно два конца: закрыться или сорваться. Оба стоят
+   * подхода. Но есть третий случай, и он не вина работы: тик взял строку, а маршрут ответил, что
+   * названный ей работник уже ведёт попытку. Провалить её значило бы сжечь подход за то, что
+   * работа просто идёт; отдать занятому — посадить второго живого писателя в ту же копию.
+   *
+   * ЧТО ИМЕННО НЕ ДВИГАЕТСЯ: номер подхода (`attempt`), отметка постановки (`enqueuedAt`) и
+   * граница повторов. Строка становится ровно тем, чем была до выборки, — и следующий проход
+   * берёт её как впервые. Реестр подходов при этом не пишется вовсе: попытки не было.
+   *
+   * ЖЕТОН СПРАШИВАЕТСЯ, как и у всех дверей, закрывающих чужую попытку: вернуть в очередь строку,
+   * которую сейчас ведёт кто-то другой, — это отнять у него работу.
+   *
+   * @param {string} taskId
+   * @param {{attemptToken?:string}} [opts]
+   * @returns {Promise<boolean>} true, когда взятая строка найдена и возвращена
+   */
+  async function releaseClaim(taskId, { attemptToken } = {}) {
+    const rec = records.get(taskId)
+    if (!rec || rec.status !== 'claimed') return false
+    if (attemptTokenIsStale(rec.attemptToken, attemptToken)) return false
+    rec.status = 'queued'
+    rec.workerId = null
+    rec.claimedAt = null
+    rec.lastTouch = null
+    return true
+  }
+
   async function list(filter = {}) {
     sweep()
     let rows = [...records.values()]
@@ -2784,7 +2847,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return s
   }
 
-  return { enqueue, claimNext, touch, assignWorker, resolveBatch, setWords, complete, fail, parkForPerson, reissue, payloadOf, cancelTask, list, stats }
+  return { enqueue, claimNext, touch, assignWorker, releaseClaim, resolveBatch, setWords, complete, fail, parkForPerson, reissue, payloadOf, cancelTask, list, stats }
 }
 
 // ── the reusable contract suite (executable spec any backend must pass) ──
@@ -3464,6 +3527,61 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       expect(r.status).toBe('claimed')
       expect(r.claimedAt).toBe(8000)
       expect(r.leaseRenewedAt).toBe(8000)
+    })
+
+    /**
+     * ═══════ ВОЗВРАТ ВЗЯТОЙ СТРОКИ — ЕДИНСТВЕННЫЙ КОНЕЦ, КОТОРЫЙ НЕ СТОИТ ПОДХОДА ═══════
+     *
+     * ЗАЧЕМ ЭТО ОБЕЩАНИЕ КОНТРАКТА, А НЕ ДЕТАЛЬ ХРАНИЛИЩА. Тик зовёт возврат через шов адаптера
+     * и не знает, какой бэкенд под ним, — а бэкенды приходят к нему с РАЗНЫХ сторон: памятный
+     * правит свою запись, долговечный пишет оператором по строке задания. Разъехаться им проще
+     * всего именно на счёте подходов: постановка заново (`enqueue`) минтит номер сама и подняла
+     * бы его — то есть дверь, обязанная НЕ считать подход, посчитала бы его.
+     *
+     * ПОВОД. 02.09.2026 один работник получил вторую живую сессию: маршрут отвечал «работник
+     * занят», а тик отступал и отдавал работу занятому, потому что вернуть строку было НЕЧЕМ.
+     */
+    it('возврат взятой строки ставит её обратно в очередь и НЕ считает подход', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-77' }))
+      const claimed = await q.claimNext('w1', {})
+      expect(claimed.id).toBe('BL-77')
+
+      const [taken] = await q.list({})
+      expect(taken.status).toBe('claimed')
+      const attemptBefore = taken.attempt
+
+      expect(await q.releaseClaim('BL-77', { attemptToken: claimed.attemptToken })).toBe(true)
+
+      const [back] = await q.list({})
+      expect(back.status, 'строка снова ждёт работника — это не срыв и не парковка').toBe('queued')
+      expect(back.attempt, 'подход не считается: работа не виновата в занятости работника').toBe(attemptBefore)
+      expect(back.workerId ?? null, 'исполнителя у ждущей строки нет').toBeNull()
+      expect(back.claimedAt ?? null, 'и времени захвата у неё тоже нет').toBeNull()
+
+      // …и она снова выдаётся, тем же номером подхода, как будто её и не брали.
+      const again = await q.claimNext('w2', {})
+      expect(again.id).toBe('BL-77')
+      expect(again.attempt).toBe(attemptBefore)
+    })
+
+    it('возврат не трогает ни ждущую строку, ни чужую попытку', async () => {
+      const c = clockOf(1000)
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      await q.enqueue(backlog({ id: 'BL-78' }))
+
+      // Строку никто не брал — возвращать нечего, и «нет» здесь честнее тихого успеха.
+      expect(await q.releaseClaim('BL-78', {})).toBe(false)
+      expect(await q.releaseClaim('BL-нет-такой', {})).toBe(false)
+
+      // А ЧУЖОЙ ЖЕТОН НЕ ОТНИМАЕТ РАБОТУ У ТОГО, КТО ЕЁ ВЕДЁТ: возврат — это тоже закрытие
+      // чужой попытки, и ограда у него та же, что у завершения и срыва.
+      const claimed = await q.claimNext('w1', {})
+      expect(await q.releaseClaim('BL-78', { attemptToken: 'жетон-соседа' })).toBe(false)
+      const [still] = await q.list({})
+      expect(still.status).toBe('claimed')
+      expect(await q.releaseClaim('BL-78', { attemptToken: claimed.attemptToken })).toBe(true)
     })
 
     /**

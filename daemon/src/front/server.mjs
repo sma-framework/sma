@@ -122,6 +122,10 @@ import { CHAT_STAGES, proposeBreakdown, proposeWords, SNAPSHOT_EVENT_CAP, STATUS
 import { createQuestions, findPhaseDir, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
 import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
+// КАКУЮ РОЛЬ ДЕРЖИТ РАБОТНИК — спрашивается у того же чистого словаря, у которого её спрашивает
+// применитель. Дверь считает ответ про НАБОР, названный на кнопке; свой список имён здесь стал
+// бы вторым мнением о том, кого эта кнопка включила.
+import { isPipelineRole, roleOf } from '../policy/worker-role.mjs'
 import { readAttempts, readJournalEntries, foldAttemptRows } from '../queue/attempt-ledger.mjs'
 import { readJournal, DISPATCH_REASONS, REDIRECT_MODE_LABELS, attemptIdFor } from './journal.mjs'
 import {
@@ -137,6 +141,9 @@ import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 // СКОЛЬКО ИМЁН КОНФЛИКТА ПОКАЗЫВАТЬ — потолок один на весь продукт и живёт там, где живёт сам
 // словарь конфликта. Второе число здесь однажды разошлось бы с тем, от которого считается «ещё N».
 import { CONFLICT_FILES_CAP as MERGE_CONFLICT_FILES_SHOWN } from '../../../scripts/sma/lib/branch-sync.mjs'
+// …И ПО ТОЙ ЖЕ ПРИЧИНЕ — сколько имён упавших тестов показывать: потолок живёт рядом с тем,
+// кто эти имена собирает, иначе «ещё N» однажды посчитается от другого числа.
+import { FAILED_TESTS_SHOWN as RED_RUN_TESTS_SHOWN } from '../../../scripts/sma/lib/landing.mjs'
 // Код отказа сборки окна берётся у ритуала, а не пишется здесь второй раз: одно слово, один
 // хозяин — иначе дверь и квитанция однажды назовут одну беду двумя разными именами.
 import { SPA_BUILD_FAILED_CODE } from '../../../scripts/sma/lib/merge-gate.mjs'
@@ -153,6 +160,10 @@ import { namedPaths, missingPaths } from './tree-probe.mjs'
 import { collectDiagnostics } from './diagnostics.mjs'
 import { projectEntry, codeTreeOf, planningHomeOf, pipelineMaxTurns } from '../config.mjs'
 import { taskTurnCap, burnedTurnCapsOf, TURN_SIZE_LABELS } from '../policy/turn-budget.mjs'
+// ОДНО ВЫРАЖЕНИЕ О СМЕРТИ РЕБЁНКА — общее с тиком. Дверь отмены отвечает человеку тем же
+// наблюдением, которым дом идущих попыток отдаёт место: два написания одного факта уже
+// разошлись однажды, и стоило это вставшего конвейера при свободном работнике.
+import { confirmProcessGone } from '../queue/in-flight.mjs'
 // NOTE: только ПРЕДИКАТ формы идентификатора сессии импортируется из сборщика аргументов —
 // чистая функция без состояния и без выхода наружу. Спавн этой дверью не заводится: она
 // спрашивает то же правило, каким пользуется запуск, чтобы не завести второго мнения о том,
@@ -205,6 +216,14 @@ const ATTEMPT_ID_RE = /^[A-Za-z0-9._-]{1,64}(#\d{1,4})?$/
  * STOCK_TEAM_TARGET, and harness.test.ts asserts the two never drift apart.
  */
 export const STOCK_TEAM_TARGET = '__stock-team__'
+
+/**
+ * The SECOND reserved target on that same door: «switch on the roles the conveyor itself calls»
+ * — the executors and the planner. Declared here for the same reason its neighbour is, it is
+ * the same literal as harness.mjs's STOCK_PIPELINE_TARGET, and harness.test.ts asserts the two
+ * never drift apart.
+ */
+export const STOCK_PIPELINE_TARGET = '__stock-pipeline__'
 
 /**
  * The reserved POST /api/approve target PREFIX meaning «apply the migration proposal for one
@@ -1110,6 +1129,17 @@ async function handleTask({ res, params, config, deps }) {
     // (сдача до появления поля, попытка, которой нечего было сводить), и это НЕ то же самое,
     // что «сведена»: молчание не имеет права читаться как чистая ветка.
     sync: a.sync ?? null,
+    // ═══ СКОЛЬКО СЕССИЯ СОБИРАЛАСЬ, ПРЕЖДЕ ЧЕМ СКАЗАТЬ ПЕРВОЕ СЛОВО ══════════════
+    //
+    // `{ms, words}` со строки попытки. До первого кадра у идущей работы есть ровно один
+    // признак жизни — её вывод, поэтому подготовка песочницы и повисший процесс выглядели
+    // снаружи одинаково: «молчит N минут». Раздача прав по писаемым корням занимала минуты
+    // (замерено 02.09.2026), и решение «снимать или ждать» принималось вслепую. Вычислено и
+    // записано — не то же самое, что предъявлено.
+    //
+    // `null` — «попытка об этом молчит»: сдача до появления поля или отказ до всякого
+    // процесса. Это НЕ «стартовала мгновенно».
+    sessionStart: a.sessionStart ?? null,
     // ═══ ЧЕГО ЭТА ПОПЫТКА СТОИЛА ════════════════════════════════════════════════
     //
     // Четыре числа поставщика — вход, выход, чтение кэша и запись в кэш — как их записала
@@ -1490,7 +1520,7 @@ function mergeRollbackFields(raw) {
 }
 
 /**
- * mergeReceiptWords(raw) → `{branch, sha, testsPassed, testsNote}`, или `null`.
+ * mergeReceiptWords(raw) → `{branch, sha, testsPassed, testsNote, failedTests, report}`, или `null`.
  *
  * ТА ЖЕ КВИТАНЦИЯ, ДРУГОЙ ВОПРОС. `mergeRollbackFields` выше — граница КОМАНДЫ: из неё
  * выходит только то, что человек скопирует и запустит, и потому оттуда не выходит ничего,
@@ -1541,11 +1571,22 @@ function mergeReceiptWords(raw) {
   const sha = typeof receipt.resultSha === 'string' ? receipt.resultSha.trim() : ''
   const branchName = typeof receipt.branch === 'string' ? receipt.branch.trim() : ''
   const note = typeof receipt.testsNote === 'string' ? receipt.testsNote.trim() : ''
+  // ЧТО ИМЕННО УПАЛО И ГДЕ ЭТО ЧИТАТЬ — на карточке, а не только в отказе двери. Отказ
+  // читают один раз, в секунду нажатия; карточка остаётся, и именно к ней возвращаются,
+  // решая, настоящий это красный или ложный (полный прогон при живых соседних сессиях умеет
+  // краснеть ни за что). Путь к отчёту — единственное, чем эти два случая различаются.
+  const failedTests = (Array.isArray(receipt.failedTests) ? receipt.failedTests : [])
+    .filter((s) => typeof s === 'string' && s.trim())
+    .map((s) => s.trim().slice(0, 200))
+    .slice(0, RED_RUN_TESTS_SHOWN)
+  const oneFailed = typeof receipt.failedTest === 'string' && receipt.failedTest.trim() ? receipt.failedTest.trim() : null
   const out = {
     branch: branchName || null,
     sha: sha && OBJECT_NAME_RE.test(sha) ? sha : null,
     testsPassed: typeof receipt.testsPassed === 'boolean' ? receipt.testsPassed : null,
     testsNote: note || null,
+    failedTests: failedTests.length ? failedTests : oneFailed ? [oneFailed] : [],
+    report: typeof receipt.savedReport === 'string' && receipt.savedReport.trim() ? receipt.savedReport.trim() : null,
   }
   // Квитанция, не сказавшая НИЧЕГО из четырёх, — это не квитанция, а разобравшийся объект.
   return out.branch || out.sha || out.testsPassed !== null || out.testsNote ? out : null
@@ -2029,8 +2070,19 @@ function refusalClass(m) {
   // доводит их до глаз, потому что квитанцию на карточке никто не разворачивает. Имя не
   // выдумывается: прогонятель, промолчавший о нём, назван промолчавшим — по правдоподобному
   // имени человек пошёл бы чинить не тот тест.
+  // …А ЕЩЁ — ГДЕ ЛЕЖИТ ОТЧЁТ ПРОГОНА. Отсылка «смотрите вывод прогона» была отсылкой в
+  // пустоту: отчёт полного набора писался во временный каталог и умирал вместе с отказом
+  // (02.09.2026, первая ночная приёмка). Полный прогон при живых соседних сессиях умеет
+  // краснеть ложно, и отличить такой красный от настоящего можно ТОЛЬКО по отчёту —
+  // поэтому путь к нему стоит в отказе рядом с именами, а не в квитанции под карточкой.
   if (m.testsPassed === false) {
-    const named = typeof m.failedTest === 'string' && m.failedTest.trim() ? m.failedTest.trim() : null
+    const receipt = m.receipt && typeof m.receipt === 'object' ? m.receipt : {}
+    const list = (Array.isArray(m.failedTests) ? m.failedTests : Array.isArray(receipt.failedTests) ? receipt.failedTests : [])
+      .filter((s) => typeof s === 'string' && s.trim())
+      .map((s) => s.trim())
+    const one = typeof m.failedTest === 'string' && m.failedTest.trim() ? m.failedTest.trim() : null
+    const shown = list.length ? list.slice(0, RED_RUN_TESTS_SHOWN) : one ? [one] : []
+    const rest = Math.max(0, list.length - shown.length)
     const detail =
       typeof m.failureDetail === 'string' && m.failureDetail.trim()
         ? m.failureDetail
@@ -2039,12 +2091,20 @@ function refusalClass(m) {
             .filter(Boolean)
             .join(' · ')
         : null
+    const report =
+      (typeof m.savedReport === 'string' && m.savedReport.trim() ? m.savedReport.trim() : null) ||
+      (typeof receipt.savedReport === 'string' && receipt.savedReport.trim() ? receipt.savedReport.trim() : null)
     return {
       reasonCode: 'tests_red',
       reason:
         'слияние не выполнено: тесты на сведённом результате красные — работа осталась ждать вас. ' +
-        (named ? `Упал: ${named}` : 'Имя упавшего теста прогонятель не назвал — смотрите вывод прогона') +
-        (detail ? `. Причина: ${detail}` : ''),
+        (shown.length
+          ? `Упало ${list.length || shown.length}: ${shown.join(' · ')}${rest ? ` … ещё ${rest}` : ''}`
+          : 'Имя упавшего теста прогонятель не назвал') +
+        (detail ? `. Причина: ${detail}` : '') +
+        (report
+          ? `. Отчёт прогона: ${report}`
+          : '. Отчёта прогона не сохранилось — смотрите вывод в журнале демона'),
     }
   }
 
@@ -2856,6 +2916,11 @@ async function handleForge({ req, res, config, deps }) {
  * size is the guard invariant; a «switch the team on» route would have had to move it. So the
  * whole team is addressed the way one agent is — same validation, same applier posture, same
  * refusal shape, same harness.updated hint — and the table did not move.
+ *
+ * There are TWO reserved targets now, and the second one is the narrow act:
+ * STOCK_PIPELINE_TARGET switches on only the roles the conveyor calls by itself. It rides the
+ * same door by the same trick and costs the table nothing either. What comes back names the
+ * scope, so the window can say what it just did in the words of the button that was pressed.
  */
 async function handleAgentToggle({ req, res, config, deps }) {
   if (typeof deps.applyAgentToggle !== 'function') return send501(res)
@@ -2865,17 +2930,23 @@ async function handleAgentToggle({ req, res, config, deps }) {
   if (rejectUnknownKeys(res, b, new Set(['id', 'enabled']))) return undefined
   if (typeof b.id !== 'string' || !ID_RE.test(b.id)) return send400(res, 'invalid id')
   if (typeof b.enabled !== 'boolean') return send400(res, 'enabled must be a boolean')
-  if (b.id === STOCK_TEAM_TARGET) {
+  if (b.id === STOCK_TEAM_TARGET || b.id === STOCK_PIPELINE_TARGET) {
     if (typeof deps.applyStockTeamToggle !== 'function') return send501(res)
+    const scope = b.id === STOCK_PIPELINE_TARGET ? 'pipeline' : 'all'
     try {
       // BOTH directories: `repoDir` is the tree the applier READS the installed roster from,
       // and `configIo` carries the write seam — including the launchDir baseline, which is
       // never the served repoDir.
-      const next = deps.applyStockTeamToggle({ config, enabled: b.enabled, repoDir: deps.repoDir, ...configIo(deps) })
+      const next = deps.applyStockTeamToggle({ config, enabled: b.enabled, scope, repoDir: deps.repoDir, ...configIo(deps) })
       refreshWorkers(config, next)
-      const touched = (next && next.workers ? next.workers : []).filter((w) => w && w.stockDigest !== undefined)
+      // Сколько работников теперь несёт поставочную отметку — и, для узкого действия, сколько
+      // из них КОНВЕЙЕРНЫХ. Роль читается тем же словарём, каким её отбирал применитель:
+      // число в ответе обязано быть числом про тот же набор, что назван на кнопке.
+      const touched = (next && next.workers ? next.workers : []).filter(
+        (w) => w && w.stockDigest !== undefined && (scope === 'all' || isPipelineRole(roleOf(w))),
+      )
       emitSafe(deps, { event: 'harness.updated' })
-      return sendJson(res, 200, { ok: true, stockTeam: { enabled: b.enabled, agents: touched.length } })
+      return sendJson(res, 200, { ok: true, stockTeam: { enabled: b.enabled, scope, agents: touched.length } })
     } catch (err) {
       return applierError(res, err)
     }
@@ -4004,16 +4075,23 @@ const defaultNap = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * still marked stopped is an attempt still unwinding, and a handle that is gone is an attempt
  * that finished. Nothing new is registered to learn this — a second bookkeeping of the same
  * fact is a second truth, and the two would drift.
+ *
+ * И ЭТО ЖЕ НАБЛЮДЕНИЕ ОТДАЁТ МЕСТО. Дверь отвечала «попытка закрылась», а дом идущих попыток
+ * продолжал считать её идущей: наблюдение было одно, но написано в двух файлах, и здешнее
+ * написание про места не знало. Замерено: два таких ответа — и тик три минуты подряд отказывал
+ * очереди по потолку при двух живых попытках из четырёх мест. Теперь ответ человеку и
+ * освобождение места — ОДНО выражение (`confirmProcessGone`), поэтому «закрылась» на экране и
+ * «место свободно» в тике не могут разойтись.
  */
 async function waitForAttemptClose({ registry, taskId, deps }) {
   if (!registry || typeof registry.wasStopped !== 'function') return false
   const nap = typeof deps.sleep === 'function' ? deps.sleep : defaultNap
   const looks = Math.max(1, Math.ceil(CANCEL_ATTEMPT_CLOSE_WAIT_MS / CANCEL_ATTEMPT_POLL_MS))
   for (let i = 0; i < looks; i += 1) {
-    if (registry.wasStopped(taskId) !== true) return true
+    if (confirmProcessGone(deps, taskId)) return true
     await nap(CANCEL_ATTEMPT_POLL_MS)
   }
-  return registry.wasStopped(taskId) !== true
+  return confirmProcessGone(deps, taskId)
 }
 
 /**
@@ -4033,7 +4111,17 @@ async function waitForAttemptClose({ registry, taskId, deps }) {
  *   attemptClosed — true when the attempt finished unwinding inside the cap, false when the
  *                   cap ran out (the row is still closed — the terminal is not negotiable),
  *                   and null when there was nothing to kill, because «did not close» and
- *                   «there was nothing to close» are not the same statement.
+ *                   «there was nothing to close» are not the same statement. И это же «true»
+ *                   ОТДАЁТ МЕСТО в доме идущих попыток — одним выражением, а не согласованной
+ *                   парой: пока их было двое, дверь говорила «закрылась», а тик той же секундой
+ *                   отказывал очереди по потолку.
+ *
+ * И «УБИТЬ БЫЛО НЕЧЕГО» БОЛЬШЕ НЕ ЗНАЧИТ «НИЧЕГО НЕ БУДЕТ». Между решением очереди выдать
+ * задачу и первым кадром работника лежит провизия копии; слово, сказанное внутри этого окна,
+ * закрывало строку и не убивало никого, а сессия стартовала следом и жила невидимой — час,
+ * замерено. Реестр ручек теперь помнит такую остановку короткий названный срок и исполняет её
+ * при рождении хода (см. `createTurnRegistry`). Ответ при этом не меняется: `killed:false`
+ * по-прежнему честно говорит, что в ЭТУ секунду живого ребёнка не было.
  *   cancelled     — the queue closed the row. False is an honest «there was nothing to stop»:
  *                   the queue cannot tell an unknown task from one that is already finished,
  *                   and inventing that distinction here would be a distinction the storage
@@ -6344,6 +6432,45 @@ function queueTitleFor(id, words) {
 const BACKLOG_TITLE_CAP = 400
 
 /**
+ * ТРИ ПОЛЯ, КОТОРЫМИ ЗАДАЧА ГОВОРИТ О СЕБЕ, — И ОНИ ЕДУТ ТЕМ ЖЕ ЗАПРОСОМ, ЧТО САМА ЗАДАЧА.
+ *
+ * ЧТО БЫЛО НЕ ТАК, И ЭТО ИЗМЕРЕНО, А НЕ ПРЕДПОЛОЖЕНО (02.09.2026). Две двери, ставящие работу
+ * пачкой, принимали только «что сделать» — заголовок, дорожку, идентификатор строки. Обещание
+ * («признаки успеха») приезжало ОТДЕЛЬНЫМ запросом, дверью правки слов, секунды спустя. А
+ * строка становится захватываемой в тот миг, когда она записана: тик успевал взять её раньше,
+ * чем приезжали её слова. Потолок ходов считается по ОБЪЯВЛЕННОМУ размеру работы, и работа без
+ * обещания объявлена мелкой — та же самая работа получала базовый потолок вместо тройного и
+ * умирала на ритуале сдачи, израсходовав ход сверх потолка. Соседние куски той же сборки,
+ * взятые ПОСЛЕ прихода слов, получали втрое больше. Разница между «сгорела» и «сделана» была
+ * не в работе, а в том, чей запрос успел первым.
+ *
+ * ОДНО ОБЕЩАНИЕ — ОДИН ЗАПРОС. Гонки нет там, где нечему опаздывать: слова кладутся на строку
+ * в том же вызове, что и сама строка, и первый же захват видит их. Дверь правки слов остаётся
+ * ровно тем, чем была, — ИСПРАВЛЕНИЕМ уже сказанного, а не единственным способом это сказать.
+ *
+ * ИМЕНА ПОЛЕЙ ОДНИ И ТЕ ЖЕ У ВСЕХ ЧЕТЫРЁХ ДВЕРЕЙ (постановка, сборка, повышение строки,
+ * правка слов). Разъехавшиеся имена — самый дешёвый способ потерять провод, а по этому проводу
+ * едет единственное, из чего продукт вообще узнаёт размер работы.
+ *
+ * ГРАНИЦ ЗДЕСЬ НЕ ПИШЕТСЯ НИ ОДНОЙ: длину, форму и число пунктов проверяет тот же
+ * `validateTask`, что и у двери постановки. Второй набор капов у второй двери — это второй
+ * набор капов, и работает более слабый.
+ */
+const TASK_WORD_KEYS = Object.freeze(['description', 'acceptance', 'taskContext'])
+
+/**
+ * taskWordsFrom(o) → те из трёх полей, что в запросе ЕСТЬ, как они есть.
+ *
+ * Отсутствующее поле не становится пустой строкой: `undefined` означает «человек об этом не
+ * сказал», а пустая строка — «сказал, что ничего», и на строке очереди это разные утверждения.
+ */
+function taskWordsFrom(o) {
+  const out = {}
+  for (const k of TASK_WORD_KEYS) if (o && o[k] !== undefined) out[k] = o[k]
+  return out
+}
+
+/**
  * GET /api/backlog — the project's own backlog file, as rows.
  *
  * No file is an empty board and not a 404: a project that keeps no backlog is not a broken one,
@@ -6355,7 +6482,8 @@ function handleBacklog({ res, config, deps }) {
 }
 
 /**
- * POST /api/backlog/promote — body {id, lane?, title?}. One line becomes work in the queue.
+ * POST /api/backlog/promote — body {id, lane?, title?, description?, acceptance?, taskContext?}.
+ * One line becomes work in the queue.
  *
  * THE LINE MUST BE IN THE FILE. The board and this door read it the same way, through the same
  * derive, so an identifier that is not an open row is a 404 rather than a phantom task nobody
@@ -6372,6 +6500,9 @@ function handleBacklog({ res, config, deps }) {
  * `row.priority`) becomes the number the row stands at in the queue. Both are computed once, in
  * the intake module, and read here — a door doing its own triage would be a second triage, and
  * a line promoted by hand would then queue differently from the same line taken by the scan.
+ *
+ * И ОБЕЩАНИЕ ЕДЕТ ЭТИМ ЖЕ ЗАПРОСОМ — см. `TASK_WORD_KEYS`: строка, повышенная в работу, несёт
+ * свои слова с первого мига, а не догоняет их вторым нажатием, пока тик её уже взял.
  */
 async function handleBacklogPromote({ req, res, config, deps }) {
   const adapter = deps.adapter
@@ -6381,7 +6512,7 @@ async function handleBacklogPromote({ req, res, config, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
   const b = body.value || {}
-  if (rejectUnknownKeys(res, b, new Set(['id', 'lane', 'title']))) return undefined
+  if (rejectUnknownKeys(res, b, new Set(['id', 'lane', 'title', ...TASK_WORD_KEYS]))) return undefined
 
   const id = b.id
   if (typeof id !== 'string' || !BACKLOG_WIRE_ID_RE.test(id)) return send400(res, 'invalid id')
@@ -6414,6 +6545,9 @@ async function handleBacklogPromote({ req, res, config, deps }) {
     // Размер внутри него по-прежнему второй ключ, поэтому мелкая работа, поставленная рукой,
     // встаёт там же, где встала бы взятая сканом: две постановки одной строки — одно место.
     ...(typeof row.priority === 'number' ? { priority: row.priority } : {}),
+    // …И СЛОВА, ЕСЛИ ЧЕЛОВЕК ИХ НАПИСАЛ, — тем же запросом, до того как строка стала
+    // захватываемой. Капы и формы — у `validateTask` ниже, своих здесь нет.
+    ...taskWordsFrom(b),
   }
   let norm
   try {
@@ -6442,6 +6576,14 @@ const BATCH_TITLE_CAP = 200
 /**
  * POST /api/batch — body {title, items[], lane?}. One sentence becomes a request row plus the
  * N pieces of work it names, all wearing one batch id.
+ *
+ * У КУСКА МОГУТ БЫТЬ СВОИ СЛОВА, И ОНИ ЕДУТ ЭТИМ ЖЕ ЗАПРОСОМ. Элемент списка — либо строка
+ * (как было и как останется), либо объект `{title, description?, acceptance?, taskContext?}`,
+ * где `title` — та же самая строка, а рядом лежит обещание ИМЕННО этого куска. Почему на
+ * куске, а не на сборке: у пяти дел одной сборки пять разных обещаний, и одно на всех
+ * означало бы, что каждый кусок объявлен размером со всю сборку. Зачем вообще — см.
+ * `TASK_WORD_KEYS`: обещание, приезжающее вторым запросом, опаздывает к захвату, и работа
+ * получает потолок ходов по пустоте. Незнакомый ключ ВНУТРИ элемента — тот же 400 до всего.
  *
  * AN ITEM IS EITHER A BACKLOG LINE OR A SENTENCE, and both are legal in one list: the owner
  * ticks what already exists and types what does not, and the backlog is not a compulsory
@@ -6475,15 +6617,22 @@ async function handleBatchCreate({ req, res, config, deps }) {
   // request that would then sit there, assembled and closed, having done nothing.
   if (!Array.isArray(b.items) || b.items.length === 0) return send400(res, 'a batch needs at least one item')
   if (b.items.length > BATCH_ITEMS_CAP) return send400(res, `a batch carries at most ${BATCH_ITEMS_CAP} items`)
-  const lines = []
+  const pieces = []
   for (const raw of b.items) {
-    const line = typeof raw === 'string' ? raw.trim() : ''
+    // ДВЕ ФОРМЫ ОДНОГО ЭЛЕМЕНТА, и обе разбираются здесь, до единой записи. Голая строка —
+    // кусок без своих слов; объект — тот же кусок со своим обещанием. Всё, кроме строки и
+    // объекта, — 400: `null` и число, приведённые к тексту, стали бы задачей с названием
+    // «null», и человек прочитал бы её как чью-то опечатку, а не как свою.
+    const isObject = raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+    if (isObject && rejectUnknownKeys(res, raw, new Set(['title', ...TASK_WORD_KEYS]))) return undefined
+    const source = isObject ? raw.title : raw
+    const line = typeof source === 'string' ? source.trim() : ''
     if (line === '' || line.length > BATCH_ITEM_CAP) return send400(res, 'invalid item')
-    lines.push(line)
+    pieces.push({ line, words: isObject ? taskWordsFrom(raw) : {} })
   }
 
   // The referenced lines, resolved ONCE against the file — the same read the board does.
-  const referenced = lines.filter((l) => BACKLOG_WIRE_ID_RE.test(l))
+  const referenced = pieces.filter((p) => BACKLOG_WIRE_ID_RE.test(p.line)).map((p) => p.line)
   let backlogRows = []
   if (referenced.length > 0) {
     if (typeof deps.deriveBacklog !== 'function') return send501(res)
@@ -6502,7 +6651,7 @@ async function handleBatchCreate({ req, res, config, deps }) {
   // миллисекунду, — то есть две правды о том, когда человек нажал.
   const requestedAt = clock()
   const batchId = `B-${requestedAt}`
-  const tasks = lines.map((line, i) => {
+  const tasks = pieces.map(({ line, words }, i) => {
     const row = BACKLOG_WIRE_ID_RE.test(line) ? backlogRows.find((r) => r && r.id === line) : null
     // A referenced line rides identifier-first, the way the promote door already writes it, so a
     // queue row can be read back to the line it came from. Both halves are the project's words.
@@ -6515,6 +6664,8 @@ async function handleBatchCreate({ req, res, config, deps }) {
       title: row ? queueTitleFor(row.id, row.title) : line,
       lane,
       batchId,
+      // Обещание ЭТОГО куска — на строке с первого мига, а не вторым запросом вдогонку.
+      ...words,
     }
   })
   const request = {

@@ -63,7 +63,7 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -108,6 +108,138 @@ export const RECEIPT_COVERS_NOTE =
 export const NO_SUITE_NOTE = 'в этом дереве нет полного набора — прогонять было нечего'
 export const NO_SUITE_RUNNER_NOTE = 'сьютер не нашёлся рядом с этой установкой — полного прогона не было'
 export const TIMED_OUT_NOTE = `полный прогон не уложился в ${Math.round(FULL_SUITE_TIMEOUT_MS / 60000)} мин — прогона не было`
+
+
+/**
+ * ГДЕ ЛЕЖИТ ОТЧЁТ ОТКАЗАННОЙ ПОСАДКИ — каталог внутри дома данных демона.
+ *
+ * Отчёт зелёного прогона живёт ровно до штампа: числа из него переписаны в квитанцию, и
+ * временный файл убирается той же рукой. У КРАСНОГО прогона такого читателя нет вовсе —
+ * слияние откатывается, штамп не зовётся, — а вопрос «что именно упало» задаётся ровно
+ * тогда. Замерено 02.09.2026 первой ночной приёмкой: дверь вернула «тесты красные», отчёт
+ * лежал во временном каталоге под именем с номером процесса, и смотреть после отказа было
+ * НЕГДЕ. Поэтому красный прогон оставляет свой отчёт и хвост вывода в доме данных демона —
+ * там же, где живут журналы и реестры, то есть переживает и процесс, и уборку копии.
+ */
+export const LANDING_REPORTS_DIRNAME = 'landing'
+
+/** Сколько имён упавших тестов едет в отказ: отказ читают глазами, а не грепом. */
+export const FAILED_TESTS_SHOWN = 5
+
+/** Пределы одной строки отказа — те же по смыслу, что у дымового прогонятеля. */
+const NAME_CAP = 200
+const LINE_CAP = 200
+const DETAIL_LINES = 3
+
+/** Отчёта сохранить не удалось — и это сказано, а не выдано за «отчёта не было». */
+export const NO_KEEP_DIR_NOTE = 'дом данных демона не назван — отчёт красного прогона сохранять некуда'
+
+/** Первая непустая строка чужого сообщения, обрезанная до читаемой длины. */
+function firstLine(text) {
+  const said = String(text ?? '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .find((s) => s !== '')
+  return said ? said.slice(0, LINE_CAP) : null
+}
+
+/**
+ * summarizeVitestReport(text) → `{failedTest, failedTests, failureDetail}` — ЧТО ИМЕННО УПАЛО,
+ * прочитанное из ОТЧЁТА сьютера, а не из его печати на экране.
+ *
+ * ПОЧЕМУ НЕ ХВАТАЕТ РАЗБОРА ВЫВОДА. Полный прогон идёт с отчётом в файл, и печатать при этом
+ * ему почти нечего: разбор экранного вывода (`summarizeRedRun`) находит там пусто и честно
+ * отвечает «имени не назвали». Имена в этом прогоне живут ТОЛЬКО в отчёте — по файлу, по
+ * набору и по тесту, — и берутся они отсюда.
+ *
+ * ЗАКОН ТОТ ЖЕ: НИЧЕГО НЕ ВЫДУМЫВАТЬ. Отчёт, который не разобрался, отдаёт пустой список.
+ * Файл, упавший на сборке и не доехавший ни до одного утверждения, назван САМИМ ФАЙЛОМ —
+ * это правда о нём, а имя теста там не существует.
+ *
+ * @param {string} text — содержимое отчёта сьютера
+ * @returns {{failedTest: (string|null), failedTests: string[], failureDetail: (string|null)}}
+ */
+export function summarizeVitestReport(text) {
+  const empty = { failedTest: null, failedTests: [], failureDetail: null }
+  let report = null
+  try {
+    report = JSON.parse(String(text ?? ''))
+  } catch {
+    return empty
+  }
+  const perFile = Array.isArray(report && report.testResults) ? report.testResults : []
+  const names = []
+  const details = []
+  for (const file of perFile) {
+    if (!file || typeof file !== 'object' || file.status === 'passed') continue
+    const where = typeof file.name === 'string' && file.name.trim() ? file.name.trim() : '(файл не назван)'
+    const cases = (Array.isArray(file.assertionResults) ? file.assertionResults : []).filter(
+      (a) => a && a.status === 'failed',
+    )
+    if (cases.length === 0) {
+      // Файл, не доехавший до утверждений: падение есть, теста нет — и назван файл.
+      names.push(where.slice(0, NAME_CAP))
+      const said = firstLine(file.message)
+      if (said) details.push(`${where}: ${said}`.slice(0, LINE_CAP))
+      continue
+    }
+    for (const one of cases) {
+      const title =
+        (typeof one.fullName === 'string' && one.fullName.trim()) ||
+        (typeof one.title === 'string' && one.title.trim()) ||
+        ''
+      names.push((title ? `${where} > ${title}` : where).slice(0, NAME_CAP))
+      const said = firstLine(Array.isArray(one.failureMessages) ? one.failureMessages[0] : one.failureMessages)
+      if (said) details.push(said)
+    }
+  }
+  if (names.length === 0) return empty
+  return {
+    failedTest: names[0],
+    failedTests: names.slice(0, FAILED_TESTS_SHOWN),
+    failureDetail: details.length ? details.slice(0, DETAIL_LINES).join('\n') : null,
+  }
+}
+
+/** Имя файла отчёта не имеет права быть путём: чужая строка становится одним отрезком имени. */
+function safeLabel(label) {
+  const said = String(label ?? '').trim()
+  const cleaned = said.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+  return cleaned ? cleaned.slice(0, 80) : 'landing'
+}
+
+/**
+ * keepRedRun({keepDir, label, reportText, output, clock}) → `{savedReport, savedLog}` либо
+ * `{keepNote}` — ОТЧЁТ КРАСНОГО ПРОГОНА, ПОЛОЖЕННЫЙ ТУДА, ГДЕ ЕГО МОЖНО ОТКРЫТЬ ПОТОМ.
+ *
+ * Два файла, а не один: отчёт сьютера (`.json`) отвечает на «какие тесты упали и с чем», хвост
+ * обоих потоков (`.log`) — на «а что вообще происходило», и он единственный говорит хоть
+ * что-то, когда сьютер умер, не написав отчёта. Имя строится из названного ярлыка и минуты:
+ * два отказа одной строки — два разных файла, и ни один не затирает другого.
+ *
+ * FAIL-OPEN: не записалось — сказано словами. Посадка, упавшая на попытке сохранить объяснение
+ * отказа, превратила бы честный красный в поломку.
+ */
+export function keepRedRun({ keepDir, label, reportText, output, clock } = {}) {
+  if (!keepDir) return { keepNote: NO_KEEP_DIR_NOTE }
+  const at = new Date(typeof clock === 'function' ? clock() : Date.now()).toISOString().replace(/[:.]/g, '-')
+  const base = join(keepDir, `${safeLabel(label)}-${at}`)
+  try {
+    mkdirSync(keepDir, { recursive: true })
+    const kept = {}
+    if (typeof reportText === 'string' && reportText.trim()) {
+      const path = `${base}.json`
+      writeFileSync(path, reportText, 'utf8')
+      kept.savedReport = path
+    }
+    const logPath = `${base}.log`
+    writeFileSync(logPath, String(output ?? ''), 'utf8')
+    kept.savedLog = logPath
+    return kept
+  } catch (err) {
+    return { keepNote: `отчёт красного прогона не сохранён (${String((err && err.message) || err)})` }
+  }
+}
 
 // ── ПЕРЕСБОРКА ОКНА: слияние принесло исходник, раздача осталась вчерашней ───────────────
 
@@ -334,6 +466,12 @@ export function hasFullSuite({ cwd, exists } = {}) {
  * ОТЧЁТ ПИШЕТСЯ ВО ВРЕМЕННЫЙ КАТАЛОГ, А НЕ В ДЕРЕВО. Прогон идёт в чужой копии; лишний файл,
  * оставленный в ней, — это грязь в чужом рабочем дереве и, в худшем случае, лишняя строка в
  * чужом коммите.
+ *
+ * …И ИМЕННО ПОЭТОМУ У КРАСНОГО ПРОГОНА ОТЧЁТ ЛОЖИТСЯ ВТОРОЙ РАЗ. Временный файл переживает
+ * ровно зелёный случай: числа из него уезжают в квитанцию, и штамп его убирает. Красный
+ * прогон откатывает слияние и штампа не зовёт — а вопрос «что упало» задаётся именно здесь.
+ * `keepDir` (дом данных демона) получает отчёт и хвост обоих потоков, и путь к ним едет в
+ * ответе, чтобы дойти до квитанции отказа.
  */
 export function runFullSuiteAsync(o = {}) {
   const tree = o.cwd || process.cwd()
@@ -342,6 +480,8 @@ export function runFullSuiteAsync(o = {}) {
   const spawnImpl = o.spawn || spawn
   const timeoutMs = Number.isFinite(o.timeoutMs) ? o.timeoutMs : FULL_SUITE_TIMEOUT_MS
   const reportPath = o.reportPath || join(tmpdir(), `sma-landing-${process.pid}-${Date.now()}.json`)
+  const keepDir = typeof o.keepDir === 'string' && o.keepDir.trim() ? o.keepDir.trim() : null
+  const readReport = typeof o.readFile === 'function' ? o.readFile : (p) => readFileSync(p, 'utf8')
 
   if (!hasFullSuite({ cwd: tree, exists })) {
     // `noSuite` — признак ДЛЯ ЧИТАТЕЛЯ, а не для глаз: посадка по нему зовёт запасного
@@ -391,7 +531,23 @@ export function runFullSuiteAsync(o = {}) {
         return resolve({ passed: null, ran: false, note: TIMED_OUT_NOTE })
       }
       if (code === 0) return resolve({ passed: true, ran: true, reportPath })
-      const { failedTest, failureDetail } = summarizeRedRun(said)
+
+      // КРАСНЫЙ ПРОГОН ОТВЕЧАЕТ ИМЕНАМИ, А НЕ ОТСЫЛКОЙ К ВЫВОДУ, КОТОРОГО НЕТ. Отчёт —
+      // ПЕРВЫЙ источник и единственный полный: полный прогон печатает на экран почти
+      // ничего (весь его отчёт уходит в файл), и разбор печати честно отвечал «имени не
+      // назвали» на КАЖДОМ красном отказе посадки. Печать остаётся запасным источником —
+      // сьютер, умерший до отчёта, говорит только ею.
+      let reportText = null
+      try {
+        reportText = readReport(reportPath)
+      } catch {
+        reportText = null
+      }
+      const fromReport = summarizeVitestReport(reportText)
+      const fromSaid = summarizeRedRun(said)
+      const failedTest = fromReport.failedTest || fromSaid.failedTest
+      const failureDetail = fromReport.failureDetail || fromSaid.failureDetail
+      const kept = keepRedRun({ keepDir, label: o.label, reportText, output: said, clock: o.clock })
       resolve({
         passed: false,
         ran: true,
@@ -399,6 +555,8 @@ export function runFullSuiteAsync(o = {}) {
         reportPath,
         ...(failedTest ? { failedTest } : {}),
         ...(failureDetail ? { failureDetail } : {}),
+        ...(fromReport.failedTests.length ? { failedTests: fromReport.failedTests } : {}),
+        ...kept,
       })
     })
   })
@@ -630,6 +788,10 @@ export function verifyLanding({ cwd, io } = {}) {
  * `fallbackRunner` — прогонятель для дерева, у которого полного набора нет вовсе (чужая копия,
  * временный репозиторий). Дверь отдаёт сюда свой дымовой прогонятель: посадка не имеет права
  * превратить «здесь нечего гонять» в «здесь красное».
+ *
+ * `dataDir` — дом данных демона, и он здесь ровно ради красного прогона: отчёт отказанной
+ * посадки ложится в `<dataDir>/landing/`. Без него посадка работает по-прежнему и говорит
+ * словами, что сохранять отчёт было некуда, — молчания на этом месте быть не должно.
  */
 export function createLanding(o = {}) {
   const execGit = typeof o.execGit === 'function' ? o.execGit : defaultExecGit
@@ -637,6 +799,10 @@ export function createLanding(o = {}) {
   const runSuite = typeof o.runSuite === 'function' ? o.runSuite : runFullSuiteAsync
   const runBuild = typeof o.runBuild === 'function' ? o.runBuild : runSpaBuild
   const fallbackRunner = typeof o.fallbackRunner === 'function' ? o.fallbackRunner : null
+  const dataDir = typeof o.dataDir === 'string' && o.dataDir.trim() ? o.dataDir.trim() : null
+  const keepDir =
+    (typeof o.keepDir === 'string' && o.keepDir.trim() ? o.keepDir.trim() : null) ||
+    (dataDir ? join(dataDir, LANDING_REPORTS_DIRNAME) : null)
   const state = { decided: null, reason: null, ran: false, reportPath: null, tree: null, spaBuild: null }
 
   /**
@@ -704,7 +870,11 @@ export function createLanding(o = {}) {
     // (2) ВЕРШИНА ДВИГАЛАСЬ — набор идёт ОДИН раз, здесь.
     state.decided = 'ran'
     const reportPath = o.reportPath || join(tmpdir(), `sma-landing-${process.pid}-${Date.now()}.json`)
-    const answer = (await runSuite({ cwd, reportPath })) || {}
+    // ЧЬЯ ЭТО ПОСАДКА — сказано именем ветки, потому что другого имени у ритуала нет. Оно же
+    // становится именем сохранённого отчёта: человек, читающий отказ, ищет файл по строке,
+    // которую нажимал, а не по номеру процесса демона.
+    const label = typeof call.branch === 'string' ? call.branch.replace(/^wt\//, '') : null
+    const answer = (await runSuite({ cwd, reportPath, keepDir, label })) || {}
 
     // (3) …ЕСЛИ ЕМУ БЫЛО ГДЕ ПОЙТИ. Вопрос «есть ли в этом дереве набор» задаёт сам
     //     прогонятель — он единственный, кто знает, чем гонит, — и на «здесь нечего гонять»
