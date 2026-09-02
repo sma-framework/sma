@@ -855,11 +855,19 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     // `memoryHarvest`, в блок самой приёмки («что решили», потом «что вынесли из копии»), —
     // поэтому хвостовые указатели за точкой вставки НЕ ДВИНУЛИСЬ, а всё, что тянется назад ЗА
     // неё, сдвинулось ровно на единицу и перезакреплено в своих случаях.
-    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(41)
+    //
+    // RE-PINNED ONCE MORE, reason in words: строка получила `sessionStart` — СКОЛЬКО СЕССИЯ
+    // СОБИРАЛАСЬ, ПРЕЖДЕ ЧЕМ СКАЗАТЬ ПЕРВОЕ СЛОВО. До первого кадра у идущей работы есть один
+    // признак жизни — её вывод, поэтому подготовка песочницы и повисший процесс выглядели
+    // снаружи одинаково; раздача прав по писаемым корням занимала минуты, и решение «снимать
+    // или ждать» принималось вслепую. Имя вставлено СРАЗУ ЗА `spawn` — к фактам о самой
+    // сессии, рядом с тем, ЧЕМ её запустили, — поэтому хвостовые указатели за точкой вставки
+    // НЕ ДВИНУЛИСЬ, а всё, что тянется назад ЗА неё, сдвинулось ровно на единицу.
+    expect(ALLOWED_ATTEMPT_KEYS).toHaveLength(42)
     expect(ALLOWED_ATTEMPT_KEYS.at(-1)).toBe('conflictsWith')
     expect(ALLOWED_ATTEMPT_KEYS.slice(-4, -1)).toEqual(['turnCap', 'turnsUsed', 'turnKinds'])
     expect(Object.isFrozen(ALLOWED_ATTEMPT_KEYS)).toBe(true)
-    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(41) // no duplicate name
+    expect(new Set(ALLOWED_ATTEMPT_KEYS).size).toBe(42) // no duplicate name
   })
 
   /**
@@ -972,14 +980,17 @@ describe('ALLOWED_ATTEMPT_KEYS — the stamp, the provenance flag, the copy, the
     // конца ровно на единицу. Хвост за точкой вставки не двигался.
     // И ЕЩЁ НА ОДИН, по тому же правилу: `closed` вставлено перед `memoryHarvest`, то есть
     // ПОЗАДИ этих трёх блоков, — значит все они отодвинулись от конца ровно на единицу.
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-22, -16)).toEqual(COPY_KEYS)
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-16, -12)).toEqual(CHANGED_KEYS)
+    // И ЕЩЁ НА ОДИН, по тому же правилу: `sessionStart` вставлено сразу ЗА `spawn`, то есть
+    // ПОЗАДИ этих блоков, — значит они снова отодвинулись от конца ровно на единицу.
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-23, -17)).toEqual(COPY_KEYS)
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-17, -13)).toEqual(CHANGED_KEYS)
     // Сдвинулось на один: `failureDetail` дописано сразу за `receiptRef`, впереди этого имени.
     expect(ALLOWED_ATTEMPT_KEYS.slice(0, 19)[18]).toBe('reconstructed')
-    // What the account actually held when this attempt ran, which servers it was given — and
-    // WHAT IT WAS STARTED WITH. All three are facts about the session that the sweep of the
-    // copy makes unrecoverable, which is exactly why they live on the durable row.
-    expect(ALLOWED_ATTEMPT_KEYS.slice(-12, -9)).toEqual(['personalLayer', 'mcpConfig', 'spawn'])
+    // What the account actually held when this attempt ran, which servers it was given, WHAT
+    // IT WAS STARTED WITH — and how long it took to say its first word. All four are facts
+    // about the session that the sweep of the copy makes unrecoverable, which is exactly why
+    // they live on the durable row.
+    expect(ALLOWED_ATTEMPT_KEYS.slice(-13, -9)).toEqual(['personalLayer', 'mcpConfig', 'spawn', 'sessionStart'])
   })
 
   /**

@@ -29,6 +29,7 @@ import {
   assertProfileParity,
   buildClaudeArgs,
   codexHomeFor,
+  codexTempFor,
   CODEX_WINDOWS_SANDBOX_MARKER,
 } from '../src/runner/args.mjs'
 import { DEFAULT_PIPELINE_MAX_TURNS } from '../src/config.mjs'
@@ -390,6 +391,54 @@ describe('buildArgs — the Codex home is created, seeded and authenticated', ()
     const home = String(spec.env.CODEX_HOME)
     expect(existsSync(join(home, 'auth.json'))).toBe(true)
     expect(readFileSync(join(home, 'auth.json'), 'utf8')).toBe(readFileSync(join(accountDir, 'auth.json'), 'utf8'))
+  })
+
+  /**
+   * ═══════ СВОЙ TEMP НА ЗАДАЧУ — ПРОВОД, А НЕ НАМЕРЕНИЕ ═══════
+   *
+   * Замерено 02.09.2026: перед первой строкой сессии песочница Windows раздаёт право записи по
+   * КАЖДОМУ писаемому корню — и общий временный каталог машины она считает одним из них. Обход
+   * этого дерева занял четыре минуты в одном запуске и семнадцать в другом, ДО того как сессия
+   * сказала хоть слово; окно подписки при этом идёт, а снаружи это неотличимо от повисшего
+   * работника. Лечится адресом: у задачи свой дом, пустой и свежий, и Temp внутри него.
+   *
+   * ДВА УТВЕРЖДЕНИЯ, И ОБА О ПРОДУКТЕ. Имя в окружении спавна — половина ответа; вторая
+   * половина в том, что каталог с этим именем ЛЕЖИТ НА ДИСКЕ. Названный и не сделанный, он
+   * отправил бы процесс временными файлами туда, куда его перенаправит система, — то есть
+   * обратно в общий каталог, ради ухода из которого всё это и написано. Ровно так этот дом уже
+   * однажды оставался без логина.
+   */
+  it('the sandbox is handed a temp of its OWN: the spawn environment names one inside the task home', () => {
+    const { cfg, env, fsImpl } = codexFixture()
+    const spec = build(cfg, env, fsImpl)(codexTask(), codexRoute())
+
+    const home = String(spec.env.CODEX_HOME)
+    // ОБА ИМЕНИ, а не одно: Windows читает и TEMP, и TMP, и забытое второе вернуло бы общий
+    // каталог тем, кто спрашивает именно его.
+    expect(spec.env.TEMP).toBe(codexTempFor(home))
+    expect(spec.env.TMP).toBe(codexTempFor(home))
+    // И ЭТО ДРУГОЙ КАТАЛОГ, ЧЕМ ТОТ, ЧТО НЁС ДЕМОН: подстановка обязана ВЫТЕСНЯТЬ общий Temp,
+    // а не соседствовать с ним.
+    const shared = build(cfg, { ...env, TEMP: tmpdir(), TMP: tmpdir() }, fsImpl)(codexTask(), codexRoute())
+    expect(shared.env.TEMP).not.toBe(tmpdir())
+    expect(String(shared.env.TEMP)).toContain('codex-tasks')
+  })
+
+  it('that temp directory EXISTS on disk after the spec is built — named is not made', () => {
+    const { cfg, env, fsImpl } = codexFixture()
+    const spec = build(cfg, env, fsImpl)(codexTask(), codexRoute())
+
+    expect(existsSync(String(spec.env.TEMP))).toBe(true)
+  })
+
+  // ПОЛОСА CLAUDE ХОДИТ ВООБЩЕ БЕЗ ПЕСОЧНИЦЫ — раздавать права там некому, и перенаправлять её
+  // временный каталог значило бы чинить болезнь, которой у неё нет. Её окружение обязано
+  // выйти ровно тем, что несёт демон.
+  it('the Claude lane keeps the machine temp it was given: nothing is redirected where nothing grants ACLs', () => {
+    const shared = join(tmpdir(), 'machine-temp')
+    const spec = build(CONFIG, { ...ENV, TEMP: shared, TMP: shared })(task(), route())
+    expect(spec.env.TEMP).toBe(shared)
+    expect(spec.env.TMP).toBe(shared)
   })
 
   it('two tasks of one account get two homes, each with its own seeded pair', () => {
