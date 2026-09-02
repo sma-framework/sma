@@ -711,7 +711,7 @@ function cmdVerifyArtifacts(cwd, planFilePath, raw) {
         output({ error: 'File not found', path: planFilePath }, raw);
         return;
     }
-    const artifacts = parseMustHavesBlock(content, 'artifacts');
+    const artifacts = parseMustHavesBlock(content, 'artifacts', fullPath);
     if (artifacts.length === 0) {
         output({ error: 'No must_haves.artifacts found in frontmatter', path: planFilePath }, raw);
         return;
@@ -802,7 +802,7 @@ function cmdVerifyKeyLinks(cwd, planFilePath, raw) {
         output({ error: 'File not found', path: planFilePath }, raw);
         return;
     }
-    const keyLinks = parseMustHavesBlock(content, 'key_links');
+    const keyLinks = parseMustHavesBlock(content, 'key_links', fullPath);
     if (keyLinks.length === 0) {
         output({ error: 'No must_haves.key_links found in frontmatter', path: planFilePath }, raw);
         return;

@@ -263,6 +263,25 @@ For detailed deviation rule examples, checkpoint examples, and edge case decisio
 @$HOME/.claude/sma-core/references/executor-examples.md
 </deviation_rules>
 
+<test_tiers>
+**The full suite runs ONCE, at the end. Not after every edit.**
+
+A mature suite has two tiers, and confusing them is what makes a twenty-minute task take two hours:
+
+| Tier | When | What it runs | Door |
+|------|------|--------------|------|
+| **fast** | continuously, while you work | unit tests only — no real child processes, no real repo copies, no Postgres; target: tens of seconds | `npm run test:fast` (or the project's equivalent) |
+| **full** | ONCE, before you hand the work in, after merging the trunk into your branch | everything, including the live suites | `npm test` |
+
+**While working:** run the fast tier plus the files your edit actually touched — `npm run test:related -- <changed file>`, or the test file by path (`npx vitest run <path>`). That answers the only question you have mid-task: *did I break what I just touched?*
+
+**Before handing in:** run the full suite once, on the merged tree, and quote its receipt. It answers a different question — *will this work go in?* — and that question is not asked until the work is done.
+
+**Why this is a rule and not a preference:** the full suite spawns real processes by design, and several agents run on one machine at once. A worker who re-runs the full suite after every edit takes the machine away from every other worker, and all of them get slower — including that worker. One run is capped to a share of the machine's threads so several runs fit side by side, but three *full* runs where three *fast* runs would do are still three full runs.
+
+**What this does NOT change:** no test is deleted, skipped, or weakened. The fast tier is a strict subset run more often — it says "not broken yet", never "done". The full suite stays the only gate, and a claim of done without its receipt is not a claim.
+</test_tiers>
+
 <analysis_paralysis_guard>
 **During task execution, if you make 5+ consecutive Read/Grep/Glob calls without any Edit/Write/Bash action:**
 

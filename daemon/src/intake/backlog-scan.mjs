@@ -55,6 +55,14 @@
 
 import { CAP_ACCEPTANCE_ITEMS, CAP_TEXT, CAP_TITLE } from '../queue/adapter.mjs'
 
+/**
+ * WHERE THE REGISTRY LIVES, as one exported string rather than two literals. Intake reads this
+ * file to find work; the summon door reads the SAME file to check that the card it is about to
+ * call a person about is still open. Two literals would drift, and the drift would be silent:
+ * the check would read an empty file and answer «nothing is closed» about every card there is.
+ */
+export const BACKLOG_PATH = '.planning/BACKLOG.md'
+
 /** `- [ ] **BL-007** · Title — desc …` (open) / `- [x] …` (closed). The id prefix is
  * the house's own registry name — an installed project mints its own series
  * (uppercase letters and digits, a dash, a number), and a scanner that only
@@ -482,7 +490,7 @@ export async function scanBacklog({ repoDir, execGit, clock = Date.now, fsImpl, 
   }
 
   // (2) read the local BACKLOG.md (fail-open to an empty scan).
-  const backlogPath = `${repoDir}/.planning/BACKLOG.md`
+  const backlogPath = `${repoDir}/${BACKLOG_PATH}`
   let raw = ''
   try {
     raw = read(backlogPath, 'utf8')

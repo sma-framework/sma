@@ -67,7 +67,7 @@ import {
 } from '../src/loop.mjs'
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { createAgingMemory } from '../src/policy/aging-memory.mjs'
-import { createMemoryQueue, REASON_LABELS, failureAwaitsAPerson, AUTO_RETRY_LIMIT, AUTO_RETRY_BASE_MS } from '../src/queue/adapter.mjs'
+import { createMemoryQueue, FAIL_REASONS, REASON_LABELS, failureAwaitsAPerson, AUTO_RETRY_LIMIT, AUTO_RETRY_BASE_MS } from '../src/queue/adapter.mjs'
 // Единый журнал срывов — читается и пишется здесь через те же две функции, что демон
 // подаёт тику швом `ledger`: тест о том, что срыв доезжает до журнала САМ, не имеет права
 // подсовывать проходу свой журнал в памяти.
@@ -99,6 +99,9 @@ import {
 // the module that owns what a correction IS, never a sentence retyped into a test. A hand
 // written expectation would go on passing after the two forms drifted apart.
 import { appendRedirect, readPendingRedirects, redirectFileOf, correctionsPreamble } from '../src/runner/redirects.mjs'
+// Реестр живых ручек берётся НАСТОЯЩИЙ — тот же, что держит демон и дёргает дверь поправки:
+// подделка здесь закрыла бы ровно тот провод, ради которого случай ниже и написан.
+import { createTurnRegistry } from '../src/front/chat.mjs'
 import { attemptRunDir, runsDirOf } from '../src/queue/run-dir.mjs'
 import { formatDecision, parseDecision, ticketIdFor, readWaitingTicket } from '../../scripts/sma/lib/tool-gate.mjs'
 import { writeWaveHold } from '../src/queue/wave-holds.mjs'
@@ -2641,6 +2644,88 @@ describe('поправка потребляется только тогда, к�
     expect(spawns[0].prompt).toContain('правь шапку, не подвал')
     expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toHaveLength(2)
     expect(doneMarks(dataDir, 'BL-1')).toEqual([])
+  })
+
+  /**
+   * ═══ «ПЕРЕБИТЬ СЕЙЧАС» ПО РАБОТНИКУ БЕЗ КАНАЛА: УБИЛИ ХОД — ЗНАЧИТ ВЕРНИТЕ ЗАДАЧУ ═══
+   *
+   * Замерено 01.09: дверь по задаче стороннего вендора ответила {accepted:true, live:true},
+   * ход был убит, а в журнале осталось `redirect_skipped · provider` — перевыдачи не было, и
+   * задача умерла пустой. Снаружи это неотличимо от доставки: человек сказал слово, получил
+   * «принято» и не получил ничего. Дело красное ровно на этом: исход «принято + пропуск»
+   * запрещён, у слова обязана быть дорога, и дорога у него одна — ЗАДАНИЕ СЛЕДУЮЩЕГО ЗАХОДА.
+   *
+   * ДВЕРЬ ЗДЕСЬ НЕ ПОДДЕЛАНА ПО СУЩЕСТВУ: она делает ровно две вещи (пишет слово в то самое
+   * хранилище и дёргает ту самую ручку из реестра попыток), и обе делаются настоящими —
+   * `appendRedirect` и `createTurnRegistry`, тот же реестр, который цикл потом и спрашивает.
+   */
+  it('(г) «перебить сейчас» по работнику без канала: ход оборван — задача возвращается, записка едет в задании', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const attemptTurns = createTurnRegistry()
+
+    const spawns: any[] = []
+    const spawnWorker = (spec: any) => {
+      spawns.push({ args: spec.args.slice(), prompt: String(spec.prompt ?? '') })
+      if (spawns.length === 1) {
+        // ДВЕРЬ СРАБАТЫВАЕТ ПО ЖИВОМУ РЕБЁНКУ — после того, как ручка попала в реестр (это
+        // делает `steeredSpawn` уже ПОСЛЕ возврата отсюда), поэтому выстрел откладывается.
+        setTimeout(() => {
+          appendRedirect({ dataDir, taskId: 'BL-1', text: 'стой, не трогай подвал', mode: 'interrupt', clock: c.clock })
+          attemptTurns.stop('BL-1')
+        }, 0)
+        return { pid: 1, kill: () => spec.onExit?.({ code: 143, signal: 'SIGTERM' }) }
+      }
+      spec.onLine?.('APPROACH_NOTE: прямой путь')
+      spec.onLine?.('LESSON_NONE: тестовый работник')
+      spec.onExit?.({ code: 0, signal: null })
+      return { pid: 1, kill: () => {} }
+    }
+
+    const { deps, journalled } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker,
+      config: { dataDir },
+      responses: RESPONSES,
+      deps: { buildArgs: lane('codex'), attemptTurns },
+    })
+
+    const first = await tick(deps)
+
+    // (1) ИСХОД НАЗВАН СЛОВАМИ, И ЭТО НЕ ПРОПУСК. Пропуск здесь запрещён: он означал бы
+    // «слово потеряно молча», а слово поедет.
+    expect(journalled.filter((e: any) => e.type === 'task.redirect_skipped')).toEqual([])
+    const deferred = journalled.filter((e: any) => e.type === 'task.redirect_deferred')
+    expect(deferred).toHaveLength(1)
+    expect(deferred[0].delivery).toBe('next_run')
+    expect(deferred[0].detail).toContain('следующего захода')
+
+    // (2) ПОПЫТКА КОНЧИЛАСЬ ПЕРЕВЫДАВАЕМЫМ КОНЦОМ СО СВОИМ СЛОВОМ — не «нет квитанции» и не
+    // «ошибка работника»: работу не сломали, её прервали.
+    expect(first.failed?.reason).toBe('redirect_restart')
+    expect(FAIL_REASONS).toContain('redirect_restart')
+    expect(failureAwaitsAPerson('redirect_restart')).toBe(false) // за этим концом стоит попытка, а не человек
+    expect(REASON_LABELS.redirect_restart).toContain('перевыдана')
+
+    // (3) СЛОВО ЦЕЛО: доставить его было нечем, значит и потреблять было нечего.
+    expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toHaveLength(1)
+    expect(doneMarks(dataDir, 'BL-1')).toEqual([])
+
+    // ═══ И ДОСТАВКА, ИЗМЕРЕННАЯ НА АРГУМЕНТАХ СЛЕДУЮЩЕГО ЗАПУСКА ═══
+    c.advance(AUTO_RETRY_BASE_MS + 1000) // пауза автоповтора — она же граница «не долбить»
+    await tick(deps)
+
+    expect(spawns).toHaveLength(2) // перевыдача СОСТОЯЛАСЬ
+    expect(spawns[1].prompt).toContain(TASK_PROMPT) // задание не подменено, слово ДОПИСАНО
+    expect(spawns[1].prompt).toContain(correctionsPreamble([{ text: 'стой, не трогай подвал' }]))
+    expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toEqual([]) // употреблено ровно теперь
+    expect(doneMarks(dataDir, 'BL-1')).toHaveLength(1)
+    const delivered = journalled.filter((e: any) => e.type === 'task.redirected')
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0].delivery).toBe('prompt')
   })
 
   it('(д) слово ЖИВОМУ ходу, которого ход не подобрал, подбирает продолжение — та же сессия', async () => {
@@ -7586,5 +7671,126 @@ describe('обход беклога не ставит заново работу,
     expect(enqueued, 'слепой обход поставил работу, не спросив очередь').toEqual([])
     expect(res.intake).toEqual({ scannedAt: expect.any(Number), enqueued: 0, known: [], notReady: [] })
     expect(journalled.some((e: any) => e.type === 'intake-blind')).toBe(true)
+  })
+})
+
+/**
+ * ═══ ЗАХВАТ СПРАШИВАЕТ ПОСЛЕДНЕЕ СЛОВО О ЗАДАЧЕ — ДО ТОГО, КАК ЗА НЕЁ НАЧНУТ ПЛАТИТЬ ═══════
+ *
+ * ЧТО БЫЛО ИЗМЕРЕНО. Обход беклога перестал минтить принятую работу (дела выше), но выданной она
+ * от этого быть не перестала: строка, уже стоявшая в очереди, доезжала до работника как ни в чём
+ * не бывало. Правило свёртки («последнее слово о задаче») спрашивал ОДИН автоповтор; у захвата
+ * того же вопроса не было ни одного. Цена названа днём 31.08.2026: три оплаченных прогона, каждый
+ * из которых закончился словами «уже сделано».
+ *
+ * И ВТОРАЯ, ОСТРЕЙШАЯ ГРАНЬ ТОГО ЖЕ КЛАССА. Задача в состоянии `awaiting_approval` получала
+ * ВТОРОГО живого писателя в ТУ ЖЕ рабочую копию (19:48:35Z и 20:07:18Z, дважды за вечер): работник
+ * дописывал исходники под ногами у посадки — честный штамп на движущемся дереве невозможен, — а
+ * уборка копии при приёмке убила бы его незакоммиченное.
+ *
+ * ДЕЛА ГОНЯЮТ НАСТОЯЩИЙ ТИК над настоящей эталонной очередью и настоящим швом реестра.
+ */
+describe('захват не выдаёт работу, о которой уже сказано последнее слово', () => {
+  const line = (over: any = {}) => backlogTask({ id: 'SB-176', title: 'починить дверь приёмки', ...over })
+  const runResponses = (id: string) => ({
+    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: `/wt/${id}`, branch: `wt/${id}` }) },
+    reverify: GREEN_REVERIFY,
+  })
+
+  it('принятую и слитую карточку работнику не отдают — даже когда её строка стоит в очереди', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(line()) // призрак, отчеканенный обходом ДО приёмки
+    const { deps, order, attempts, journalled } = makeDeps({ adapter, clockObj: c, responses: runResponses('SB-176') })
+    // то, что осталось после приёмки: строка закрытия, как её пишет дверь «Одобрить»
+    deps.ledger.recordAttempt({
+      taskId: 'SB-176',
+      attempt: 1,
+      closed: { at: '2026-08-31T11:12:00.000Z', by: 'approve', merged: true, mergeSha: '504b61a9' },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.refusedClaim).toEqual({ taskId: 'SB-176', code: 'card_closed' })
+    // НИ КОПИИ, НИ ПРОЦЕССА: дороже всего стоит не выданная строка, а запущенный по ней работник
+    expect(order).toEqual([])
+    const [row] = await adapter.list({})
+    expect(row.status, 'призрак остался живым в очереди').toBe('failed')
+    expect(row.failure_reason).toBe('already_decided')
+    // и почему — словами, на долговечной строке, а не только в журнале демона
+    const ghost: any = attempts.find((a: any) => a.failureReason === 'already_decided')
+    expect(ghost.failureDetail).toContain('принятая работа не выдаётся заново')
+    expect(journalled.some((e: any) => e.type === 'claim.refused')).toBe(true)
+  })
+
+  it('вторую строку не выдают, пока первая ждёт решения человека — второй писатель в ту же копию', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(line({ id: 'SB-195' }))
+    // Долговечная очередь держит ЗАКОНЧЕННУЮ строку рядом с новой; памятная так не умеет — одна
+    // задача, одна запись. Поэтому список о двух строках подставлен поверх настоящей очереди, и
+    // это единственная подделка в деле: захват, отказ и закрытие строки — настоящие.
+    const waiting = {
+      id: 'SB-195',
+      status: 'awaiting_approval',
+      attempt: 1,
+      title: 'починить дверь приёмки',
+      lane: 'prod',
+      source: 'backlog',
+      priority: 0,
+      enqueuedAt: c.clock() - 3600_000,
+      completedAt: c.clock() - 600_000,
+    }
+    const twoRows = { ...adapter, list: async (f: any) => [...(await adapter.list(f)), waiting] }
+    const { deps, order } = makeDeps({ adapter: twoRows, clockObj: c, responses: runResponses('SB-195') })
+
+    const res = await tick(deps)
+
+    expect(res.refusedClaim).toEqual({ taskId: 'SB-195', code: 'awaiting_person' })
+    expect(order).toEqual([]) // работник в живую копию посадки не поехал
+    const ghost: any = (await adapter.list({})).find((r: any) => r.id === 'SB-195')
+    expect(ghost.status).toBe('failed')
+    expect(ghost.failure_reason).toBe('already_decided')
+  })
+
+  it('чужое закрытие ничего не запрещает: работа со своим именем идёт как обычно — это сторож, а не замок', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(line({ id: 'SB-901' }))
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: runResponses('SB-901') })
+    deps.ledger.recordAttempt({
+      taskId: 'SB-176', // закрыта ДРУГАЯ карточка
+      attempt: 1,
+      closed: { at: '2026-08-31T11:12:00.000Z', by: 'approve', merged: true },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.refusedClaim).toBeUndefined()
+    expect(res.completed).toBe('SB-901')
+  })
+
+  /**
+   * ═══ И СЧЁТ ПОДХОДОВ МОНОТОНЕН: ВТОРОЙ ЕДИНИЦЫ НЕ БЫВАЕТ ═══════════════════════════════
+   *
+   * Счёт ведёт очередь, и она его забывает вместе со строкой (архив по сроку хранения), а реестр
+   * не забывает. Замерено 31.08.2026: вторая физическая попытка задачи записана ТЕМ ЖЕ номером 1.
+   * Каталог прогона зовётся `<taskId>#<attempt>` — повторённое число молча накрывает запись
+   * предыдущего подхода.
+   */
+  it('вторая физическая попытка не пишется номером 1 — реестр поднимает счёт очереди', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(line({ id: 'SB-180' })) // очередь начала счёт заново: подход 1
+    const { deps, attempts, journalled } = makeDeps({ adapter, clockObj: c, responses: runResponses('SB-180') })
+    deps.ledger.recordAttempt({ taskId: 'SB-180', attempt: 1, outcome: 'failed', failureReason: 'provider_error' })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('SB-180')
+    const ended: any = attempts.filter((a: any) => a.taskId === 'SB-180' && a.outcome === 'completed').at(-1)
+    expect(ended.attempt, 'вторая попытка легла в реестр под номером первой').toBe(2)
+    expect(journalled.some((e: any) => e.type === 'attempt.number_lifted')).toBe(true)
   })
 })
