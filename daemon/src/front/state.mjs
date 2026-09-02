@@ -117,7 +117,7 @@ import {
   failureAwaitsAPerson,
   awaitsAutoRetry,
   autoRetriesSpent,
-  AUTO_RETRY_LIMIT,
+  autoRetryLimitFor,
   turnCapOffer,
 } from '../queue/adapter.mjs'
 // ТРИАЖ СТРОКИ РЕЕСТРА — ОДНО ЧТЕНИЕ НА ОБА ПУТИ ВХОДА. Часовой скан и дверь «в работу»
@@ -3905,7 +3905,7 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machi
       // Поле ЕСТЬ, только пока повторы остались; кончились — сказать больше нечего, и молчание
       // здесь и есть «дальше решаете вы». Правило спрашивается у очереди, а не выводится заново.
       ...(awaitsAutoRetry(r)
-        ? { repeats: { attempt: autoRetriesSpent(r) + 1, of: AUTO_RETRY_LIMIT } }
+        ? { repeats: { attempt: autoRetriesSpent(r) + 1, of: autoRetryLimitFor(reason) } }
         : {}),
     }
   }

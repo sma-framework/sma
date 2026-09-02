@@ -463,6 +463,10 @@ describe('constants — taxonomy', () => {
       // why there is none. Named apart from no_journal because the two omissions ask a person
       // for different things — the note explains THIS work, the lesson feeds the next one
       'no_lesson',
+      // and the word for when the omission above is OURS: the note and the lesson are filed by
+      // INSTRUMENTS, and a crashed instrument turns both of the two words above into an
+      // accusation against a worker who did everything asked of him
+      'close_tool_broken',
       // the documentary counterpart of no_receipt: a stage whose product is prose said done
       // and left no document — the file is absent from the phase directory, or uncommitted
       'no_artifact',
@@ -527,6 +531,12 @@ describe('constants — taxonomy', () => {
       'worker_process_gone',
       'attempt_lifetime_exceeded',
       'window_exhausted',
+      // ПОПРАВКА ЧЕЛОВЕКА ОБОРВАЛА ХОД У РАБОТНИКА, КОТОРОМУ ЕЁ НЕ ВРУЧИТЬ ЖИВЬЁМ. Дверь
+      // «перебить сейчас» убивает ребёнка на всякой полосе, а возобновить сессию умеет не на
+      // всякой: у стороннего вендора у поправки остаётся одна дорога — задание следующего
+      // захода, и попытка обязана кончиться так, чтобы этот заход состоялся. Отдельно от
+      // agent_error и no_receipt: работу не сломали, её прервали — и своим же словом
+      'redirect_restart',
       // THE FOUR THE DISPATCHER DECIDES BEFORE ANY PROCESS EXISTS. They are named apart from
       // window_exhausted because that one word used to be written over all of them: a person
       // whose own spending ceiling stopped the task was told to wait for a window, and waiting

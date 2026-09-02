@@ -798,6 +798,48 @@ describe('buildTaskPrompt (item 1 — DoD contract into the worker)', () => {
     expect(prompt).toContain('Условие сдачи')
   })
 
+  /**
+   * ═══════ ДВА ЯРУСА ТЕСТОВ, СКАЗАННЫЕ СЛОВАМИ ТОМУ, КТО ИХ ГОНЯЕТ ═══════
+   *
+   * Механизм был бы построен и не позван. `test:fast` и `vitest related` существуют в
+   * package.json, но работник читает ЗАДАНИЕ, а не package.json, — и, не услышав иного,
+   * гоняет полный набор после каждой правки. Замер 02.09.2026: четверо таких работников
+   * разом — это четыре полных набора на одной машине, 0,2 ГБ свободной памяти и процессор в
+   * полке; проигрывали все четверо. Это ровно «вычислено, но не подключено», где подключение
+   * — одна фраза в брифе, поэтому фраза проверяется здесь, а не подразумевается.
+   */
+  it('бриф называет быстрый ярус и задетые файлы — то, что гоняют ПО ХОДУ работы', () => {
+    const prompt = buildTaskPrompt({ task: { id: 'R-94', title: 'правка' } })
+    expect(prompt).toContain('npm run test:fast')
+    expect(prompt).toContain('npm run test:related')
+    expect(prompt).toMatch(/по ходу работы/i)
+  })
+
+  it('бриф говорит: полный набор — ОДИН раз перед сдачей, после свода с main', () => {
+    const prompt = buildTaskPrompt({ task: { id: 'R-95', title: 'правка' } })
+    const at = prompt.indexOf('Тесты: по ходу и перед сдачей')
+    expect(at, 'раздела про ярусы в брифе нет вовсе').toBeGreaterThan(-1)
+    const section = prompt.slice(at)
+    expect(section).toMatch(/ОДИН раз/)
+    expect(section).toContain('sync-branch')
+    expect(section).toContain('npm test')
+    // и прямо сказано, чего делать НЕ надо — иначе «один раз» читается как «хотя бы раз»
+    expect(section).toMatch(/по ходу работы НЕ НУЖНО/)
+  })
+
+  /**
+   * ПОРЯДОК ЗДЕСЬ — ЧАСТЬ СМЫСЛА. Полный набор гоняется по СВЕДЁННОМУ дереву: замер по
+   * дереву, которое человеку не поедет, описывает не ту работу. Поэтому раздел про тесты
+   * стоит ПОСЛЕ раздела про сведение ветки, а не до него.
+   */
+  it('раздел про тесты стоит ПОСЛЕ свода ветки — мерить надо то дерево, которое поедет', () => {
+    const prompt = buildTaskPrompt({ task: { id: 'R-96', title: 'правка' } })
+    const merge = prompt.indexOf('Ветка сдаётся сведённой')
+    const tests = prompt.indexOf('Тесты: по ходу и перед сдачей')
+    expect(merge).toBeGreaterThan(-1)
+    expect(tests).toBeGreaterThan(merge)
+  })
+
   it('пустая строка конспекта — это отсутствие конспекта, а не пустой блок', () => {
     const prompt = buildTaskPrompt({ task: { id: 'R-92', title: 'пусто' }, continuationSummary: '   \n  ' })
     expect(prompt).not.toContain('continuation')
