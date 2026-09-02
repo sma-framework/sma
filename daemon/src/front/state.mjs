@@ -120,6 +120,10 @@ import {
   AUTO_RETRY_LIMIT,
   turnCapOffer,
 } from '../queue/adapter.mjs'
+// ТРИАЖ СТРОКИ РЕЕСТРА — ОДНО ЧТЕНИЕ НА ОБА ПУТИ ВХОДА. Часовой скан и дверь «в работу»
+// обязаны отвечать одинаково на «какой у строки приоритет», «чего она ждёт» и «почему она не
+// взята»: два читателя одного файла — это два триажа, и тише выигрывает случайный.
+import { depsOf, headlineOf, intakeVerdict, queuePriority, readLineTags } from '../intake/backlog-scan.mjs'
 import { readWaveHolds } from '../queue/wave-holds.mjs'
 // ПОТОЛОК МЕСТ читается ТЕМ ЖЕ выражением, которым его читает тик перед тем, как отказать в
 // месте: у дома идущих попыток. Своё чтение настройки здесь означало бы подпись под экраном,
@@ -1758,7 +1762,7 @@ export async function deriveCoordination({ config, readLedger, clock } = {}) {
 }
 
 /**
- * deriveBacklog({config, fsImpl}) → {rows:[{id, title, ageLine}]}.
+ * deriveBacklog({config, fsImpl}) → {rows:[{id, title, ageLine, headline, priority, notReady}]}.
  *
  * ЧИТАЕТСЯ ИЗ ДОМА ПЛАНИРОВАНИЯ, А НЕ ИЗ ДЕРЕВА КОДА. Беклог — планирование, и в доме, где
  * код и планирование разведены по репозиториям, он лежит в другом каталоге. Пока адрес был
@@ -1773,6 +1777,18 @@ export async function deriveCoordination({ config, readLedger, clock } = {}) {
  * The parser knows one SHAPE and no vocabulary (see BACKLOG_LINE_RE). A line that does not
  * carry an identifier is not a row — it is prose, a heading or a note to self, and the board
  * shows what the file marked as an entry rather than everything it happens to contain.
+ *
+ * ═══════ ПОЧЕМУ СТРОКА НЕ ВЗЯТА — ВИДНО ЗДЕСЬ, А НЕ ТОЛЬКО В ЖУРНАЛЕ ═══════
+ *
+ * Часовой скан отказывал молча: 15 из 17 карточек с весом не доезжали до очереди, слова
+ * отказа оставались в журнале демона, и человек у окна видел ровно то же, что и всегда, —
+ * строку, которая просто не поехала. Поэтому каждая строка доски несёт ТРИ вычисленных факта,
+ * и все три считаются ТЕМИ ЖЕ функциями, которыми считает скан: `headline` — заголовок,
+ * которым строка поедет в очередь; `priority` — число, на котором она там встанет; `notReady`
+ * — почему скан её не берёт, словами человека (пусто — возьмёт).
+ *
+ * `title` при этом остаётся строкой ФАЙЛА целиком, с тегами: доска показывает то, что
+ * написано, а не то, что из этого поняла машина.
  *
  * @param {{config?:object, fsImpl?:object}} [deps]
  * @returns {{rows:object[]}}
@@ -1789,8 +1805,18 @@ export function deriveBacklog({ config, fsImpl } = {}) {
     return { rows: [] }
   }
 
+  // ЧТО В РЕЕСТРЕ ОТКРЫТО — по ВСЕМУ файлу и до сборки строк: зависимость называет карточку,
+  // которая может стоять ниже по списку, и цикл, спрашивающий только уже пройденное, ответил
+  // бы «ничего не ждёт» ровно в половине случаев.
+  const lines = text.split(/\r?\n/)
+  const openIds = new Set()
+  for (const line of lines) {
+    const m = BACKLOG_LINE_RE.exec(line)
+    if (m && !(m[1] && m[1].toLowerCase() === 'x')) openIds.add(m[2])
+  }
+
   const rows = []
-  for (const line of text.split(/\r?\n/)) {
+  for (const line of lines) {
     const m = BACKLOG_LINE_RE.exec(line)
     if (!m) continue
     // A finished line is not work waiting to be done. The file's own checkbox says so, and
@@ -1798,10 +1824,25 @@ export function deriveBacklog({ config, fsImpl } = {}) {
     if (m[1] && m[1].toLowerCase() === 'x') continue
     const tail = String(m[3] ?? '').trim()
     const age = BACKLOG_AGE_TAG_RE.exec(tail)
+    const { text: words, tags } = readLineTags(tail)
+    const sp = tags.sp !== undefined ? Number.parseInt(tags.sp, 10) : NaN
+    const verdict = intakeVerdict(
+      {
+        id: m[2],
+        open: true,
+        phase: tags.phase ?? null,
+        storyPoints: Number.isFinite(sp) ? sp : null,
+        deps: depsOf(tags),
+      },
+      openIds,
+    )
     rows.push({
       id: m[2],
       title: tail.replace(/^[·—–\-:]\s*/, '').slice(0, BACKLOG_TITLE_CAP),
       ageLine: age ? age[1] : '',
+      headline: headlineOf(words).title,
+      priority: queuePriority({ size: tags.size ?? null, priority: tags.priority ?? null }),
+      notReady: verdict.reason,
     })
     if (rows.length >= BACKLOG_CAP) break
   }

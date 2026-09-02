@@ -4142,7 +4142,17 @@ async function runIntake(deps, now, result) {
         if (typeof journal === 'function') journal({ type: 'intake-skip', taskId: task && task.id, error: String((err && err.message) || err) })
       }
     }
-    result.intake = { scannedAt: now, enqueued, notReady: (scan && scan.notReady) || [] }
+    // ОТКАЗ СКАНА НАЗЫВАЕТСЯ ВСЛУХ. Отвергнутые ворота строки попадали в журнал сами (enqueue
+    // бросает и это ловится выше), а строки, не дошедшие до ворот, не попадали никуда: скан
+    // молчал о них и в журнале, и на экране. Доска читает те же слова через deriveBacklog —
+    // это вторая половина той же правды, для человека, который в журнал не смотрит.
+    const notReady = (scan && scan.notReady) || []
+    if (typeof journal === 'function') {
+      for (const line of notReady) {
+        journal({ type: 'intake-not-ready', taskId: line && line.id, reason: line && line.reason })
+      }
+    }
+    result.intake = { scannedAt: now, enqueued, notReady }
   } catch (err) {
     if (typeof journal === 'function') journal({ type: 'intake-error', error: String((err && err.message) || err) })
   }

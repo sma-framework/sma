@@ -32,6 +32,15 @@ import { Waiting } from '../../shell/Waiting'
  * on its own and the one thing the door will not guess twice. «Кузница» is deliberately absent
  * for the same reason it is absent from the new-task form: a forge task needs a draft brief the
  * queue validates separately, and it is asked for on «Агенты», where that brief exists.
+ *
+ * ═════════════════════ ОТКАЗ ЧАСОВОГО СКАНА ВИДЕН ЗДЕСЬ СЛОВАМИ ═════════════════════
+ *
+ * Кроме этой доски у реестра есть второй читатель — скан, который раз в час сам ставит готовые
+ * строки в очередь. Он отказывал МОЛЧА: слова отказа оставались в журнале демона, а человек
+ * видел строку, которая просто не поехала, и не знал, ждать ли. Демон считает причину теми же
+ * воротами, которыми скан и решает (`notReady`), и карточка её произносит: чего строке не
+ * хватает — оценки, декомпозиции или закрытия той карточки, которую она ждёт. Рядом — та
+ * первая фраза, которой строка поедет в очередь, чтобы «в работу» не было прыжком в темноту.
  */
 
 /**
@@ -87,6 +96,18 @@ function BacklogCard({ row }: { row: BacklogRow }) {
         <span className="min-w-0 flex-1 text-[12.5px] leading-[1.5] text-tx">{row.title}</span>
       </div>
       {row.ageLine ? <span className="text-[11px] leading-[1.5] text-tx3">{row.ageLine}</span> : null}
+
+      {/* Первая фраза — заголовок будущей строки очереди. Показывается только когда строка
+          файла длиннее его: у короткой строки это то же самое, и повтор был бы шумом. */}
+      {row.headline && row.headline !== row.title ? (
+        <span className="text-[11px] leading-[1.5] text-tx3">В очередь поедет: {row.headline}</span>
+      ) : null}
+
+      {row.notReady ? (
+        <span className="text-[11.5px] leading-[1.5] text-warn-tx">
+          Сам скан её не возьмёт: {row.notReady}
+        </span>
+      ) : null}
 
       {queued ? (
         <div className="flex flex-wrap items-center gap-2">
