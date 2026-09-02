@@ -1862,6 +1862,18 @@ export interface StockTeamCard {
   origin: StockOrigin
   forked: boolean
   stockUpdate: StockUpdate
+  /**
+   * The role this definition holds, normalized the way the ROUTER normalizes it — `sma-planner`
+   * and `planner` are one role, and the window never spells it a second way.
+   */
+  role: string
+  /**
+   * Does the conveyor call this role by itself, without anyone naming it in the task? True for
+   * the executors and the planner. It arrives DECIDED: the same answer decides what the
+   * «включить тех, кто нужен сейчас» switch acts on, and a second opinion computed here is how
+   * a button and its own caption come to mean different sets.
+   */
+  pipeline: boolean
   /** A definition that could not be read, or a twin that was shadowed — named, not hidden. */
   problem: string | null
 }
@@ -2401,8 +2413,11 @@ export interface ToggleResult {
   agent?: { id: string; enabled: boolean }
   skill?: { id: string; assignedTo: string[] }
   mcp?: { id: string; enabled: boolean }
-  /** The reserved «whole shipped team» branch: how many roster entries the switch touched. */
-  stockTeam?: { enabled: boolean; agents: number }
+  /**
+   * The reserved-target branch: how many roster entries the switch touched, and WHICH set it
+   * was aimed at — the whole shipped team, or only the roles the conveyor calls by itself.
+   */
+  stockTeam?: { enabled: boolean; scope?: 'all' | 'pipeline'; agents: number }
 }
 
 export interface OkResult {
