@@ -340,11 +340,29 @@ export function installRefusal(opts = {}) {
   }
 }
 
+/** Короткие флаги одной части команды: `-xfd` читается как `x`,`f`,`d`. */
+function shortFlagsOf(parts) {
+  const set = new Set()
+  for (const raw of parts) {
+    const w = unquote(raw)
+    if (!w.startsWith('-') || w.startsWith('--')) continue
+    for (const ch of w.slice(1)) set.add(ch)
+  }
+  return set
+}
+
 /**
  * copyRemovalTargetsOf({command, cwd}) -> [абсолютные пути] — какие каталоги эта команда
- * собирается снести целиком. Разбираются две формы, которыми копию убирают руками:
- * `git worktree remove [флаги] <путь>` и рекурсивное удаление (`rm -rf <путь>`,
- * `Remove-Item <путь> -Recurse`). Всё остальное сюда не относится.
+ * собирается снести целиком. Разбираются формы, которыми копию убирают руками:
+ * `git worktree remove [флаги] <путь>`, рекурсивное удаление (`rm -rf <путь>`,
+ * `Remove-Item <путь> -Recurse`, `rmdir /s <путь>`) и `git clean -xfd`.
+ *
+ * ПОЧЕМУ ЗДЕСЬ ОКАЗАЛСЯ `git clean`. Это ТА ЖЕ РУКА, что и `git worktree remove`: внутри
+ * git обе идут через одну рекурсивную уборку каталога, ту самую, которая 31.08.2026 прошла
+ * ПО живой ссылке и опустошила каталог-цель в основном дереве. Разница только в том, как
+ * её позвали. Опасна не всякая уборка, а `-d` (входит в каталоги) вместе с `-x`/`-X`
+ * (берёт игнорируемое): `node_modules` игнорируется git, и без `-x` до него не доходят.
+ * Отказ всё равно выносится не по имени команды, а по факту — есть ли ЖИВАЯ ссылка в цели.
  * @param {{command:string, cwd:string}} opts
  * @returns {string[]}
  */
@@ -368,7 +386,27 @@ export function copyRemovalTargetsOf(opts = {}) {
     if (head === 'git') {
       const wt = parts.findIndex((w) => unquote(w) === 'worktree')
       const rm = parts.findIndex((w) => unquote(w) === 'remove')
-      if (wt > 0 && rm === wt + 1) for (const w of parts.slice(rm + 1)) push(w)
+      if (wt > 0 && rm === wt + 1) {
+        for (const w of parts.slice(rm + 1)) push(w)
+        continue
+      }
+      const cl = parts.findIndex((w) => unquote(w) === 'clean')
+      if (cl === 1) {
+        const tail = parts.slice(cl + 1)
+        const flags = shortFlagsOf(tail)
+        if (!flags.has('d') || !(flags.has('x') || flags.has('X'))) continue
+        // Сухой прогон НИЧЕГО не удаляет. Отказ на нём — ложная тревога, а страж, который
+        // останавливает «покажи, что снесётся», выключат вместе с настоящими отказами.
+        if (flags.has('n') || tail.some((w) => unquote(w) === '--dry-run')) continue
+        const paths = tail.filter((w) => !unquote(w).startsWith('-'))
+        // Без путей уборка целится в САМ рабочий каталог — это и есть копия.
+        if (paths.length) for (const w of paths) push(w)
+        else push('.')
+      }
+      continue
+    }
+    if (/^(rmdir|rd)$/i.test(head) && parts.slice(1).some((w) => /^\/s$/i.test(unquote(w)))) {
+      for (const w of parts.slice(1)) if (!unquote(w).startsWith('/')) push(w)
       continue
     }
     if (head === 'rm' && parts.slice(1).some((w) => /^-[a-z]*r/i.test(unquote(w)))) {

@@ -12185,6 +12185,13 @@ async function cmdShipLane({ positionals, flags, dirs }) {
  * reason in words and the repository is left exactly as it was. `pushLock` is part of the
  * answer either way, so the record of a run can state what the copy actually stood under.
  *
+ * WHO EMPTIED THE STORE: `store-log` reads the dependency store's OWN watch — the journal
+ * `.sma/deps/store.jsonl` kept in the tree that OWNS the store, not in the copy that looked.
+ * Every gated Bash call takes a census of `node_modules`/`node_modules/.pnpm`; a census that
+ * disagrees with the previous one appends one line naming what went, who last saw the store
+ * intact and who first saw it short. The store is shared by reference, so the hand that
+ * empties it is invisible in its own session — this is the only place that sees the interval.
+ *
  * REMOVING A COPY THAT HAS LINKS: `remove` unhooks every link inside the copy BEFORE
  * git ever sees it (deleting the link itself leaves the target alone), because on
  * Windows git follows a junction and empties the main tree's target directory instead
@@ -12333,6 +12340,30 @@ async function cmdWorktree({ positionals, flags, dirs }) {
       process.stderr.write(`SMA worktree: отказ: ${res.message}\n`)
     }
     return res.ok ? 0 : 1
+  }
+
+  if (sub === 'store-log') {
+    // ЖУРНАЛ САМОГО СКЛАДА, А НЕ СЕССИИ. Копии подключают зависимости ссылкой, поэтому
+    // опустошает склад тот, кого в своей сессии не видно: за двое суток 01.09.2026 он
+    // опустел четырежды, и ни один посессионный журнал не отвечал на вопрос «что шло в ту
+    // минуту». Вахта пишет в дерево-ВЛАДЕЛЕЦ склада — сюда и смотрим, из копии тоже.
+    const sj = await import('./lib/store-journal.mjs')
+    const owner = sj.storeOwnerOf({ cwd: process.cwd() })
+    const root = owner ? owner.root : mainRoot
+    const losses = sj.storeLosses({ root })
+    const all = sj.readStoreJournal({ root })
+    if (wantsJson(flags)) {
+      printJson({ owner: root, viaLink: Boolean(owner && owner.viaLink), changes: all.entries.length, losses })
+      return 0
+    }
+    process.stdout.write(`SMA store-log: склад ${root}${owner && owner.viaLink ? ' (подключён ссылкой)' : ''}\n`)
+    if (!all.entries.length) {
+      process.stdout.write('  журнал пуст — либо вахта ещё не видела ни одного расхождения, либо склад цел\n')
+      return 0
+    }
+    process.stdout.write(`  расхождений записано: ${all.entries.length}, из них с ПРОПАЖЕЙ: ${losses.length}\n`)
+    for (const e of losses.slice(-20)) process.stdout.write(`  • ${sj.blameSentence(e)}\n`)
+    return 0
   }
 
   if (sub === 'sibling') {
@@ -13043,7 +13074,7 @@ const HANDLERS = {
   statusline: cmdStatusline, // native statusline segment (render|--wrap|install|uninstall|set-webhook|--stat)
   pulse: cmdPulse, // hook-facing attention pulse (working|waiting-for-human); idle is derived
   manifest: cmdManifest, // PR evidence passport reader (--range|--json|--md|--stat)
-  worktree: cmdWorktree, // per-terminal worktree isolation (provision|list|remove|sibling; --selftest|--selftest-sibling)
+  worktree: cmdWorktree, // per-terminal worktree isolation (provision|list|remove|sibling|store-log; --selftest|--selftest-sibling)
   merge: cmdMerge, // serialized merge ritual (merge <branch> local-only; --selftest|--selftest-enforce)
   'sync-branch': cmdSyncBranch, // the OTHER direction: bring the trunk INTO this copy's branch before handing in (--trunk|--check|--json); the worker's door, since `git merge` is denied to it by the envelope
   explain: cmdExplain, // in-product explainers ([topic]|--list|--coverage [--count]|--lang en|ru|--json)
