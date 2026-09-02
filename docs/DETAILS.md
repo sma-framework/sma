@@ -1192,12 +1192,42 @@ happening silently. What a confirmed finding earns is a receipt of its own,
 word, never dressed up as «Ответ без правки кода», because the two send you to different places.
 
 **A test must speak about the product, not about itself.** A test file **added by this same
-attempt** is refused as `self_referential_test` when all three hold: it imports no module of the
-tree (only packages and builtins), it names at least one path, and **every** path it names was
-added by this same work. The first condition is what protects ordinary work — a new module with
-its own test imports what it tests, and testing behaviour is a conversation about the product
-whatever the diff calls the file. The word is kept apart from `tests_red` on purpose: those tests
-are green, and what needs fixing is what they are **about**.
+attempt** is refused as `self_referential_test` when all three hold: it holds onto no part of the
+tree, it names at least one path, and **every** path it names was added by this same work. The
+first condition is what protects ordinary work — a new module with its own test imports what it
+tests, and testing behaviour is a conversation about the product whatever the diff calls the file.
+The word is kept apart from `tests_red` on purpose: those tests are green, and what needs fixing
+is what they are **about**.
+
+**Holding on has three shapes, and any one is enough.** Importing a module of the tree; **running
+a file of the tree as a process** (`spawn`/`spawnSync`/`execFile`/`fork`/…) and reading what it
+printed; or naming a path that exists in the copy and was not added by this work. The second was
+missing until 02.09.2026 and it cost an honest attempt: a new test started the real product script
+as a child process with a stand-in failing driver and read its stdout — a wire test of the highest
+grade, and the recogniser, which looked only at `import`s, refused a finished green branch.
+
+**The launch is what decides where the target is looked for.** The path to a spawned script is
+almost never written in one literal (`join(ROOT, 'scripts', 'sma', 'ui-drive.mjs')`), so a bare
+file name is tried against the directory of the test that named it and its ancestors — and, **for a
+launch only**, reassembled from the literal pieces standing next to it. That reassembly is a guess,
+so exactly two things confirm it: the reassembled path **exists in the copy**, and it sits inside
+the directories where the product's runnable code lives (`bin`, `daemon`, `scripts`, `sma-core`,
+`supervisor`, `tools`). Take away the launch, the runnable extension or the anchor, and the same
+file is a conversation about itself again — each of the three changes a verdict, and each has its
+own test.
+
+**The question is put to the attempt's tests together, not to each new file alone.** Every test
+file in the diff **that is still in the copy** is asked, edited ones included: an attempt that edits
+an existing test of the product is speaking about what was there before it, so it is not speaking
+only about itself. One test holding onto the product clears the whole attempt — but a test the work
+**deleted or moved** is no voice at all (a deletion says the file is gone, a rename says it
+travelled, and neither says the work re-examined any behaviour), and an unreadable file exonerates
+nobody: the accusation always rests on a test that WAS read. That last rule is not decoration —
+while silence cleared an attempt, a self-referential note plus any test deletion walked through the
+gate. **And the refusal is said in words**: it names the file, the paths it is about, why that makes
+it self-referential, and the way out — import what you are checking, or run a file of the product as
+a process and check its output; and if the task has no subject, close it in words with evidence
+rather than with a test.
 
 **A new top-level directory is a question, not a side effect.** What the product is made of
 travels into the README, the packaging and the habits of every worker after this one, and no task
