@@ -3,6 +3,7 @@ import { useApprove, useCancelTask, useReturnTask, useStateQuery } from '../../a
 import { openScreen } from '../../shell/navigation'
 import type { BatchRow, DoneRow, QueueRow, WorkerRow } from '../../api/types'
 import { DayFeed } from './DayFeed'
+import { ofProject, orphansOf } from './orphans'
 import type { OfferAct } from './offer'
 import { KpiStrip } from './KpiStrip'
 import { TaskPanel } from '../../shell/TaskPanel'
@@ -137,9 +138,10 @@ export function Screen() {
   // window already has — never a narrower question asked of the daemon.
   //
   // Строка без проекта (`null` — «неизвестен») этим ситом не проходит: этот экран о сегодняшнем
-  // дне ОДНОГО проекта. Такая работа не пропадает — её показывает группой экран «Задачи».
-  const mine = <T extends { project?: string | null }>(rows: T[]): T[] =>
-    activeProject ? rows.filter((r) => r.project === activeProject) : rows
+  // дне ОДНОГО проекта. Такая работа не пропадает — её показывает группой экран «Задачи», и
+  // экран говорит о ней числом (см. `orphanFinished` ниже и `orphans.ts` рядом): молча
+  // отброшенная готовая работа — это ровно то, из-за чего флагманы смены не были видны никем.
+  const mine = <T extends { project?: string | null }>(rows: T[]): T[] => ofProject(rows, activeProject)
 
   const queue: QueueRow[] = useMemo(() => mine(data?.queue ?? []), [data, activeProject])
   const awaiting: QueueRow[] = useMemo(() => mine(data?.awaiting ?? []), [data, activeProject])
@@ -168,6 +170,13 @@ export function Screen() {
   const waiting = [...queue].sort((a, b) => a.position - b.position)
   const failed = done.filter((r) => r.failed)
   const finished = done.filter((r) => !r.failed)
+  // СКОЛЬКО ГОТОВОГО СИТО ВЫБРОСИЛО ЗА ОТСУТСТВИЕ ВЛАДЕЛЬЦА. Считается по ТОМУ ЖЕ списку, что
+  // сито и просеивало, — иначе число разошлось бы с тем, что человек видит под ним. Строка
+  // чужого проекта сюда не попадает: она спрятана по делу и видна на своём месте.
+  const orphanFinished = useMemo(
+    () => orphansOf(data?.done ?? [], activeProject).filter((r) => !r.failed).length,
+    [data, activeProject],
+  )
 
   /**
    * ОТВЕТИЛО ЛИ ЧТЕНИЕ ХОТЬ РАЗ — и до этого мгновения экран не подводит итогов ночи.
@@ -223,6 +232,7 @@ export function Screen() {
             stalled={stalledBatches}
             failed={failed}
             finished={finished}
+            orphanFinished={orphanFinished}
             waiting={waiting}
             selectedId={selectedId}
             onOpen={setSelectedId}
