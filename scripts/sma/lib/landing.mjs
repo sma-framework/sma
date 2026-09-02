@@ -97,7 +97,6 @@ export const RECEIPT_COVERS_NOTE =
 export const NO_SUITE_NOTE = 'в этом дереве нет полного набора — прогонять было нечего'
 export const NO_SUITE_RUNNER_NOTE = 'сьютер не нашёлся рядом с этой установкой — полного прогона не было'
 export const TIMED_OUT_NOTE = `полный прогон не уложился в ${Math.round(FULL_SUITE_TIMEOUT_MS / 60000)} мин — прогона не было`
-export const OUTPUT_OVERFLOW_NOTE = 'вывод полного прогона перерос буфер — ребёнок убит, приговора нет'
 
 /** Настоящий git: execFileSync с МАССИВОМ аргументов (никакой подстановки через оболочку). */
 export function defaultExecGit(args, opts = {}) {
