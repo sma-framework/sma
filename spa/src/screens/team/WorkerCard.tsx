@@ -162,6 +162,27 @@ export function WorkerCard({
         ) : (
           <span className="text-tx2">Задачи в работе нет.</span>
         )}
+        {/* ВТОРАЯ ЖИВАЯ СЕССИЯ У ОДНОГО РАБОТНИКА — правило продукта говорит, что её быть не
+            должно, поэтому список рисуется только когда она есть, и рисуется ТРЕВОГОЙ. Карточка
+            называла первую из двух попыток и молчала о второй: доска была единственным местом,
+            где двойной захват не виден, и это стоило дня разбирательства. */}
+        {worker.alsoRunning && worker.alsoRunning.length > 0 ? (
+          <div className="mt-2 rounded-[9px] border border-err-bd bg-err-s px-2.5 py-1.5 text-[11.5px] text-err-tx">
+            <div className="mb-1 font-semibold">
+              Двойной захват: одновременно ещё {worker.alsoRunning.length}
+            </div>
+            {worker.alsoRunning.map((r) => (
+              <button
+                key={r.taskId}
+                type="button"
+                onClick={() => onOpenTask(r.taskId)}
+                className="block truncate text-left hover:underline"
+              >
+                {r.taskTitle ?? r.taskId}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       <div className="flex items-start gap-4">

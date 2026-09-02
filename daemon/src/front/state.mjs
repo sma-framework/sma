@@ -3259,7 +3259,15 @@ export async function deriveState(deps = {}) {
     const bar = windowBar(win)
     const open = isOpen(bar, () => now)
 
-    const active = claimedRows.find((r) => r.workerId === w.id) || null
+    // ВСЁ, ЧТО ЭТОТ РАБОТНИК ДЕРЖИТ, А НЕ ПЕРВОЕ ПОПАВШЕЕСЯ. Здесь стоял `find`, и он был
+    // молчаливым согласием с правилом «один работник = одна живая сессия»: пока правило
+    // держалось, разницы не было, а когда оно сломалось — 02.09.2026 один работник вёл две
+    // попытки — доска показала ОДНУ и стала единственным местом, где нарушение не видно.
+    // Экран не чинит инвариант (его держит захват), но обязан его НАЗЫВАТЬ: вторая строка едет
+    // на карточку отдельным списком, и её пустота — это измерение, а не умолчание.
+    const held = claimedRows.filter((r) => r.workerId === w.id)
+    const active = held[0] || null
+    const alsoHeld = held.slice(1)
     // The sign of life is the RENEWAL clock: «событие N секунд назад» is a statement about the
     // last time the worker said it lives, not about when it started. The two older names stay as
     // the fallback for a reading that carries only one of them.
@@ -3307,6 +3315,20 @@ export async function deriveState(deps = {}) {
             // and delivered to nobody. Null while the queue cannot say; the renewal clock is
             // already stated beside it as pulseAgeSec.
             taskClaimedAt: active.claimedAt ?? null,
+          }
+        : {}),
+      // ВТОРАЯ И ДАЛЬНЕЙШИЕ ПОПЫТКИ ОДНОГО РАБОТНИКА — поле появляется ТОЛЬКО когда инвариант
+      // нарушен, и его присутствие само по себе есть жалоба. Три факта на строку — те же, что
+      // экран уже читает у первой: без имени и проекта карточка печатала бы голый номер
+      // маршрута там, где человек ждёт названия работы.
+      ...(alsoHeld.length > 0
+        ? {
+            alsoRunning: alsoHeld.map((r) => ({
+              taskId: r.id,
+              taskTitle: r.title ?? null,
+              project: projectOf(r),
+              taskClaimedAt: r.claimedAt ?? null,
+            })),
           }
         : {}),
       window: bar,
