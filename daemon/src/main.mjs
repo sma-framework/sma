@@ -1443,7 +1443,10 @@ export function createDaemon(o = {}) {
         // отвечает тот же смок, что отвечал всегда.
         verbRunner: async (m) => {
           const at = m.cwd ?? repoDir
-          const landing = createLanding({ cwd: at, execGit, fallbackRunner: mergeTestRunner })
+          // ДОМ ДАННЫХ — РАДИ КРАСНОГО ПРОГОНА. Отчёт отказанной посадки ложится в
+          // `<dataDir>/landing/` и переживает отказ: без него дверь отсылала человека к
+          // выводу прогона, которого после отката слияния не было уже нигде.
+          const landing = createLanding({ cwd: at, execGit, fallbackRunner: mergeTestRunner, dataDir })
           const merged = await runMerge({ ...m, execGit, runTests: landing.runTests })
           // Штампуют только СОСТОЯВШЕЕСЯ слияние: отказ не двигал вершины, а «сводить было
           // нечего» не приносило в дерево ни одной строки, которую стоило бы перемерять.
