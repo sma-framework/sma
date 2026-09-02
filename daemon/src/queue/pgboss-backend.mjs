@@ -966,6 +966,48 @@ export function createPgBossQueue({
   }
 
   /**
+   * releaseClaim(taskId, {attemptToken}) — СТРОКА ВОЗВРАЩАЕТСЯ В ОЧЕРЕДЬ, И ПОДХОД НЕ СЧИТАЕТСЯ.
+   *
+   * ЗАЧЕМ ОТДЕЛЬНАЯ ДВЕРЬ, КОГДА РЯДОМ ЕСТЬ СРЫВ И ПЕРЕВЫДАЧА. Обе они СТОЯТ ПОДХОДА: `fail`
+   * отдаёт строку библиотеке, та поднимает `retry_count`, и следующий захват честно называется
+   * второй попыткой. Но случай, ради которого дверь заведена, попытки не прожил вовсе: тик взял
+   * строку, а маршрут ответил, что названный ей работник уже ведёт другую. Работа не виновата и
+   * платить за занятость соседа не должна.
+   *
+   * ПРАВКОЙ СОСТОЯНИЯ, А НЕ ПОСТАНОВКОЙ ЗАНОВО — и это ровно ОБРАТНОЕ решение тому, что принял
+   * `reissue` ниже, поэтому оно названо здесь. Постановка заново прошла бы через `enqueue`,
+   * который минтит номер подхода сам и поднял бы его на единицу: дверь, обязанная НЕ считать
+   * подход, посчитала бы его первым же вызовом. Оператор пишет ровно то состояние, из которого
+   * строку и взяли, и не трогает ни `retry_count`, ни `start_after`, ни отметку постановки —
+   * то есть возвращает её тем же, чем она была секунду назад.
+   *
+   * ОТМЕТКИ ЗАХВАТА СНИМАЮТСЯ ВСЕ ТРИ (жетон, время захвата, счёт выдач на захвате) вместе с
+   * именем работника: строка, оставшаяся с ними, читалась бы экраном как «кто-то её ведёт», а
+   * `attemptNumberOf` считал бы её подход по чужой отметке.
+   *
+   * ЖЕТОН СПРАШИВАЕТСЯ, как и у всех дверей, закрывающих чужую попытку: вернуть в очередь
+   * строку, которую сейчас ведёт другой работник, — значит отнять у него работу.
+   *
+   * @param {string} taskId
+   * @param {{attemptToken?:string}} [opts]
+   * @returns {Promise<boolean>} true, когда взятая строка найдена и возвращена
+   */
+  async function releaseClaim(taskId, { attemptToken } = {}) {
+    if (typeof taskId !== 'string' || taskId === '') return false
+    const job = await resolveActiveJob(taskId)
+    if (!job) return false
+    if (attemptTokenIsStale(tokenOfJob(job), attemptToken)) return false
+    await runSql(
+      `UPDATE pgboss.job
+          SET state = 'created', started_on = NULL,
+              data = data - 'workerId' - 'attemptToken' - 'claimedAt' - 'claimedAtRetry'
+        WHERE id = $1 AND state = 'active'`,
+      [job.id],
+    )
+    return true
+  }
+
+  /**
    * resolveBatch(batchId, {skip, cancel}) — the owner's word about a stopped assembly, written
    * onto the REQUEST row and made to take effect. Returns false when no such request exists.
    *
@@ -1739,6 +1781,7 @@ export function createPgBossQueue({
     claimNext,
     touch,
     assignWorker,
+    releaseClaim,
     resolveBatch,
     setWords,
     complete,

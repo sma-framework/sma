@@ -121,7 +121,7 @@ import { reconcileAttempts } from './queue/reconcile.mjs'
 import { sweepBugJournal, causeOf } from './queue/bug-journal.mjs'
 // Потолок мест читает ДОМ ИДУЩИХ ПОПЫТОК, а не тик: одно чтение настройки на весь демон —
 // его же спрашивает дверь состояния, чтобы назвать человеку «занято X из N».
-import { concurrencyCap } from './queue/in-flight.mjs'
+import { concurrencyCap, seatCeiling, confirmProcessGone } from './queue/in-flight.mjs'
 // ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
 // belongs to the module that owns the row's key list, and a second copy of the number here
 // would be a second ceiling waiting to drift away from the first.
@@ -476,6 +476,68 @@ function turnBudgetFor(deps, config, task) {
   }
   const burnedCaps = burnedTurnCapsOf(rows)
   return { ...taskTurnCap({ base: pipelineMaxTurns(config), task, burnedCaps }), burnedCaps }
+}
+
+/**
+ * ЧТО ЗАДАЧА ГОВОРИТ О СЕБЕ — поля, которые человек вправе дописать ПОСЛЕ постановки и
+ * которые видны в строке очереди. Обещание (`acceptance`) решает объявленный размер работы, а
+ * значит и её потолок ходов; описание едет с ним заодно, потому что правится тем же нажатием.
+ *
+ * СНИМКА КОНТЕКСТА ЗДЕСЬ НЕТ, И ЭТО НЕ ЗАБЫВЧИВОСТЬ. Строка очереди его НЕ НЕСЁТ нарочно
+ * (`taskContextOf` над строкой списка отвечает пустотой — так очередь и написана): снимок
+ * едет на ВЫДАЧЕ, а не в списке. Дописать его в поле, которого в источнике нет, значило бы
+ * завести провод, по которому никогда ничего не приедет. Правка снимка действует со следующей
+ * выдачи, как о том и сказано у гейта слов.
+ */
+const PROMISE_FIELDS = Object.freeze(['description', 'acceptance'])
+
+/**
+ * refreshPromise(deps, task) → какие из полей обещания ПРИЕХАЛИ ПОСЛЕ ЗАХВАТА. Мутирует `task`.
+ *
+ * ЗАЧЕМ. Строка становится захватываемой в тот миг, когда она записана, а слова к ней человек
+ * (или окно) дописывает следующим запросом — секундой позже. Между этими двумя мигами тик
+ * успевает её взять, и дальше вся попытка живёт по объекту, который очередь отдала при
+ * захвате: работа с уже написанным обещанием уходит в процесс объявленной ПУСТОЙ, то есть
+ * мелкой, и получает базовый потолок вместо тройного. Замерено 02.09.2026: соседние куски
+ * одной сборки, взятые после прихода слов, получили втрое больше ходов на ту же работу, а
+ * взятый раньше — сгорел на ритуале сдачи, перешагнув потолок на один ход.
+ *
+ * СЛОВА ДОГОНЯЮТ, ПОКА ПОПЫТКА НЕ СТАРТОВАЛА. Спрашивается перед самым счётом потолка: всё,
+ * что дописано к этому мигу, попадает и в решение «есть ли что дать», и в число на командной
+ * строке (сборщик аргументов считает его от ЭТОГО же объекта). Окно между этим чтением и
+ * запуском процесса — провизия рабочей копии — остаётся неприкрытым, и это названо вслух: там
+ * счёт уже сделан, а второе чтение стоило бы второго списка на каждом проходе.
+ *
+ * ЧЕГО ЗДЕСЬ НАРОЧНО НЕТ: проекта. Он тоже правится той же дверью, но им уже провизится копия
+ * и по нему выбрано дерево — переставить его на полпути значило бы увести попытку в другое
+ * дерево посреди захода. Перестановка проекта действует со СЛЕДУЮЩЕЙ выдачи, как и было. Про
+ * снимок контекста — там же, у `PROMISE_FIELDS`: его в строке списка нет вовсе.
+ *
+ * FAIL-OPEN: нечитаемая очередь и пропавшая строка означают «ничего не приехало», а не срыв
+ * попытки. Сторож, роняющий работу из-за сбоя чтения, стоил бы дороже опоздавшего обещания.
+ *
+ * @returns {string[]} имена полей, которые изменились (пусто — ничего не приехало)
+ */
+async function refreshPromise(deps, task) {
+  const adapter = deps.adapter
+  let rows = []
+  try {
+    rows = (adapter && typeof adapter.list === 'function' && (await adapter.list({}))) || []
+  } catch {
+    return []
+  }
+  const fresh = Array.isArray(rows) ? rows.find((r) => r && r.id === task.id) : null
+  if (!fresh) return []
+  const moved = []
+  for (const field of PROMISE_FIELDS) {
+    if (fresh[field] === undefined) continue
+    // Сравнение по СЕРИАЛИЗАЦИИ, потому что обещание бывает и строкой, и списком строк:
+    // сравнение ссылок объявляло бы движением всякий список, приехавший из хранилища заново.
+    if (JSON.stringify(fresh[field] ?? null) === JSON.stringify(task[field] ?? null)) continue
+    task[field] = fresh[field]
+    moved.push(field)
+  }
+  return moved
 }
 
 /**
@@ -2070,7 +2132,17 @@ function recordWindowReading(deps, subscription, event) {
   if (!accountName || !dataDir) return
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   try {
-    markWindowObserved({ dataDir, accountName, observation: event, clock, fsImpl: deps.fsImpl })
+    // ONE FRAME IS ONE READING OF THE WHOLE SUBSCRIPTION, AND BOTH WINDOWS ARE WRITTEN FROM IT.
+    // Only the window the frame NAMED used to be filed, and the vendor names the weekly one
+    // about once a day — so the board showed a week measured nineteen hours ago beside a
+    // five-hour window measured a minute ago, and a person reading it asked why the two
+    // disagreed with his own terminal. The parser now hands every window the frame spoke about
+    // (`windows`); a frame that carried none falls back to the frame itself, which is exactly
+    // what every frame from before this field existed looks like.
+    const readings = Array.isArray(event.windows) && event.windows.length > 0 ? event.windows : [event]
+    for (const observation of readings) {
+      markWindowObserved({ dataDir, accountName, observation, clock, fsImpl: deps.fsImpl })
+    }
     // A WINDOW THE VENDOR SAYS IS NO LONGER ALLOWING WORK IS A CLOSE, AND A CLOSE OUTLIVES
     // EVERY OTHER FACT ON THIS LINE. This used to fire on `utilization >= 1` — a fraction the
     // stream has never once carried, which arrives here as 0 — so the condition was false on
@@ -4523,36 +4595,53 @@ export async function tick(deps = {}) {
       result.idle = true
       return result
     }
-    // (3a) ПОТОЛОК — ДО ЗАХВАТА, А НЕ ПОСЛЕ. Спросить очередь и потом отказаться от строки
-    // означало бы выдать задачу и тут же уронить её обратно: в долговременной очереди выборка
-    // И ЕСТЬ захват. Поэтому проход при полном доме — простой, и он назван вслух: пустая доска
-    // при работающих процессах ровно так и выглядела 12.08, и понять это было нечем.
+    // (3a) ДВА ОГРАНИЧИТЕЛЯ ЗАХВАТА, И ПОТОЛОК — ТОЛЬКО ОДИН ИЗ НИХ. Спросить очередь и потом
+    // отказаться от строки означало бы выдать задачу и тут же уронить её обратно: в
+    // долговременной очереди выборка И ЕСТЬ захват. Поэтому проход при полном доме — простой,
+    // и он назван вслух: пустая доска при работающих процессах ровно так и выглядела 12.08, и
+    // понять это было нечем.
+    //
+    // ВТОРОЙ ОГРАНИЧИТЕЛЬ — СВОБОДНОЕ МЕСТО У РАБОТНИКА, и он появился здесь потому, что одного
+    // потолка не хватало по устройству. Работников трое, потолок четыре — четвёртая строка
+    // бралась при всех занятых и уезжала ЗАНЯТОМУ: маршрут отвечал «работник занят», а тик
+    // отступал и перерешал маршрут без фильтра занятости. Замерено 02.09.2026: один работник
+    // держал две живые сессии, доска показывала одну. Теперь мест не больше, чем работников
+    // (`seatCeiling`), и число это читается ТАМ ЖЕ, где живёт потолок, — второе написание
+    // разошлось бы с первым молча.
     const inFlight = deps.inFlight
     const cap = concurrencyCap(config)
+    const seats = seatCeiling(config)
     if (inFlight && typeof inFlight.reserve === 'function') {
       // Место берётся ОДНИМ синхронным шагом и ДО захвата. Иначе два проходящих внахлёст тика
       // оба увидели бы пустой дом (захват — это await), оба прошли бы потолок и оба взяли бы
       // по задаче — ровно то, ради чего потолок и заводится.
-      seat = inFlight.reserve(cap)
+      //
+      // НУЛЬ МЕСТ — ЭТО ОТКАЗ, А НЕ УМОЛЧАНИЕ. Дом при нуле выдал бы место по своему полу в
+      // единицу, поэтому случай назван здесь и до него: работников не осталось ни одного, брать
+      // работу некому, и это простой, а не работа.
+      seat = seats >= 1 ? inFlight.reserve(seats) : null
       if (!seat) {
         writeLog(deps, {
           type: 'tick.concurrency_cap',
-          detail: `идущих попыток ${inFlight.size()} при потолке ${cap} — задача в этом проходе не берётся`,
+          detail:
+            `идущих попыток ${inFlight.size()} при потолке ${cap} и ${seats} местах работников — ` +
+            'задача в этом проходе не берётся',
         })
         // …И ТО ЖЕ САМОЕ — ЧЕЛОВЕКУ, В ЖИВОЙ ПОТОК. Отказ в месте жил только в журнале демона,
         // то есть был виден лишь тому, кто уже пошёл его искать. Снаружи это выглядело как
         // «доска пустая, работники свободны, а ничего не едет» — ровно та немота, из-за которой
-        // ошибку с потолком не могли уличить весь день. Кадр несёт два числа и ни слова больше.
-        ringLive(deps, { event: 'seats.full', inFlight: inFlight.size(), cap })
+        // ошибку с потолком не могли уличить весь день. Кадр несёт объявленный потолок и число
+        // мест, которое из него вышло после второго ограничителя.
+        ringLive(deps, { event: 'seats.full', inFlight: inFlight.size(), cap, seats })
         result.idle = true
-        result.concurrencyCap = { inFlight: inFlight.size(), cap }
+        result.concurrencyCap = { inFlight: inFlight.size(), cap, seats }
         return result
       }
     }
-    // …И НИ ОДНОГО СВОБОДНОГО МЕСТА — тоже причина не брать. Проверяется ЗДЕСЬ, до захвата, а
-    // не в маршрутизаторе: в долговременной очереди выборка И ЕСТЬ захват, вернуть строку
-    // назад нечем, а провалить её значило бы сжечь попытку из отпущенной границы за то, что
-    // работа просто идёт. Маршрутизатор своим фильтром занятости остаётся вторым рубежом.
+    // …И ТОТ ЖЕ ВОПРОС ПОИМЁННО. Счёт мест выше держит границу числом; этот рубеж спрашивает
+    // ИМЕНА — тот же источник, из которого маршрутизатор берёт свой фильтр занятости. Он остаётся
+    // на случай, когда дом мест не раздаёт вовсе (шов собран без него), и говорит человеку своим
+    // словом: не «мест нет», а «все работники уже ведут попытку».
     if (inFlight && typeof inFlight.workers === 'function') {
       const busyNow = inFlight.workers()
       const enabled = (Array.isArray(config.workers) ? config.workers : []).filter((w) => w && w.enabled !== false)
@@ -4698,18 +4787,48 @@ export async function tick(deps = {}) {
         // instead of stacking a second one on it. Computed, until now, by nobody.
         busyWorkers: inFlight && typeof inFlight.workers === 'function' ? inFlight.workers() : null,
       }
-      let route = deps.routing.resolveRoute(task, routeDeps)
-      // ГОНКА МЕЖДУ ПРОВЕРКОЙ И МАРШРУТОМ. Место проверялось до захвата; пока задачу забирали,
-      // соседний проход мог занять последнего свободного. Задача УЖЕ захвачена, вернуть её
-      // нечем — и умирать ей за то, что работа идёт, нельзя. Поэтому фильтр занятости здесь
-      // отступает: он предпочтение, а регулятор стоит на захвате.
+      const route = deps.routing.resolveRoute(task, routeDeps)
+      // ═══ ГОНКА МЕЖДУ ПРОВЕРКОЙ И МАРШРУТОМ — СТРОКА ВОЗВРАЩАЕТСЯ, А НЕ ЕДЕТ ЗАНЯТОМУ ═══════
+      //
+      // Свободное место спрашивается до захвата, но пул маршрута у́же общего: кусок сборки
+      // закреплён за ОДНИМ работником, и он может оказаться занят при трёх свободных соседях.
+      // Здесь стояло «фильтр занятости отступает» — маршрут перерешался без него, и работа
+      // уезжала занятому. Так один работник получал вторую живую сессию в той же копии.
+      //
+      // ТРЕТЬЕГО ВАРИАНТА У ЭТОЙ РАЗВИЛКИ НЕТ. Провалить строку значило бы сжечь попытку за то,
+      // что работа просто идёт; отдать занятому — сломать «один работник = одна живая сессия».
+      // Остаётся вернуть её в очередь: СЧЁТ ПОДХОДА НЕ ДВИГАЕТСЯ, парковки нет, строка снова
+      // ждёт своей очереди и уедет тем же проходом, как только место освободится.
+      //
+      // ЗАПИСЬ О ГОНКЕ ОСТАЁТСЯ. Она — единственный след того, что проверка и маршрут разошлись,
+      // и по ней это разойдение считают; молчаливый возврат выглядел бы как задача, которая
+      // «почему-то стоит».
       if (route && route.reasonCode === 'worker_busy') {
         writeLog(deps, {
           type: 'task.route_busy_race',
           taskId: task.id,
-          detail: 'место занято между проверкой и маршрутом — фильтр занятости отступает, задача не гибнет',
+          detail: 'место занято между проверкой и маршрутом — строка возвращается в очередь без счёта попытки',
         })
-        route = deps.routing.resolveRoute(task, { ...routeDeps, busyWorkers: null })
+        let released = false
+        if (typeof adapter.releaseClaim === 'function') {
+          try {
+            released = (await adapter.releaseClaim(task.id, { attemptToken: task.attemptToken })) === true
+          } catch (err) {
+            writeLog(deps, { type: 'task.release_failed', taskId: task.id, error: String((err && err.message) || err) })
+          }
+        }
+        if (!released) {
+          // ВОЗВРАТ НЕ СОСТОЯЛСЯ — и это сказано вслух, а не спрятано. Строка остаётся
+          // захваченной, её подберёт сторож живости следующим проходом; это дороже (подход
+          // сгорит), но честнее выдуманного успеха.
+          writeLog(deps, {
+            type: 'task.release_failed',
+            taskId: task.id,
+            detail: 'очередь не приняла возврат — строку подберёт сторож живости',
+          })
+        }
+        result.releasedToQueue = { taskId: task.id, reason: 'worker_busy', ok: released }
+        return result
       }
       if (!route || (!route.workerId && !route.useApiFallback)) {
         // Claimed but no runnable target after the real route — degrade honestly, AND IN THE
@@ -4846,6 +4965,18 @@ export async function tick(deps = {}) {
       // мы готовы оплатить, эта работа уже сожгла. Запуск с числом, которое уже проиграло, —
       // оплаченный повтор известного исхода; отказ здесь стоит ноль процессов и ноль минут
       // подписки, а человеку на карточку едут его три выхода и число сожжённых ходов.
+      //
+      // …И СЧИТАЕТСЯ ПО ТОМУ, ЧТО ЗАДАЧА ГОВОРИТ О СЕБЕ СЕЙЧАС, а не по тому, что она говорила
+      // в миг захвата: слова, дописанные между этими двумя мигами, догоняют попытку здесь
+      // (`refreshPromise` — там же и цена этого чтения, и то, чего оно не закрывает).
+      const promiseMoved = await refreshPromise(deps, task)
+      if (promiseMoved.length > 0) {
+        writeLog(deps, {
+          type: 'task.promise_arrived',
+          taskId: task.id,
+          detail: `слова задачи приехали после захвата и до старта (${promiseMoved.join(', ')}) — потолок ходов считается по ним`,
+        })
+      }
       const turnBudget = turnBudgetFor(deps, config, task)
       if (turnBudget.cap === null) {
         const detail =
@@ -5394,6 +5525,14 @@ export async function tick(deps = {}) {
         }
       }
       if (deps.attemptTurns) deps.attemptTurns.done(task.id)
+      // И МЕСТО ОТДАЁТСЯ ЗДЕСЬ — В МОМЕНТ ПОДТВЕРЖДЁННОЙ СМЕРТИ РЕБЁНКА, а не в последнем
+      // `finally` прохода. Ниже этой строки идут ворота: маркер, квитанция, переповерка,
+      // коммиты, свод — минуты, за которые процесса уже нет, а место всё ещё занято. Место
+      // считает ЖИВЫХ детей (см. `in-flight.mjs`), и держать его за мёртвым значит голодить
+      // очередь при свободном работнике — замерено: 282 отказа по потолку подряд при двух
+      // живых попытках из четырёх мест. Тем же выражением, каким дверь отмены отвечает
+      // человеку «попытка закрылась»; `finally` отдаст место вторым разом и это не ошибка.
+      confirmProcessGone(deps, task.id)
 
       // WHAT THE SESSION ITSELF REPORTED joins what the mirror wrote, on ONE key. The mirror
       // says what was PUT INTO the account; the init frame says what the session actually
@@ -6251,6 +6390,9 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
   const attemptStartedAt = now()
   const exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine, now)
   if (deps.attemptTurns) deps.attemptTurns.done(task.id)
+  // Место отдаётся на смерти ребёнка и у этой полосы — правило «место держит живой процесс» не
+  // знает полос ровно так же, как его не знает закрытие координационного окна.
+  confirmProcessGone(deps, task.id)
   // СКОЛЬКО СОБИРАЛАСЬ СЕССИЯ — на строку попытки и здесь: у кузницы тот же спавн, то же
   // молчание до первого кадра и тот же человек у окна.
   worktreeRow.sessionStart = sessionStartRecord({ spawnedAt: attemptStartedAt, firstLineAt: exit.firstLineAt })

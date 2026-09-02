@@ -187,6 +187,10 @@ describe('раскрытие готовой работы — дверь карт
       sha: MERGE_SHA,
       testsPassed: true,
       testsNote: null,
+      // Зелёный прогон никого не роняет и отчёта после себя не оставляет: пусто и `null`
+      // здесь — измерение, а не забытые поля.
+      failedTests: [],
+      report: null,
     })
 
     // (3) КТО ПРИНЯЛ И КОГДА. Дверь одобрения — человеческая по построению, и след уборки
@@ -200,6 +204,56 @@ describe('раскрытие готовой работы — дверь карт
     //     след его решения.
     expect(body.returns.rounds).toBe(1)
     expect(body.returns.notes).toContain('вернул: нет красного теста')
+  })
+
+  /**
+   * КРАСНАЯ ПРИЁМКА НА КАРТОЧКЕ — С ИМЕНАМИ И С ПУТЁМ К ОТЧЁТУ.
+   *
+   * Отказ читают один раз, в секунду нажатия; карточка остаётся, и именно к ней возвращаются,
+   * решая, настоящий это красный или ложный (полный прогон при живых соседних сессиях умеет
+   * краснеть ни за что). Пока имена и путь стояли только в квитанции, карточка говорила
+   * «тесты гонялись — красно» и ни слова о том, что смотреть.
+   */
+  it('красная квитанция несёт до карточки имена упавших тестов и путь к отчёту прогона', async () => {
+    const id = 'SB-177-r'
+    const report = '/var/sma/data/landing/SB-177-r-2026-09-02T18-58-00-000Z.json'
+    const { body } = await askTaskDoor(
+      {
+        adapter: {
+          list: async () => [
+            {
+              id,
+              status: 'awaiting_approval',
+              title: 'красная приёмка',
+              mergeReceipt: JSON.stringify({
+                branch: `wt/${id}`,
+                resultSha: null,
+                repo: '/repo',
+                testsPassed: false,
+                refused: true,
+                failedTest: 'scripts/sma/__tests__/landing.test.ts > посадка > Test 5',
+                failedTests: [
+                  'scripts/sma/__tests__/landing.test.ts > посадка > Test 5',
+                  'daemon/__tests__/broken-import.test.ts',
+                ],
+                savedReport: report,
+              }),
+            },
+          ],
+        },
+        ledger: ledgerOfAcceptedWork(id),
+        execGit: gitOfAcceptedWork([]),
+        repoDir: '/repo',
+      },
+      id,
+    )
+
+    expect(body.accepted.merge.testsPassed).toBe(false)
+    expect(body.accepted.merge.failedTests).toEqual([
+      'scripts/sma/__tests__/landing.test.ts > посадка > Test 5',
+      'daemon/__tests__/broken-import.test.ts',
+    ])
+    expect(body.accepted.merge.report, 'путь к отчёту не доехал до карточки').toBe(report)
   })
 
   it('принятая терминалом: приёмщик назван словом и своим именем, квитанция — из его журнала', async () => {
