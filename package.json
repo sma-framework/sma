@@ -51,6 +51,8 @@
   ],
   "scripts": {
     "test": "vitest run && node scripts/sma/lib/badge.mjs --check && node tools/verify-rebrand.mjs",
+    "test:fast": "vitest run --config vitest.fast.config.mjs",
+    "test:related": "vitest related --run",
     "badge": "vitest run --reporter=json --outputFile=.vitest-report.json && node scripts/sma/lib/badge.mjs --from-vitest .vitest-report.json",
     "build:spa": "npm --prefix spa run build",
     "daemon:stop": "node supervisor/daemon-control.mjs stop",
