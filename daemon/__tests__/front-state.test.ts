@@ -1286,6 +1286,46 @@ describe('deriveState — projects, machines and federation', () => {
     const idle = payload.workers.find((w: any) => w.id === 'max-2')
     expect('taskTitle' in idle).toBe(false)
     expect('project' in idle).toBe(false)
+    // Правило держится — и карточка об этом МОЛЧИТ: список второй попытки существует ровно на
+    // случай нарушения, и его присутствие само по себе есть жалоба.
+    expect('alsoRunning' in holder, 'одна сессия — говорить не о чем').toBe(false)
+  })
+
+  /**
+   * ДВОЙНОЙ ЗАХВАТ ВИДЕН НА ДОСКЕ, А НЕ ТОЛЬКО В ЖУРНАЛЕ.
+   *
+   * Правило продукта — одна живая сессия на работника, и держит его захват (см. провод на тике).
+   * Экран инвариант не чинит, но обязан его НАЗЫВАТЬ: здесь стоял `find`, который брал первую
+   * попавшуюся строку работника, и 02.09.2026, когда один работник получил вторую живую сессию,
+   * доска показала ОДНУ — то есть оказалась единственным местом, где нарушение не видно.
+   */
+  it('работник держит две строки — карточка называет ОБЕ, а не первую попавшуюся', async () => {
+    const claimed = (id: string, title: string, at: number) => ({
+      id,
+      status: 'claimed',
+      lane: 'prod',
+      title,
+      project: 'other-shop',
+      workerId: 'max-1',
+      claimedAt: at,
+      lastTouch: at,
+    })
+    const payload = await deriveState({
+      adapter: mkAdapter([claimed('R-первая', 'первая работа', NOW - 9000), claimed('R-вторая', 'вторая работа', NOW - 2000)]),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+
+    const holder = payload.workers.find((w: any) => w.id === 'max-1')
+    expect(holder.taskId, 'первая строка остаётся на своём месте').toBe('R-первая')
+    expect(holder.alsoRunning, 'вторая строка обязана быть названа, а не пропасть').toHaveLength(1)
+    expect(holder.alsoRunning[0]).toMatchObject({
+      taskId: 'R-вторая',
+      taskTitle: 'вторая работа',
+      project: 'other-shop',
+      taskClaimedAt: NOW - 2000,
+    })
   })
 
   /**
