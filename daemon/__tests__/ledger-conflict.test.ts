@@ -25,7 +25,13 @@ import { mkdtempSync, rmSync, copyFileSync, readFileSync, writeFileSync } from '
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { recordAttempt, readAttempts, foldAttemptRows, ALLOWED_ATTEMPT_KEYS } from '../src/queue/attempt-ledger.mjs'
+import {
+  recordAttempt,
+  readAttempts,
+  foldAttemptRows,
+  nextAttemptNumber,
+  ALLOWED_ATTEMPT_KEYS,
+} from '../src/queue/attempt-ledger.mjs'
 
 const tmpDirs: string[] = []
 function mkLedgerDir(): string {
@@ -191,5 +197,91 @@ describe('the reader shows the contradiction instead of picking a winner in sile
     expect(rows.some((r) => r.conflictsWith !== undefined)).toBe(false)
     const one: any = foldAttemptRows(rows).find((r: any) => r.attempt === 1)
     expect(one.conflict).toBeDefined()
+  })
+})
+
+/**
+ * ═══ СХЕМА СТРОКИ: ВТОРОЙ ЕДИНИЦЫ НЕ БЫВАЕТ, А ОТМЕТКА — ВСЕГДА МОМЕНТ ═══════════════════
+ *
+ * ТА ЖЕ БЕДА, ЧТО У ДЕЛ ВЫШЕ, ВЗЯТАЯ ЗА ДРУГОЙ КОНЕЦ. Там одна физическая попытка легла в реестр
+ * двумя номерами; здесь — две физические попытки под ОДНИМ номером 1, потому что счёт ведёт
+ * очередь, а очередь его забывает: строку законченной работы уносит в архив по сроку хранения, и
+ * карточка, поставленная заново, начинает считать с единицы. Замерено 31.08.2026 на живой доске.
+ * Каталогом прогона служит `<taskId>#<attempt>`, ключ идемпотентности минтится из того же номера,
+ * а сверка находит «попытку 1» уже записанной — одно повторённое число молча накрывает запись
+ * предыдущего подхода.
+ *
+ * И ВТОРАЯ ПОЛОВИНА ТОЙ ЖЕ УЛИКИ: у той же строки `startedAt` оказался сырым числом эпохи вместо
+ * ISO — единственный видимый признак того, что писал её не штатный путь захвата. Признак,
+ * который читатель отличить не может: на карточке оба вида рисуются временем.
+ */
+describe('схема строки реестра: счёт подходов монотонен, отметки времени — только ISO', () => {
+  const EPOCH = 1_756_640_580_000 // сырое число эпохи, ровно тем видом, каким оно легло на строку
+
+  it('сырое число эпохи в startedAt на долговечную строку не попадает — оно становится моментом', () => {
+    const dir = mkLedgerDir()
+    const written: any = recordAttempt(dir, {
+      taskId: 'SB-176',
+      attempt: 1,
+      outcome: 'completed',
+      receiptRef: 'reverify:abc',
+      startedAt: EPOCH,
+      endedAt: EPOCH + 60_000,
+    })
+    expect(written.startedAt).toBe(new Date(EPOCH).toISOString())
+    // …и на ДИСКЕ то же самое, а не только в возвращённой форме: читателя строки интересует файл
+    const [stored]: any = readAttempts(dir, 'SB-176')
+    expect(typeof stored.startedAt).toBe('string')
+    expect(stored.startedAt).toBe(new Date(EPOCH).toISOString())
+    expect(stored.endedAt).toBe(new Date(EPOCH + 60_000).toISOString())
+  })
+
+  it('уже правильный ISO дверь не трогает — приведение это лечение вида, а не вторая запись', () => {
+    const dir = mkLedgerDir()
+    const iso = '2026-08-31T11:03:00.000Z'
+    const written: any = recordAttempt(dir, { taskId: 'SB-176', attempt: 1, outcome: 'failed', startedAt: iso })
+    expect(written.startedAt).toBe(iso)
+  })
+
+  it('отметка, которая моментом не читается, ключа не получает — отсутствие честнее мусора', () => {
+    const dir = mkLedgerDir()
+    const written: any = recordAttempt(dir, {
+      taskId: 'SB-177',
+      attempt: 1,
+      outcome: 'failed',
+      failureReason: 'provider_error',
+      startedAt: 'позавчера вечером',
+    })
+    expect('startedAt' in written).toBe(false)
+    // строка при этом ЗАПИСАНА: аудит не теряется из-за формы одной своей отметки
+    const [stored]: any = readAttempts(dir, 'SB-177')
+    expect(stored.outcome).toBe('failed')
+    expect(stored.recordedAt).toBeDefined()
+  })
+
+  it('номер подхода строго больше всякого ЗАКОНЧЕННОГО — вторая попытка не пишется единицей', () => {
+    const dir = mkLedgerDir()
+    recordAttempt(dir, { taskId: 'SB-178', attempt: 1, outcome: 'failed', failureReason: 'provider_error' })
+    recordAttempt(dir, { taskId: 'SB-178', attempt: 2, outcome: 'completed', receiptRef: 'reverify:abc' })
+    // очередь забыла прожитое и называет подход первым — реестр помнит два законченных
+    expect(nextAttemptNumber(readAttempts(dir, 'SB-178'), 1)).toBe(3)
+  })
+
+  it('идущий подход остаётся собой: второй писатель ТОЙ ЖЕ попытки её номер не двигает', () => {
+    const dir = mkLedgerDir()
+    // переход пишет свою строку без исхода — попытка идёт прямо сейчас
+    recordAttempt(dir, { taskId: 'SB-179', attempt: 3, startedAt: '2026-09-01T10:00:00.000Z' })
+    expect(nextAttemptNumber(readAttempts(dir, 'SB-179'), 3)).toBe(3)
+  })
+
+  it('больший номер очереди принимается как есть — реестр поднимает счёт, но не опускает', () => {
+    const dir = mkLedgerDir()
+    recordAttempt(dir, { taskId: 'SB-181', attempt: 1, outcome: 'failed', failureReason: 'timeout' })
+    expect(nextAttemptNumber(readAttempts(dir, 'SB-181'), 7)).toBe(7)
+  })
+
+  it('молчащий реестр не выдумывает прожитого: первый подход остаётся первым', () => {
+    expect(nextAttemptNumber([], 1)).toBe(1)
+    expect(nextAttemptNumber(null as any, undefined as any)).toBe(1)
   })
 })
