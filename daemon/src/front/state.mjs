@@ -91,7 +91,10 @@ import { readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, statSync 
 import { networkInterfaces as osNetworkInterfaces } from 'node:os'
 import { join } from 'node:path'
 
-import { activeProjectEntry, apiCapUsd, codeTreeOf, pipelineEnabled, planningHomeOf } from '../config.mjs'
+import { activeProjectEntry, apiCapUsd, codeTreeOf, pipelineEnabled, pipelineMaxTurns, planningHomeOf } from '../config.mjs'
+// ПОТОЛОК ХОДОВ СЧИТАЕТСЯ ТОЙ ЖЕ ФУНКЦИЕЙ, что зовёт тик перед запуском и карточка на экране.
+// Своя арифметика у списка была бы третьим мнением о числе, с которым работник уйдёт в процесс.
+import { taskTurnCap, burnedTurnCapsOf } from '../policy/turn-budget.mjs'
 import { isOpen } from '../policy/windows.mjs'
 import {
   accountNameOf,
@@ -3202,6 +3205,31 @@ export async function deriveState(deps = {}) {
       if (Number.isFinite(stoppedAt) && now - stoppedAt >= 0) out.agedForHours = (now - stoppedAt) / HOUR_MS
     } else if (ageMs > agingMs) {
       out.agedForHours = Math.floor(ageMs / HOUR_MS) // «застряла» signal
+    }
+
+    // ── СТРОКА БЕЗ ОБЕЩАНИЯ ГОВОРИТ ОБ ЭТОМ ВСЛУХ, ПОКА ЕЁ ЕЩЁ НЕ ВЗЯЛИ ──────────────────
+    //
+    // Потолок ходов считается по ОБЪЯВЛЕННОМУ размеру работы, а работа, о которой не сказано
+    // ничего, объявлена мелкой и получает базовый потолок. Правильное направление ошибки для
+    // потолка — но невидимое: человек узнавал число только после того, как работа в него
+    // упёрлась и сгорела. Слово рядом со строкой возвращает ему тот единственный миг, когда
+    // это ещё чинится одним нажатием: дописать обещание, пока строка ждёт работника.
+    //
+    // ТОЛЬКО У ЖДУЩИХ РАБОТНИКА. У взятой строки число уже уехало на командную строку, и
+    // подсказка «допишите» была бы советом, которому нечего изменить.
+    //
+    // ЧИСЛО — НАСТОЯЩЕЕ, той же функцией, что считает его тик. Реестр попыток спрашивается
+    // ТОЛЬКО у строки, которая уже ходила (`attempt > 1`): у свежей строки жечь было нечего,
+    // а чтение файла на каждую строку очереди в каждом опросе экрана — цена, которую платить
+    // не за что.
+    if (r.status === 'queued') {
+      const burned = Number(r.attempt) > 1 ? burnedTurnCapsOf(readTaskAttempts(r.id)) : []
+      const plan = taskTurnCap({ base: pipelineMaxTurns(config), task: r, burnedCaps: burned })
+      // «Без обещания» — это ноль пунктов И ноль знаков: работа, о размере которой не сказано
+      // ничего. Оценка, поставленная числом, обещанием тоже считается — там размер объявлен, и
+      // слово «без обещания» над крупной работой было бы неправдой.
+      const mute = plan.signals.criteria === 0 && plan.signals.promiseChars === 0 && plan.size === 'small'
+      if (mute && typeof plan.cap === 'number') out.noPromise = { cap: plan.cap }
     }
     return out
   }
