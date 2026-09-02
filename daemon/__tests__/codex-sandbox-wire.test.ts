@@ -26,7 +26,7 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -84,6 +84,50 @@ const makeCopy = () => {
   git(['add', 'product.txt'], dir)
   git(['commit', '-qm', 'работа'], dir)
   return { dir, base }
+}
+
+/**
+ * Копия работника ТАК, КАК ЕЁ ЧЕКАНИТ ДЕМОН: не отдельный репозиторий, а РАБОЧЕЕ ДЕРЕВО git.
+ *
+ * Разница между этим и `makeCopy()` — та самая, что стоила попытки 01.09.2026: у рабочего
+ * дерева `.git` не каталог, а файл-указатель, и индекс, ссылки и объекты лежат в основном
+ * репозитории, СНАРУЖИ рабочего каталога. Песочница `workspace-write` открывает на запись
+ * рабочий каталог и ничего больше — то есть правку сделать можно, а сдать её нельзя.
+ */
+const makeWorktreeCopy = () => {
+  const root = mkDir('sma-codexbox-main-')
+  const main = join(root, 'main')
+  mkdirSync(main, { recursive: true })
+  git(['init', '-q', '.'], main)
+  git(['config', 'user.email', 'wire@test'], main)
+  git(['config', 'user.name', 'wire'], main)
+  git(['config', 'core.autocrlf', 'false'], main)
+  writeFileSync(join(main, 'CLAUDE.md'), '# правила проекта\n', 'utf8')
+  git(['add', 'CLAUDE.md'], main)
+  git(['commit', '-qm', 'база'], main)
+  const base = git(['rev-parse', 'HEAD'], main).trim()
+  const dir = join(root, 'wt-BL-1')
+  git(['worktree', 'add', '-q', '-b', 'wt/BL-1', dir], main)
+  writeFileSync(join(dir, 'product.txt'), 'работа сделана\n', 'utf8')
+  git(['add', 'product.txt'], dir)
+  git(['commit', '-qm', 'работа'], dir)
+  return { dir, base, gitDir: join(main, '.git') }
+}
+
+/**
+ * Один и тот же каталог, названный двумя способами, — это один каталог.
+ *
+ * `os.tmpdir()` на Windows отдаёт КОРОТКОЕ имя (`JUNISA~1`), а git отвечает длинным, и сравнение
+ * строк объявило бы два имени одного каталога разными. Спрашивается файловая система, а не
+ * текст: `realpath` — единственный способ сказать «это то же место».
+ */
+const samePlace = (p: unknown) => {
+  const raw = String(p)
+  try {
+    return (realpathSync.native ?? realpathSync)(raw).replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '')
+  } catch {
+    return raw.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '')
+  }
 }
 
 // ── поток полосы codex: слова работника ЖИВУТ ВНУТРИ КАДРА ─────────────────────────────────
@@ -147,11 +191,13 @@ async function runTick(over: {
   platform?: string
   lines?: string[]
   sandbox?: string
+  worktreeCopy?: boolean
+  failGitCommonDir?: boolean
 } = {}) {
   const accountDir = mkDir('sma-codexbox-acct-')
   const projectDir = mkDir('sma-codexbox-proj-')
   const ledgerDir = mkDir('sma-codexbox-ledger-')
-  const copy = makeCopy()
+  const copy = over.worktreeCopy ? makeWorktreeCopy() : makeCopy()
   const workDir = copy.dir
   const worker = { ...CODEX_WORKER, account: { ...CODEX_WORKER.account, configDir: accountDir, spendLogsDir: join(accountDir, 'spend') } }
 
@@ -177,6 +223,7 @@ async function runTick(over: {
   await adapter.enqueue(backlogTask())
   const logged: Record<string, unknown>[] = []
   const spawned: Record<string, unknown>[] = []
+  const builtWith: Record<string, unknown>[] = []
   const lines = over.lines ?? [codexSaid(`${NOTE}\n${LESSON}`)]
 
   const deps: Record<string, unknown> = {
@@ -205,14 +252,17 @@ async function runTick(over: {
     platform: over.platform ?? 'win32',
     // Команда спавна — настоящая, собранная тем же строителем, что и в бою: строка реестра
     // обязана нести ТО, ЧЕМ ЗАПУСКАЛИ, а не то, что удобно утверждать.
-    buildArgs: () => ({
-      bin: 'codex',
-      args: buildCodexArgs({ sandbox: over.sandbox ?? 'workspace-write' }),
-      env: { CODEX_HOME: home, PATH: '/usr/bin' },
-      prompt: 'сделай дело',
-      workerId: worker.id,
-      provider: 'codex',
-    }),
+    buildArgs: (_t: unknown, _r: unknown, options: Record<string, unknown> = {}) => {
+      builtWith.push(options)
+      return {
+        bin: 'codex',
+        args: buildCodexArgs({ sandbox: over.sandbox ?? 'workspace-write' }),
+        env: { CODEX_HOME: home, PATH: '/usr/bin' },
+        prompt: 'сделай дело',
+        workerId: worker.id,
+        provider: 'codex',
+      }
+    },
     verbRunner: makeVerbRunner({
       preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
       worktree: {
@@ -230,12 +280,17 @@ async function runTick(over: {
     report: async () => {},
     clock: c.clock,
     journal: (e: Record<string, unknown>) => logged.push(e),
-    execGit: (args: string[], opts: { cwd?: string } = {}) => git(args, opts.cwd || workDir),
+    execGit: (args: string[], opts: { cwd?: string } = {}) => {
+      if (over.failGitCommonDir && args[0] === 'rev-parse' && args[1] === '--git-common-dir') {
+        throw new Error('git недоступен')
+      }
+      return git(args, opts.cwd || workDir)
+    },
   }
 
   const res = await tick(deps)
   const rows = readAttempts(ledgerDir, 'BL-1')
-  return { res, row: rows[rows.length - 1], logged, spawned, home, accountDir, ledgerDir }
+  return { res, row: rows[rows.length - 1], logged, spawned, builtWith, home, accountDir, ledgerDir, copy, workDir }
 }
 
 // ═══════════ (1) ЧЕМ ЗАПУСТИЛИ — НА ДОЛГОВЕЧНОЙ СТРОКЕ ═════════════════════════════════════
@@ -410,11 +465,11 @@ const forgeTask = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
-async function runForgeTick(over: { provisioned?: boolean; platform?: string } = {}) {
+async function runForgeTick(over: { provisioned?: boolean; platform?: string; worktreeCopy?: boolean } = {}) {
   const accountDir = mkDir('sma-codexforge-acct-')
   const projectDir = mkDir('sma-codexforge-proj-')
   const ledgerDir = mkDir('sma-codexforge-ledger-')
-  const copy = makeCopy()
+  const copy = over.worktreeCopy ? makeWorktreeCopy() : makeCopy()
   const workDir = copy.dir
   const worker = {
     id: 'creator',
@@ -435,6 +490,7 @@ async function runForgeTick(over: { provisioned?: boolean; platform?: string } =
   await adapter.enqueue(forgeTask())
   const logged: Record<string, unknown>[] = []
   const spawned: Record<string, unknown>[] = []
+  const builtWith: Record<string, unknown>[] = []
 
   const deps: Record<string, unknown> = {
     adapter,
@@ -455,14 +511,17 @@ async function runForgeTick(over: { provisioned?: boolean; platform?: string } =
     windows: () => true,
     projectDir: () => projectDir,
     platform: over.platform ?? 'win32',
-    buildArgs: () => ({
-      bin: 'codex',
-      args: buildCodexArgs({ sandbox: 'workspace-write' }),
-      env: { CODEX_HOME: home, PATH: '/usr/bin' },
-      prompt: 'ЗАМЕНИТСЯ подсказкой кузницы',
-      workerId: worker.id,
-      provider: 'codex',
-    }),
+    buildArgs: (_t: unknown, _r: unknown, options: Record<string, unknown> = {}) => {
+      builtWith.push(options)
+      return {
+        bin: 'codex',
+        args: buildCodexArgs({ sandbox: 'workspace-write' }),
+        env: { CODEX_HOME: home, PATH: '/usr/bin' },
+        prompt: 'ЗАМЕНИТСЯ подсказкой кузницы',
+        workerId: worker.id,
+        provider: 'codex',
+      }
+    },
     verbRunner: makeVerbRunner({
       worktree: {
         code: 0,
@@ -483,7 +542,7 @@ async function runForgeTick(over: { provisioned?: boolean; platform?: string } =
 
   const res = await tick(deps)
   const rows = readAttempts(ledgerDir, 'F-1')
-  return { res, row: rows[rows.length - 1], logged, spawned, home }
+  return { res, row: rows[rows.length - 1], logged, spawned, builtWith, home, copy, workDir }
 }
 
 describe('полоса кузницы на codex: та же граница, та же дверь', () => {
@@ -510,5 +569,57 @@ describe('полоса кузницы на codex: та же граница, та
     expect(row.spawn.bin).toBe('codex')
     expect(row.spawn.args).toEqual(spawned[0].args)
     expect(row.spawn.sandbox).toBe('workspace-write')
+  })
+})
+
+// ═══════════ ПРАВО ПИСАТЬ БЕЗ КАТАЛОГА, В КОТОРЫЙ СДАЮТ, — ЭТО ПОЛОВИНА ПРАВА ══════════════
+//
+// ЧТО СЛОМАНО БЕЗ ЭТОГО. `workspace-write` открывает на запись РАБОЧИЙ КАТАЛОГ и ничего больше.
+// А копия попытки — РАБОЧЕЕ ДЕРЕВО git: её `.git` не каталог, а файл-указатель, и индекс,
+// ссылки и объекты лежат в основном репозитории, СНАРУЖИ копии. Поэтому сессия честно правила
+// файлы и упиралась в запрет на `git add`; попытка уходила как «нет квитанции», и на карточке
+// был виноват работник, сделавший всё, что мог (замерено 01.09.2026). Решение основателя
+// 02.09.2026: кодекс — работник уровня Опуса/Фейбла и делает всё идентично; соседняя полоса
+// ходит вообще без песочницы.
+//
+// УТВЕРЖДЕНИЕ ЗДЕСЬ — ПРО ШОВ, А НЕ ПРО ФУНКЦИЮ: git настоящий, копия — настоящее рабочее
+// дерево, и вопрос ровно один — доехал ли до сборщика спавна тот каталог, без которого работу
+// нельзя сдать. Границу это не снимает: называется ОДИН каталог, `danger-full-access`
+// по-прежнему отклонён структурно.
+describe('копия — рабочее дерево: git-каталог снаружи её едет в границу запуска', () => {
+  it('пишущая задача: назван РОВНО git-каталог копии, и он лежит СНАРУЖИ рабочего каталога', async () => {
+    const { builtWith, copy, workDir, spawned } = await runTick({ provisioned: true, worktreeCopy: true })
+
+    expect(spawned).toHaveLength(1)
+    const roots = (builtWith[0].writableRoots as string[]) ?? []
+    expect(roots).toHaveLength(1)
+    // ТОТ САМЫЙ каталог, а не «какой-нибудь снаружи»: индекс и ссылки лежат именно здесь.
+    expect(samePlace(roots[0])).toBe(samePlace((copy as { gitDir: string }).gitDir))
+    // …и он ВНЕ копии — то есть песочница рабочего каталога его не покрывает, ради чего всё это.
+    expect(samePlace(roots[0]).startsWith(`${samePlace(workDir)}/`)).toBe(false)
+  })
+
+  it('обычный клон: каталог всё равно назван — относительный ответ git развёрнут от копии', async () => {
+    const { builtWith, workDir } = await runTick({ provisioned: true })
+
+    const roots = (builtWith[0].writableRoots as string[]) ?? []
+    expect(roots).toHaveLength(1)
+    expect(samePlace(roots[0])).toBe(`${samePlace(workDir)}/.git`)
+  })
+
+  it('git молчит → корней нет, спавн идёт прежним, а промах лежит в журнале', async () => {
+    const { builtWith, spawned, logged } = await runTick({ provisioned: true, failGitCommonDir: true })
+
+    expect(spawned).toHaveLength(1) // отказ убил бы и полосу Claude, которая этот список не читает
+    expect(builtWith[0].writableRoots).toBeUndefined()
+    expect(logged.some((e) => e.type === 'task.copy_git_dir_unknown')).toBe(true)
+  })
+
+  it('вторая дверь спавна — кузница — получает тот же каталог, а не остаётся без него', async () => {
+    const { builtWith, copy, spawned } = await runForgeTick({ provisioned: true, worktreeCopy: true })
+
+    expect(spawned).toHaveLength(1)
+    const roots = (builtWith[0].writableRoots as string[]) ?? []
+    expect(samePlace(roots[0])).toBe(samePlace((copy as { gitDir: string }).gitDir))
   })
 })

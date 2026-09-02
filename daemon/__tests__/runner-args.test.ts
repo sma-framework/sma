@@ -90,6 +90,7 @@ import {
   codexWorkspaceWriteOutlook,
   codexSandboxTrailWhole,
   codexSandboxSourceFor,
+  codexGitWritableRoot,
   codexHomeFor,
   CODEX_WINDOWS_SANDBOX_MARKER,
   seedCodexHome,
@@ -609,6 +610,69 @@ describe('seedCodexHome — след песочницы едет тем же ш�
 
     expect(seeded.sandboxSeeded).toEqual([])
     expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe(codexConfigSeed())
+  })
+})
+
+/**
+ * ── КАТАЛОГ, В КОТОРЫЙ РАБОТА СДАЁТСЯ, — ВНУТРИ ГРАНИЦЫ ЗАПУСКА ─────────────────────────────
+ *
+ * ЧТО ЭТО ЛОВИТ В ПРОДУКТЕ. `workspace-write` открывает на запись РАБОЧИЙ КАТАЛОГ и ничего
+ * больше. Копия попытки — рабочее дерево git: её `.git` не каталог, а файл-указатель, и индекс,
+ * ссылки и объекты лежат в основном репозитории, СНАРУЖИ копии. Сессия правит файлы честно и
+ * упирается в запрет на `git add`; гейт закрывает попытку как «нет квитанции», и на карточке
+ * виноват работник, сделавший всё, что мог (замерено 01.09.2026).
+ *
+ * Утверждения — про ТЕКСТ, который читает CLI, и про РАЗВОРАЧИВАНИЕ пути, потому что ломались
+ * ровно эти две вещи: секции в конфиге не было вовсе, а ответ git об обычном клоне относителен.
+ */
+describe('песочница кодекса впускает git-каталог копии — иначе правку некуда сдать', () => {
+  it('корень назван → секция, которую читает CLI, а обратный слэш Windows экранирован', () => {
+    const toml = codexConfigSeed({ writableRoots: ['C:\\Users\\f\\projects\\sma\\.git'] })
+
+    expect(toml).toContain('[sandbox_workspace_write]')
+    // TOML: путь Windows внутри строки в кавычках — это ДВОЙНОЙ слэш; одинарный CLI прочитает
+    // как escape-последовательность и либо отвергнет файл, либо поймёт путь не тот.
+    expect(toml).toContain('writable_roots = ["C:\\\\Users\\\\f\\\\projects\\\\sma\\\\.git"]')
+    // и прежние обещания дома на месте — форма файла расширена, а не переписана
+    expect(toml).toContain('memories = false')
+    expect(toml).toContain(`approval_policy = "${CODEX_APPROVAL_POLICY}"`)
+  })
+
+  it('корней нет → секции нет: обычный клон, чей `.git` внутри копии, форму дома не меняет', () => {
+    expect(codexConfigSeed({ writableRoots: [] })).toBe(codexConfigSeed())
+    expect(codexConfigSeed()).not.toContain('sandbox_workspace_write')
+  })
+
+  it('посев кладёт корень В ТОТ дом, который назовёт среда ребёнка', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-codex-writable-'))
+    const home = join(root, 'codex-tasks', 'T-0003')
+    const gitDir = join(root, 'main', '.git')
+
+    const seeded = seedCodexHome({ home, authSources: [], writableRoots: [gitDir] })
+
+    expect(seeded.writableRoots).toEqual([gitDir])
+    const toml = readFileSync(join(home, 'config.toml'), 'utf8')
+    expect(toml).toContain('[sandbox_workspace_write]')
+    expect(toml).toContain(gitDir.replace(/\\/g, '\\\\'))
+  })
+
+  /**
+   * ОТВЕТ GIT ОТНОСИТЕЛЕН РОВНО ТОГДА, КОГДА КОПИЯ — ОБЫЧНЫЙ КЛОН. Песочница же понимает только
+   * абсолютный корень: относительный она развернёт от своего каталога, а не от копии, и молча
+   * откроет на запись что-то другое. Поэтому разворачивание — часть продукта, а не вызывающего.
+   */
+  it('относительный ответ git разворачивается от КОПИИ, а абсолютный остаётся собой', () => {
+    const copy = join(tmpdir(), 'sma-copy-abs')
+    expect(codexGitWritableRoot({ workDir: copy, gitCommonDir: '.git' })).toBe(join(copy, '.git'))
+
+    const outside = join(tmpdir(), 'sma-main', '.git')
+    expect(codexGitWritableRoot({ workDir: copy, gitCommonDir: outside })).toBe(outside)
+  })
+
+  it('git не ответил → корня нет, и решение остаётся у вызывающего, а не подменяется догадкой', () => {
+    expect(codexGitWritableRoot({ workDir: '/copy', gitCommonDir: '' })).toBeNull()
+    expect(codexGitWritableRoot({ workDir: '', gitCommonDir: '.git' })).toBeNull()
+    expect(codexGitWritableRoot()).toBeNull()
   })
 })
 
