@@ -126,7 +126,7 @@ import { insideCopiesDir } from './queue/worktree-cleanup.mjs'
 import { sweepBugJournal, causeOf } from './queue/bug-journal.mjs'
 // Потолок мест читает ДОМ ИДУЩИХ ПОПЫТОК, а не тик: одно чтение настройки на весь демон —
 // его же спрашивает дверь состояния, чтобы назвать человеку «занято X из N».
-import { concurrencyCap, seatCeiling, confirmProcessGone } from './queue/in-flight.mjs'
+import { concurrencyCap, seatCeiling, seatWorkers, confirmProcessGone } from './queue/in-flight.mjs'
 // ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
 // belongs to the module that owns the row's key list, and a second copy of the number here
 // would be a second ceiling waiting to drift away from the first.
@@ -4728,7 +4728,11 @@ export async function tick(deps = {}) {
     // словом: не «мест нет», а «все работники уже ведут попытку».
     if (inFlight && typeof inFlight.workers === 'function') {
       const busyNow = inFlight.workers()
-      const enabled = (Array.isArray(config.workers) ? config.workers : []).filter((w) => w && w.enabled !== false)
+      // КТО ЗДЕСЬ РАБОТНИК — СПРАШИВАЕТСЯ ТЕМ ЖЕ СЛОВОМ, ЧТО И У СЧЁТА МЕСТ. Своё выражение
+      // стояло тут и считало верхушку обычным работником: проверка ждала, пока попытку возьмёт
+      // тот, кто задач не берёт ни при каком порядке строк конфига, — и потому не срабатывала
+      // никогда, а рубеж, написанный ради человеческого слова «все работники заняты», молчал.
+      const enabled = seatWorkers(config) ?? []
       if (enabled.length > 0 && enabled.every((w) => busyNow.has(w.id))) {
         writeLog(deps, {
           type: 'tick.all_workers_busy',
@@ -4887,6 +4891,14 @@ export async function tick(deps = {}) {
       // ЗАПИСЬ О ГОНКЕ ОСТАЁТСЯ. Она — единственный след того, что проверка и маршрут разошлись,
       // и по ней это разойдение считают; молчаливый возврат выглядел бы как задача, которая
       // «почему-то стоит».
+      //
+      // …И ВОЗВРАЩАЕТСЯ ОНА С ОТСРОЧКОЙ, А НЕ В ГОЛОВУ ОЧЕРЕДИ. Срок ставит сама очередь (см.
+      // RELEASE_DEFER_MS): порядок выдачи — приоритет и время постановки, а возврат ни того ни
+      // другого не двигает, поэтому без отсрочки следующий проход брал бы ТУ ЖЕ строку, получал
+      // тот же ответ и возвращал её снова — пока занят закреплённый за ней работник, а это
+      // минуты. Строки за ней не поехали бы вовсе, и каждый оборот стоил бы захвата, записи в
+      // хранилище и двух кадров живого потока. Тик срока не называет: «на сколько откладывать»
+      // — правило хранилища, и второе его написание здесь разошлось бы с первым.
       if (route && route.reasonCode === 'worker_busy') {
         writeLog(deps, {
           type: 'task.route_busy_race',
@@ -4911,6 +4923,13 @@ export async function tick(deps = {}) {
             detail: 'очередь не приняла возврат — строку подберёт сторож живости',
           })
         }
+        // ВОЗВРАЩЁННАЯ СТРОКА НЕ СЧИТАЕТСЯ ВЗЯТОЙ ЭТИМ ПРОХОДОМ. `claimed` отвечает на вопрос
+        // «что этот проход взял в работу» — по нему считают, что тик делал (loop.test.ts:
+        // `if (res.claimed) ran.push(res.claimed)`), — а строка, отданная обратно, к концу
+        // прохода снова ждёт работника. Оставленная здесь, она бы удваивала счёт работы: та же
+        // задача была бы «взята» и этим проходом, и тем, который её действительно поведёт.
+        // Сам факт возврата не теряется — он назван своим ключом, и таск в нём поимённо.
+        delete result.claimed
         result.releasedToQueue = { taskId: task.id, reason: 'worker_busy', ok: released }
         return result
       }
