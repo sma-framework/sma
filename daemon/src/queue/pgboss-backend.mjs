@@ -251,6 +251,16 @@ const STATE_TO_STATUS = Object.freeze({
 const FAILED_STATES = Object.freeze(Object.keys(STATE_TO_STATUS).filter((s) => STATE_TO_STATUS[s] === 'failed'))
 
 /**
+ * СОСТОЯНИЕ, В КОТОРОЕ СТРОКУ ПЕРЕВОДИТ ЧЬЁ-ТО РЕШЕНИЕ, А НЕ ПОЛОМКА. Его пишет ровно одна
+ * команда библиотеки — `cancel`, — и зовут её три двери, у которых общая суть: остановка человека
+ * (`cancelTask`), собственный потолок демона (`parkForPerson`) и брошенная владельцем сборка
+ * (`resolveBatch`). Ни за одной из трёх не стоит следующая попытка, и ни одну из них перевыдача
+ * переигрывать не смеет: читается такая строка по-прежнему как закрытая срывом (карта состояний
+ * выше не тронута) — отказывает ей только дверь повтора.
+ */
+const CANCELLED_STATE = 'cancelled'
+
+/**
  * The approval-row statuses that mean «this task still owes a PERSON a word», and the ONLY
  * ones allowed to overrule what pg-boss says about a job.
  *
@@ -1327,6 +1337,18 @@ export function createPgBossQueue({
     const data = row && row.data && typeof row.data === 'object' ? row.data : null
     if (!data) return false
     if (!FAILED_STATES.includes(String(row.state))) return false
+    // ═════ ОТМЕНА НЕ ПЕРЕИГРЫВАЕТСЯ ПЕРЕВЫДАЧЕЙ ═════
+    //
+    // Замерено 01.09.2026: SB-068 слита ночью, её дубль снят отменой в 03:14 — и перевыдан в
+    // 10:11, 10:16 и 10:20; три живых процесса в одной копии, три места из четырёх заняты
+    // призраками, очередь не берёт нового. Причина видна отсюда: `cancel` библиотеки закрывает
+    // строку состоянием `cancelled`, а карта состояний читает его как «сорвалась» — то есть как
+    // ровно то, что эта дверь и повторяет. Решение человека кончалось тем же состоянием, что и
+    // поломка, и дверь честно переигрывала решение.
+    //
+    // ТО ЖЕ «НЕТ» ГОВОРИТ И ПАМЯТНЫЙ БЭКЕНД (`stoppedByAPerson` у его двери повтора): обещание
+    // контракта одно на оба хранилища, и дело о нём стоит в общем сьюте.
+    if (String(row.state) === CANCELLED_STATE) return false
     const attempt = attemptNumberOf(data, row.retry_count, { unclaimed: true })
     const out = await enqueue({ ...data, attempt: (Number.isFinite(attempt) ? attempt : 1) + 1 })
     // СЛИПШАЯСЯ ПОСТАНОВКА — ЭТО НЕ ПОВТОР. Живая строка под этим номером уже стоит в очереди

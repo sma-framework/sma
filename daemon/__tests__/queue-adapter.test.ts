@@ -455,7 +455,7 @@ describe("taskContext — the human's snapshot of what this task is about, livin
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 28-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 29-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -553,6 +553,11 @@ describe('constants — taxonomy', () => {
       // chose — no instructions, no hooks, and connectors from somewhere else entirely
       'personal_layer_error',
       'manual',
+      // об этой работе уже сказано последнее слово: она принята и слита, либо ждёт решения
+      // человека — а строка выдана заново. Названо отдельно от `manual` (никто ничего не
+      // останавливал, решение принято раньше) и отдельно от рабочих причин: с работой всё в
+      // порядке, её просто больше не надо делать
+      'already_decided',
     ])
     expect(Object.isFrozen(FAIL_REASONS)).toBe(true)
   })

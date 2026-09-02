@@ -7588,3 +7588,124 @@ describe('обход беклога не ставит заново работу,
     expect(journalled.some((e: any) => e.type === 'intake-blind')).toBe(true)
   })
 })
+
+/**
+ * ═══ ЗАХВАТ СПРАШИВАЕТ ПОСЛЕДНЕЕ СЛОВО О ЗАДАЧЕ — ДО ТОГО, КАК ЗА НЕЁ НАЧНУТ ПЛАТИТЬ ═══════
+ *
+ * ЧТО БЫЛО ИЗМЕРЕНО. Обход беклога перестал минтить принятую работу (дела выше), но выданной она
+ * от этого быть не перестала: строка, уже стоявшая в очереди, доезжала до работника как ни в чём
+ * не бывало. Правило свёртки («последнее слово о задаче») спрашивал ОДИН автоповтор; у захвата
+ * того же вопроса не было ни одного. Цена названа днём 31.08.2026: три оплаченных прогона, каждый
+ * из которых закончился словами «уже сделано».
+ *
+ * И ВТОРАЯ, ОСТРЕЙШАЯ ГРАНЬ ТОГО ЖЕ КЛАССА. Задача в состоянии `awaiting_approval` получала
+ * ВТОРОГО живого писателя в ТУ ЖЕ рабочую копию (SB-195 в 19:48:35Z, SB-196 в 20:07:18Z): работник
+ * дописывал исходники под ногами у посадки — честный штамп на движущемся дереве невозможен, — а
+ * уборка копии при приёмке убила бы его незакоммиченное.
+ *
+ * ДЕЛА ГОНЯЮТ НАСТОЯЩИЙ ТИК над настоящей эталонной очередью и настоящим швом реестра.
+ */
+describe('захват не выдаёт работу, о которой уже сказано последнее слово', () => {
+  const line = (over: any = {}) => backlogTask({ id: 'SB-176', title: 'починить дверь приёмки', ...over })
+  const runResponses = (id: string) => ({
+    preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
+    worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: `/wt/${id}`, branch: `wt/${id}` }) },
+    reverify: GREEN_REVERIFY,
+  })
+
+  it('принятую и слитую карточку работнику не отдают — даже когда её строка стоит в очереди', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(line()) // призрак, отчеканенный обходом ДО приёмки
+    const { deps, order, attempts, journalled } = makeDeps({ adapter, clockObj: c, responses: runResponses('SB-176') })
+    // то, что осталось после приёмки: строка закрытия, как её пишет дверь «Одобрить»
+    deps.ledger.recordAttempt({
+      taskId: 'SB-176',
+      attempt: 1,
+      closed: { at: '2026-08-31T11:12:00.000Z', by: 'approve', merged: true, mergeSha: '504b61a9' },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.refusedClaim).toEqual({ taskId: 'SB-176', code: 'card_closed' })
+    // НИ КОПИИ, НИ ПРОЦЕССА: дороже всего стоит не выданная строка, а запущенный по ней работник
+    expect(order).toEqual([])
+    const [row] = await adapter.list({})
+    expect(row.status, 'призрак остался живым в очереди').toBe('failed')
+    expect(row.failure_reason).toBe('already_decided')
+    // и почему — словами, на долговечной строке, а не только в журнале демона
+    const ghost: any = attempts.find((a: any) => a.failureReason === 'already_decided')
+    expect(ghost.failureDetail).toContain('принятая работа не выдаётся заново')
+    expect(journalled.some((e: any) => e.type === 'claim.refused')).toBe(true)
+  })
+
+  it('вторую строку не выдают, пока первая ждёт решения человека — второй писатель в ту же копию', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(line({ id: 'SB-195' }))
+    // Долговечная очередь держит ЗАКОНЧЕННУЮ строку рядом с новой; памятная так не умеет — одна
+    // задача, одна запись. Поэтому список о двух строках подставлен поверх настоящей очереди, и
+    // это единственная подделка в деле: захват, отказ и закрытие строки — настоящие.
+    const waiting = {
+      id: 'SB-195',
+      status: 'awaiting_approval',
+      attempt: 1,
+      title: 'починить дверь приёмки',
+      lane: 'prod',
+      source: 'backlog',
+      priority: 0,
+      enqueuedAt: c.clock() - 3600_000,
+      completedAt: c.clock() - 600_000,
+    }
+    const twoRows = { ...adapter, list: async (f: any) => [...(await adapter.list(f)), waiting] }
+    const { deps, order } = makeDeps({ adapter: twoRows, clockObj: c, responses: runResponses('SB-195') })
+
+    const res = await tick(deps)
+
+    expect(res.refusedClaim).toEqual({ taskId: 'SB-195', code: 'awaiting_person' })
+    expect(order).toEqual([]) // работник в живую копию посадки не поехал
+    const ghost: any = (await adapter.list({})).find((r: any) => r.id === 'SB-195')
+    expect(ghost.status).toBe('failed')
+    expect(ghost.failure_reason).toBe('already_decided')
+  })
+
+  it('чужое закрытие ничего не запрещает: работа со своим именем идёт как обычно — это сторож, а не замок', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(line({ id: 'SB-901' }))
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: runResponses('SB-901') })
+    deps.ledger.recordAttempt({
+      taskId: 'SB-176', // закрыта ДРУГАЯ карточка
+      attempt: 1,
+      closed: { at: '2026-08-31T11:12:00.000Z', by: 'approve', merged: true },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.refusedClaim).toBeUndefined()
+    expect(res.completed).toBe('SB-901')
+  })
+
+  /**
+   * ═══ И СЧЁТ ПОДХОДОВ МОНОТОНЕН: ВТОРОЙ ЕДИНИЦЫ НЕ БЫВАЕТ ═══════════════════════════════
+   *
+   * Счёт ведёт очередь, и она его забывает вместе со строкой (архив по сроку хранения), а реестр
+   * не забывает. Замерено 31.08.2026: вторая физическая попытка SB-180 записана ТЕМ ЖЕ номером 1.
+   * Каталог прогона зовётся `<taskId>#<attempt>` — повторённое число молча накрывает запись
+   * предыдущего подхода.
+   */
+  it('вторая физическая попытка не пишется номером 1 — реестр поднимает счёт очереди', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(line({ id: 'SB-180' })) // очередь начала счёт заново: подход 1
+    const { deps, attempts, journalled } = makeDeps({ adapter, clockObj: c, responses: runResponses('SB-180') })
+    deps.ledger.recordAttempt({ taskId: 'SB-180', attempt: 1, outcome: 'failed', failureReason: 'provider_error' })
+
+    const res = await tick(deps)
+
+    expect(res.completed).toBe('SB-180')
+    const ended: any = attempts.filter((a: any) => a.taskId === 'SB-180' && a.outcome === 'completed').at(-1)
+    expect(ended.attempt, 'вторая попытка легла в реестр под номером первой').toBe(2)
+    expect(journalled.some((e: any) => e.type === 'attempt.number_lifted')).toBe(true)
+  })
+})
