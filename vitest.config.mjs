@@ -1,4 +1,121 @@
+import { readdirSync, readFileSync } from 'node:fs'
+import { availableParallelism, cpus } from 'node:os'
+import { join } from 'node:path'
 import { defaultExclude, defineConfig } from 'vitest/config'
+
+/**
+ * ПОТОЛОК ПОТОКОВ НА ОДИН ПРОГОН — почему прогон больше не забирает машину целиком.
+ *
+ * По умолчанию vitest берёт столько рабочих, сколько у машины потоков, и это верно ровно
+ * для одного прогона на пустой машине. Здесь прогонов не один: четыре работника, сдающие
+ * работу одновременно, — это четыре полных набора разом, и замер 02.09.2026 показал, во что
+ * это обходится: под полусотней процессов node свободной памяти оставалось 0,2–0,3 ГБ, а
+ * процессор стоял в полке. Проигрывают при этом ВСЕ прогоны сразу, включая тот, который
+ * начался первым: время каждого растёт быстрее, чем падает время очереди.
+ *
+ * Отсюда потолок — треть потоков машины, и он ВЫЧИСЛЕН, а не вписан константой: на шести
+ * потоках это два рабочих, на двенадцати — четыре, на тридцати двух — десять. Константа
+ * («4») была бы правдой ровно про ту машину, на которой её замерили, и молча стала бы либо
+ * удавкой, либо той же полкой на следующей. Треть выбрана так, чтобы ТРИ прогона умещались
+ * рядом, не отнимая машину друг у друга и не отнимая её у человека.
+ *
+ * Потолок общий на весь прогон, а не на проект: пул у vitest один, поэтому параллельная
+ * группа и последовательная делят одно и то же число рабочих. Последовательной это ничего
+ * не меняет — `fileParallelism: false` и так держит её на одном файле за раз.
+ *
+ * Что это НЕ делает: не убирает ни одного теста и не меняет глубину набора. Полный прогон
+ * остаётся полным; меняется только то, сколько машины он берёт под себя.
+ */
+export const MACHINE_THREADS = (() => {
+  try {
+    const n = availableParallelism()
+    if (Number.isFinite(n) && n > 0) return n
+  } catch {
+    /* availableParallelism появился не везде — падать на этом нельзя */
+  }
+  const n = cpus()?.length
+  return Number.isFinite(n) && n > 0 ? n : 1
+})()
+
+export const RUN_MAX_WORKERS = Math.max(1, Math.floor(MACHINE_THREADS / 3))
+
+/**
+ * LIVE_MARKERS — чем «живой» тест отличается от юнита, и почему это ПРАВИЛО, а не список.
+ *
+ * Быстрый ярус — тот, что гоняют ПО ХОДУ работы, десятки раз за сессию, — обязан быть
+ * дешёвым: никаких настоящих дочерних процессов, никаких настоящих копий репозитория,
+ * никакого Postgres. Одноразовый каталог под `mkdtemp` живым тестом не делает и в маркеры
+ * не входит: это несколько файлов на диске для внутрипроцессного кода, миллисекунды. Дорого
+ * стоит ПРОЦЕСС — а настоящую копию иначе как через `git worktree add` и не завести, так что
+ * `child_process` ловит и её. Отобрать такие файлы можно было списком имён, и список немедленно
+ * начал бы врать: каждый новый живой тест попадал бы в быстрый ярус, пока кто-нибудь не
+ * заметил бы, что «десятки секунд» превратились в минуты, и не дописал бы ещё одну строку.
+ * Ровно та болезнь, которую этот файл уже лечил на shebang'ах — список жертв против правила
+ * о классе.
+ *
+ * Поэтому ярус вычисляется из ИСХОДНИКА теста: файл, который зовёт `child_process`, берёт
+ * `mkdtemp` или тянет Postgres, — живой по определению и в быстрый ярус не идёт. Правило
+ * ошибается только в безопасную сторону: лишний файл, отнесённый к живым, делает быстрый
+ * ярус беднее, но никогда не делает его медленным вранием. Полный набор от этого не
+ * меняется вовсе — он гоняет ВСЁ и остаётся единственным гейтом.
+ *
+ * Экспортируется, чтобы само правило было проверяемо тестом, а не только своим результатом.
+ */
+export const LIVE_MARKERS = [
+  // настоящий дочерний процесс: spawn/exec/fork — и настоящая копия репозитория тоже,
+  // потому что `git worktree add` иначе не позвать
+  /child_process/,
+  // Postgres в любом виде — драйвер или очередь поверх него
+  /\bpg-boss\b/,
+  /from ['"]pg['"]/,
+]
+
+/** Живой ли этот тест — по его собственному исходнику. */
+export function isLiveSuite(source) {
+  if (typeof source !== 'string') return false
+  return LIVE_MARKERS.some((re) => re.test(source))
+}
+
+/**
+ * TEST_DIRS — два каталога, в которых живут тесты продукта. Держатся здесь, а не в двух
+ * местах: `INCLUDE` ниже собирается из них же, поэтому «где лежат тесты» — один ответ.
+ */
+const TEST_DIRS = ['scripts/sma/__tests__', 'daemon/__tests__']
+
+/** Все файлы тестов дерева, путями от корня — без глоба, обычным обходом каталога. */
+export function allSuites(root = process.cwd()) {
+  const found = []
+  for (const dir of TEST_DIRS) {
+    let entries
+    try {
+      entries = readdirSync(join(root, dir), { recursive: true, withFileTypes: true })
+    } catch {
+      continue // каталога нет — это не поломка конфига
+    }
+    for (const e of entries) {
+      if (!e.isFile() || !e.name.endsWith('.test.ts')) continue
+      const rel = join(e.parentPath ?? e.path ?? join(root, dir), e.name)
+      found.push(rel.slice(root.length + 1).split('\\').join('/'))
+    }
+  }
+  return found.sort()
+}
+
+/**
+ * unitSuites() — быстрый ярус: всё, что не последовательная группа и не живой тест.
+ * Читает исходники один раз, при сборке конфига быстрого яруса.
+ */
+export function unitSuites(root = process.cwd()) {
+  const serial = new Set(SERIAL_SUITES)
+  return allSuites(root).filter((rel) => {
+    if (serial.has(rel)) return false
+    try {
+      return !isLiveSuite(readFileSync(join(root, rel), 'utf8'))
+    } catch {
+      return false
+    }
+  })
+}
 
 /**
  * SERIAL_SUITES — the files that must not run beside eleven other workers.
@@ -28,7 +145,7 @@ import { defaultExclude, defineConfig } from 'vitest/config'
  * `JSON.parse`). Pinning buys determinism, not silence: a real regression in any
  * of the seven still turns this suite red.
  */
-const SERIAL_SUITES = [
+export const SERIAL_SUITES = [
   'scripts/sma/__tests__/manifest.test.ts',
   'scripts/sma/__tests__/init-hooks.test.ts',
   // The install/uninstall inversion plus the four hook verbs driven by real
@@ -178,6 +295,10 @@ export default defineConfig({
     // (whole file)" red on record. Parity with testTimeout, not inflation: the
     // per-hook bound stays the same order as the per-test one.
     hookTimeout: 30000,
+    // ПОТОЛОК ПОТОКОВ — см. RUN_MAX_WORKERS наверху файла. Вычислен из числа потоков
+    // машины (треть), а не вписан числом: прогон перестаёт быть единственным жильцом
+    // машины, и три прогона умещаются рядом. Глубины набора это не касается.
+    maxWorkers: RUN_MAX_WORKERS,
     projects: [
       {
         extends: true,
