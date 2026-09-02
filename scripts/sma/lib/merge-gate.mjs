@@ -481,8 +481,22 @@ export async function runMerge(o = {}) {
       }
     }
 
+    // ЧТО ИМЕННО ПОЛУЧИЛОСЬ, СКАЗАННОЕ ХЕШЕМ, А НЕ ИМЕНАМИ ВЕТОК. Индекс незафиксированного
+    // слияния — это уже то дерево, которое станет деревом коммита, и `write-tree` называет его
+    // раньше, чем коммит появится. Прогонятель, умеющий спросить «а не измерено ли это дерево
+    // уже», получает здесь единственный ответ, по которому такой вопрос вообще можно задать;
+    // тот, кому это безразлично, просто не читает лишнее поле. Молчание git — это `null`,
+    // то есть «неизвестно», и ни один читатель не имеет права прочесть его как «совпало».
+    let mergedTree = null
+    try {
+      const written = String(execGit(['write-tree'], { cwd })).trim()
+      mergedTree = /^[0-9a-f]{7,40}$/.test(written) ? written : null
+    } catch {
+      mergedTree = null
+    }
+
     if (runTests) {
-      const tr = await runTests({ branch, resultSha: null, cwd })
+      const tr = await runTests({ branch, resultSha: null, cwd, mergedTree })
       // A runner may say «I ran nothing» in its own voice: passed:null, or an explicit flag.
       // Anything else is an OUTCOME and is read as one — a runner that answers nonsense is
       // still a red answer, never a quiet null that would let the merge through.

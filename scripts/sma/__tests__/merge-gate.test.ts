@@ -240,8 +240,72 @@ describe('merge-claim triplet + the sma merge ritual', () => {
     const verbs = execGit.calls.map((c) => c.args[0])
     expect(verbs).not.toContain('push')
     expect(execGit.calls.every((c) => !c.args.includes('push'))).toBe(true)
-    // only local read/merge/record subcommands.
-    for (const v of verbs) expect(['merge', 'rev-parse', 'commit']).toContain(v)
+    // only local read/merge/record subcommands. `write-tree` joined the list when the ritual
+    // started NAMING the tree it had just assembled: it writes an object into the local
+    // database and says nothing to any remote — the same class as `rev-parse`.
+    for (const v of verbs) expect(['merge', 'rev-parse', 'write-tree', 'commit']).toContain(v)
+  })
+
+  /**
+   * ЧТО ИМЕННО СВЕЛОСЬ — СКАЗАНО ПРОГОНЯТЕЛЮ, А НЕ ОСТАВЛЕНО ЕМУ НА ДОГАДКУ.
+   *
+   * Прогонятель посадки решает единственный дорогой вопрос — гнать ли полный набор — сверкой
+   * хеша сведённого дерева с деревом, на котором снята квитанция. Спросить об этом самому ему
+   * негде: коммита слияния ещё нет, а `HEAD` называет дерево ДО прихода ветки. Ритуал знает
+   * ответ (индекс уже сведён) и обязан его передать. Без этого поля прогонятель либо гонит
+   * набор всегда, либо угадывает — и второе хуже.
+   */
+  it('the ritual hands the runner the sha of the tree it has just assembled', async () => {
+    const seen: any[] = []
+    const execGit = (args: string[]) => {
+      if (args[0] === 'write-tree') return 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+      if (args[0] === 'rev-parse') return args.includes('MERGE_HEAD') ? 'MERGE_HEAD_SHA\n' : 'RESULT\n'
+      return ''
+    }
+    const res = (await runMerge({
+      branch: 'sma-wt/tree',
+      by: 'T-a',
+      execGit,
+      runTests: (call: any) => {
+        seen.push(call)
+        return { passed: true }
+      },
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })) as any
+    expect(res.merged).toBe(true)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].mergedTree, 'the runner was told nothing about the tree it is judging').toBe(
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    )
+    // …and the sha the runner is handed is NOT the pre-merge HEAD: the whole point is that it
+    // names the assembled tree, which no rev-parse of HEAD can answer for.
+    expect(seen[0].resultSha, 'there is no merge commit yet — a sha here would name yesterday').toBe(null)
+  })
+
+  /** Молчание git о дереве — это «неизвестно», и оно обязано доехать как `null`, не как строка. */
+  it('a git that will not name the tree leaves the runner with an explicit null, never a guess', async () => {
+    const seen: any[] = []
+    const execGit = (args: string[]) => {
+      if (args[0] === 'write-tree') throw new Error('write-tree failed')
+      if (args[0] === 'rev-parse') return args.includes('MERGE_HEAD') ? 'MERGE_HEAD_SHA\n' : 'RESULT\n'
+      return ''
+    }
+    const res = (await runMerge({
+      branch: 'sma-wt/tree-silent',
+      by: 'T-a',
+      execGit,
+      runTests: (call: any) => {
+        seen.push(call)
+        return { passed: true }
+      },
+      claimsDir,
+      journalDir,
+      cwd: '/repo',
+    })) as any
+    expect(res.merged, 'a tree git would not name is not a reason to refuse the merge').toBe(true)
+    expect(seen[0].mergedTree).toBe(null)
   })
 
   /**

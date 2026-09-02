@@ -3139,6 +3139,19 @@ export async function deriveState(deps = {}) {
   const queuedRows = foldedRows.filter((r) => r.status === 'queued')
   const claimedRows = foldedRows.filter((r) => r.status === 'claimed')
   const awaitingRows = foldedRows.filter((r) => r.status === 'awaiting_approval')
+  // ═══ РАБОТА, КОТОРУЮ ПРЯМО СЕЙЧАС САЖАЮТ, ОСТАЁТСЯ НА ЭКРАНЕ ══════════════════════
+  //
+  // `approving` — это НЕ мгновение между двумя состояниями. За кнопкой приёмки стоит посадка:
+  // свод с вершиной, полный прогон набора, когда квитанция работника это дерево уже не
+  // описывает, и штамп чисел. Это минуты, и всё это время строка не попадала НИ В ОДИН
+  // список: ни в очередь (там ждут работника), ни в «ждут вас», ни в «сделано». Человек
+  // нажимал — и работа исчезала с экрана до конца прогона, то есть ровно тогда, когда ему
+  // важнее всего видеть, что она идёт.
+  //
+  // СЧЁТЧИК «ЖДУТ ВАС» ЕЁ НЕ СЧИТАЕТ, И ЭТО НАМЕРЕННО: он мерит работу, которая ДОЛЖНА
+  // человеку слово, а эта своё слово уже получила и его исполняет. Список и счётчик здесь
+  // отвечают на разные вопросы, поэтому и читают разные наборы строк.
+  const landingRows = foldedRows.filter((r) => r.status === 'approving')
   const doneRows = foldedRows.filter((r) => r.status === 'completed' || r.status === 'failed')
 
   // ── ONE task row, named field by field. An adapter row may carry anything at all; a
@@ -3184,7 +3197,7 @@ export async function deriveState(deps = {}) {
     // and waiting for a person is the whole cost of the row, so no span of it is «не считается».
     // Where the stop was never marked (a row reconstructed after the fact) the field is ABSENT —
     // a zero would read as «остановилась только что», which is a claim about work nobody watched.
-    if (r.status === 'awaiting_approval') {
+    if (r.status === 'awaiting_approval' || r.status === 'approving') {
       const stoppedAt = toMs(r.completedAt)
       if (Number.isFinite(stoppedAt) && now - stoppedAt >= 0) out.agedForHours = (now - stoppedAt) / HOUR_MS
     } else if (ageMs > agingMs) {
@@ -3213,7 +3226,7 @@ export async function deriveState(deps = {}) {
     const stopped = toMs(r.completedAt)
     return Number.isFinite(stopped) ? stopped : toMs(r.enqueuedAt) || 0
   }
-  const awaiting = [...awaitingRows].sort((a, b) => waitingSince(a) - waitingSince(b)).map(toTaskRow)
+  const awaiting = [...awaitingRows, ...landingRows].sort((a, b) => waitingSince(a) - waitingSince(b)).map(toTaskRow)
 
   // ── ЧТО ЭТОТ РАБОТНИК ВЁЛ — the ledger's durable spine, joined to the words of the queue ──
   //

@@ -2329,6 +2329,13 @@ async function handleApprove({ req, res, config, deps }) {
     merged: green,
     ...(merge && merge.receipt ? { receipt: merge.receipt } : {}),
     ...(merge && merge.softDenied ? { softDenied: true } : {}),
+    // ═══ ЧЕМ КОНЧИЛАСЬ ПОСАДКА — ОТДЕЛЬНЫМ ПОЛЕМ, А НЕ ВНУТРИ КВИТАНЦИИ ═══════════════
+    //
+    // Слияние — половина нажатия; вторая половина в том, ЗЕЛЁНАЯ ЛИ ВЕРШИНА после него:
+    // сошлись ли числа значка, квитанции и карты и гонялся ли ради этого полный набор.
+    // Окно обязано сказать это словами, а квитанция слияния объявлена в окне как `unknown`
+    // — читать оттуда значило бы разбирать в разметке то, что дверь уже знает.
+    ...(merge && merge.landing ? { landing: merge.landing } : {}),
     ...(refusal ? { reasonCode: refusal.reasonCode, reason: refusal.reason } : {}),
     ...(cleanup ? { cleanup } : {}),
     ...(harvest ? { memoryHarvest: { ok: harvest.ok, mode: harvest.mode, copied: harvest.copied, applied: harvest.applied, drafted: harvest.drafted, refused: harvest.refused, ...(harvest.reason ? { reason: harvest.reason } : {}) } } : {}),
