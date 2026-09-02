@@ -484,6 +484,35 @@ describe('buildArgs — the Codex home is created, seeded and authenticated', ()
       expect(spec.args[spec.args.indexOf('--sandbox') + 1]).toBe('workspace-write')
     })
 
+    /**
+     * ПРАВО ПИСАТЬ БЕЗ КАТАЛОГА, В КОТОРЫЙ СДАЮТ, — ЭТО ПОЛОВИНА ПРАВА. `workspace-write`
+     * открывает РАБОЧИЙ КАТАЛОГ и ничего больше, а копия попытки — рабочее дерево git: индекс,
+     * ссылки и объекты лежат в основном репозитории, снаружи копии. Замерено 01.09.2026:
+     * сессия правила файлы и не смогла их закоммитить, попытка ушла как «нет квитанции».
+     * Утверждение — про ДИСК того дома, который названа среда ребёнка, а не про вызов.
+     */
+    it('git-каталог копии лежит в конфиге ТОГО дома, который назван среде ребёнка', () => {
+      const { cfg, env, fsImpl } = codexFixture()
+      const gitDir = join(tmpdir(), 'sma-main-tree', '.git')
+
+      const spec = build(cfg, env, fsImpl, 'linux')(codexTask(), codexRoute(), {
+        allowedTools: ['Read', 'Edit', 'Write', 'Bash'],
+        writableRoots: [gitDir],
+      })
+
+      const toml = readFileSync(join(String(spec.env.CODEX_HOME), 'config.toml'), 'utf8')
+      expect(toml).toContain('[sandbox_workspace_write]')
+      expect(toml).toContain(gitDir.replace(/\\/g, '\\\\'))
+    })
+
+    it('тик корней не назвал → дом выходит ровно прежним, без пустой секции', () => {
+      const { cfg, env, fsImpl } = codexFixture()
+      const spec = build(cfg, env, fsImpl, 'linux')(codexTask(), codexRoute(), { allowedTools: ['Read', 'Edit'] })
+      expect(readFileSync(join(String(spec.env.CODEX_HOME), 'config.toml'), 'utf8')).not.toContain(
+        'sandbox_workspace_write',
+      )
+    })
+
     it('читающий конверт на той же машине проходит: отказ про право писать, а не про полосу', () => {
       const { cfg, env, fsImpl } = codexFixture()
       const spec = build(cfg, env, fsImpl, 'win32')(codexTask(), codexRoute(), { allowedTools: ['Read', 'Grep'] })
