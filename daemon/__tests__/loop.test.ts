@@ -7479,3 +7479,112 @@ provider: claude
     expect(spawns[0].prompt).not.toContain('МАРКЕР-РОЛИ-ИЗ-ХРАНИЛИЩА-МАШИНЫ')
   })
 })
+
+/**
+ * ═══ ПРИНЯТАЯ РАБОТА НЕ ВОСКРЕСАЕТ: ОБХОД БЕКЛОГА СПРАШИВАЕТ, ПРЕЖДЕ ЧЕМ СТАВИТЬ ═══
+ *
+ * ЧТО БЫЛО ИЗМЕРЕНО. Работа, законченная в 11:03 и ПРИНЯТАЯ человеком в 11:12, вернулась в
+ * очередь ближайшим обходом беклога и была выдана работнику заново. Причин ровно две, и обе
+ * проверяются здесь:
+ *   · строку файла беклога ведёт ЧЕЛОВЕК — дверь приёмки его не правит и вычеркнутой строку не
+ *     увидит, поэтому «строка открыта» ничего не говорит о том, брали ли её в работу;
+ *   · слипание очереди держит только ждущее и идущее (`singletonKey` на `created`/`active`), а
+ *     ЗАКОНЧЕННАЯ работа — ждущая решения и принятая — заводилась заново, подходом номер два.
+ *
+ * ПОЧЕМУ СЛУЧАЯ ДВА. Они закрывают дыру в РАЗНОЕ время: пока строка в очереди есть — отвечает
+ * очередь; когда очередь унесла законченную работу в архив по сроку хранения, отвечать может
+ * только реестр, и только если дверь приёмки записала в него закрытие карточки.
+ *
+ * Оба случая гоняют НАСТОЯЩИЙ тик над настоящей эталонной очередью: подставлен только сканер
+ * файла, потому что файла на диске здесь нет.
+ */
+describe('обход беклога не ставит заново работу, о которой уже есть слово', () => {
+  const line = (over: any = {}) => backlogTask({ id: 'SB-176', title: 'починить дверь приёмки', ...over })
+  const intakeOf = (items: any[]) => ({ lastScanAt: 0, scan: async () => ({ items, notReady: [] }) })
+
+  it('карточку, принятую человеком, не ставит — даже когда очередь о ней уже забыла', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const { deps, journalled } = makeDeps({
+      adapter,
+      clockObj: c,
+      deps: { intake: intakeOf([line()]) },
+    })
+    // ЧТО ОСТАЛОСЬ ПОСЛЕ ПРИЁМКИ: строки очереди нет вовсе (её унёс архив), а реестр несёт
+    // строку закрытия — ровно ту, которую пишет дверь «Одобрить».
+    deps.ledger.recordAttempt({
+      taskId: 'SB-176',
+      attempt: 1,
+      closed: { at: '2026-08-31T11:12:00.000Z', by: 'approve', merged: true },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.intake.enqueued, 'принятая и слитая работа поставлена в очередь заново').toBe(0)
+    expect(res.intake.known).toEqual(['SB-176'])
+    expect(await adapter.list({})).toEqual([]) // очередь осталась пустой
+    expect(journalled.some((e: any) => e.type === 'intake-known')).toBe(true)
+  })
+
+  it('карточку, которая ждёт решения человека, не выдаёт вторым подходом', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(line())
+    const claimed: any = await adapter.claimNext('w-1', { lanes: ['prod'] })
+    await adapter.complete('SB-176', { receiptRef: 'reverify:abc', attemptToken: claimed.attemptToken })
+    const [before] = await adapter.list({})
+    expect(before.status).toBe('awaiting_approval') // исходное состояние случая, а не допущение
+
+    const { deps } = makeDeps({ adapter, clockObj: c, deps: { intake: intakeOf([line()]) } })
+    const res = await tick(deps)
+
+    expect(res.intake.enqueued).toBe(0)
+    const rows = await adapter.list({})
+    expect(rows).toHaveLength(1)
+    expect(rows[0].status, 'готовая работа снова уехала в очередь').toBe('awaiting_approval')
+    expect(rows[0].attempt).toBe(1)
+  })
+
+  it('строку, о которой не сказал никто, обход по-прежнему ставит — иначе это не сторож, а замок', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const { deps } = makeDeps({
+      adapter,
+      clockObj: c,
+      deps: { intake: intakeOf([line({ id: 'SB-901' })]) },
+    })
+
+    const res = await tick(deps)
+
+    expect(res.intake.enqueued).toBe(1)
+    expect(res.intake.known).toEqual([])
+    expect((await adapter.list({})).map((r: any) => r.id)).toEqual(['SB-901'])
+  })
+
+  it('очередь, которая не ответила о своих строках, останавливает постановку целиком', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const enqueued: any[] = []
+    const blind = {
+      ...adapter,
+      list: async () => {
+        throw new Error('queue unreachable')
+      },
+      enqueue: async (t: any) => {
+        enqueued.push(t)
+        return { id: t.id, coalesced: false, coalesceCount: 1 }
+      },
+    }
+    const { deps, journalled } = makeDeps({
+      adapter: blind,
+      clockObj: c,
+      deps: { intake: intakeOf([line({ id: 'SB-902' })]) },
+    })
+
+    const res = await tick(deps)
+
+    expect(enqueued, 'слепой обход поставил работу, не спросив очередь').toEqual([])
+    expect(res.intake).toEqual({ scannedAt: expect.any(Number), enqueued: 0, known: [], notReady: [] })
+    expect(journalled.some((e: any) => e.type === 'intake-blind')).toBe(true)
+  })
+})

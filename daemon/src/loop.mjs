@@ -125,7 +125,10 @@ import { concurrencyCap } from './queue/in-flight.mjs'
 // ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
 // belongs to the module that owns the row's key list, and a second copy of the number here
 // would be a second ceiling waiting to drift away from the first.
-import { memorySnapshotHash, safeName, ATTEMPT_FILES_CAP } from './queue/attempt-ledger.mjs'
+// …и `closureOf` — ОДИН вопрос к реестру: «эту карточку уже закрыли?». Его задаёт обход
+// беклога перед тем, как поставить строку файла в работу; своё чтение поля `closed` здесь
+// было бы вторым мнением о том, что считается закрытием.
+import { memorySnapshotHash, safeName, ATTEMPT_FILES_CAP, closureOf } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
 import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, sanitizeRun, createToolPairing, buildContinuationSummary, writeContinuation, readContinuation, writeTaskContext, fileWord, RUN_DIRS_KEEP, TASK_CONTEXT_FILE } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
@@ -185,6 +188,7 @@ import {
   codexSandboxFor,
   codexWorkspaceWriteOutlook,
   codexSandboxRefusal,
+  codexGitWritableRoot,
 } from './runner/args.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
@@ -362,6 +366,49 @@ function gateSpawnOptions(deps, config, task) {
     }
   }
   return runDir || redirectsFile ? { gate: { runDir: runDir ?? undefined, redirectsFile: redirectsFile ?? undefined } } : {}
+}
+
+/**
+ * copyWriteSpawnOptions(deps, workDir) → `{writableRoots}` — ЕДИНСТВЕННЫЙ КАТАЛОГ СНАРУЖИ
+ * КОПИИ, БЕЗ КОТОРОГО РАБОТА В НЕЙ НЕ ЗАКАНЧИВАЕТСЯ КОММИТОМ.
+ *
+ * ЧТО СЛОМАНО БЕЗ ЭТОГО. Полоса codex ходит в песочнице `workspace-write`: она открывает на
+ * запись РАБОЧИЙ КАТАЛОГ и ничего больше. А копия попытки — это РАБОЧЕЕ ДЕРЕВО git: её `.git`
+ * не каталог, а файл-указатель, и индекс, ссылки, объекты лежат в основном репозитории,
+ * СНАРУЖИ копии. Поэтому сессия честно правит файлы и упирается в запрет на `git add`, а гейт
+ * закрывает попытку как «нет квитанции» — на карточке виноват работник, который сделал всё,
+ * что мог. Замерено 01.09.2026; решение основателя 02.09.2026: кодекс — работник уровня
+ * Опуса/Фейбла и делает всё идентично, а соседняя полоса ходит вообще без песочницы.
+ *
+ * ГРАНИЦА НЕ СНИМАЕТСЯ, В НЕЁ ВНОСИТСЯ ОДИН КАТАЛОГ. `danger-full-access` для этого не
+ * годится и структурно отклонён сборщиком аргументов; здесь называется ровно git-каталог этой
+ * копии, и больше ничего.
+ *
+ * СПРАШИВАЕТСЯ У GIT, А НЕ ВЫВОДИТСЯ ИЗ РАСКЛАДКИ КАТАЛОГОВ. Где лежит git-каталог копии,
+ * знает только git: у обычного клона это `.git` внутри, у рабочего дерева — путь в основной
+ * репозиторий. Ответ приводится к абсолютному одним выражением (codexGitWritableRoot), тем же
+ * на обеих дверях спавна.
+ *
+ * FAIL-OPEN, НО ВСЛУХ. Git молчит или его нет — спавн идёт прежним (полоса Claude этот список
+ * не читает вовсе, и отказ убил бы её ни за что), а промах ложится в журнал: молчание здесь
+ * вернуло бы ровно ту попытку без квитанции, ради которой всё это и написано.
+ */
+function copyWriteSpawnOptions(deps, workDir) {
+  if (typeof deps.execGit !== 'function') return {}
+  if (typeof workDir !== 'string' || workDir.trim() === '') return {}
+  let common = ''
+  try {
+    common = String(deps.execGit(['rev-parse', '--git-common-dir'], { cwd: workDir }) || '').trim()
+  } catch (err) {
+    writeLog(deps, { type: 'task.copy_git_dir_unknown', workDir, error: String((err && err.message) || err) })
+    return {}
+  }
+  const root = codexGitWritableRoot({ workDir, gitCommonDir: common })
+  if (!root) {
+    writeLog(deps, { type: 'task.copy_git_dir_unknown', workDir, error: 'git не назвал общий каталог копии' })
+    return {}
+  }
+  return { writableRoots: [root] }
 }
 
 /**
@@ -4085,8 +4132,42 @@ async function callStalledBatches(deps, now) {
   }
 }
 
+/**
+ * cardIsClosed(ledger, taskId) → уже ли эта карточка закрыта человеком, по РЕЕСТРУ.
+ *
+ * Реестр попыток — единственная запись, которая переживает и уборку копии, и срок хранения
+ * очереди: строку принятой работы pg-boss уносит в архив, и после этого спросить очередь о
+ * закрытии карточки нельзя. FAIL-OPEN: нечитаемый реестр отвечает «не знаю» (false), и решение
+ * остаётся за проверкой очереди — молчание файла не имеет права ЗАКРЫТЬ работу навсегда.
+ */
+function cardIsClosed(ledger, taskId) {
+  if (!ledger || typeof ledger.readAttempts !== 'function' || !taskId) return false
+  try {
+    return closureOf(ledger.readAttempts(taskId) || []) !== null
+  } catch {
+    return false
+  }
+}
+
 /** Intake per cadence — enqueue NEW ready backlog items; last-scan is threaded THROUGH the
- *  tick (deps.intake.lastScanAt in, result.intake.scannedAt out) so the tick stays stateless. */
+ *  tick (deps.intake.lastScanAt in, result.intake.scannedAt out) so the tick stays stateless.
+ *
+ *  «NEW» — ЭТО ТЕПЕРЬ ПРОВЕРЯЕМОЕ СЛОВО, А НЕ ОБЕЩАНИЕ. Обход ставил в очередь КАЖДУЮ готовую
+ *  строку файла на каждом заходе, а файл беклога ведёт человек: эта дверь его не правит и
+ *  вычеркнутой строку не увидит, пока он сам её не вычеркнет. Слипание очереди спасало только
+ *  то, что ещё ждёт или идёт (singletonKey держит `created`/`active`); работа ЗАКОНЧЕННАЯ —
+ *  ждущая решения, принятая и слитая — заводилась заново, подходом номер два. Замерено
+ *  31.08.2026: работа, принятая человеком в 11:12, вернулась в очередь ближайшим обходом.
+ *
+ *  ДВА ИСТОЧНИКА, ПОТОМУ ЧТО ОНИ МОЛЧАТ В РАЗНОЕ ВРЕМЯ. Очередь знает всё, что у неё ЕСТЬ —
+ *  включая то, что ещё никто не запускал, — но забывает законченное по сроку хранения. Реестр
+ *  не забывает ничего, но знает только о том, что уже закрыли. Ни один из них по отдельности
+ *  не отвечает «эту строку уже брали в работу».
+ *
+ *  А ОЧЕРЕДЬ, КОТОРАЯ НЕ ОТВЕТИЛА, ОСТАНАВЛИВАЕТ ПОСТАНОВКУ ЦЕЛИКОМ. Цена ошибки здесь
+ *  несимметрична: пропущенный заход стоит новой строке одного периода ожидания, а лишняя
+ *  постановка — оплаченного прогона по уже принятой работе. Заход при этом ЗАСЧИТЫВАЕТСЯ
+ *  (отметка едет наружу), иначе тик спрашивал бы сломанную очередь каждые несколько секунд. */
 async function runIntake(deps, now, result) {
   const { adapter, config, journal } = deps
   const intake = deps.intake
@@ -4096,17 +4177,38 @@ async function runIntake(deps, now, result) {
   if (now - last < dueMs) return
   try {
     const scan = await intake.scan()
+    const items = (scan && scan.items) || []
+    const notReady = (scan && scan.notReady) || []
+    // СПИСОК, А НЕ КЛЮЧЕВАЯ КОЛЛЕКЦИЯ: тик не держит ни одной — и это правило проверяется по
+    // тексту файла, а не по области видимости (журнальный grep-гейт).
+    let queued
+    try {
+      queued = (await adapter.list({})).map((r) => (r && r.id) || '').filter(Boolean)
+    } catch (err) {
+      if (typeof journal === 'function') journal({ type: 'intake-blind', error: String((err && err.message) || err) })
+      result.intake = { scannedAt: now, enqueued: 0, known: [], notReady }
+      return
+    }
     let enqueued = 0
-    for (const task of (scan && scan.items) || []) {
+    const known = []
+    for (const task of items) {
+      const id = task && task.id
+      if (id && (queued.includes(id) || cardIsClosed(deps.ledger, id))) {
+        // НЕ ОШИБКА И НЕ ПРОПАЖА: строка файла жива, работа по ней уже есть. Названа в журнале
+        // и в сводке захода, чтобы «обход ничего не поставил» читалось как ответ, а не как сбой.
+        known.push(id)
+        continue
+      }
       try {
         await adapter.enqueue(task)
         enqueued += 1
       } catch (err) {
         // a NotReady / invalid item is journaled, never fatal (fail-open intake)
-        if (typeof journal === 'function') journal({ type: 'intake-skip', taskId: task && task.id, error: String((err && err.message) || err) })
+        if (typeof journal === 'function') journal({ type: 'intake-skip', taskId: id, error: String((err && err.message) || err) })
       }
     }
-    result.intake = { scannedAt: now, enqueued, notReady: (scan && scan.notReady) || [] }
+    if (known.length > 0 && typeof journal === 'function') journal({ type: 'intake-known', ids: known })
+    result.intake = { scannedAt: now, enqueued, known, notReady }
   } catch (err) {
     if (typeof journal === 'function') journal({ type: 'intake-error', error: String((err && err.message) || err) })
   }
@@ -4826,6 +4928,9 @@ export async function tick(deps = {}) {
         ...continuationSpawnOptions(deps, config, task, wake),
         ...(mcpConfig ? { mcpConfigPath: mcpConfig.path } : {}),
         ...envelopeSpawnOptions(envelope),
+        // КУДА ЭТА ПОПЫТКА СДАЁТСЯ — в границу запуска, а не только в промпт. Копия попытки
+        // это рабочее дерево git, её git-каталог лежит СНАРУЖИ; см. copyWriteSpawnOptions.
+        ...copyWriteSpawnOptions(deps, workDir),
         // The attempt directory and the correction file, created and named BEFORE the process
         // exists — the parking gate inside the child reads both out of its environment.
         ...gateSpawnOptions(deps, config, task),
@@ -5757,6 +5862,10 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
     // Тот же список сгоревших потолков, что и на пути кода: два места, где живёт одно правило,
     // однажды разойдутся, а одно выражение — нет.
     burnedTurnCaps: turnBudget.burnedCaps,
+    // И ТА ЖЕ ГРАНИЦА ЗАПИСИ. У кузницы своей квитанции нет, но черновик она КОММИТИТ — а
+    // git-каталог копии лежит снаружи рабочего каталога ровно так же. Одно выражение на обе
+    // двери: вторая дверь спавна уже дважды оставалась без того, что получила первая.
+    ...copyWriteSpawnOptions(deps, worktreePath),
     // The SAME one function the code path calls — see its own note about the last time these
     // two points each carried a private copy of a spawn decision.
     ...gateSpawnOptions(deps, config, task),

@@ -79,7 +79,7 @@
  */
 
 import { copyFileSync as fsCopyFileSync, cpSync as fsCpSync, existsSync as fsExistsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve as resolvePath } from 'node:path'
 
 import { atomicWriteJson, atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 import { APPROACH_MARKERS, LESSON_MARKERS, MOOT_MARKERS } from '../front/journal.mjs'
@@ -934,6 +934,31 @@ export const CODEX_SANDBOX_ARTIFACTS = Object.freeze(['.sandbox', '.sandbox-bin'
 export const CODEX_APPROVAL_POLICY = 'never'
 
 /**
+ * codexGitWritableRoot({workDir, gitCommonDir}) → КАТАЛОГ GIT ЭТОЙ КОПИИ, приведённый к
+ * абсолютному пути, либо `null`, когда его назвать нечем.
+ *
+ * ПОЧЕМУ ЭТО ОТДЕЛЬНОЕ ВЫРАЖЕНИЕ, А НЕ СТРОКА В ТИКЕ. `git rev-parse --git-common-dir`
+ * отвечает по-разному в зависимости от того, где стоит копия: в обычном клоне это
+ * ОТНОСИТЕЛЬНЫЙ `.git`, а в рабочем дереве — абсолютный путь в основной репозиторий. В
+ * песочницу же можно положить только абсолютный корень: относительный она развернёт от
+ * своего каталога, а не от копии. Приведение живёт здесь, рядом с тем, кто пишет конфиг,
+ * чтобы обе двери спавна не делали его каждая по-своему.
+ *
+ * @param {{workDir?:string, gitCommonDir?:string}} [args]
+ * @returns {string|null}
+ */
+export function codexGitWritableRoot({ workDir, gitCommonDir } = {}) {
+  if (typeof workDir !== 'string' || workDir.trim() === '') return null
+  if (typeof gitCommonDir !== 'string' || gitCommonDir.trim() === '') return null
+  return resolvePath(workDir, gitCommonDir.trim())
+}
+
+/** Одна строка TOML в кавычках: обратный слэш Windows и кавычка — экранируются. */
+function tomlString(value) {
+  return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+}
+
+/**
  * codexConfigSeed() → the TEXT of the `config.toml` a spawn writes into a FRESH per-task
  * CODEX_HOME. Pure; the writing is seedCodexHome's job.
  *
@@ -966,12 +991,32 @@ export const CODEX_APPROVAL_POLICY = 'never'
  *     перед спавном. На системе, где песочницу держит ядро, копировать нечего, посев ничего не
  *     сеет, и текст выходит в точности прежним — ни один существующий спавн не меняет формы.
  *
- * Verified against codex-cli 0.150.1: this text passes `--strict-config`.
+ *   - `[sandbox_workspace_write] writable_roots` — КАТАЛОГ GIT КОПИИ, и без него работник
+ *     полосы codex правит файлы и не может их сдать. `workspace-write` открывает на запись
+ *     РАБОЧИЙ КАТАЛОГ и ничего больше, а копия задачи — это РАБОЧЕЕ ДЕРЕВО git: её `.git` —
+ *     файл-указатель, а индекс, ссылки и объекты лежат в основном репозитории, СНАРУЖИ копии.
+ *     Поэтому `git add`/`git commit` внутри песочницы упираются в запрет записи, сессия
+ *     честно правит файлы и уходит без коммита, а гейт закрывает попытку как «нет квитанции»
+ *     — на карточке виноват работник. Замерено 01.09.2026; решение основателя 02.09.2026:
+ *     кодекс работает на уровне Опуса/Фейбла и делает всё идентично, а полоса Claude ходит
+ *     вообще без песочницы. `danger-full-access` для этого не годится и структурно отклонён
+ *     (см. buildCodexArgs) — граница остаётся, в неё лишь вносится тот единственный каталог
+ *     снаружи копии, без которого работа не заканчивается.
  *
- * @param {{windowsSandbox?:boolean}} [opts]
+ *     Корней нет — секции нет, и текст выходит в точности прежним: обычный клон, чей `.git`
+ *     лежит ВНУТРИ рабочего каталога, ничего сюда не приносит.
+ *
+ * Verified against codex-cli 0.150.1: this text passes `--strict-config`; the key names are
+ * those of the CLI's own `SandboxWorkspaceWrite` table (`writable_roots`, `network_access`,
+ * `exclude_tmpdir_env_var`, `exclude_slash_tmp`) — read out of the shipped binary, not guessed.
+ *
+ * @param {{windowsSandbox?:boolean, writableRoots?:string[]}} [opts]
  * @returns {string}
  */
-export function codexConfigSeed({ windowsSandbox = false } = {}) {
+export function codexConfigSeed({ windowsSandbox = false, writableRoots = [] } = {}) {
+  const roots = (Array.isArray(writableRoots) ? writableRoots : [])
+    .filter((r) => typeof r === 'string' && r.trim() !== '')
+    .map((r) => r.trim())
   return [
     '# SMA — written fresh for THIS task; never shared with another and never hand-edited.',
     `approval_policy = "${CODEX_APPROVAL_POLICY}"`,
@@ -980,6 +1025,9 @@ export function codexConfigSeed({ windowsSandbox = false } = {}) {
     'memories = false',
     '',
     ...(windowsSandbox === true ? ['[windows]', 'sandbox = "elevated"', ''] : []),
+    ...(roots.length > 0
+      ? ['[sandbox_workspace_write]', `writable_roots = [${roots.map(tomlString).join(', ')}]`, '']
+      : []),
   ].join('\n')
 }
 
@@ -1029,10 +1077,15 @@ export class CodexHomeError extends Error {
  * функция не бросает, `sandboxSeeded` выходит пустым, конфиг выходит прежним, а решение, можно
  * ли в такой дом спавнить, остаётся там же, где решение про логин, — у композитора.
  *
- * @param {{home:string, authSources?:string[], sandboxSource?:string, fsImpl?:object}} args
- * @returns {{home:string, configPath:string, authPath:(string|null), authSource:(string|null), sandboxSeeded:string[], sandboxSource:(string|null)}}
+ * И ЧЕТВЁРТОЕ — КАТАЛОГ, В КОТОРЫЙ РАБОТА СДАЁТСЯ. `writableRoots` едет прямо в конфиг (см.
+ * codexConfigSeed): песочница `workspace-write` открывает рабочий каталог и ничего больше, а
+ * git-каталог копии-рабочего-дерева лежит СНАРУЖИ неё. Здесь этот список только записывается —
+ * ЧЕМ он заполнен, знает тик, потому что только он знает, где стоит копия.
+ *
+ * @param {{home:string, authSources?:string[], sandboxSource?:string, writableRoots?:string[], fsImpl?:object}} args
+ * @returns {{home:string, configPath:string, authPath:(string|null), authSource:(string|null), sandboxSeeded:string[], sandboxSource:(string|null), writableRoots:string[]}}
  */
-export function seedCodexHome({ home, authSources, sandboxSource, fsImpl } = {}) {
+export function seedCodexHome({ home, authSources, sandboxSource, writableRoots, fsImpl } = {}) {
   if (!home || String(home).trim() === '') throw new CodexHomeError('seedCodexHome: a home path is required')
   const dir = String(home)
   const existsFn = (fsImpl && fsImpl.existsSync) || fsExistsSync
@@ -1068,8 +1121,12 @@ export function seedCodexHome({ home, authSources, sandboxSource, fsImpl } = {})
   }
   const sandboxWhole = sandboxSeeded.length === CODEX_SANDBOX_ARTIFACTS.length
 
+  const roots = (Array.isArray(writableRoots) ? writableRoots : [])
+    .filter((r) => typeof r === 'string' && r.trim() !== '')
+    .map((r) => r.trim())
+
   const configPath = join(dir, CODEX_CONFIG_FILE)
-  atomicWriteRaw(configPath, codexConfigSeed({ windowsSandbox: sandboxWhole }), {
+  atomicWriteRaw(configPath, codexConfigSeed({ windowsSandbox: sandboxWhole, writableRoots: roots }), {
     mkdirFn: fsImpl && fsImpl.mkdirSync,
     writeFn: fsImpl && fsImpl.writeFileSync,
     renameFn: fsImpl && fsImpl.renameSync,
@@ -1099,6 +1156,7 @@ export function seedCodexHome({ home, authSources, sandboxSource, fsImpl } = {})
     authSource,
     sandboxSeeded,
     sandboxSource: sandboxWhole ? sandboxFrom : null,
+    writableRoots: roots,
   }
 }
 
