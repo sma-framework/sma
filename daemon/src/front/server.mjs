@@ -130,6 +130,9 @@ import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 // СКОЛЬКО ИМЁН КОНФЛИКТА ПОКАЗЫВАТЬ — потолок один на весь продукт и живёт там, где живёт сам
 // словарь конфликта. Второе число здесь однажды разошлось бы с тем, от которого считается «ещё N».
 import { CONFLICT_FILES_CAP as MERGE_CONFLICT_FILES_SHOWN } from '../../../scripts/sma/lib/branch-sync.mjs'
+// Код отказа сборки окна берётся у ритуала, а не пишется здесь второй раз: одно слово, один
+// хозяин — иначе дверь и квитанция однажды назовут одну беду двумя разными именами.
+import { SPA_BUILD_FAILED_CODE } from '../../../scripts/sma/lib/merge-gate.mjs'
 import { appendRedirect, REDIRECT_TEXT_CAP } from '../runner/redirects.mjs'
 import { writeWaveHold, WAVE_ACTIONS } from '../queue/wave-holds.mjs'
 import { BATCH_DECISIONS, parseReceiptProof, projectOf } from './state.mjs'
@@ -1100,6 +1103,17 @@ async function handleTask({ res, params, config, deps }) {
     // (сдача до появления поля, попытка, которой нечего было сводить), и это НЕ то же самое,
     // что «сведена»: молчание не имеет права читаться как чистая ветка.
     sync: a.sync ?? null,
+    // ═══ СКОЛЬКО СЕССИЯ СОБИРАЛАСЬ, ПРЕЖДЕ ЧЕМ СКАЗАТЬ ПЕРВОЕ СЛОВО ══════════════
+    //
+    // `{ms, words}` со строки попытки. До первого кадра у идущей работы есть ровно один
+    // признак жизни — её вывод, поэтому подготовка песочницы и повисший процесс выглядели
+    // снаружи одинаково: «молчит N минут». Раздача прав по писаемым корням занимала минуты
+    // (замерено 02.09.2026), и решение «снимать или ждать» принималось вслепую. Вычислено и
+    // записано — не то же самое, что предъявлено.
+    //
+    // `null` — «попытка об этом молчит»: сдача до появления поля или отказ до всякого
+    // процесса. Это НЕ «стартовала мгновенно».
+    sessionStart: a.sessionStart ?? null,
     // ═══ ЧЕГО ЭТА ПОПЫТКА СТОИЛА ════════════════════════════════════════════════
     //
     // Четыре числа поставщика — вход, выход, чтение кэша и запись в кэш — как их записала
@@ -1988,6 +2002,28 @@ function refusalClass(m) {
     return {
       reasonCode: 'env_broken',
       reason: said || 'слияние не выполнено: среда прогона сломана — тесты не запускались, чинится в основном дереве',
+    }
+  }
+
+  // ОКНО НЕ СОБРАЛОСЬ — И ЭТО ТОЖЕ НЕ ТЕСТЫ. Посадка пересобирает раздачу окна на сведённом
+  // дереве до прогона; сборка, которая не прошла, останавливает слияние ДО первого теста.
+  // Раньше такой отказ приезжал как «тесты красные, имя теста не названо» — человек шёл
+  // искать упавший тест, которого не существовало, а чинить надо было сборку. Хвост вывода
+  // сборщика едет к глазам: причина живёт в последних строках и больше нигде.
+  if (m.spaBuildFailed === true) {
+    const tail =
+      typeof m.failureDetail === 'string' && m.failureDetail.trim()
+        ? m.failureDetail
+            .split('\n')
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .join(' · ')
+        : null
+    return {
+      reasonCode: SPA_BUILD_FAILED_CODE,
+      reason:
+        'слияние не выполнено: окно не собралось на сведённом дереве — тесты не запускались, чинится сборка. ' +
+        (tail ? `Хвост сборки: ${tail}` : 'Сборщик не сказал ни строки — смотрите вывод сборки'),
     }
   }
 
@@ -6191,6 +6227,45 @@ function queueTitleFor(id, words) {
 const BACKLOG_TITLE_CAP = 400
 
 /**
+ * ТРИ ПОЛЯ, КОТОРЫМИ ЗАДАЧА ГОВОРИТ О СЕБЕ, — И ОНИ ЕДУТ ТЕМ ЖЕ ЗАПРОСОМ, ЧТО САМА ЗАДАЧА.
+ *
+ * ЧТО БЫЛО НЕ ТАК, И ЭТО ИЗМЕРЕНО, А НЕ ПРЕДПОЛОЖЕНО (02.09.2026). Две двери, ставящие работу
+ * пачкой, принимали только «что сделать» — заголовок, дорожку, идентификатор строки. Обещание
+ * («признаки успеха») приезжало ОТДЕЛЬНЫМ запросом, дверью правки слов, секунды спустя. А
+ * строка становится захватываемой в тот миг, когда она записана: тик успевал взять её раньше,
+ * чем приезжали её слова. Потолок ходов считается по ОБЪЯВЛЕННОМУ размеру работы, и работа без
+ * обещания объявлена мелкой — та же самая работа получала базовый потолок вместо тройного и
+ * умирала на ритуале сдачи, израсходовав ход сверх потолка. Соседние куски той же сборки,
+ * взятые ПОСЛЕ прихода слов, получали втрое больше. Разница между «сгорела» и «сделана» была
+ * не в работе, а в том, чей запрос успел первым.
+ *
+ * ОДНО ОБЕЩАНИЕ — ОДИН ЗАПРОС. Гонки нет там, где нечему опаздывать: слова кладутся на строку
+ * в том же вызове, что и сама строка, и первый же захват видит их. Дверь правки слов остаётся
+ * ровно тем, чем была, — ИСПРАВЛЕНИЕМ уже сказанного, а не единственным способом это сказать.
+ *
+ * ИМЕНА ПОЛЕЙ ОДНИ И ТЕ ЖЕ У ВСЕХ ЧЕТЫРЁХ ДВЕРЕЙ (постановка, сборка, повышение строки,
+ * правка слов). Разъехавшиеся имена — самый дешёвый способ потерять провод, а по этому проводу
+ * едет единственное, из чего продукт вообще узнаёт размер работы.
+ *
+ * ГРАНИЦ ЗДЕСЬ НЕ ПИШЕТСЯ НИ ОДНОЙ: длину, форму и число пунктов проверяет тот же
+ * `validateTask`, что и у двери постановки. Второй набор капов у второй двери — это второй
+ * набор капов, и работает более слабый.
+ */
+const TASK_WORD_KEYS = Object.freeze(['description', 'acceptance', 'taskContext'])
+
+/**
+ * taskWordsFrom(o) → те из трёх полей, что в запросе ЕСТЬ, как они есть.
+ *
+ * Отсутствующее поле не становится пустой строкой: `undefined` означает «человек об этом не
+ * сказал», а пустая строка — «сказал, что ничего», и на строке очереди это разные утверждения.
+ */
+function taskWordsFrom(o) {
+  const out = {}
+  for (const k of TASK_WORD_KEYS) if (o && o[k] !== undefined) out[k] = o[k]
+  return out
+}
+
+/**
  * GET /api/backlog — the project's own backlog file, as rows.
  *
  * No file is an empty board and not a 404: a project that keeps no backlog is not a broken one,
@@ -6202,7 +6277,8 @@ function handleBacklog({ res, config, deps }) {
 }
 
 /**
- * POST /api/backlog/promote — body {id, lane?, title?}. One line becomes work in the queue.
+ * POST /api/backlog/promote — body {id, lane?, title?, description?, acceptance?, taskContext?}.
+ * One line becomes work in the queue.
  *
  * THE LINE MUST BE IN THE FILE. The board and this door read it the same way, through the same
  * derive, so an identifier that is not an open row is a 404 rather than a phantom task nobody
@@ -6219,6 +6295,9 @@ function handleBacklog({ res, config, deps }) {
  * `row.priority`) becomes the number the row stands at in the queue. Both are computed once, in
  * the intake module, and read here — a door doing its own triage would be a second triage, and
  * a line promoted by hand would then queue differently from the same line taken by the scan.
+ *
+ * И ОБЕЩАНИЕ ЕДЕТ ЭТИМ ЖЕ ЗАПРОСОМ — см. `TASK_WORD_KEYS`: строка, повышенная в работу, несёт
+ * свои слова с первого мига, а не догоняет их вторым нажатием, пока тик её уже взял.
  */
 async function handleBacklogPromote({ req, res, config, deps }) {
   const adapter = deps.adapter
@@ -6228,7 +6307,7 @@ async function handleBacklogPromote({ req, res, config, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
   const b = body.value || {}
-  if (rejectUnknownKeys(res, b, new Set(['id', 'lane', 'title']))) return undefined
+  if (rejectUnknownKeys(res, b, new Set(['id', 'lane', 'title', ...TASK_WORD_KEYS]))) return undefined
 
   const id = b.id
   if (typeof id !== 'string' || !BACKLOG_WIRE_ID_RE.test(id)) return send400(res, 'invalid id')
@@ -6261,6 +6340,9 @@ async function handleBacklogPromote({ req, res, config, deps }) {
     // Размер внутри него по-прежнему второй ключ, поэтому мелкая работа, поставленная рукой,
     // встаёт там же, где встала бы взятая сканом: две постановки одной строки — одно место.
     ...(typeof row.priority === 'number' ? { priority: row.priority } : {}),
+    // …И СЛОВА, ЕСЛИ ЧЕЛОВЕК ИХ НАПИСАЛ, — тем же запросом, до того как строка стала
+    // захватываемой. Капы и формы — у `validateTask` ниже, своих здесь нет.
+    ...taskWordsFrom(b),
   }
   let norm
   try {
@@ -6289,6 +6371,14 @@ const BATCH_TITLE_CAP = 200
 /**
  * POST /api/batch — body {title, items[], lane?}. One sentence becomes a request row plus the
  * N pieces of work it names, all wearing one batch id.
+ *
+ * У КУСКА МОГУТ БЫТЬ СВОИ СЛОВА, И ОНИ ЕДУТ ЭТИМ ЖЕ ЗАПРОСОМ. Элемент списка — либо строка
+ * (как было и как останется), либо объект `{title, description?, acceptance?, taskContext?}`,
+ * где `title` — та же самая строка, а рядом лежит обещание ИМЕННО этого куска. Почему на
+ * куске, а не на сборке: у пяти дел одной сборки пять разных обещаний, и одно на всех
+ * означало бы, что каждый кусок объявлен размером со всю сборку. Зачем вообще — см.
+ * `TASK_WORD_KEYS`: обещание, приезжающее вторым запросом, опаздывает к захвату, и работа
+ * получает потолок ходов по пустоте. Незнакомый ключ ВНУТРИ элемента — тот же 400 до всего.
  *
  * AN ITEM IS EITHER A BACKLOG LINE OR A SENTENCE, and both are legal in one list: the owner
  * ticks what already exists and types what does not, and the backlog is not a compulsory
@@ -6322,15 +6412,22 @@ async function handleBatchCreate({ req, res, config, deps }) {
   // request that would then sit there, assembled and closed, having done nothing.
   if (!Array.isArray(b.items) || b.items.length === 0) return send400(res, 'a batch needs at least one item')
   if (b.items.length > BATCH_ITEMS_CAP) return send400(res, `a batch carries at most ${BATCH_ITEMS_CAP} items`)
-  const lines = []
+  const pieces = []
   for (const raw of b.items) {
-    const line = typeof raw === 'string' ? raw.trim() : ''
+    // ДВЕ ФОРМЫ ОДНОГО ЭЛЕМЕНТА, и обе разбираются здесь, до единой записи. Голая строка —
+    // кусок без своих слов; объект — тот же кусок со своим обещанием. Всё, кроме строки и
+    // объекта, — 400: `null` и число, приведённые к тексту, стали бы задачей с названием
+    // «null», и человек прочитал бы её как чью-то опечатку, а не как свою.
+    const isObject = raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+    if (isObject && rejectUnknownKeys(res, raw, new Set(['title', ...TASK_WORD_KEYS]))) return undefined
+    const source = isObject ? raw.title : raw
+    const line = typeof source === 'string' ? source.trim() : ''
     if (line === '' || line.length > BATCH_ITEM_CAP) return send400(res, 'invalid item')
-    lines.push(line)
+    pieces.push({ line, words: isObject ? taskWordsFrom(raw) : {} })
   }
 
   // The referenced lines, resolved ONCE against the file — the same read the board does.
-  const referenced = lines.filter((l) => BACKLOG_WIRE_ID_RE.test(l))
+  const referenced = pieces.filter((p) => BACKLOG_WIRE_ID_RE.test(p.line)).map((p) => p.line)
   let backlogRows = []
   if (referenced.length > 0) {
     if (typeof deps.deriveBacklog !== 'function') return send501(res)
@@ -6349,7 +6446,7 @@ async function handleBatchCreate({ req, res, config, deps }) {
   // миллисекунду, — то есть две правды о том, когда человек нажал.
   const requestedAt = clock()
   const batchId = `B-${requestedAt}`
-  const tasks = lines.map((line, i) => {
+  const tasks = pieces.map(({ line, words }, i) => {
     const row = BACKLOG_WIRE_ID_RE.test(line) ? backlogRows.find((r) => r && r.id === line) : null
     // A referenced line rides identifier-first, the way the promote door already writes it, so a
     // queue row can be read back to the line it came from. Both halves are the project's words.
@@ -6362,6 +6459,8 @@ async function handleBatchCreate({ req, res, config, deps }) {
       title: row ? queueTitleFor(row.id, row.title) : line,
       lane,
       batchId,
+      // Обещание ЭТОГО куска — на строке с первого мига, а не вторым запросом вдогонку.
+      ...words,
     }
   })
   const request = {

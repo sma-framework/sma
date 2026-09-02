@@ -34,6 +34,13 @@ export interface WindowFact {
   /** The provider's own percentage, ONLY when it sent one. Null means it did not. */
   pct: number | null
   /**
+   * When this reading was taken. A percentage with no hour on it is read as «now» — which is
+   * how a week measured nineteen hours earlier passed for the current one on the board. The
+   * moment travels rather than an age, because an age computed on the daemon is already wrong
+   * by the time the screen draws it.
+   */
+  observedAt: string | null
+  /**
    * Where this fact came from, when it was not the account's own reading. `terminal` means a
    * status line signed into this account's config directory reported it — the same
    * subscription, said by another mouth — and the screen names that instead of passing it off
@@ -115,6 +122,20 @@ export interface QueueRow {
    */
   claimedAt: number | null
   leaseRenewedAt: number | null
+  /**
+   * СТРОКА, О РАЗМЕРЕ КОТОРОЙ НЕ СКАЗАНО НИЧЕГО, — и потолок ходов, который она за это
+   * получит.
+   *
+   * Потолок считается по объявленной работе: ни признаков успеха, ни оценки — работа объявлена
+   * мелкой и уходит в процесс с базовым числом ходов. Направление ошибки правильное (никто не
+   * выдаёт запас, которого не просили), но до сих пор оно было невидимым: человек узнавал
+   * число уже красной карточкой, когда работа в него упёрлась. Здесь оно приходит вовремя —
+   * пока строка ждёт работника и обещание ещё можно дописать.
+   *
+   * Присутствует ТОЛЬКО у ждущей работника строки без обещания; отсутствие означает, что
+   * размер работы чем-то объявлен, а не что потолка нет.
+   */
+  noPromise?: { cap: number }
 }
 
 /**
@@ -320,6 +341,20 @@ export interface WorkerRow {
    * `taskId` или не приходит вовсе.
    */
   taskClaimedAt?: number | null
+  /**
+   * ОСТАЛЬНЫЕ ПОПЫТКИ, КОТОРЫЕ ЭТОТ РАБОТНИК ДЕРЖИТ ОДНОВРЕМЕННО С `taskId`.
+   *
+   * Правило продукта — одна живая сессия на работника, и держит его захват. Поле существует
+   * ровно на случай, когда правило всё-таки нарушено: пока его нет, всё в порядке. Раньше на
+   * этом месте не было ничего, и карточка называла ПЕРВУЮ из двух попыток — то есть доска
+   * оказывалась единственным местом, где двойной захват не виден.
+   */
+  alsoRunning?: Array<{
+    taskId: string
+    taskTitle?: string | null
+    project?: string | null
+    taskClaimedAt?: number | null
+  }>
   /**
    * «Сделано / не получилось» за последние 30 дней, посчитанные демоном из леджера попыток.
    * ОТСУТСТВУЕТ, когда леджер прочитать не удалось (или демон старый): ноль на карточке
@@ -1512,6 +1547,13 @@ export interface TaskAttempt {
    * (сдана до появления поля, либо сводить было нечего), и это НЕ то же самое, что «свелась».
    */
   sync?: AttemptSync | null
+  /**
+   * Сколько сессия собиралась, прежде чем сказать первое слово: `ms` — измерение, `words` — то,
+   * что читается без пересчёта в голове. До первого кадра у идущей работы есть один признак
+   * жизни — её вывод, поэтому подготовка песочницы и повисший процесс выглядели снаружи
+   * одинаково. `null` — «попытка об этом молчит», и это НЕ «стартовала мгновенно».
+   */
+  sessionStart?: { ms: number | null; words: string } | null
   /**
    * ═══════ ЧТО ЭТА ПОПЫТКА ИЗМЕНИЛА И ЧТО ПОСЛЕ НЕЁ ИСЧЕЗЛО ═══════
    *

@@ -91,7 +91,10 @@ import { readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, statSync 
 import { networkInterfaces as osNetworkInterfaces } from 'node:os'
 import { join } from 'node:path'
 
-import { activeProjectEntry, apiCapUsd, codeTreeOf, pipelineEnabled, planningHomeOf } from '../config.mjs'
+import { activeProjectEntry, apiCapUsd, codeTreeOf, pipelineEnabled, pipelineMaxTurns, planningHomeOf } from '../config.mjs'
+// ПОТОЛОК ХОДОВ СЧИТАЕТСЯ ТОЙ ЖЕ ФУНКЦИЕЙ, что зовёт тик перед запуском и карточка на экране.
+// Своя арифметика у списка была бы третьим мнением о числе, с которым работник уйдёт в процесс.
+import { taskTurnCap, burnedTurnCapsOf } from '../policy/turn-budget.mjs'
 import { isOpen } from '../policy/windows.mjs'
 import {
   accountNameOf,
@@ -1410,6 +1413,12 @@ function windowFact(fact) {
     // so an unknown window went on the wire as «0%», which is the one wrong answer this whole
     // change exists to stop: a zero bar is read as «the quota is free».
     pct: f.pct == null ? null : numOrNull(f.pct),
+    // WHEN THIS WAS MEASURED. A percentage with no hour on it is read as «now», and on
+    // 02.09.2026 that is exactly how a week measured nineteen hours earlier was read: the board
+    // said 67 %, the person's own terminal said 7 %, and nothing on the screen said which of the
+    // two was older. The screens say the age in words beside the number; the wire carries the
+    // moment, because an age computed here would be stale by the time it was drawn.
+    observedAt: typeof f.observedAt === 'string' ? f.observedAt : null,
     ...(f.source === 'terminal' ? { source: 'terminal' } : {}),
   }
 }
@@ -3203,6 +3212,31 @@ export async function deriveState(deps = {}) {
     } else if (ageMs > agingMs) {
       out.agedForHours = Math.floor(ageMs / HOUR_MS) // «застряла» signal
     }
+
+    // ── СТРОКА БЕЗ ОБЕЩАНИЯ ГОВОРИТ ОБ ЭТОМ ВСЛУХ, ПОКА ЕЁ ЕЩЁ НЕ ВЗЯЛИ ──────────────────
+    //
+    // Потолок ходов считается по ОБЪЯВЛЕННОМУ размеру работы, а работа, о которой не сказано
+    // ничего, объявлена мелкой и получает базовый потолок. Правильное направление ошибки для
+    // потолка — но невидимое: человек узнавал число только после того, как работа в него
+    // упёрлась и сгорела. Слово рядом со строкой возвращает ему тот единственный миг, когда
+    // это ещё чинится одним нажатием: дописать обещание, пока строка ждёт работника.
+    //
+    // ТОЛЬКО У ЖДУЩИХ РАБОТНИКА. У взятой строки число уже уехало на командную строку, и
+    // подсказка «допишите» была бы советом, которому нечего изменить.
+    //
+    // ЧИСЛО — НАСТОЯЩЕЕ, той же функцией, что считает его тик. Реестр попыток спрашивается
+    // ТОЛЬКО у строки, которая уже ходила (`attempt > 1`): у свежей строки жечь было нечего,
+    // а чтение файла на каждую строку очереди в каждом опросе экрана — цена, которую платить
+    // не за что.
+    if (r.status === 'queued') {
+      const burned = Number(r.attempt) > 1 ? burnedTurnCapsOf(readTaskAttempts(r.id)) : []
+      const plan = taskTurnCap({ base: pipelineMaxTurns(config), task: r, burnedCaps: burned })
+      // «Без обещания» — это ноль пунктов И ноль знаков: работа, о размере которой не сказано
+      // ничего. Оценка, поставленная числом, обещанием тоже считается — там размер объявлен, и
+      // слово «без обещания» над крупной работой было бы неправдой.
+      const mute = plan.signals.criteria === 0 && plan.signals.promiseChars === 0 && plan.size === 'small'
+      if (mute && typeof plan.cap === 'number') out.noPromise = { cap: plan.cap }
+    }
     return out
   }
 
@@ -3259,7 +3293,15 @@ export async function deriveState(deps = {}) {
     const bar = windowBar(win)
     const open = isOpen(bar, () => now)
 
-    const active = claimedRows.find((r) => r.workerId === w.id) || null
+    // ВСЁ, ЧТО ЭТОТ РАБОТНИК ДЕРЖИТ, А НЕ ПЕРВОЕ ПОПАВШЕЕСЯ. Здесь стоял `find`, и он был
+    // молчаливым согласием с правилом «один работник = одна живая сессия»: пока правило
+    // держалось, разницы не было, а когда оно сломалось — 02.09.2026 один работник вёл две
+    // попытки — доска показала ОДНУ и стала единственным местом, где нарушение не видно.
+    // Экран не чинит инвариант (его держит захват), но обязан его НАЗЫВАТЬ: вторая строка едет
+    // на карточку отдельным списком, и её пустота — это измерение, а не умолчание.
+    const held = claimedRows.filter((r) => r.workerId === w.id)
+    const active = held[0] || null
+    const alsoHeld = held.slice(1)
     // The sign of life is the RENEWAL clock: «событие N секунд назад» is a statement about the
     // last time the worker said it lives, not about when it started. The two older names stay as
     // the fallback for a reading that carries only one of them.
@@ -3307,6 +3349,20 @@ export async function deriveState(deps = {}) {
             // and delivered to nobody. Null while the queue cannot say; the renewal clock is
             // already stated beside it as pulseAgeSec.
             taskClaimedAt: active.claimedAt ?? null,
+          }
+        : {}),
+      // ВТОРАЯ И ДАЛЬНЕЙШИЕ ПОПЫТКИ ОДНОГО РАБОТНИКА — поле появляется ТОЛЬКО когда инвариант
+      // нарушен, и его присутствие само по себе есть жалоба. Три факта на строку — те же, что
+      // экран уже читает у первой: без имени и проекта карточка печатала бы голый номер
+      // маршрута там, где человек ждёт названия работы.
+      ...(alsoHeld.length > 0
+        ? {
+            alsoRunning: alsoHeld.map((r) => ({
+              taskId: r.id,
+              taskTitle: r.title ?? null,
+              project: projectOf(r),
+              taskClaimedAt: r.claimedAt ?? null,
+            })),
           }
         : {}),
       window: bar,

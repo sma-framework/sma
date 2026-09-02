@@ -294,6 +294,29 @@ function makeFakeBackend({
       const n = [...attempts.entries()].filter(([id, a]) => a.status === status && live.has(id)).length
       return { rows: [{ n }] }
     }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes("SET state = 'created'")) {
+      // releaseClaim(): ВЗЯТАЯ СТРОКА ВОЗВРАЩАЕТСЯ В ОЧЕРЕДЬ, И ПОДХОД НЕ СЧИТАЕТСЯ. Смоделирован
+      // ровно как написан: по JOB id, только из активного состояния, и — это здесь главное —
+      // БЕЗ `retry_count`, потому что именно на нём стоит номер подхода. Подделка, трогающая
+      // счётчик, удостоверяла бы возврат, который на живой очереди сжигал бы подход.
+      //
+      // СТОИТ ВЫШЕ ДВУХ ВЕТОК, ЧЬИ ПРИЗНАКИ ЭТОТ ОПЕРАТОР РАЗДЕЛЯЕТ: имени работника (он его
+      // СНИМАЕТ, а не пишет) и отметки аренды. Поставленная ниже, она бы до него не доехала —
+      // и возврат молча превратился бы в назначение работника.
+      const jobId = params[0]
+      const j = jobs.get(String(jobId))
+      if (j && j.state === 'active') {
+        j.state = 'created'
+        j.started_on = null
+        const kept: any = {}
+        for (const [k, v] of Object.entries(j.data || {})) {
+          if (k === 'workerId' || k === 'attemptToken' || k === 'claimedAt' || k === 'claimedAtRetry') continue
+          kept[k] = v
+        }
+        j.data = kept
+      }
+      return { rows: [] }
+    }
     if (sql.startsWith('UPDATE pgboss.job') && sql.includes('workerId')) {
       // assignWorker(): the executing worker written into the job payload, keyed by JOB id.
       const [jobId, workerId] = params
