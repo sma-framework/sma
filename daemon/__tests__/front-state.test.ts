@@ -136,16 +136,23 @@ function mkAdapter(rows: any[]) {
 }
 
 describe('derivePresence — pure truth table', () => {
-  it('a CLOSED window → «ждёт окно» even with an active task', () => {
-    expect(derivePresence({ windowOpen: false, hasActiveTask: true, pulseAgeSec: 1 })).toBe('ждёт окно')
+  it('a CLOSED window → «ждёт окно» when the worker holds NOTHING', () => {
     expect(derivePresence({ windowOpen: false, hasActiveTask: false })).toBe('ждёт окно')
   })
-  it('an OPEN window + active task + fresh touch → «работает»', () => {
+  it('an OPEN window + active task → «работает»', () => {
     expect(derivePresence({ windowOpen: true, hasActiveTask: true, pulseAgeSec: 5 })).toBe('работает')
   })
-  it('an OPEN window with no active task → «свободен»; a stale touch → «свободен»', () => {
+  it('an OPEN window with no active task → «свободен»', () => {
     expect(derivePresence({ windowOpen: true, hasActiveTask: false })).toBe('свободен')
-    expect(derivePresence({ windowOpen: true, hasActiveTask: true, pulseAgeSec: 9999 })).toBe('свободен')
+  })
+  // Взятая строка перебивает и молчание, и закрытое окно: пока строка в руках, работник её
+  // не отпустил — ни места, ни задачи, — и слово «свободен» над ней было бы неправдой.
+  // Отпускает не тишина, а сторож живости: он снимает захват, и слово меняется само.
+  it('a STALE touch does NOT free a worker that still holds the row', () => {
+    expect(derivePresence({ windowOpen: true, hasActiveTask: true, pulseAgeSec: 9999 })).toBe('работает')
+  })
+  it('a CLOSED window does NOT idle a worker mid-attempt — the window says who may TAKE work', () => {
+    expect(derivePresence({ windowOpen: false, hasActiveTask: true, pulseAgeSec: 1 })).toBe('работает')
   })
 })
 
@@ -352,6 +359,58 @@ describe('deriveState — the one-poll payload', () => {
     })
     expect(payload.workers[0].presence).toBe('ждёт окно')
     expect(payload.workers[0].window.closedUntil).toBe(NOW + HOUR)
+  })
+
+  // ── СЧЁТЧИК И СПИСОК — ОБ ОДНОМ И ТОМ ЖЕ, В ОДНОЙ И ТОЙ ЖЕ ВЫДАЧЕ ──
+  //
+  // Замерено 31.08 сверкой счётчика со списком: `kpis.workersBusy` считал работников по
+  // наличию строки в руках, а слово под работником выводилось по свежести касания — и доска
+  // в одном ответе говорила «в работе N» и рисовала N карточек со словом «свободен».
+  // Аренда продлевается только на целых кадрах потока, так что молчащий (думающий) работник
+  // переставал быть «свежим» через три минуты, не отпуская ни строки, ни места.
+  it('замолчавший работник, держащий строку, остаётся «работает» — и счётчик равен списку', async () => {
+    const rows = [
+      // Взята пять минут назад, сигнал жизни — тогда же: работник думает молча.
+      { id: 'R-quiet', status: 'claimed', lane: 'prod', title: 'молчит', workerId: 'max-1', claimedAt: NOW - 300_000, leaseRenewedAt: NOW - 300_000 },
+      // Взята только что — вторая занятая карточка, чтобы счётчик считал не единицу.
+      { id: 'R-fresh', status: 'claimed', lane: 'prod', title: 'свежая', workerId: 'max-2', claimedAt: NOW - 2000, leaseRenewedAt: NOW - 2000 },
+    ]
+    const windows = makeWindows({
+      'max-1': { fiveHour: win('open', NOW + HOUR), week: win('open') },
+      'max-2': { fiveHour: win('open', NOW + HOUR), week: win('open') },
+    })
+    const payload = await deriveState({ adapter: mkAdapter(rows), windows, config, clock: () => NOW })
+
+    const quiet = payload.workers.find((w: any) => w.id === 'max-1')
+    expect(quiet.taskId).toBe('R-quiet')
+    expect(quiet.pulseAgeSec).toBe(300) // молчание НАЗВАНО — и названо отдельным полем
+    expect(quiet.presence, 'работник, не выпустивший строку, помечен свободным').toBe('работает')
+
+    expect(payload.kpis.workersBusy).toBe(2)
+    // ЗАКОН, А НЕ СОВПАДЕНИЕ: счётчик — это пересчитанные карточки, и разойтись им нечем.
+    const pool = payload.workers.filter((w: any) => w.inQueue)
+    expect(pool.filter((w: any) => w.presence === 'работает').length).toBe(payload.kpis.workersBusy)
+    expect(pool.filter((w: any) => w.presence === 'свободен' && w.taskId)).toEqual([])
+  })
+
+  // Окно закрылось ПОСРЕДИ попытки: работа идёт, и карточка, показывающая её название,
+  // не имеет права говорить «ждёт окно». Окно отвечает на «может ли ВЗЯТЬ», а не на «делает ли».
+  it('окно, закрывшееся посреди попытки, не превращает работника в ожидающего', async () => {
+    const rows = [
+      { id: 'R-mid', status: 'claimed', lane: 'prod', title: 'в руках', workerId: 'max-1', claimedAt: NOW - 60_000, leaseRenewedAt: NOW - 10_000 },
+    ]
+    const windows = makeWindows({
+      'max-1': { fiveHour: win('exhausted', NOW + HOUR), week: win('open'), closedUntil: NOW + HOUR },
+    })
+    const payload = await deriveState({
+      adapter: mkAdapter(rows),
+      windows,
+      config: { ...config, workers: [{ id: 'max-1', lane: 'prod', account: { name: 'max-1' } }] },
+      clock: () => NOW,
+    })
+    expect(payload.workers[0].presence).toBe('работает')
+    expect(payload.workers[0].taskId).toBe('R-mid')
+    expect(payload.kpis.workersBusy).toBe(1)
   })
 
   it('agedForHours appears ONLY past config.agingHours (both sides of the boundary)', async () => {
