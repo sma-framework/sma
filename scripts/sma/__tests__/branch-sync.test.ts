@@ -46,6 +46,8 @@ import {
   abortSync,
   unresolvedMergeHint,
   matchesPattern,
+  mechanicalPaths,
+  isMechanicalPath,
   measuredLinePatterns,
   hasConflictMarkers,
   CONFLICT_FILES_CAP,
@@ -124,6 +126,34 @@ describe('что считается механическим — и что не 
     const split = classifyConflicts(['test-receipt.json', 'daemon/src/loop.mjs'], MECHANICAL_DEFAULTS)
     expect(split.measured).toEqual(['test-receipt.json'])
     expect(split.human).toEqual(['daemon/src/loop.mjs'])
+  })
+
+  // ОДИН СПИСОК НА ДВУХ СПРАШИВАЮЩИХ. О механическом спрашивает не только слияние: очередь
+  // задаёт тот же вопрос, решая, стоит ли из-за файла придерживать работу. Второй перечень тех
+  // же имён разошёлся бы с первым в первый же день, когда правила пополнят с одной стороны.
+  it('весь механический набор называется одним списком — склейка, замер и пересборка вместе', () => {
+    const paths = mechanicalPaths(MECHANICAL_DEFAULTS)
+    expect(paths).toContain('README.md')
+    expect(paths).toContain('README.ru.md')
+    expect(paths).toContain('test-receipt.json')
+    expect(paths).toContain('docs/master-graph.html')
+    expect(paths).toContain('.claude/memory/INDEX-*.md')
+    expect(paths).not.toContain('daemon/src/loop.mjs')
+  })
+
+  it('вопрос «развожу ли я это сам» отвечается по образцу, а не по точному имени', () => {
+    expect(isMechanicalPath('README.ru.md')).toBe(true)
+    expect(isMechanicalPath('.claude/memory/INDEX-tech.md')).toBe(true)
+    expect(isMechanicalPath('daemon/src/loop.mjs')).toBe(false)
+    expect(isMechanicalPath('')).toBe(false)
+    // Свои правила звонящего — своё поведение: список остаётся данными.
+    expect(isMechanicalPath('README.md', { union: [] })).toBe(false)
+  })
+
+  // Строки бейджа — это СТРОКИ внутри рукописного файла, а не файлы: объявить по ним весь файл
+  // механическим значило бы соврать о чужих абзацах.
+  it('образцы строк замера файлами не притворяются', () => {
+    expect(mechanicalPaths({ measured: { lines: ['img\\.shields\\.io/badge/tests-'] } })).toEqual([])
   })
 
   it('правило БЕЗ команды пересборки не делает файл механическим', () => {

@@ -20,7 +20,12 @@
  *   4. справочный бэкенд держит обещание: пересекающаяся работа НЕ выдаётся, пока сосед в
  *      работе, и выдаётся сразу, как он закончил (последовательно, а не никогда);
  *   5. дверь приёмки называет ЧИСЛО и ИМЕНА файлов, а механически разведённое — отдельно;
- *   6. само удержание не бывает МОЛЧАЛИВЫМ: придержанная строка называет занятый файл и
+ *   6. ШТАМПЫ НЕ ДЕРЖАТ: файл, спор о котором развод снимает механически (оба README, карта
+ *      графа, квитанция прогона, индекс памяти), объявленным не считается — иначе закон дома
+ *      «README×2 в том же изменении» заставляет каждую карточку пересечься с каждой, и очередь
+ *      выстраивает весь флот в одну линию (замерено 02.09.2026: одиннадцать строк, свободный
+ *      работник, ни одного захвата);
+ *   7. само удержание не бывает МОЛЧАЛИВЫМ: придержанная строка называет занятый файл и
  *      работу, которая его держит, — иначе свободные работники и стоящая задача читаются как
  *      поломка, и человек идёт искать её там, где её нет.
  */
@@ -28,6 +33,7 @@
 import { describe, it, expect } from 'vitest'
 
 import { createMemoryQueue, declaredFiles, fileHeldOf, fileHoldsOf } from '../src/queue/adapter.mjs'
+import { MECHANICAL_DEFAULTS, mechanicalPaths } from '../../scripts/sma/lib/branch-sync.mjs'
 import { mergeRefusal } from '../src/front/server.mjs'
 import { buildUnits } from '../../spa/src/screens/tasks/units'
 import type { QueueRow } from '../../spa/src/api/types'
@@ -47,13 +53,12 @@ describe('declaredFiles — что работа объявила своими с
   it('читает пути из заголовка, описания и признаков успеха', () => {
     const files = declaredFiles({
       title: 'починить daemon/src/loop.mjs',
-      description: 'конфликты садятся в оба README.md и README.ru.md',
-      acceptance: ['числа в `docs/master-graph.html` пересобираются'],
+      description: 'заодно экран spa/app.mjs',
+      acceptance: ['разбор в `scripts/sma/lib/branch-sync.mjs` не меняется'],
     })
     expect(files).toContain('daemon/src/loop.mjs')
-    expect(files).toContain('README.md')
-    expect(files).toContain('README.ru.md')
-    expect(files).toContain('docs/master-graph.html')
+    expect(files).toContain('spa/app.mjs')
+    expect(files).toContain('scripts/sma/lib/branch-sync.mjs')
   })
 
   it('версии и даты путями не считаются', () => {
@@ -70,6 +75,33 @@ describe('declaredFiles — что работа объявила своими с
 
   it('обрамление кавычками и обратными кавычками снимается', () => {
     expect(declaredFiles({ title: 'правит `daemon/src/loop.mjs`.' })).toEqual(['daemon/src/loop.mjs'])
+  })
+
+  // ШТАМПЫ ОБЪЯВЛЕННЫМИ НЕ СЧИТАЮТСЯ. Закон дома велит каждой карточке, меняющей продукт,
+  // назвать оба README, — по ним пересекаются ВСЕ работы со всеми, и очередь, честно исполняя
+  // правило, выстраивала флот в одну линию. Разводит эти файлы машина, а не человек.
+  it('оба README, квитанция прогона и карта графа объявленными не считаются', () => {
+    const files = declaredFiles({
+      title: 'починить daemon/src/loop.mjs',
+      description: 'обновить README.md и README.ru.md',
+      acceptance: ['`test-receipt.json` свежий', 'числа в `docs/master-graph.html` пересобраны'],
+    })
+    expect(files).toEqual(['daemon/src/loop.mjs'])
+  })
+
+  it('штамп не спасает и явное объявление: правило одно для обоих путей чтения', () => {
+    expect(declaredFiles({ title: 'что угодно', files: ['README.md', 'daemon/src/loop.mjs'] })).toEqual([
+      'daemon/src/loop.mjs',
+    ])
+  })
+
+  // ОДИН ИСТОЧНИК, А НЕ КОПИЯ: очередь спрашивает о механическом ту самую сторону, которая его
+  // и разводит на приёмке. Пополнят список правил — очередь узнает об этом тем же днём.
+  it('механический набор берётся у развода слияния — весь, каким бы он ни стал', () => {
+    for (const pattern of mechanicalPaths(MECHANICAL_DEFAULTS)) {
+      const path = pattern.replace(/\*/g, 'x')
+      expect(declaredFiles({ title: `работа про ${path} и daemon/src/loop.mjs` })).toEqual(['daemon/src/loop.mjs'])
+    }
   })
 })
 
@@ -113,10 +145,25 @@ describe('fileHoldsOf — удержание вместе с причиной, �
   })
 
   it('держатели не повторяются: одна работа, занявшая два файла, названа один раз', () => {
-    const two = { id: 'A', status: 'claimed', title: 'README.md и README.ru.md' }
-    const holds = fileHoldsOf([two, { id: 'B', status: 'queued', title: 'дописать в README.md и README.ru.md' }])
-    expect(holds[0].files).toEqual(['README.md', 'README.ru.md'])
-    expect(holds[0].holders).toEqual([{ id: 'A', title: 'README.md и README.ru.md' }])
+    const two = { id: 'A', status: 'claimed', title: 'daemon/src/loop.mjs и spa/app.mjs' }
+    const holds = fileHoldsOf([two, { id: 'B', status: 'queued', title: 'дописать в daemon/src/loop.mjs и spa/app.mjs' }])
+    expect(holds[0].files).toEqual(['daemon/src/loop.mjs', 'spa/app.mjs'])
+    expect(holds[0].holders).toEqual([{ id: 'A', title: 'daemon/src/loop.mjs и spa/app.mjs' }])
+  })
+
+  // ПРОВОД: штамп, названный обеими работами, никого не держит, а настоящий файл — держит.
+  // Обе половины в одном случае намеренно: правило, снявшее удержание вместе с полезным, было
+  // бы не починкой, а отключением.
+  it('две работы про оба README и квитанцию друг друга не держат — а про движок держат', () => {
+    const stamps = 'README.md, README.ru.md и test-receipt.json'
+    const rows = [
+      { id: 'A', status: 'claimed', title: `первая: ${stamps}, а также daemon/src/loop.mjs` },
+      { id: 'B', status: 'queued', title: `вторая: ${stamps}` },
+      { id: 'C', status: 'queued', title: `третья: ${stamps} и daemon/src/loop.mjs` },
+    ]
+    const holds = fileHoldsOf(rows)
+    expect(holds.map((h) => h.id)).toEqual(['C'])
+    expect(holds[0].files).toEqual(['daemon/src/loop.mjs'])
   })
 
   // ВОЗВРАЩЁННАЯ РАБОТА ВСТАЁТ В ОЧЕРЕДЬ ПОД СВОИМ ЖЕ НОМЕРОМ, и долговечный бэкенд хранит
