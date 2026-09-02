@@ -183,7 +183,7 @@ import {
   isResumableSessionId,
   codexHomeFor,
   codexSandboxFor,
-  codexWorkspaceWriteSupport,
+  codexWorkspaceWriteOutlook,
   codexSandboxRefusal,
 } from './runner/args.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
@@ -1763,6 +1763,15 @@ function envelopeBlocker(envelope) {
  * решение спрашивается РАНЬШЕ только ради слова на карточке: брошенное из строителя, оно
  * приехало бы общим `runtime_offline`, под которым не видно ни песочницы, ни дома.
  *
+ * И РАЗ РАНЬШЕ — ЗНАЧИТ ВОПРОС ПРОГНОЗА, А НЕ ФАКТА: ЭТО И БЫЛ НЕСШИТЫЙ ШОВ. Дома задачи в эту
+ * секунду ещё нет на диске — его чеканит и засевает сборщик, — поэтому «лежит ли в нём след
+ * установки» отвечало «нет» ВСЕГДА, и страж отказывал ДО ТОГО, как посев успевал лечь. Замерено
+ * живой пробой записи 01.09.2026 после выпуска: в доме счёта лежал полный след, посев скопировал
+ * бы его через полсекунды, а ни одна пишущая задача полосы codex не стартовала вовсе. Поэтому
+ * спрашивается `codexWorkspaceWriteOutlook` — «провизирован дом задачи ИЛИ ляжет посев из дома
+ * счёта», тем же правилом, каким сеет сам посев. Сборщик остаётся на факте: он смотрит уже
+ * ПОСЛЕ посева, и там прогноз был бы догадкой о том, что уже случилось.
+ *
  * `missing_access` — потому что это ровно оно и есть по словарю очереди: «нужен человек, не
  * хватает доступа». Установку песочницы проводит человек из элевированной оболочки; ни один
  * повтор попытки этого не изменит.
@@ -1790,8 +1799,16 @@ function codexSandboxBlocker(deps, task, route, envelope) {
   } catch {
     return null // дом не собрался — это скажет сборщик аргументов своими словами
   }
-  const support = codexWorkspaceWriteSupport({ platform: deps.platform, home, fsImpl: deps.fsImpl })
-  if (support.supported) return null
+  const outlook = codexWorkspaceWriteOutlook({
+    platform: deps.platform,
+    home,
+    // ИСТОЧНИК ПОСЕВА НАЗЫВАЕТСЯ НЕ ЗДЕСЬ: тот же счёт отдаётся сборщику аргументов, и путь
+    // собирается одним выражением на обе двери (codexSandboxSourceFor).
+    account: worker.account,
+    homedir: deps.homedir,
+    fsImpl: deps.fsImpl,
+  })
+  if (outlook.supported) return null
   return {
     reason: 'missing_access',
     // СЛОВА ОТКАЗА ЖИВУТ ОДНИМ ВЫРАЖЕНИЕМ РЯДОМ С ПРЕДИКАТОМ, А НЕ ЗДЕСЬ: тот же текст читает

@@ -35,7 +35,12 @@ import { tick } from '../src/loop.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
 import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { recordAttempt, readAttempts, createAttemptLogWriter } from '../src/queue/attempt-ledger.mjs'
-import { buildCodexArgs, codexHomeFor, CODEX_WINDOWS_SANDBOX_MARKER } from '../src/runner/args.mjs'
+import {
+  buildCodexArgs,
+  codexHomeFor,
+  CODEX_WINDOWS_SANDBOX_MARKER,
+  CODEX_SANDBOX_ARTIFACTS,
+} from '../src/runner/args.mjs'
 
 // ── временный мир ──────────────────────────────────────────────────────────────────────────
 
@@ -125,13 +130,20 @@ const GREEN_REVERIFY = { code: 0, stdout: JSON.stringify({ verdict: 'green', rec
  * ЗАДАЧИ: файл кладётся по тому же выражению пути, каким его найдёт демон (`codexHomeFor`),
  * а не по строке, собранной здесь руками, — иначе сьют проверял бы не тот каталог.
  *
- * `accountProvisioned` — проведена ли она для ДОМА АККАУНТА. Это РАЗНЫЕ каталоги, и именно их
- * разница стоила окна подписки 01.09.2026: установка была проведена (аккаунтский дом её несёт),
- * а сессия стояла в свежем доме задачи, где её нет и быть не может.
+ * `accountProvisioned` — проведена ли она для ДОМА АККАУНТА, и проведена ЦЕЛИКОМ: три каталога
+ * следа, которые оставляет установка. Это РАЗНЫЕ каталоги, и именно их разница стоила окна
+ * подписки 01.09.2026: установка была проведена (аккаунтский дом её несёт), а сессия стояла в
+ * свежем доме задачи. С тех пор след КОПИРУЕТСЯ в дом задачи посевом — поэтому полный след в
+ * доме счёта означает «задача сможет писать», а не «дом задачи пуст».
+ *
+ * `accountPartial` — установка была, но след неполон (один маркер, без учётных данных
+ * ограниченного пользователя). Посев кладёт целиком либо никак, поэтому это по-прежнему отказ —
+ * и он обязан звучать иначе, чем «установки не было вовсе».
  */
 async function runTick(over: {
   provisioned?: boolean
   accountProvisioned?: boolean
+  accountPartial?: boolean
   platform?: string
   lines?: string[]
   sandbox?: string
@@ -149,6 +161,13 @@ async function runTick(over: {
     writeFileSync(join(home, CODEX_WINDOWS_SANDBOX_MARKER), '{"version":5}', 'utf8')
   }
   if (over.accountProvisioned) {
+    // ВЕСЬ след, а не один маркер: ровно те три каталога, что оставляет элевированная установка,
+    // и ровно их посев копирует в дом задачи.
+    for (const entry of CODEX_SANDBOX_ARTIFACTS) mkdirSync(join(accountDir, entry), { recursive: true })
+    writeFileSync(join(accountDir, CODEX_WINDOWS_SANDBOX_MARKER), '{"version":5}', 'utf8')
+    writeFileSync(join(accountDir, '.sandbox-secrets', 'sandbox_users.json'), '{"version":1}', 'utf8')
+  }
+  if (over.accountPartial) {
     mkdirSync(join(accountDir, '.sandbox'), { recursive: true })
     writeFileSync(join(accountDir, CODEX_WINDOWS_SANDBOX_MARKER), '{"version":5}', 'utf8')
   }
@@ -271,6 +290,26 @@ describe('задача с правом писать на полосе codex: л�
     expect(res.failed).toBeFalsy()
   })
 
+  // ШОВ СТРАЖА И ПОСЕВА. Дома задачи в момент этой проверки НЕ СУЩЕСТВУЕТ — его чеканит и
+  // засевает сборщик аргументов, уже после решения тика. Страж, спрашивавший «лежит ли след в
+  // доме задачи», получал «нет» ВСЕГДА и отказывал ДО ТОГО, как посев успевал лечь: замерено
+  // живой пробой записи 01.09.2026 после выпуска — в доме счёта лежал полный след, а ни одна
+  // пишущая задача полосы codex не стартовала. Здесь дом задачи ПУСТ (`provisioned: false`), и
+  // единственное, что отделяет его от права писать, — посев из дома счёта.
+  it('дом счёта несёт весь след — задача СТАРТУЕТ: страж считает посев, который ляжет до спавна', async () => {
+    const { res, spawned } = await runTick({ provisioned: false, accountProvisioned: true })
+
+    expect(spawned).toHaveLength(1)
+    expect(res.failed).toBeFalsy()
+  })
+
+  it('след дома счёта неполон — отказ остаётся: посев кладёт целиком либо никак', async () => {
+    const { res, spawned } = await runTick({ provisioned: false, accountPartial: true })
+
+    expect(spawned).toHaveLength(0)
+    expect(res.failed).toMatchObject({ taskId: 'BL-1', reason: 'missing_access' })
+  })
+
   it('не-Windows: песочницу держит ядро, готовить нечего — запуск как раньше', async () => {
     const { spawned } = await runTick({ provisioned: false, platform: 'linux' })
     expect(spawned).toHaveLength(1)
@@ -290,7 +329,7 @@ describe('задача с правом писать на полосе codex: л�
 // Человек, сделавший всё правильно, прочитал бы на карточке «вы этого не сделали».
 describe('слова отказа: развилка названа, тупик не предлагается', () => {
   it('дом задачи чеканится на задачу — и отказ говорит это, а не зовёт провизировать одноразовый путь', async () => {
-    const { row } = await runTick({ provisioned: false })
+    const { row, accountDir } = await runTick({ provisioned: false })
     const detail = String(row.failureDetail)
 
     // ПРИЧИНА, ПО КОТОРОЙ СОВЕТ «ПРОВЕСТИ УСТАНОВКУ» ЗДЕСЬ НЕ РАБОТАЕТ, — В САМИХ СЛОВАХ.
@@ -302,20 +341,22 @@ describe('слова отказа: развилка названа, тупик �
     // ВЫХОДЫ, КОТОРЫЕ ПРАВДА ЕСТЬ СЕГОДНЯ.
     expect(detail).toContain('полосе Claude')
     expect(detail).toMatch(/читающие задачи/i)
-    // …а «сделать полосу пишущей» названо РЕШЕНИЕМ ЧЕЛОВЕКА, а не действием, которое демон
-    // предлагает выполнить: у обеих развилок своя цена, и выбирает её не эта функция.
-    expect(detail).toMatch(/решение человека/i)
+    // …а выход, который ПРАВДА работает, назван командой целиком — и он про дом СЧЁТА, тот
+    // единственный каталог, для которого установку можно провести заранее.
+    expect(detail).toContain('--codex-home')
+    expect(detail).toContain(accountDir)
   })
 
-  it('установка проведена для аккаунта, но не для задачи — отказ различает это, а не винит человека', async () => {
-    const { row, accountDir } = await runTick({ provisioned: false, accountProvisioned: true })
+  it('установка проведена, но след неполон — отказ называет НЕДОСТАЮЩЕЕ, а не винит человека', async () => {
+    const { row, accountDir } = await runTick({ provisioned: false, accountPartial: true })
     const detail = String(row.failureDetail)
 
     expect(detail).toContain(accountDir)
     expect(detail).toMatch(/провизирован/i)
-    // ГЛАВНОЕ УТВЕРЖДЕНИЕ ЭТОГО СЛУЧАЯ: причина названа как НАША развилка (дом задачи не
-    // наследует провизию), а не как забытая человеком установка.
-    expect(detail).toMatch(/не наследует/i)
+    // ГЛАВНОЕ УТВЕРЖДЕНИЕ ЭТОГО СЛУЧАЯ: сказано, ЧЕГО не хватает и что чинить, — а не «дом не
+    // провизирован» про человека, который установку проводил.
+    expect(detail).toContain('.sandbox-secrets')
+    expect(detail).toMatch(/целиком либо никак/i)
     expect(detail).not.toMatch(/установки не было вовсе/i)
   })
 

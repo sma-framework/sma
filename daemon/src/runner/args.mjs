@@ -707,6 +707,92 @@ export function codexWorkspaceWriteSupport({ platform = process.platform, home, 
 }
 
 /**
+ * codexSandboxSourceFor({account, homedir}) → каталог, ИЗ КОТОРОГО след установки едет в дом
+ * задачи: дом счёта, ровно тот же, в котором лежит и его `auth.json`. Счёта нет — `null`.
+ *
+ * ОДНО ВЫРАЖЕНИЕ, ТРИ ЧИТАТЕЛЯ, И ЭТО ВЕСЬ СМЫСЛ — та же причина, по которой одним выражением
+ * живёт `codexHomeFor`. Источник называют посев (build-args, шаг 5а), прогноз тика и слова
+ * отказа; разойдись они хоть на разворот тильды — тик отказал бы по одному каталогу, посев
+ * поехал бы из другого, и оба были бы «зелёными» про разные дома.
+ *
+ * @param {{account?:object, homedir?:Function}} [args]
+ * @returns {string|null}
+ */
+export function codexSandboxSourceFor({ account, homedir } = {}) {
+  return account && typeof account === 'object' && account.configDir
+    ? expandHome(String(account.configDir), homedir)
+    : null
+}
+
+/**
+ * codexSandboxTrailWhole({home, fsImpl}) → `{whole, missing}`: лежит ли в ЭТОМ каталоге ВЕСЬ
+ * след элевированной установки (CODEX_SANDBOX_ARTIFACTS) и чего именно не хватает.
+ *
+ * ЭТО ТО ЖЕ ПРАВИЛО «ЦЕЛИКОМ ЛИБО НИКАК», ПО КОТОРОМУ СЕЕТ `seedCodexHome`, — и ровно поэтому
+ * оно вынуто в одно выражение. Прогноз «посев ляжет» обязан отвечать ровно то, что посев потом
+ * сделает: второе прочтение этого правила означало бы «страж пропустил, посев не лёг», то есть
+ * спавн в ту самую молчаливую стену, ради которой страж и заводился.
+ *
+ * `missing` — не украшение: им отказ называет, ЧТО чинить, вместо «дом не провизирован».
+ *
+ * @param {{home?:string, fsImpl?:object}} [args]
+ * @returns {{whole:boolean, missing:string[]}}
+ */
+export function codexSandboxTrailWhole({ home, fsImpl } = {}) {
+  const dir = typeof home === 'string' && home.trim() !== '' ? home : null
+  if (!dir) return { whole: false, missing: [...CODEX_SANDBOX_ARTIFACTS] }
+  const existsFn = (fsImpl && fsImpl.existsSync) || fsExistsSync
+  const missing = []
+  for (const entry of CODEX_SANDBOX_ARTIFACTS) {
+    let there = false
+    try {
+      there = existsFn(join(dir, entry)) === true
+    } catch {
+      there = false // нечитаемый источник — это «следа нет», а не «наверное, всё-таки да»
+    }
+    if (!there) missing.push(entry)
+  }
+  return { whole: missing.length === 0, missing }
+}
+
+/**
+ * codexWorkspaceWriteOutlook({platform, home, account, homedir, fsImpl}) → сможет ли задача
+ * писать К МОМЕНТУ СПАВНА: `{supported, reason, marker, via, source, missing}`.
+ *
+ * ЗАЧЕМ ВТОРОЙ ПРЕДИКАТ РЯДОМ С ПЕРВЫМ: ЭТО РАЗНЫЕ ВОПРОСЫ, ЗАДАННЫЕ В РАЗНЫЕ МОМЕНТЫ.
+ * `codexWorkspaceWriteSupport` спрашивает ФАКТ — лежит ли след в доме ПРЯМО СЕЙЧАС; так и должен
+ * спрашивать сборщик аргументов, потому что он спрашивает уже ПОСЛЕ посева. Тик спрашивает
+ * раньше — до всякой копии и всякого процесса, — а дома задачи в этот момент ещё нет на диске
+ * вовсе: он чеканится и засевается сборщиком. Факт «следа нет» в несуществующем каталоге верен
+ * всегда, и страж, задававший тику этот вопрос, отказывал ВСЕГДА — на машине, где установка
+ * проведена и посев лёг бы через полсекунды. Замерено живой пробой записи 01.09.2026, после
+ * выпуска: аккаунтский дом нёс полный след, ни одна пишущая задача полосы codex не стартовала.
+ *
+ * ПОЭТОМУ ЗДЕСЬ ВОПРОС ПРОГНОЗА, А НЕ ДОГАДКА: «провизирован ли дом задачи ИЛИ лежит ли ЦЕЛИКОМ
+ * в доме счёта тот след, который посев в него скопирует». Оба слагаемых — чтение диска тем же
+ * правилом, каким читает посев; ни одно из них не является мнением о платформе.
+ *
+ * ДОМА НЕТ ВОВСЕ (`no-codex-home`) — ЭТО НЕ ЧИНИТСЯ ПОСЕВОМ: сеять некуда, и ответ выходит
+ * прежним отказом, без единого обращения к дому счёта.
+ *
+ * @param {{platform?:string, home?:string, account?:object, homedir?:Function, fsImpl?:object}} [args]
+ * @returns {{supported:boolean, reason:string, marker:(string|null), via:(string|null), source:(string|null), missing:string[]}}
+ */
+export function codexWorkspaceWriteOutlook({ platform = process.platform, home, account, homedir, fsImpl } = {}) {
+  const support = codexWorkspaceWriteSupport({ platform, home, fsImpl })
+  const base = { ...support, source: null, missing: [] }
+  if (support.supported) return { ...base, via: String(platform) === 'win32' ? 'home' : 'kernel' }
+  if (support.reason === 'no-codex-home') return { ...base, via: null }
+
+  const source = codexSandboxSourceFor({ account, homedir })
+  const trail = codexSandboxTrailWhole({ home: source, fsImpl })
+  if (trail.whole) {
+    return { supported: true, reason: 'windows-sandbox-seeded-from-account', marker: support.marker, via: 'seed', source, missing: [] }
+  }
+  return { ...base, via: null, source, missing: trail.missing }
+}
+
+/**
  * codexSandboxRefusal({sandbox, home, account, homedir, platform, fsImpl}) → ТЕКСТ ОТКАЗА,
  * который человек прочитает на карточке, одним выражением на обе двери спавна.
  *
@@ -719,36 +805,46 @@ export function codexWorkspaceWriteSupport({ platform = process.platform, home, 
  * `codex-tasks/B-1788253929094-1/.sandbox/` есть только лог.
  *
  * ПОЭТОМУ ОТКАЗ НАЗЫВАЕТ РАЗВИЛКУ, А НЕ ПОДОЗРЕВАЕМОГО: дом задачи чеканится заново на каждую
- * задачу НАШИМ выражением (codexHomeFor), и провизия аккаунта в него не наследуется. Про
- * аккаунтский дом спрашивается тем же предикатом — чтобы «установки не было вовсе» и «установка
- * есть, но не там, где её читает CLI» не выглядели на карточке одинаково.
+ * задачу НАШИМ выражением (codexHomeFor), и провизия аккаунта попадает в него ПОСЕВОМ, а не
+ * наследованием. Про аккаунтский дом спрашивается тем же правилом, каким читает посев, — чтобы
+ * три РАЗНЫХ случая не выглядели на карточке одинаково.
  *
- * СДЕЛАТЬ ПОЛОСУ ПИШУЩЕЙ — РЕШЕНИЕ ЧЕЛОВЕКА, И ОНО НАЗВАНО КАК РЕШЕНИЕ. Наследовать провизию в
- * дом задачи или отказаться от дома на задачу — выбор с разной ценой (в первом случае в
- * одноразовый каталог едут секреты песочницы, во втором задачи перестают быть изолированными
- * друг от друга), и угадывать его за человека этот файл не будет.
+ * ТРИ СЛУЧАЯ, И У КАЖДОГО СВОЙ ВЫХОД:
+ *   - в доме счёта лежит ВЕСЬ след — значит установка ни при чём, и не лёг именно посев
+ *     (копия оборвалась либо дом собран мимо него): это уже наша поломка, а не забытая команда;
+ *   - след есть, но НЕПОЛОН — названо, каких каталогов не хватает, и повтор установки ДЛЯ ДОМА
+ *     СЧЁТА назван командой целиком: посев переносит след целиком либо никак;
+ *   - следа нет нигде — та же команда названа как разовый выход, потому что с этого дня дом
+ *     задачи копирует след из дома счёта на каждую задачу.
  *
  * @param {{sandbox?:string, home?:string, account?:object, homedir?:Function, platform?:string, fsImpl?:object}} [args]
  * @returns {string}
  */
 export function codexSandboxRefusal({ sandbox = 'workspace-write', home, account, homedir, platform = process.platform, fsImpl } = {}) {
-  const accountHome =
-    account && typeof account === 'object' && account.configDir ? expandHome(String(account.configDir), homedir) : null
+  const accountHome = codexSandboxSourceFor({ account, homedir })
   const accountSupport = accountHome ? codexWorkspaceWriteSupport({ platform, home: accountHome, fsImpl }) : null
+  const trail = accountHome ? codexSandboxTrailWhole({ home: accountHome, fsImpl }) : null
+  const setup = `codex sandbox setup --elevated --current-user --codex-home ${accountHome}`
   const accountWords = !accountSupport
     ? ''
-    : accountSupport.supported
-      ? `Аккаунтский дом ${accountHome} провизирован — установка проведена, и дело не в ней: дом задачи её не наследует. `
-      : `Не провизирован и аккаунтский дом ${accountHome} — элевированной установки не было вовсе. `
+    : trail.whole
+      ? `Аккаунтский дом ${accountHome} несёт ПОЛНЫЙ след, и дом задачи копирует его посевом — значит дело не в ` +
+        'установке: посев в этот дом не лёг (копия оборвалась или дом собран мимо посева). '
+      : accountSupport.supported
+        ? `Аккаунтский дом ${accountHome} провизирован, но его след НЕПОЛОН — не хватает ${trail.missing.join(', ')}. ` +
+          `Посев кладёт след целиком либо никак, поэтому дом задачи остаётся пустым; выход — повторить установку для ` +
+          `дома счёта: \`${setup}\`. `
+        : `Элевированной установки не было вовсе — её следа нет и в аккаунтском доме ${accountHome}. Выход — провести ` +
+          `её ОДИН раз для дома счёта: \`${setup}\`, и дом задачи будет копировать след оттуда на каждую задачу. `
   return (
     `конверт задачи даёт правку и оболочку, то есть песочницу ${sandbox}, а дом ${home} на платформе ${platform} ` +
     `её не исполнит: следа элевированной установки (${CODEX_WINDOWS_SANDBOX_MARKER}) в нём нет. ` +
     'ЭТОТ ДОМ ЧЕКАНИТСЯ ЗАНОВО НА КАЖДУЮ ЗАДАЧУ (codexHomeFor: <configDir>/codex-tasks/<id>) и уходит вместе с ней — ' +
-    'поэтому ни повтор попытки, ни `codex sandbox setup --elevated` ПО ЭТОМУ ПУТИ делу не помогут. ' +
+    'поэтому ни повтор попытки, ни `codex sandbox setup --elevated` ПО ЭТОМУ ПУТИ делу не помогут: след попадает в ' +
+    'него посевом из дома счёта. ' +
     accountWords +
-    'Сессия стартовала бы читающей и молча — поэтому она не стартует вовсе. Выходы сегодня: вести работу с правкой ' +
-    'на полосе Claude, либо оставить codex-полосе только читающие задачи. Сделать codex-полосу пишущей на Windows — ' +
-    'решение человека о доме задачи (наследовать провизию аккаунта или отказаться от дома на задачу), а не повтор.'
+    'Сессия стартовала бы читающей и молча — поэтому она не стартует вовсе. Пока следа в доме счёта нет, работу с ' +
+    'правкой ведите на полосе Claude, а codex-полосе оставьте только читающие задачи.'
   )
 }
 
@@ -952,29 +1048,22 @@ export function seedCodexHome({ home, authSources, sandboxSource, fsImpl } = {})
   // заводилась, только теперь с зелёным светом перед ним. Поэтому источники сперва
   // пересчитываются целиком, и только полная пачка копируется; неполная не кладёт НИЧЕГО, и
   // дом честно выглядит непровизированным.
+  //
+  // ПРАВИЛО СПРАШИВАЕТСЯ ОДНИМ ВЫРАЖЕНИЕМ (codexSandboxTrailWhole) — ТЕМ ЖЕ, каким тик заранее
+  // считает, ляжет ли посев. Своя копия этого цикла здесь означала бы страж, обещающий одно, и
+  // посев, делающий другое, — то есть ровно тот шов, который уже расходился однажды.
   const sandboxSeeded = []
   const sandboxFrom = typeof sandboxSource === 'string' && sandboxSource.trim() !== '' ? sandboxSource : null
-  if (sandboxFrom) {
-    let whole = true
-    for (const entry of CODEX_SANDBOX_ARTIFACTS) {
-      try {
-        if (existsFn(join(sandboxFrom, entry)) !== true) whole = false
-      } catch {
-        whole = false // нечитаемый источник — это «следа нет», а не «наверное, всё-таки да»
+  if (sandboxFrom && codexSandboxTrailWhole({ home: sandboxFrom, fsImpl }).whole) {
+    try {
+      for (const entry of CODEX_SANDBOX_ARTIFACTS) {
+        cpFn(join(sandboxFrom, entry), join(dir, entry), { recursive: true })
+        sandboxSeeded.push(entry)
       }
-      if (!whole) break
-    }
-    if (whole) {
-      try {
-        for (const entry of CODEX_SANDBOX_ARTIFACTS) {
-          cpFn(join(sandboxFrom, entry), join(dir, entry), { recursive: true })
-          sandboxSeeded.push(entry)
-        }
-      } catch {
-        // Копия оборвалась на середине: пачка объявляется несостоявшейся, конфиг ниже выйдет
-        // прежним, и дом не обещает права, которого у него нет.
-        sandboxSeeded.length = 0
-      }
+    } catch {
+      // Копия оборвалась на середине: пачка объявляется несостоявшейся, конфиг ниже выйдет
+      // прежним, и дом не обещает права, которого у него нет.
+      sandboxSeeded.length = 0
     }
   }
   const sandboxWhole = sandboxSeeded.length === CODEX_SANDBOX_ARTIFACTS.length

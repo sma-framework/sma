@@ -87,6 +87,9 @@ import {
   codexConfigSeed,
   codexSandboxFor,
   codexWorkspaceWriteSupport,
+  codexWorkspaceWriteOutlook,
+  codexSandboxTrailWhole,
+  codexSandboxSourceFor,
   codexHomeFor,
   CODEX_WINDOWS_SANDBOX_MARKER,
   seedCodexHome,
@@ -265,6 +268,86 @@ describe('buildCodexArgs (exit-gate lane)', () => {
     expect(codexWorkspaceWriteSupport({ platform: 'win32' }).supported).toBe(false)
 
     rmSync(home, { recursive: true, force: true })
+  })
+
+  /**
+   * ═══════ ШОВ СТРАЖА И ПОСЕВА: ПРОГНОЗ ОБЯЗАН СБЫВАТЬСЯ ════════════════════════════════
+   *
+   * ДВА ВОПРОСА В РАЗНЫЕ МОМЕНТЫ, И ИМЕННО ЭТО ОДНАЖДЫ РАЗОШЛОСЬ. Тик решает, спавнить ли, ДО
+   * всякой копии: дома задачи в эту секунду нет на диске вовсе — его чеканит и засевает сборщик
+   * аргументов. Страж, спрашивавший у тика ФАКТ («лежит ли след в доме задачи»), получал «нет»
+   * всегда и отказывал ДО ТОГО, как посев успевал лечь. Замерено живой пробой записи 01.09.2026
+   * после выпуска: дом счёта нёс полный след, посев скопировал бы его через полсекунды, а ни
+   * одна пишущая задача полосы codex не стартовала.
+   *
+   * ПОЭТОМУ ЗДЕСЬ ПРОВЕРЯЕТСЯ НЕ ФОРМА ОТВЕТА, А СБЫВАЕМОСТЬ: прогноз спрашивается у пустого
+   * дома задачи, а затем в тот же дом зовётся НАСТОЯЩИЙ посев — и то, что после него скажет
+   * последний пояс (codexWorkspaceWriteSupport), обязано совпасть с обещанием прогноза. Оба
+   * исхода стоят одинаково дорого: «обещал и не лёг» — это спавн в молчаливую стену, «не обещал,
+   * хотя лёг бы» — это выключенная полоса на провизированной машине.
+   */
+  it('прогноз тика и посев сборщика говорят одно: обещал — значит лёг, не обещал — значит нечему', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sma-codexseam-'))
+    const account = join(root, 'account')
+    const home = codexHomeFor({ account: { configDir: account }, taskId: 'T-SEAM' })
+
+    // (1) СЛЕДА НЕТ НИГДЕ — прогноз отказывает, и это тот же отказ, что был.
+    expect(codexWorkspaceWriteOutlook({ platform: 'win32', home, account: { configDir: account } })).toMatchObject({
+      supported: false,
+      reason: 'windows-sandbox-unprovisioned',
+    })
+
+    // (2) СЛЕД НЕПОЛОН — прогноз отказывает и НАЗЫВАЕТ недостающее; посев тоже не кладёт ничего,
+    // поэтому дом после него честно остаётся непровизированным.
+    mkdirSync(join(account, '.sandbox'), { recursive: true })
+    writeFileSync(join(account, CODEX_WINDOWS_SANDBOX_MARKER), '{"version":5}')
+    const partial = codexWorkspaceWriteOutlook({ platform: 'win32', home, account: { configDir: account } })
+    expect(partial.supported).toBe(false)
+    expect(partial.missing).toEqual(['.sandbox-bin', '.sandbox-secrets'])
+    seedCodexHome({ home, authSources: [], sandboxSource: account })
+    expect(codexWorkspaceWriteSupport({ platform: 'win32', home }).supported).toBe(false)
+
+    // (3) СЛЕД ЦЕЛИКОМ — прогноз обещает право писать ЧЕРЕЗ ПОСЕВ, хотя дом задачи ещё пуст…
+    for (const entry of CODEX_SANDBOX_ARTIFACTS) mkdirSync(join(account, entry), { recursive: true })
+    writeFileSync(join(account, '.sandbox-secrets', 'sandbox_users.json'), '{"version":1}')
+    expect(codexWorkspaceWriteOutlook({ platform: 'win32', home, account: { configDir: account } })).toMatchObject({
+      supported: true,
+      reason: 'windows-sandbox-seeded-from-account',
+      via: 'seed',
+      source: account,
+    })
+    expect(existsSync(join(home, CODEX_WINDOWS_SANDBOX_MARKER))).toBe(false)
+
+    // …и обещание СБЫВАЕТСЯ: тот же посев, тот же дом, и последний пояс говорит «да».
+    seedCodexHome({ home, authSources: [], sandboxSource: account })
+    expect(codexWorkspaceWriteSupport({ platform: 'win32', home }).supported).toBe(true)
+
+    // (4) ДОМА НЕТ ВОВСЕ — посевом это не чинится: сеять некуда, и дом счёта не спрашивается.
+    expect(codexWorkspaceWriteOutlook({ platform: 'win32', account: { configDir: account } })).toMatchObject({
+      supported: false,
+      reason: 'no-codex-home',
+      source: null,
+    })
+
+    // (5) ЯДЕРНАЯ ПЕСОЧНИЦА — ответ прежний и без единого обращения к диску.
+    expect(codexWorkspaceWriteOutlook({ platform: 'linux', home: '/nowhere' })).toMatchObject({ supported: true })
+
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  /**
+   * ИСТОЧНИК ПОСЕВА — ОДНО ВЫРАЖЕНИЕ НА ТРЁХ ЧИТАТЕЛЕЙ (посев, прогноз тика, слова отказа), по
+   * той же причине, что и дом задачи: разворот тильды, сделанный в одном месте и забытый в
+   * другом, — это страж про один каталог и посев из другого.
+   */
+  it('источник следа — дом счёта, и тильда в нём развёрнута до того, как о нём спросят', () => {
+    expect(codexSandboxSourceFor({ account: { configDir: '~/acct' }, homedir: () => join('/h', 'x') })).toBe(
+      join('/h', 'x', 'acct'),
+    )
+    expect(codexSandboxSourceFor({ account: {} })).toBeNull()
+    expect(codexSandboxSourceFor({})).toBeNull()
+    // источника нет — правило «целиком либо никак» отвечает «нечего копировать», а не бросает
+    expect(codexSandboxTrailWhole({})).toMatchObject({ whole: false, missing: [...CODEX_SANDBOX_ARTIFACTS] })
   })
 
   /**
