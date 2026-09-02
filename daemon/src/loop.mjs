@@ -112,7 +112,7 @@ import { dirname, join } from 'node:path'
 
 import { pipelineEnabled, pipelineMaxTurns, projectEntry, codeTreeOf, planningHomeOf } from './config.mjs'
 import { taskTurnCap, burnedTurnCapsOf, turnKindOf, emptyTurnKinds } from './policy/turn-budget.mjs'
-import { resolveExpireMs, batchWorkerOf, waveAddressOf, isBatchParent, batchItemsOf, batchDecisionsOf, brokenItemOf, batchLetGoOf, latestRowPerId, FAIL_REASONS, failureAwaitsAPerson, awaitsAutoRetry, autoRetryDueAt, autoRetriesSpent, AUTO_RETRY_LIMIT, ATTEMPTS_EXHAUSTED, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
+import { resolveExpireMs, batchWorkerOf, waveAddressOf, isBatchParent, batchItemsOf, batchDecisionsOf, brokenItemOf, batchLetGoOf, latestRowPerId, claimRefusal, FAIL_REASONS, failureAwaitsAPerson, awaitsAutoRetry, autoRetryDueAt, autoRetriesSpent, AUTO_RETRY_LIMIT, ATTEMPTS_EXHAUSTED, taskContextOf, UnknownTaskError } from './queue/adapter.mjs'
 import { WORKER_SKILLS } from './queue/worker-skills.mjs'
 import { livenessSweep } from './queue/liveness.mjs'
 import { reconcileAttempts } from './queue/reconcile.mjs'
@@ -126,9 +126,11 @@ import { concurrencyCap } from './queue/in-flight.mjs'
 // belongs to the module that owns the row's key list, and a second copy of the number here
 // would be a second ceiling waiting to drift away from the first.
 // …и `closureOf` — ОДИН вопрос к реестру: «эту карточку уже закрыли?». Его задаёт обход
-// беклога перед тем, как поставить строку файла в работу; своё чтение поля `closed` здесь
-// было бы вторым мнением о том, что считается закрытием.
-import { memorySnapshotHash, safeName, ATTEMPT_FILES_CAP, closureOf } from './queue/attempt-ledger.mjs'
+// беклога перед тем, как поставить строку файла в работу, И ЗАХВАТ перед тем, как за строку
+// начнут платить; своё чтение поля `closed` здесь было бы вторым мнением о том, что считается
+// закрытием. `nextAttemptNumber` — оттуда же и по той же причине: реестр не забывает прожитых
+// подходов, а очередь забывает, и второй арифметики номера в тике быть не должно.
+import { memorySnapshotHash, safeName, ATTEMPT_FILES_CAP, closureOf, nextAttemptNumber } from './queue/attempt-ledger.mjs'
 import { defaultEnvelope, validateEnvelope, envelopeAllows, envelopeHash, envelopeSpawnOptions } from './queue/capability-envelope.mjs'
 import { runsDirOf, attemptRunDir, writeRunStart, writeRunReceipt, pruneRunDirs, secretValuesOf, sanitizeRun, createToolPairing, buildContinuationSummary, writeContinuation, readContinuation, writeTaskContext, fileWord, RUN_DIRS_KEEP, TASK_CONTEXT_FILE } from './queue/run-dir.mjs'
 import { applyTransition } from './queue/state-machine.mjs'
@@ -4461,6 +4463,69 @@ export async function tick(deps = {}) {
 
     // From here a per-task failure is honest, never a wedge (fail-open).
     try {
+      // ═══ (3a1) ПОСЛЕДНЕЕ СЛОВО О ЗАДАЧЕ — ДО ТОГО, КАК ЗА СТРОКУ НАЧНУТ ПЛАТИТЬ ═══════
+      //
+      // Правило свёртки (`latestRowPerId`) спрашивал один автоповтор; у ЗАХВАТА того же вопроса
+      // не было ни одного, и это стоило трёх оплаченных прогонов за день (31.08.2026), каждый из
+      // которых кончился словами «уже сделано». Острее того: строка в состоянии
+      // `awaiting_approval` получала ВТОРОГО живого писателя в ту же рабочую копию — исходники
+      // двигались под ногами у посадки, а уборка копии при приёмке убила бы его незакоммиченное.
+      //
+      // ВОПРОС ЗАДАН ЗДЕСЬ, А НЕ В ОЧЕРЕДИ, ПО ОДНОЙ ПРИЧИНЕ: у долговечной очереди выборка И
+      // ЕСТЬ захват, вернуть строку назад нечем — а сюда, к единственному шву, через который
+      // проходят ОБА хранилища, строка приходит ещё до маршрута, до копии и до процесса. Дороже
+      // всего стоит не выданная строка, а ЗАПУЩЕННЫЙ по ней работник.
+      //
+      // ДВА ИСТОЧНИКА, ПОТОМУ ЧТО МОЛЧАТ ОНИ В РАЗНОЕ ВРЕМЯ — тот же ответ, что у обхода беклога
+      // выше: реестр помнит закрытие карточки вечно, но знает только о закрытых; очередь знает
+      // всё, что у неё есть сейчас, включая строку, ждущую слова человека. Правило, по которому
+      // из этих двух ответов получается «нельзя», живёт в словаре очереди (`claimRefusal`).
+      //
+      // FAIL-OPEN НА ЧТЕНИИ И ТОГО И ДРУГОГО: непрочитанный источник стоит одной проверки, а
+      // сторож, останавливающий конвейер из-за сбоя диска, стоил бы всей раздачи работы.
+      //
+      // ЦЕНА, НАЗВАННАЯ ВСЛУХ: один список очереди и одно чтение файла реестра — и только на тех
+      // проходах, которые ДЕЙСТВИТЕЛЬНО что-то взяли. Пустой проход не платит ничего.
+      let ledgerRows = []
+      try {
+        ledgerRows = (ledger && typeof ledger.readAttempts === 'function' && ledger.readAttempts(task.id)) || []
+      } catch {
+        ledgerRows = []
+      }
+      let queueRows = []
+      try {
+        queueRows = await adapter.list({})
+      } catch {
+        queueRows = []
+      }
+      const refusal = claimRefusal({ id: task.id, rows: queueRows, closed: closureOf(ledgerRows) })
+      if (refusal) {
+        writeLog(deps, { type: 'claim.refused', taskId: task.id, code: refusal.code, detail: refusal.said })
+        // ЗАКРЫВАЕТСЯ ОБЫЧНОЙ ДВЕРЬЮ СРЫВА, а не своей: `already_decided` ждёт человека по
+        // таксономии, поэтому та же дверь сама уводит строку в парковку вместо перевыдачи, и
+        // строка реестра о призраке пишется тем же путём, что о всякой другой попытке.
+        await failTask(deps, task, { reason: 'already_decided', failureDetail: refusal.said, now: now(), envelope, from: fleetState })
+        result.failed = { taskId: task.id, reason: 'already_decided' }
+        result.refusedClaim = { taskId: task.id, code: refusal.code }
+        return result
+      }
+
+      // ═══ (3a2) СЧЁТ ПОДХОДОВ МОНОТОНЕН — ВТОРОЙ ЕДИНИЦЫ НЕ БЫВАЕТ ══════════════════════
+      //
+      // Номер называет очередь, и она его забывает вместе со строкой; реестр не забывает. Где
+      // они расходятся, побеждает реестр — иначе каталог прогона `<taskId>#<attempt>` достаётся
+      // второй попытке под именем первой, и запись первой уходит под запись второй молча.
+      // Арифметика — в реестре (`nextAttemptNumber`), здесь только шов и слово в журнале.
+      const numbered = nextAttemptNumber(ledgerRows, task.attempt)
+      if (numbered !== task.attempt) {
+        writeLog(deps, {
+          type: 'attempt.number_lifted',
+          taskId: task.id,
+          detail: `очередь назвала подход ${task.attempt ?? '?'}, реестр уже помнит законченные — попытка идёт под номером ${numbered}`,
+        })
+        task.attempt = numbered
+      }
+
       // The router writes its OWN dispatcher layer at the decision — the tick
       // only hands it the sink; it never narrates the routing reason on the router's behalf.
       const routeDeps = {
@@ -5080,6 +5145,23 @@ export async function tick(deps = {}) {
       // corrections module, the same producer the gate inside the worker's child and the next
       // run's task text use. An agreement written down in three places is three agreements,
       // and the founder would be quoted differently depending on which road his sentence took.
+      //
+      // И ЕСЛИ ХОД ОБОРВАЛИ РАДИ ЭТОГО СЛОВА — ЗАДАЧА ВОЗВРАЩАЕТСЯ ЗА НИМ, А НЕ УМИРАЕТ ПУСТОЙ.
+      // Дверь поправки отвечает «принято» и убивает живого ребёнка ОДИНАКОВО на обеих полосах:
+      // у нашей полосы за этим стоит возобновление сессии прямо здесь, у чужой — не стоит
+      // ничего. Замерено 01.09: «перебить сейчас» по задаче стороннего вендора ответило
+      // {accepted:true, live:true}, ход был убит, в журнале осталось `redirect_skipped ·
+      // provider`, и на этом всё кончилось — снаружи неотличимо от доставки. Слово при этом
+      // лежало на диске целым (его никто не съел), но ехать ему было НЕ НА ЧЕМ: следующего
+      // захода задачи не случилось.
+      // Дорога у такого слова ровно одна и она уже построена выше — ЗАДАНИЕ СЛЕДУЮЩЕГО
+      // ЗАХОДА. Значит попытка, которую оборвали ради поправки, обязана кончиться так, чтобы
+      // этот заход состоялся: она объявляется перевыдаваемым отказом со своим словом
+      // (`redirect_restart`), очередь возвращает строку, и записка уезжает в промпте.
+      // ТОЛЬКО ПО ОБОРВАННОМУ ХОДУ, и это граница намеренная: попытка, доработавшая сама,
+      // — законченная работа, и валить её ради слова, сказанного «после хода», значило бы
+      // выбрасывать сделанное. Такое слово по-прежнему ждёт на диске и записывается пропуском.
+      let redirectRestart = null
       if (config.dataDir) {
         let hops = 0
         for (;;) {
@@ -5088,11 +5170,27 @@ export async function tick(deps = {}) {
           const sessionId = sessionOf()
           const resumable = spec.bin === CLAUDE_BIN && typeof sessionId === 'string' && /^[0-9a-f-]{32,40}$/i.test(sessionId)
           if (!resumable || hops >= REDIRECT_HOP_CAP) {
-            writeLog(deps, {
-              type: 'task.redirect_skipped',
-              taskId: task.id,
-              reason: hops >= REDIRECT_HOP_CAP ? 'hop_cap' : spec.bin !== CLAUDE_BIN ? 'provider' : 'no_session',
-            })
+            const reason = hops >= REDIRECT_HOP_CAP ? 'hop_cap' : spec.bin !== CLAUDE_BIN ? 'provider' : 'no_session'
+            // УБИЛА ЛИ ЭТОТ ХОД ИМЕННО ДВЕРЬ — спрашивается у той же ручки, которой дверь его и
+            // убивала, и ДО `done` ниже, пока ручка ещё зарегистрирована. Демон, собранный без
+            // реестра ручек, отвечает «нет» и ведёт себя ровно как прежде.
+            const shot =
+              reason === 'provider' &&
+              Boolean(deps.attemptTurns && typeof deps.attemptTurns.wasStopped === 'function' && deps.attemptTurns.wasStopped(task.id))
+            if (shot) {
+              redirectRestart =
+                `поправка не доезжает до живого хода этого работника (${spec.bin}): ход оборван дверью, ` +
+                'задача возвращается в очередь — записка едет в задании следующего захода'
+              writeLog(deps, {
+                type: 'task.redirect_deferred',
+                taskId: task.id,
+                mode: pending[pending.length - 1].mode,
+                delivery: 'next_run',
+                detail: redirectRestart,
+              })
+            } else {
+              writeLog(deps, { type: 'task.redirect_skipped', taskId: task.id, reason })
+            }
             break
           }
           hops += 1
@@ -5233,6 +5331,21 @@ export async function tick(deps = {}) {
         approach: note,
         tokens: attemptTokens,
       })
+
+      // ═══ ХОД, ОБОРВАННЫЙ РАДИ ПОПРАВКИ, — НЕ ПЛОХАЯ РАБОТА, А НЕДОДЕЛАННАЯ ═══════════════
+      //
+      // Развилка стоит ВЫШЕ всех гейтов и раньше всякого суждения о качестве: попытку убил
+      // человек своей поправкой, и судить её тем же гейтом, что и работу, дошедшую до конца, —
+      // значит назвать чужим именем («нет квитанции», «тесты красные») то, чего никто не делал.
+      // Конец перевыдаваемый по устройству (слова нет в `AWAITS_A_PERSON`), поэтому строка
+      // возвращается в очередь, следующий заход собирается с запиской в задании — тем самым
+      // кодом, что стоит перед первым запуском выше, — и поправка доезжает.
+      if (redirectRestart) {
+        writeLog(deps, { type: 'task.refused', taskId: task.id, reason: 'redirect_restart', detail: redirectRestart })
+        await failTask(deps, task, { reason: 'redirect_restart', failureDetail: redirectRestart, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
+        result.failed = { taskId: task.id, reason: 'redirect_restart', detail: redirectRestart }
+        return result
+      }
 
       // An infra failure, a provider abort or a worker marker is the SHARPER signal and wins
       // over either gate below: a crashed attempt must not complete on a document that was
