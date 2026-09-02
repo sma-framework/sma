@@ -3098,6 +3098,53 @@ describe('deriveState — idleReason on queued rows', () => {
     })
     expect(payload.queue[0].idleReason).toBeUndefined()
   })
+
+  /**
+   * ═══════ СТРОКА, КОТОРУЮ УЖЕ БРАЛИ И ОТДАВАЛИ НАЗАД, ГОВОРИТ ОБ ЭТОМ ВСЛУХ ═══════
+   *
+   * Работа бывает закреплена за ОДНИМ работником (кусок сборки, полоса, названная роль), и пока
+   * он ведёт другую попытку, очередь берёт её и тут же возвращает: отдать соседу значило бы
+   * посадить второго живого писателя в ту же копию. Возврат подхода не считает и отметок захвата
+   * не оставляет — поэтому строка после трёх возвратов выглядит как только что поставленная, а
+   * человек, видящий свободных работников и стоящую задачу, идёт искать поломку там, где её нет.
+   *
+   * СЧЁТ ЕДЕТ С САМОЙ СТРОКИ, слово складывает окно. Здесь проверяется ПРОВОД: число, которое
+   * пишет очередь, доезжает до полезной нагрузки и объясняет простой именно этой строки.
+   */
+  it('возвращённая после гонки строка называет свою причину и число возвратов', async () => {
+    const returned = { ...queuedRow, id: 'r-returned', releaseCount: 3 }
+    const payload = await deriveState({
+      adapter: mkAdapter([returned]),
+      windows: makeWindows({}),
+      config: { ...config, pipeline: { enabled: true } },
+      clock: () => NOW,
+    })
+    expect(payload.queue[0].idleReason, 'причина простоя названа своим словом').toBe('worker_busy')
+    expect(payload.queue[0].releaseCount, 'счёт возвратов доезжает до экрана числом, а не пропадает').toBe(3)
+  })
+
+  it('строку, которую не возвращали, счёт возвратов не выдумывает', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter([queuedRow]),
+      windows: makeWindows({}),
+      config: { ...config, pipeline: { enabled: true } },
+      clock: () => NOW,
+    })
+    expect(Object.hasOwn(payload.queue[0], 'releaseCount'), 'ноль возвратов — это отсутствие поля, а не ноль').toBe(false)
+    expect(payload.queue[0].idleReason).toBeUndefined()
+  })
+
+  it('общая причина сильнее: при выключенном конвейере строка стоит из-за тумблера', async () => {
+    const returned = { ...queuedRow, id: 'r-returned', releaseCount: 2 }
+    const payload = await deriveState({
+      adapter: mkAdapter([returned]),
+      windows: makeWindows({}),
+      config, // тумблер по умолчанию выключен
+      clock: () => NOW,
+    })
+    expect(payload.queue[0].idleReason, 'пока конвейер выключен, работник ни при чём').toBe('pipeline_off')
+    expect(payload.queue[0].releaseCount, 'но сам факт возвратов остаётся фактом о строке').toBe(2)
+  })
 })
 
 // ═══════════ heldBy — ПОЧЕМУ СТОИТ ИМЕННО ЭТА СТРОКА, когда весь конвейер идёт ═══════════

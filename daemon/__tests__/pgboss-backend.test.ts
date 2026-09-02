@@ -303,16 +303,24 @@ function makeFakeBackend({
       // СТОИТ ВЫШЕ ДВУХ ВЕТОК, ЧЬИ ПРИЗНАКИ ЭТОТ ОПЕРАТОР РАЗДЕЛЯЕТ: имени работника (он его
       // СНИМАЕТ, а не пишет) и отметки аренды. Поставленная ниже, она бы до него не доехала —
       // и возврат молча превратился бы в назначение работника.
+      //
+      // ОТСРОЧКА МОДЕЛИРУЕТСЯ ЧЕСТНО, потому что ради неё оператор и трогает `start_after`:
+      // выборка выше уже отказывает строке, чей срок не вышел (`AND start_after < now()` — это
+      // собственный план библиотеки), так что подделка, игнорирующая секунды, удостоверяла бы
+      // отсрочку, которой на живой очереди нет. Счёт возвратов — второе, что пишет оператор.
       const jobId = params[0]
+      const deferSec = Number(params[1]) || 0
       const j = jobs.get(String(jobId))
       if (j && j.state === 'active') {
         j.state = 'created'
         j.started_on = null
+        j.start_after = now() + deferSec * 1000
         const kept: any = {}
         for (const [k, v] of Object.entries(j.data || {})) {
           if (k === 'workerId' || k === 'attemptToken' || k === 'claimedAt' || k === 'claimedAtRetry') continue
           kept[k] = v
         }
+        kept.releaseCount = (Number(kept.releaseCount) || 0) + 1
         j.data = kept
       }
       return { rows: [] }
@@ -397,11 +405,18 @@ function makeFakeBackend({
       // releaseBatchTurns(): the piece whose turn has come stops being deferred. Modelled with
       // the statement's own guards — keyed by TASK id, only a waiting row, and only one that is
       // actually held (so a second pass over an already-released piece changes nothing).
-      const [taskId] = params
+      //
+      // …И ПОЛ, КОГДА ОПЕРАТОР ЕГО НАЗВАЛ. Два правила снимают удержание этим же заявлением, но
+      // снимают РАЗНОЕ: черёд партии отпускает всё отложенное, а волна и занятые файлы — только
+      // свою далёкую дату (`start_after >= $2`). Подделка, отпускавшая всё подряд, была щедрее
+      // собственного оператора и отменяла ЧУЖУЮ выдержку — короткую отсрочку возвращённой
+      // строки, — то есть удостоверяла карусель, которой на живой очереди нет.
+      const [taskId, floor] = params
+      const floorMs = floor == null ? null : Date.parse(String(floor))
       for (const j of jobs.values()) {
-        if (j.data && j.data.id === taskId && j.state === 'created' && (j.start_after ?? 0) > now()) {
-          j.start_after = now()
-        }
+        if (!j.data || j.data.id !== taskId || j.state !== 'created') continue
+        const at = j.start_after ?? 0
+        if (floorMs == null ? at > now() : at >= floorMs) j.start_after = now()
       }
       return { rows: [] }
     }
