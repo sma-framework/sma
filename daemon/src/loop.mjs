@@ -121,7 +121,7 @@ import { reconcileAttempts } from './queue/reconcile.mjs'
 import { sweepBugJournal, causeOf } from './queue/bug-journal.mjs'
 // Потолок мест читает ДОМ ИДУЩИХ ПОПЫТОК, а не тик: одно чтение настройки на весь демон —
 // его же спрашивает дверь состояния, чтобы назвать человеку «занято X из N».
-import { concurrencyCap, seatCeiling } from './queue/in-flight.mjs'
+import { concurrencyCap, seatCeiling, confirmProcessGone } from './queue/in-flight.mjs'
 // ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
 // belongs to the module that owns the row's key list, and a second copy of the number here
 // would be a second ceiling waiting to drift away from the first.
@@ -5525,6 +5525,14 @@ export async function tick(deps = {}) {
         }
       }
       if (deps.attemptTurns) deps.attemptTurns.done(task.id)
+      // И МЕСТО ОТДАЁТСЯ ЗДЕСЬ — В МОМЕНТ ПОДТВЕРЖДЁННОЙ СМЕРТИ РЕБЁНКА, а не в последнем
+      // `finally` прохода. Ниже этой строки идут ворота: маркер, квитанция, переповерка,
+      // коммиты, свод — минуты, за которые процесса уже нет, а место всё ещё занято. Место
+      // считает ЖИВЫХ детей (см. `in-flight.mjs`), и держать его за мёртвым значит голодить
+      // очередь при свободном работнике — замерено: 282 отказа по потолку подряд при двух
+      // живых попытках из четырёх мест. Тем же выражением, каким дверь отмены отвечает
+      // человеку «попытка закрылась»; `finally` отдаст место вторым разом и это не ошибка.
+      confirmProcessGone(deps, task.id)
 
       // WHAT THE SESSION ITSELF REPORTED joins what the mirror wrote, on ONE key. The mirror
       // says what was PUT INTO the account; the init frame says what the session actually
@@ -6382,6 +6390,9 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
   const attemptStartedAt = now()
   const exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine, now)
   if (deps.attemptTurns) deps.attemptTurns.done(task.id)
+  // Место отдаётся на смерти ребёнка и у этой полосы — правило «место держит живой процесс» не
+  // знает полос ровно так же, как его не знает закрытие координационного окна.
+  confirmProcessGone(deps, task.id)
   // СКОЛЬКО СОБИРАЛАСЬ СЕССИЯ — на строку попытки и здесь: у кузницы тот же спавн, то же
   // молчание до первого кадра и тот же человек у окна.
   worktreeRow.sessionStart = sessionStartRecord({ spawnedAt: attemptStartedAt, firstLineAt: exit.firstLineAt })

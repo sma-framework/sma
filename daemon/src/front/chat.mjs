@@ -1469,7 +1469,16 @@ async function spendRows(deps) {
 // to stop turns that died with the daemon anyway.
 
 /**
- * createTurnRegistry() → { register, stop, alive, wasStopped, done, size }.
+ * СКОЛЬКО ЖИВЁТ «ОСТАНОВИТЕ», СКАЗАННОЕ ХОДУ, КОТОРЫЙ ЕЩЁ НЕ РОДИЛСЯ. Названо, потому что срок
+ * здесь — это ставка: короче провизии копии — приговор не застанет ход, ради которого заведён;
+ * длиннее разумного — и он однажды убьёт следующую, законную попытку той же работы. Две минуты
+ * с запасом перекрывают путь от захвата строки до первого кадра работника (копия, ветка, склад,
+ * промпт) и не доживают до дня, когда человек вернёт эту работу в очередь своей рукой.
+ */
+export const STOP_BEFORE_START_TTL_MS = 120_000
+
+/**
+ * createTurnRegistry() → { register, has, stop, alive, wasStopped, done, size }.
  *
  * `stop` marks BEFORE it kills: the dying child resolves the turn through its exit path,
  * and the dispatcher then asks `wasStopped` to tell a founder's Стоп apart from a crash —
@@ -1487,12 +1496,56 @@ async function spendRows(deps) {
  * было вовсе. 31.08 под хелперами исчез склад зависимостей, пробы перестали состояться, и по
  * часам были похоронены три живые попытки подряд, чьи процессы продолжали жечь подписку. Теперь
  * поломка пробы называет себя (`PROBE_BROKEN`), и вердикт по ней не выносится вовсе.
+ *
+ * И «ОСТАНОВИТЕ» ПЕРЕЖИВАЕТ ОКНО МЕЖДУ ЗАХВАТОМ И ЗАПУСКОМ. Ручка появляется здесь только после
+ * того, как процесс запущен, — а между решением очереди выдать задачу и этой секундой проходит
+ * провизия копии, то есть заметное время. Слово человека, сказанное внутри этого окна, убивало
+ * НИЧЕГО и честно отвечало «живого не было»: строка закрывалась, а сессия стартовала следом и
+ * оставалась жить, не привязанная ни к одной карточке. Замерено: две такие сессии проработали
+ * час невидимыми, одна закончилась коммитом в копию задачи, которой уже нет, вторую пришлось
+ * добивать рукой. Поэтому остановка НЕИЗВЕСТНОГО хода запоминается на короткий названный срок,
+ * и первая же регистрация под этим именем исполняет её сразу — ход, приговорённый до рождения,
+ * не начинает работу. Приговор одноразовый и с давностью: он относится к той попытке, которую
+ * человек остановил, а не к имени задачи навсегда.
  */
-export function createTurnRegistry() {
+export function createTurnRegistry({ clock = Date.now } = {}) {
   const live = new Map() // turnId -> { kill, alive, stopped } — live handles ONLY, never truth
+  const condemned = new Map() // turnId -> минута приговора; приговор ждёт ход, который ещё не начался
+  const nowMs = () => {
+    const t = Number(clock())
+    return Number.isFinite(t) ? t : 0
+  }
+  /** Приговор действует, пока не истёк срок; истёкший стирается тем же чтением. */
+  const condemnedNow = (id) => {
+    const at = condemned.get(id)
+    if (at === undefined) return false
+    if (nowMs() - at > STOP_BEFORE_START_TTL_MS) {
+      condemned.delete(id)
+      return false
+    }
+    return true
+  }
   return {
     register(turnId, kill, alive) {
-      if (turnId) live.set(String(turnId), { kill, alive: typeof alive === 'function' ? alive : null, stopped: false })
+      if (!turnId) return
+      const id = String(turnId)
+      // ПРИГОВОР ИСПОЛНЯЕТСЯ ПРИ РОЖДЕНИИ. Записи не остаётся: останавливать нечего, а живая
+      // ручка под именем, которое человек уже снял, — это ровно тот невидимый ход, из-за
+      // которого приговор и заведён.
+      if (condemnedNow(id)) {
+        condemned.delete(id)
+        try {
+          if (typeof kill === 'function') kill()
+        } catch {
+          /* a child that cannot be killed is still a turn the founder ended */
+        }
+        return
+      }
+      live.set(id, { kill, alive: typeof alive === 'function' ? alive : null, stopped: false })
+    },
+    /** has(turnId) → держит ли ЭТОТ демон живую ручку под этим именем прямо сейчас. */
+    has(turnId) {
+      return live.has(String(turnId))
     },
     /**
      * alive(turnId) → true (процесс жив) | false (процесс завершился) | null (спросить не у
@@ -1511,10 +1564,20 @@ export function createTurnRegistry() {
         return PROBE_BROKEN
       }
     },
-    /** stop(turnId) → true if a live turn was told to die; false is «nothing to stop». */
+    /**
+     * stop(turnId) → true if a live turn was told to die; false is «nothing to stop».
+     *
+     * «Нечего останавливать» ЗАПОМИНАЕТСЯ: ход мог ещё не родиться, и тогда честный «нет» —
+     * это не конец разговора, а приговор, который исполнит регистрация (см. шапку). Ответ при
+     * этом не врёт: живого ребёнка в эту секунду действительно не убили.
+     */
     stop(turnId) {
-      const t = live.get(String(turnId))
-      if (!t) return false
+      const id = String(turnId)
+      const t = live.get(id)
+      if (!t) {
+        if (id) condemned.set(id, nowMs())
+        return false
+      }
       t.stopped = true
       try {
         t.kill()
