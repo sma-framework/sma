@@ -3899,13 +3899,6 @@ async function deriveAging(deps, now) {
 }
 
 /**
- * СКОЛЬКО ЗОВОВ ЗА ОДИН ПРОХОД. Зов уходит по сети, а тик обязан вернуться к раздаче работы;
- * пять забытых на приёмке работ не должны занимать проход целиком. Остальные позовутся
- * следующим проходом — через пять секунд, а не через смену.
- */
-const SUMMONS_PER_TICK = 3
-
-/**
  * callWaiting(deps, now) — ЗОВ ЧЕЛОВЕКА К РАБОТЕ, КОТОРУЮ БЕЗ НЕГО НИКТО НЕ ДВИНЕТ.
  *
  * Читается свежим на каждом проходе, ровно как сигнал старения рядом, и по той же причине:
@@ -3914,15 +3907,21 @@ const SUMMONS_PER_TICK = 3
  * человек. Два других повода (работник упёрся; очередь исчерпала перевыдачи) — события, а не
  * состояния, и зовут о себе там, где случаются, — в `failTask`.
  *
- * ВЕСЬ ЗАПРЕТ НА ШУМ ЖИВЁТ В `summon`, а не здесь: этот проход честно зовёт про каждую стоящую
- * работу на каждом тике, и молчание — решение зова. Так дедуп нельзя обойти вторым проводом.
+ * ВЕСЬ ЗАПРЕТ НА ШУМ ЖИВЁТ В `summon`, а не здесь: этот проход честно отдаёт зову ВЕСЬ список
+ * стоящих работ на каждом тике, и что из него станет словом — решение зова. Так дедуп нельзя
+ * обойти вторым проводом.
+ *
+ * ОДНО СООБЩЕНИЕ НА ПРОХОД, А НЕ ПО СООБЩЕНИЮ НА РАБОТУ. Раньше проход звал по каждой строке
+ * отдельно, тремя за тик, и десять стоящих работ превращались в десять сообщений подряд —
+ * то есть в залп, который человек читает как аварию. Список уходит целиком, а зов говорит о
+ * нём один раз: одна работа — своим текстом, много — сводкой.
  *
  * Fail-open целиком: нечитаемый список стоит одного несказанного слова, а тик, умерший на нём,
  * стоит всей раздачи работы.
  */
 async function callWaiting(deps, now) {
   const { adapter, summon, journal } = deps
-  if (!summon || typeof summon.raise !== 'function') return
+  if (!summon || typeof summon.raiseDigest !== 'function') return
   let rows = []
   try {
     rows = await adapter.list({ status: 'awaiting_approval' })
@@ -3930,23 +3929,22 @@ async function callWaiting(deps, now) {
     return
   }
   if (typeof summon.keepOnly === 'function') summon.keepOnly('approval', rows.map((r) => r && r.id))
-  let called = 0
+  const calls = []
   for (const row of rows) {
     if (!row || !row.id) continue
-    if (called >= SUMMONS_PER_TICK) break
-    try {
-      // КОГДА ОЖИДАНИЕ НАЧАЛОСЬ — с момента, когда работа ОСТАНОВИЛАСЬ и стала должна человеку
-      // слово, а не с постановки в очередь: это разные факты, и «сколько стоит» считают от
-      // первого. Метку пишут оба хранилища очереди; там, где её нет, остаётся мерка постановки.
-      const since = toEpochMs(row.completedAt ?? row.enqueuedAt)
-      const out = await summon.raise({ kind: 'approval', taskId: row.id, title: row.title, since })
-      if (out && out.sent) {
-        called += 1
-        if (typeof journal === 'function') journal({ type: 'summon', kind: 'approval', taskId: row.id })
-      }
-    } catch (err) {
-      if (typeof journal === 'function') journal({ type: 'summon-error', taskId: row.id, error: String((err && err.message) || err) })
+    // КОГДА ОЖИДАНИЕ НАЧАЛОСЬ — с момента, когда работа ОСТАНОВИЛАСЬ и стала должна человеку
+    // слово, а не с постановки в очередь: это разные факты, и «сколько стоит» считают от
+    // первого. Метку пишут оба хранилища очереди; там, где её нет, остаётся мерка постановки.
+    calls.push({ taskId: row.id, title: row.title, since: toEpochMs(row.completedAt ?? row.enqueuedAt) })
+  }
+  if (calls.length === 0) return
+  try {
+    const out = await summon.raiseDigest({ kind: 'approval', calls })
+    if (out && out.sent && typeof journal === 'function') {
+      journal({ type: 'summon', kind: 'approval', taskIds: out.taskIds, count: out.taskIds.length })
     }
+  } catch (err) {
+    if (typeof journal === 'function') journal({ type: 'summon-error', error: String((err && err.message) || err) })
   }
 }
 
@@ -4051,6 +4049,16 @@ async function repeatBroken(deps, now) {
  * Измеренная цена прежнего «порога в бесконечность» — 15 часов 12 минут на шести карточках.
  */
 export const BATCH_STALL_MS = 5 * 60 * 1000
+
+/**
+ * СКОЛЬКО ЗОВОВ О ВСТАВШИХ СБОРКАХ ЗА ОДИН ПРОХОД. Зов уходит по сети, а тик обязан вернуться к
+ * раздаче работы. Остальные позовутся следующим проходом — через пять секунд, а не через смену.
+ *
+ * У приёмки такой границы больше нет и она ей не нужна: там весь список уходит зову разом и
+ * становится ОДНИМ сообщением. Здесь сообщение остаётся отдельным по сути повода — вопрос
+ * задаётся о конкретном сорвавшемся элементе и без его имени не отвечается.
+ */
+const SUMMONS_PER_TICK = 3
 
 /**
  * callStalledBatches(deps, now) — ЗОВ ЧЕЛОВЕКА К СБОРКЕ, КОТОРАЯ ВСТАЛА И ЖДЁТ ЕГО ВЫБОРА.

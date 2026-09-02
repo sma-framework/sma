@@ -72,6 +72,7 @@ import { readConfigOnDisk } from './config-restart.mjs'
 import { writePidRecord, clearPidRecord, PID_RECORD_FILE } from './control.mjs'
 import { announceRecovery } from './outage.mjs'
 import { createSummons } from './summon.mjs'
+import { createClosedCards, createGhostCheck } from './summon-ghosts.mjs'
 import { createPgBossQueue } from './queue/pgboss-backend.mjs'
 import { resolveExpireMs } from './queue/adapter.mjs'
 import { APPROVAL_TABLE } from './queue/approval-store.mjs'
@@ -1677,7 +1678,31 @@ export function createDaemon(o = {}) {
     // памяти между проходами не бывает. Ей передаётся ЖИВОЙ конфиг: бота подключают из окна на
     // ходу, и зов обязан увидеть подключение без перезапуска — тот же приём, что у моста.
     // Бот не подключён — объект собран и молчит, ровно как молчал продукт до него.
-    summon: o.summon ?? createSummons({ config, now: clock, log: (line) => console.log(`[SmaDaemon] ${line}`) }),
+    // ПАМЯТЬ ЗОВА ЛЕЖИТ В ДАННЫХ ДЕМОНА, а не только в этом процессе. Без `dataDir` объект
+    // собирался бы честной памятью процесса — и ровно это стоило владельцу двух одинаковых
+    // залпов по десять сообщений за одно утро: демон поднялся дважды, и каждая работа, стоящая
+    // на его решении, позвала заново. Файл — это то, что делает второй подъём тихим.
+    //
+    // И СВЕРКА ПЕРЕД ЗОВОМ СОБИРАЕТСЯ ЗДЕСЬ ЖЕ, потому что только здесь есть оба её источника:
+    // реестр дома планирования (карточка, отмеченная владельцем сделанной) и очередь (кусок
+    // отменённой сборки). Тик о них не знает и знать не должен — он отдаёт список, а молчит зов.
+    summon:
+      o.summon ??
+      createSummons({
+        config,
+        now: clock,
+        dataDir,
+        fsImpl: o.fsImpl,
+        isGhost: createGhostCheck({
+          adapter,
+          closedCards: createClosedCards({
+            backlogRoot: () => connectedPlanningDir() ?? config.repoDir,
+            clock,
+            fsImpl: o.fsImpl,
+          }),
+        }),
+        log: (line) => console.log(`[SmaDaemon] ${line}`),
+      }),
     // «Can this worker start at all?» — asked BEFORE the attempt, so a placeholder account
     // produces a named, recorded refusal instead of three silent burnt attempts.
     workerReady: o.workerReady ?? ((worker) => workerReadiness(worker, { fsImpl: o.fsImpl })),
