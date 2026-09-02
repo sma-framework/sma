@@ -49,6 +49,8 @@ import { appendFileSync, statSync, readFileSync, mkdirSync } from 'node:fs'
 
 import { atomicWriteRaw, atomicWriteJson, readJsonSafe } from './fs-atomics.mjs'
 import { CATALOG_REFRESH_CAP, PACK_ACTIVE_TTL_MS } from './constants.mjs'
+// ОДИН СУДЬЯ О ТОМ, ЧТО СЧИТАТЬ ВЫЗОВОМ ОБОЛОЧКИ — тот же, что у классификатора опасного.
+import { shellCommandOf } from './worker-danger.mjs'
 
 /** Default soft time-budget: once cumulative stream time crosses this, remaining
  * streams are skipped (well inside the 5 s harness timeout). Env-overridable. */
@@ -327,7 +329,8 @@ async function runAirbag(ctx) {
 /**
  * deps stream — СКЛАД ЗАВИСИМОСТЕЙ ОДИН НА ЧЕЛОВЕКА И НА ВСЕ КОПИИ РАБОТНИКОВ.
  *
- * Bash-only, mayDeny:true, и обе его причины отказа — ФАКТЫ файловой системы, а не догадки
+ * Обе оболочки работника (Bash и PowerShell), mayDeny:true, и обе его причины отказа —
+ * ФАКТЫ файловой системы, а не догадки
  * по имени каталога:
  *   • команда убирает копию, внутри которой ещё висят ссылки на склад. Сырой
  *     `git worktree remove` идёт ПО ссылке: 31.08.2026 в 17:27:58Z такая команда прошла из
@@ -341,15 +344,34 @@ async function runAirbag(ctx) {
 async function runDeps(ctx) {
   const warns = []
   try {
-    if (ctx.toolName !== 'Bash') return { warns }
-    const command = typeof ctx.toolInput.command === 'string' ? ctx.toolInput.command : ''
-    if (!command.trim()) return { warns }
+    // ОБЕ ОБОЛОЧКИ РАБОТНИКА, А НЕ ОДНА. `worker-danger` знал про две (`SHELL_TOOLS`) с
+    // самого начала, а этот стрим спрашивал только Bash — и 01.09.2026 склад опустошила
+    // рука, вошедшая вызовом PowerShell. Один судья на вопрос «это оболочка и что в ней».
+    const command = shellCommandOf(ctx.toolName, ctx.toolInput)
+    if (!command) return { warns }
     const guard = ctx.deps && ctx.deps.depsGuard
     if (!guard) return { warns }
     // ГДЕ СТОИТ ВЫЗЫВАЮЩИЙ — это и есть каталог, относительно которого читаются `cd` и
     // относительные пути команды. Корень репозитория остаётся ответом только когда харнесс
     // своего каталога не назвал.
     const cwd = (ctx.evt && typeof ctx.evt.cwd === 'string' && ctx.evt.cwd.trim()) || ctx.repoRoot
+    // ── ВАХТА ПЕРВОЙ, ДО ОБОИХ ОТКАЗОВ ──
+    // Свидетель обязан увидеть КАЖДУЮ руку, включая ту, которой сейчас откажут: отметка,
+    // снятая только на пропущенных вызовах, оставила бы в журнале дыру ровно там, где
+    // интереснее всего. И ровно здесь у человека появляется ТРЕВОГА в тот ход, когда
+    // запись исчезла, — вместо `ERR_MODULE_NOT_FOUND` через полчаса и без объяснения.
+    const watch = ctx.deps && ctx.deps.storeJournal
+    if (watch && typeof watch.noteStoreAccess === 'function') {
+      const seen = watch.noteStoreAccess({
+        cwd,
+        command,
+        actor: `терминал ${(ctx.identity && ctx.identity.terminalId) || 'unknown'}`,
+        pid: process.pid,
+      })
+      if (seen && Array.isArray(seen.gone) && seen.gone.length > 0) {
+        warns.push(`SMA-deps: ${watch.blameSentence(seen.entry)}`)
+      }
+    }
     const removal = guard.copyRemovalRefusal({ command, cwd, root: ctx.repoRoot })
     if (removal && removal.refuse) return { warns, deny: { text: `SMA-deps: ${removal.reason}` } }
     const install = guard.installRefusal({ command, cwd })
@@ -734,7 +756,10 @@ export const PRE_CHECKS = [
   { id: 'airbag', tools: ['Bash'], killSwitchEnv: 'SMA_AIRBAG_DISABLE', mayDeny: true, run: runAirbag },
   // Стоит ПОСЛЕ подушки нарочно: подушка снимает точку возврата по git-разрушению, и отказ,
   // поставленный раньше, лишил бы её этой работы на командах, которые всё равно не пройдут.
-  { id: 'deps', tools: ['Bash'], killSwitchEnv: 'SMA_DEPS_GUARD_DISABLE', mayDeny: true, run: runDeps },
+  // ОБЕ ОБОЛОЧКИ. Список инструментов здесь — ПЕРВАЯ дверь: стрим, не поднятый на событии,
+  // не спасёт никакая проверка внутри него. 01.09.2026 склад опустошила рука, вошедшая
+  // вызовом PowerShell, — для стрима, поднятого только на Bash, её не существовало.
+  { id: 'deps', tools: ['Bash', 'PowerShell'], killSwitchEnv: 'SMA_DEPS_GUARD_DISABLE', mayDeny: true, run: runDeps },
   { id: 'spend', tools: ['Edit', 'Write', 'Bash', 'Task'], killSwitchEnv: 'SMA_SPEND_DISABLE', mayDeny: true, run: runSpend },
   { id: 'fingerprint', tools: ['Edit', 'Write', 'Bash'], killSwitchEnv: 'SMA_FINGERPRINT_DISABLE', mayDeny: false, run: runFingerprint },
   // enforcing scopes: SOFT-deny-with-override, on by default, silent without a
@@ -770,7 +795,7 @@ async function realGitHeadSha(repoRoot) {
 
 /** Lazy-load the real lib modules the streams depend on (overridable in tests). */
 async function loadDefaultDeps() {
-  const [collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate, depsGuard] =
+  const [collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate, depsGuard, storeJournal] =
     await Promise.all([
       import('./collision.mjs'),
       import('./reflex.mjs'),
@@ -788,8 +813,9 @@ async function loadDefaultDeps() {
       import('./citations.mjs'), // fragment fires ride the SAME usage journal
       import('./merge-gate.mjs'), // enforce stream: verified-live-only soft-deny predicate
       import('./deps-guard.mjs'), // deps stream: the dependency store's own refusals
+      import('./store-journal.mjs'), // deps stream: the store's own watch — who touched it, when
     ])
-  return { collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate, depsGuard }
+  return { collision, reflex, gates, loader, slots, journal, registry, airbag, spend, breaker, fingerprint, catalog, fragments, citations, mergeGate, depsGuard, storeJournal }
 }
 
 /**

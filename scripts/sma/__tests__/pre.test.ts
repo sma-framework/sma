@@ -402,10 +402,14 @@ describe('Task 2 — CLI surface', () => {
 describe('поток deps — склад зависимостей', () => {
   const depsStream = () => PRE_CHECKS.find((s: any) => s.id === 'deps') as any
 
-  it('зарегистрирован как Bash-поток, умеющий мягкий отказ, и с собственным выключателем', () => {
+  // ОБЕ ОБОЛОЧКИ, А НЕ ОДНА — и это поправка, купленная опустошением. 01.09.2026 склад
+  // опустел в четвёртый раз, и из 55 команд, прошедших через гейт во всех шести живых
+  // сессиях промежутка, удалением не была НИ ОДНА: рука пришла вызовом PowerShell, для
+  // которого этот стрим не поднимался вовсе. Список инструментов — первая дверь стрима.
+  it('зарегистрирован на ОБЕИХ оболочках работника, умеет мягкий отказ, и с выключателем', () => {
     const s = depsStream()
     expect(s).toBeTruthy()
-    expect(s.tools).toEqual(['Bash'])
+    expect(s.tools).toEqual(['Bash', 'PowerShell'])
     expect(s.mayDeny).toBe(true)
     expect(s.killSwitchEnv).toBe('SMA_DEPS_GUARD_DISABLE')
   })
