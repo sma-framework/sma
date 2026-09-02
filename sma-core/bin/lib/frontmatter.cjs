@@ -52,18 +52,48 @@ function splitInlineArray(body) {
         items.push(trimmed);
     return items;
 }
-function extractFrontmatter(content) {
+/**
+ * parseableContent(content, source, what) → the document as a STRING, or null when there is
+ * nothing to parse.
+ *
+ * WHY THIS EXISTS. `content.startsWith(...)` and `content.match(...)` are the first lines of
+ * the two readers below, and both assumed a caller that had already proved the file was
+ * readable. One caller that had not — a path that resolved to nothing, a read that came back
+ * null — turned a PARSE into `TypeError: content.match is not a function`, and the TypeError
+ * killed the COMMAND rather than the parse. Measured 2026-09-01: a finished attempt (three
+ * commits, 77 minutes, a clean end of turn) was discarded because the tool meant to close it
+ * died on that line, and the stack named this file without naming a single document.
+ *
+ * So the readers survive an unusable document — «no frontmatter» is the honest answer to a
+ * file there is nothing to read in — and the warning NAMES THE FILE, because a diagnostic that
+ * cannot be traced back to a path costs its reader the same hour the crash did. The caller
+ * that has no path says so out loud rather than leaving the sentence half-written.
+ *
+ * AN EMPTY STRING IS NOT A FAULT and gets no warning: a zero-byte document really has no
+ * frontmatter, and both readers already answer that with an empty result.
+ */
+function parseableContent(content, source, what) {
+    if (typeof content === 'string')
+        return content === '' ? null : content;
+    process.stderr.write(`[sma-tools] WARNING: ${what} got ${content === null ? 'null' : typeof content} where file content was expected ` +
+        `${source ? `(file: ${source})` : '(caller named no file)'} — read as «no frontmatter» instead of crashing.\n`);
+    return null;
+}
+function extractFrontmatter(content, source) {
     const frontmatter = {};
+    const text = parseableContent(content, source, 'extractFrontmatter');
+    if (text === null)
+        return frontmatter;
     // Match frontmatter only at byte 0 — a `---` block later in the document
     // body (YAML examples, horizontal rules) must never be treated as frontmatter.
-    const headerEnd = content.startsWith('---\r\n') ? 5 : content.startsWith('---\n') ? 4 : -1;
+    const headerEnd = text.startsWith('---\r\n') ? 5 : text.startsWith('---\n') ? 4 : -1;
     if (headerEnd === -1)
         return frontmatter;
-    const closingLineStart = content.indexOf('\n---', headerEnd);
+    const closingLineStart = text.indexOf('\n---', headerEnd);
     if (closingLineStart === -1)
         return frontmatter;
-    const yamlEnd = content[closingLineStart - 1] === '\r' ? closingLineStart - 1 : closingLineStart;
-    const yaml = content.slice(headerEnd, yamlEnd);
+    const yamlEnd = text[closingLineStart - 1] === '\r' ? closingLineStart - 1 : closingLineStart;
+    const yaml = text.slice(headerEnd, yamlEnd);
     const lines = yaml.split(/\r?\n/);
     const stack = [{ obj: frontmatter, key: null, indent: -1 }];
     for (const line of lines) {
@@ -352,10 +382,13 @@ function frontmatterDeepEqual(a, b) {
     }
     return false;
 }
-function parseMustHavesBlock(content, blockName) {
+function parseMustHavesBlock(content, blockName, source) {
     // Extract a specific block from must_haves in raw frontmatter YAML
     // Handles 3-level nesting: must_haves > artifacts/key_links > [{path, provides, ...}]
-    const fmMatch = content.match(/^---\r?\n([\s\S]+?)\r?\n---/);
+    const text = parseableContent(content, source, `parseMustHavesBlock(${blockName})`);
+    if (text === null)
+        return [];
+    const fmMatch = text.match(/^---\r?\n([\s\S]+?)\r?\n---/);
     if (!fmMatch)
         return [];
     const yaml = fmMatch[1];
