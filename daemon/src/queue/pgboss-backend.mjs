@@ -743,6 +743,15 @@ export function createPgBossQueue({
    * being reconciled. The statement itself is idempotent: a piece already on the clock is not
    * matched by it.
    *
+   * ОТПУСКАЕТСЯ ТОЛЬКО СВОЁ УДЕРЖАНИЕ — та самая далёкая дата, которой держат кусок, ждущий
+   * черёда, и ничего кроме неё. Здесь стояло «всё, что отложено на будущее», и это стирало
+   * ЧУЖУЮ выдержку: кусок сборки — самая частая работа, закреплённая за одним работником, то
+   * есть ровно та, ради которой заведена короткая отсрочка возврата; а перед каждой выборкой он
+   * подходит сюда под все условия разом (`queued`, не родитель, черёд пришёл, никем не держим).
+   * Свежая отсрочка снималась первым же проходом, и карусель, от которой она спасает,
+   * продолжалась именно на закреплённом элементе. Тем же условием ограждена и пауза библиотеки
+   * перед повтором: правило, ничего не знающее о чужой выдержке, не вправе её отменять.
+   *
    * FAIL-OPEN. A release that cannot run costs this pass its batch progress — the next claim
    * tries again — and never the claim of ordinary work, which is why it can never throw here.
    */
@@ -758,8 +767,8 @@ export function createPgBossQueue({
       try {
         await runSql(
           `UPDATE pgboss.job SET start_after = now()
-             WHERE data->>'id' = $1 AND state = 'created' AND start_after > now()`,
-          [item.id],
+             WHERE data->>'id' = $1 AND state = 'created' AND start_after >= $2`,
+          [item.id, HELD_UNTIL],
         )
       } catch (err) {
         log(`batch piece ${item.id} not released: ${maskError(err)}`)
