@@ -22,6 +22,9 @@
  * Ни демона, ни базы, ни сети: дом идущих попыток — настоящий, очередь — подставная.
  */
 
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
 import { describe, it, expect } from 'vitest'
 
 import { deriveState } from '../src/front/state.mjs'
@@ -112,6 +115,95 @@ describe('места одновременной работы — дверь со
     const payload: any = await door({ config: { maxConcurrentAttempts: 5 } })
     expect(payload.kpis.seatsBusy, 'нечем сказать — так и говорим, а не рисуем свободный дом').toBe(null)
     expect(payload.kpis.seatsTotal).toBe(5)
+  })
+})
+
+/**
+ * РАСХОЖДЕНИЕ «МЕСТ ЗАНЯТО» СО СПИСКОМ РАБОТНИКОВ — НАЗЫВАЕТСЯ, А НЕ ОСТАВЛЯЕТСЯ ЧЕЛОВЕКУ.
+ *
+ * ПОВОД. Доска говорила «мест занято 4» рядом со списком, в котором работали двое. Такое
+ * человек читает как ошибку экрана — и идёт чинить экран. Авария была не в экране: за двумя
+ * лишними местами шли ЖИВЫЕ сессии, не привязанные ни к одной карточке (строку сняли между
+ * захватом и запуском, процесс стартовал следом). Одна из них проработала час невидимой и
+ * закончилась коммитом в копию задачи, которой уже нет.
+ *
+ * ЧТО ДОКАЗЫВАЕТСЯ. Число выведено ИЗ ОДНОГО МЕСТА с обоими своими половинами: занятые места
+ * берутся у дома, руки — у тех же карточек работников, которые нарисованы на экране. Поэтому
+ * счёт и список не могут разойтись молча: разница называется числом.
+ */
+describe('места, за которыми не стоит ни одна карточка работника', () => {
+  const claimed = (id: string, workerId: string) => ({
+    id,
+    title: id,
+    status: 'claimed',
+    workerId,
+    lane: 'prod',
+    claimedAt: new Date(NOW).toISOString(),
+  })
+
+  it('попытка, которой нет ни в одних руках, названа числом — а не оставлена как разница двух цифр', async () => {
+    const house = createInFlight()
+    const shown = house.reserve(4)
+    const hidden = house.reserve(4)
+    house.name(shown, 'R-1', 'max-1')
+    house.name(hidden, 'R-2', 'max-2')
+
+    const payload: any = await door({
+      rows: [claimed('R-1', 'max-1')], // на доске видна ОДНА из двух идущих попыток
+      config: { maxConcurrentAttempts: 4 },
+      deps: { inFlight: house },
+    })
+
+    expect(payload.kpis.seatsBusy, 'мест занято — по-прежнему счёт дома').toBe(2)
+    expect(payload.kpis.workersBusy, 'а карточка держит строку ровно одна').toBe(1)
+    expect(
+      payload.kpis.seatsUnlisted,
+      'разница обязана быть НАЗВАНА: одна попытка идёт, и её не показывает ни одна карточка',
+    ).toBe(1)
+  })
+
+  it('всё, что идёт, видно на карточках — ноль, и это измерение', async () => {
+    const house = createInFlight()
+    const seat = house.reserve(4)
+    house.name(seat, 'R-1', 'max-1')
+
+    const payload: any = await door({
+      rows: [claimed('R-1', 'max-1')],
+      config: { maxConcurrentAttempts: 4 },
+      deps: { inFlight: house },
+    })
+
+    expect(payload.kpis.seatsUnlisted, 'обычный день — ни одной невидимой попытки').toBe(0)
+  })
+
+  it('жетон, взятый до захвата, ещё ничего не называет — и невидимой попыткой не считается', async () => {
+    const house = createInFlight()
+    house.reserve(4) // место взято перед тем, как спросить очередь; задачи у него пока нет
+
+    const payload: any = await door({ config: { maxConcurrentAttempts: 4 }, deps: { inFlight: house } })
+
+    expect(payload.kpis.seatsBusy, 'место занято — потолок считает его').toBe(1)
+    expect(payload.kpis.seatsUnlisted, 'но обвинять в невидимости нечего: попытки ещё нет').toBe(0)
+  })
+
+  it('дома не передали — сказать нечего, и это null, а не ноль', async () => {
+    const payload: any = await door({ config: { maxConcurrentAttempts: 4 } })
+    expect(payload.kpis.seatsUnlisted).toBe(null)
+  })
+
+  /**
+   * ПОСЛЕДНЕЕ ЗВЕНО: число, посчитанное дверью, ПЕРЕДАНО разметке. Посчитать и не подключить —
+   * это работа, которая выглядит сделанной и не видна ни одним глазом; читается исходником, как
+   * и у соседних проводов до разметки (у окна нет прогона разметки, зато есть прецедент).
+   */
+  it('значок мест получает это число ИЗ СОСТОЯНИЯ, а не считает разницу сам', () => {
+    const team = readFileSync(fileURLToPath(new URL('../../spa/src/screens/team/index.tsx', import.meta.url)), 'utf8')
+    const at = team.indexOf('<SeatsPill')
+    expect(at, 'значок мест обязан стоять на экране команды').toBeGreaterThan(-1)
+    const tag = team.slice(at, team.indexOf('/>', at))
+    expect(tag, 'разница обязана приехать посчитанной — экран второго мнения о ней не заводит').toContain(
+      'seatsUnlisted',
+    )
   })
 })
 
