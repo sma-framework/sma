@@ -35,7 +35,13 @@ import {
   DEAD_LETTER_QUEUE,
   BATCH_PARENT_QUEUE,
 } from '../src/queue/pgboss-backend.mjs'
-import { queueAdapterContractSuite, NoReceiptError, awaitsAutoRetry, stoppedByAPerson } from '../src/queue/adapter.mjs'
+import {
+  queueAdapterContractSuite,
+  NoReceiptError,
+  RELEASE_DEFER_MS,
+  awaitsAutoRetry,
+  stoppedByAPerson,
+} from '../src/queue/adapter.mjs'
 import { closeWithWords } from '../src/queue/approval-store.mjs'
 import { countTerminalOutcomes, recordAttempt, readAttempts } from '../src/queue/attempt-ledger.mjs'
 import { STATE_MACHINE_VERSION, idempotencyKey } from '../src/queue/state-machine.mjs'
@@ -320,16 +326,24 @@ function makeFakeBackend({
       // СТОИТ ВЫШЕ ДВУХ ВЕТОК, ЧЬИ ПРИЗНАКИ ЭТОТ ОПЕРАТОР РАЗДЕЛЯЕТ: имени работника (он его
       // СНИМАЕТ, а не пишет) и отметки аренды. Поставленная ниже, она бы до него не доехала —
       // и возврат молча превратился бы в назначение работника.
+      //
+      // ОТСРОЧКА МОДЕЛИРУЕТСЯ ЧЕСТНО, потому что ради неё оператор и трогает `start_after`:
+      // выборка выше уже отказывает строке, чей срок не вышел (`AND start_after < now()` — это
+      // собственный план библиотеки), так что подделка, игнорирующая секунды, удостоверяла бы
+      // отсрочку, которой на живой очереди нет. Счёт возвратов — второе, что пишет оператор.
       const jobId = params[0]
+      const deferSec = Number(params[1]) || 0
       const j = jobs.get(String(jobId))
       if (j && j.state === 'active') {
         j.state = 'created'
         j.started_on = null
+        j.start_after = now() + deferSec * 1000
         const kept: any = {}
         for (const [k, v] of Object.entries(j.data || {})) {
           if (k === 'workerId' || k === 'attemptToken' || k === 'claimedAt' || k === 'claimedAtRetry') continue
           kept[k] = v
         }
+        kept.releaseCount = (Number(kept.releaseCount) || 0) + 1
         j.data = kept
       }
       return { rows: [] }
@@ -414,11 +428,18 @@ function makeFakeBackend({
       // releaseBatchTurns(): the piece whose turn has come stops being deferred. Modelled with
       // the statement's own guards — keyed by TASK id, only a waiting row, and only one that is
       // actually held (so a second pass over an already-released piece changes nothing).
-      const [taskId] = params
+      //
+      // …И ПОЛ, КОГДА ОПЕРАТОР ЕГО НАЗВАЛ. Два правила снимают удержание этим же заявлением, но
+      // снимают РАЗНОЕ: черёд партии отпускает всё отложенное, а волна и занятые файлы — только
+      // свою далёкую дату (`start_after >= $2`). Подделка, отпускавшая всё подряд, была щедрее
+      // собственного оператора и отменяла ЧУЖУЮ выдержку — короткую отсрочку возвращённой
+      // строки, — то есть удостоверяла карусель, которой на живой очереди нет.
+      const [taskId, floor] = params
+      const floorMs = floor == null ? null : Date.parse(String(floor))
       for (const j of jobs.values()) {
-        if (j.data && j.data.id === taskId && j.state === 'created' && (j.start_after ?? 0) > now()) {
-          j.start_after = now()
-        }
+        if (!j.data || j.data.id !== taskId || j.state !== 'created') continue
+        const at = j.start_after ?? 0
+        if (floorMs == null ? at > now() : at >= floorMs) j.start_after = now()
       }
       return { rows: [] }
     }
@@ -1527,6 +1548,70 @@ describe('pg-boss backend — a batch request is not sent where a fetch can reac
     expect(claimed.id).toBe('B-77-1')
     expect(await adapter.claimNext('w2', {})).toBeNull()
     expect(fetched).not.toContain('sma.batch')
+  })
+
+  /**
+   * ═══════ ОСВОБОЖДЕНИЕ ЧЕРЁДА СБОРКИ НЕ СНИМАЕТ ЧУЖУЮ ВЫДЕРЖКУ ═══════
+   *
+   * ЧЕМ ЭТО ОПАСНО ИМЕННО ЗДЕСЬ. Кусок сборки — самая частая работа, закреплённая за ОДНИМ
+   * работником, то есть ровно та, ради которой отсрочка возврата и заведена. Но он же —
+   * единственный, кого перед каждой выборкой трогает освобождение черёда: он `queued`, он не
+   * родитель, черёд его пришёл, никто его не держит. Пока это освобождение двигало ЛЮБУЮ
+   * будущую дату, оно стирало свежую отсрочку возврата первым же проходом — и карусель, от
+   * которой отсрочка спасает, продолжалась именно на закреплённом элементе, то есть в
+   * единственном месте, где она и случается.
+   *
+   * ПОЧЕМУ ЭТОГО НЕ ВИДНО В ОБЩЕМ СЬЮТЕ КОНТРАКТА: у эталонной очереди нет ни черёда сборки,
+   * ни колонки `start_after` — механизм принадлежит этому бэкенду, и спрашивать о нём можно
+   * только здесь.
+   */
+  it('возвращённый кусок сборки остаётся отсроченным — черёд его освобождает, но выдержку возврата не трогает', async () => {
+    const c = mkClock()
+    const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 600000 })
+    await adapter.enqueue(parent('B-79'))
+    await adapter.enqueue({ id: 'B-79-1', source: 'roster', title: 'первый', lane: 'prod', batchId: 'B-79' })
+
+    // Черёд куска пришёл — он и выдаётся: до этой строки его держала далёкая дата.
+    const claimed = await adapter.claimNext('w1', {})
+    expect(claimed.id).toBe('B-79-1')
+
+    // Маршрут ответил «работник занят» — строка вернулась в очередь с короткой отсрочкой.
+    expect(await adapter.releaseClaim('B-79-1', { attemptToken: claimed.attemptToken })).toBe(true)
+
+    // СЛЕДУЮЩИЙ ПРОХОД НЕ ОБЯЗАН НИЧЕГО ВЫДАВАТЬ: черёд куска по-прежнему его, но выдержка
+    // возврата ещё идёт. Здесь и стояла дыра — освобождение черёда стирало её, и тот же кусок
+    // выдавался немедленно, чтобы тут же вернуться снова.
+    expect(await adapter.claimNext('w2', {}), 'выдержка возврата переживает освобождение черёда').toBeNull()
+
+    // …а когда срок вышел, кусок едет — освобождение черёда своё дело делает по-прежнему.
+    c.advance(RELEASE_DEFER_MS)
+    const again = await adapter.claimNext('w3', {})
+    expect(again && again.id, 'срок вышел — кусок снова выдаётся').toBe('B-79-1')
+  })
+
+  /**
+   * ТОТ ЖЕ ВОПРОС ТРЕТЬЕМУ БЛИЗНЕЦУ. Удержание снимают три правила — черёд сборки, остановленная
+   * волна и занятые файлы, — и все три пишут ОДНО заявление. Ограничить одно и забыть другое
+   * стоит ровно того же дефекта в другом месте: строка с адресом волны, никем не остановленная,
+   * проходит через снятие удержания при каждой выборке. Поэтому вопрос задан обоим, а не тому,
+   * на котором дыру заметили.
+   */
+  it('возвращённая строка с адресом волны тоже остаётся отсроченной — снятие остановки её не трогает', async () => {
+    const c = mkClock()
+    const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 600000 })
+    await adapter.enqueue(backlog({ id: 'BL-W1', data: { phase: '7', wave: '2' } }))
+
+    const claimed = await adapter.claimNext('w1', {})
+    expect(claimed.id).toBe('BL-W1')
+    expect(await adapter.releaseClaim('BL-W1', { attemptToken: claimed.attemptToken })).toBe(true)
+
+    // Волну никто не останавливал — значит на каждой выборке строка проходит через снятие
+    // остановки. Снять оно обязано только свою далёкую дату, а не выдержку возврата.
+    expect(await adapter.claimNext('w2', { holds: [] }), 'выдержка возврата переживает снятие остановки волны').toBeNull()
+
+    c.advance(RELEASE_DEFER_MS)
+    const again = await adapter.claimNext('w3', { holds: [] })
+    expect(again && again.id, 'срок вышел — строка снова выдаётся').toBe('BL-W1')
   })
 
   it('the request is READ back with the work — a list that hides it leaves a screen with loose items', async () => {
