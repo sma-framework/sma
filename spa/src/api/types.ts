@@ -578,6 +578,25 @@ export interface DoneRow {
   acceptance?: string | string[]
   /** Present only on a task that did not make it. */
   failed?: FailureSummary
+  /**
+   * ПОСЛЕДНЕЕ СЛОВО ЧЕЛОВЕКА о работе, которую делать не будут: устарело, предмета нет,
+   * сделано иначе. Есть ТОЛЬКО там, где слово сказано, и живёт рядом с `failed`, а не внутри:
+   * закрыть словами можно и удачную строку («сделано иначе» — законный конец зелёной работы).
+   */
+  closed?: ClosedByPerson
+}
+
+/** Закрытый словарь исходов, которыми человек закрывает работу СЛОВАМИ, а не заходом. */
+export type ClosingReason = 'obsolete' | 'no_subject' | 'done_otherwise'
+
+/** Что именно человек сказал, закрывая строку. */
+export interface ClosedByPerson {
+  /** Исход из закрытого словаря; `null` — слово, которого этот словарь не знает. */
+  reason: ClosingReason | string | null
+  /** Подпись исхода словами двери; `null`, когда подписи для слова нет. */
+  reasonLabel: string | null
+  /** Текст человека — sha, ссылка, причина. `null`, когда сказано одним исходом. */
+  note: string | null
 }
 
 /** One subscription on the spend strip: its name and the whole of its window bar. */
@@ -3163,4 +3182,16 @@ export interface CancelTaskResult {
   cancelled: boolean
   killed: boolean
   attemptClosed: boolean | null
+}
+
+/**
+ * Ответ двери «закрыть словами». Дверь либо записала последнее слово, либо отказала СЛОВАМИ
+ * (409 у живой работы, 409 у строки, о которой слово уже сказано) — успех здесь ровно один и
+ * не притворяется двумя.
+ */
+export interface CloseTaskResult {
+  ok: boolean
+  taskId: string
+  reason: ClosingReason | string
+  note: string | null
 }
