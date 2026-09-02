@@ -152,8 +152,6 @@ import {
 
 const HOUR_MS = 3600000
 const DAY_MS = 24 * HOUR_MS
-/** Touch freshness for the «работает» presence: a claimed task touched within this. */
-const FRESH_TOUCH_SEC = 180
 const DONE_COMMIT_CAP = 10
 
 /** Generated / registry artifacts of the corpus — structural files, not notes. */
@@ -192,18 +190,37 @@ function round2(n) {
 
 /**
  * derivePresence({windowOpen, hasActiveTask, pulseAgeSec}) → 'работает'|'ждёт окно'|
- * 'свободен'. PURE: a CLOSED window dominates (→ «ждёт окно») even with
- * queued work; an OPEN window with an active task freshly touched → «работает»;
- * everything else → «свободен». No storage is ever read — the fixtures carry no such
- * field to read.
+ * 'свободен'. PURE: no storage is ever read — the fixtures carry no such field to read.
+ *
+ * ВЗЯТАЯ СТРОКА ДОМИНИРУЕТ, и это главное правило здесь: работник, у которого в руках
+ * захваченная строка, — «работает». Три слова отвечают на два разных вопроса, и порядок
+ * между ними именно такой:
+ *
+ *   · «работает»  — держит взятую строку. Что делает.
+ *   · «ждёт окно» — не держит ничего, окно закрыто: взять работу НЕ МОЖЕТ.
+ *   · «свободен»  — не держит ничего, окно открыто: взять работу может.
+ *
+ * ПОЧЕМУ УШЛА ПРОВЕРКА СВЕЖЕСТИ. Раньше «работает» требовало ещё и касания не старше
+ * FRESH_TOUCH_SEC, и работник, замолчавший дольше трёх минут (аренда продлевается только на
+ * ЦЕЛЫХ кадрах потока — TOUCH_THROTTLE_MS в loop.mjs, — а думать молча дольше он имеет
+ * полное право), становился «свободен», не выпуская из рук ни строки, ни места. В одной и той
+ * же выдаче доска говорила «в работе 4» и рисовала четыре карточки со словом «свободен» —
+ * доска спорила сама с собой (замерено 31.08 сверкой счётчика со списком). Молчание — это НЕ
+ * освобождение: строку у замолчавшего забирает сторож живости (queue/liveness.mjs), и вот
+ * ТОГДА она перестаёт быть взятой и слово меняется само. А насколько давно был сигнал жизни,
+ * карточка и так говорит рядом — `pulseAgeSec` едет отдельным полем именно за этим.
+ *
+ * ЗАКРЫТОЕ ОКНО БОЛЬШЕ НЕ ПЕРЕБИВАЕТ ВЗЯТУЮ РАБОТУ. Оно перебивает ожидающую («даже при
+ * непустой очереди» — ради этого правило и заводилось): вопрос окна — «может ли он ВЗЯТЬ
+ * работу», а не «делает ли он её сейчас». Карточка, показывающая название задачи в руках и
+ * слово «ждёт окно» под ним, — то же самое противоречие, только другими словами.
  *
  * @param {{windowOpen:boolean, hasActiveTask:boolean, pulseAgeSec?:(number|null|undefined)}} o
  * @returns {'работает'|'ждёт окно'|'свободен'}
  */
-export function derivePresence({ windowOpen, hasActiveTask, pulseAgeSec } = {}) {
+export function derivePresence({ windowOpen, hasActiveTask } = {}) {
+  if (hasActiveTask) return 'работает'
   if (!windowOpen) return 'ждёт окно'
-  const fresh = pulseAgeSec == null || pulseAgeSec <= FRESH_TOUCH_SEC
-  if (hasActiveTask && fresh) return 'работает'
   return 'свободен'
 }
 
@@ -3377,9 +3394,17 @@ export async function deriveState(deps = {}) {
   // ЗАНЯТЫЕ СЧИТАЮТСЯ ПО ТОМУ ЖЕ НАБОРУ. Пара «занято X из N» обязана быть парой об одном и том
   // же множестве: занятые по всем сорока пяти против общего по шести давали бы «занято 3 из 6»
   // сегодня и «занято 8 из 6» в тот день, когда человек позовёт специалистов поимённо.
+  //
+  // СЧЁТЧИК СЧИТАЕТ КАРТОЧКИ, А НЕ РЕШАЕТ ЗАНОВО, КТО ЗАНЯТ. «Занято» жило здесь СВОИМ
+  // выражением (`!!w.taskId`), а слово под работником — своим (derivePresence), и два
+  // правила об одном факте разошлись ровно так, как расходятся всегда: в одной выдаче
+  // `workersBusy = 4` и четыре карточки со словом «свободен» (31.08). Теперь читается тот же
+  // `presence`, который увидит человек, — счётчик и список не могут разойтись по построению,
+  // потому что выражение осталось одно. Тот же закон уже записан на карточке работника
+  // («вторая копия вывода была бы вторым мнением») и на снимке доски для разговора.
   const queuePool = workers.filter((w) => w.inQueue)
   const kpis = {
-    workersBusy: queuePool.filter((w) => !!w.taskId).length,
+    workersBusy: queuePool.filter((w) => w.presence === 'работает').length,
     workersTotal: queuePool.length,
     queued: queuedRows.length,
     awaitingApproval: awaitingRows.length,
