@@ -2025,7 +2025,17 @@ function recordWindowReading(deps, subscription, event) {
   if (!accountName || !dataDir) return
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   try {
-    markWindowObserved({ dataDir, accountName, observation: event, clock, fsImpl: deps.fsImpl })
+    // ONE FRAME IS ONE READING OF THE WHOLE SUBSCRIPTION, AND BOTH WINDOWS ARE WRITTEN FROM IT.
+    // Only the window the frame NAMED used to be filed, and the vendor names the weekly one
+    // about once a day — so the board showed a week measured nineteen hours ago beside a
+    // five-hour window measured a minute ago, and a person reading it asked why the two
+    // disagreed with his own terminal. The parser now hands every window the frame spoke about
+    // (`windows`); a frame that carried none falls back to the frame itself, which is exactly
+    // what every frame from before this field existed looks like.
+    const readings = Array.isArray(event.windows) && event.windows.length > 0 ? event.windows : [event]
+    for (const observation of readings) {
+      markWindowObserved({ dataDir, accountName, observation, clock, fsImpl: deps.fsImpl })
+    }
     // A WINDOW THE VENDOR SAYS IS NO LONGER ALLOWING WORK IS A CLOSE, AND A CLOSE OUTLIVES
     // EVERY OTHER FACT ON THIS LINE. This used to fire on `utilization >= 1` — a fraction the
     // stream has never once carried, which arrives here as 0 — so the condition was false on
