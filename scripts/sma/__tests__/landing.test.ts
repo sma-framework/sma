@@ -41,11 +41,15 @@ import {
   createLanding,
   receiptCoversTree,
   runFullSuiteAsync,
+  runSpaBuild,
+  SPA_BUILD_SCRIPT,
+  SPA_NO_SCRIPT_NOTE,
+  SPA_UNTOUCHED_NOTE,
   STAMP_PATHS,
   summarizeVitestReport,
   versionMarkerIsCosmetic,
 } from '../lib/landing.mjs'
-import { runMerge } from '../lib/merge-gate.mjs'
+import { runMerge, SPA_BUILD_FAILED_CODE } from '../lib/merge-gate.mjs'
 import { checkBadge, readChangedSince, readHead } from '../lib/badge.mjs'
 import { audit } from '../lib/doc-audit.mjs'
 
@@ -373,6 +377,257 @@ describe('посадка: после кнопки вершина зелёная,
       expect(merged.testsPassed).toBe(false)
       expect(repo.git(['rev-parse', 'HEAD']).trim(), 'вершина двинулась на красном прогоне').toBe(tipBefore)
       expect(repo.git(['status', '--porcelain']).trim()).toBe('')
+    } finally {
+      rmSync(repo.home, { recursive: true, force: true })
+    }
+  }, 120000)
+})
+
+/**
+ * ОКНО ПЕРЕСОБИРАЕТСЯ ДВЕРЬЮ — И ИМЕННО МЕЖДУ СЛИЯНИЕМ И ПРОГОНОМ.
+ *
+ * Демон раздаёт окно из собранного бандла, которого нет в git вовсе. Слияние приносило в
+ * дерево новый исходник окна и не трогало раздачу — гейт свежести раздачи честно краснел, и
+ * посадка объявляла это «тесты красные». Ни одна правка окна не могла войти дверью приёмки.
+ *
+ * Здесь утверждается ПРОВОД, а не намерение: настоящий git, настоящий ритуал слияния, а
+ * подделаны ровно два шва — сборщик и прогонятель, — и оба записывают СЕБЯ в общий список
+ * событий. По этому списку и проверяется порядок: слияние → сборка → прогон.
+ */
+describe('посадка пересобирает окно: слияние → сборка → прогон', () => {
+  /** Дерево, которое УМЕЕТ собирать окно: команда сборки записана в его package.json. */
+  function repoThatBuildsWindow(name: string) {
+    const repo = makeRepo(name)
+    put(
+      repo.dir,
+      'package.json',
+      `${JSON.stringify({ name: 'fixture', version: '1.0.0', scripts: { 'build:spa': 'node -e ""' } }, null, 2)}\n`,
+    )
+    put(repo.dir, 'spa/src/main.tsx', 'export const window = 1\n')
+    repo.git(['add', '--', 'package.json', 'spa/src/main.tsx'])
+    repo.git(['commit', '-q', '--no-verify', '-m', 'window'])
+    return repo
+  }
+
+  it('ветка тронула окно: сборка зовётся один раз, ПОСЛЕ слияния и ДО прогона, время едет в квитанцию', async () => {
+    const repo = repoThatBuildsWindow('spa-touched')
+    try {
+      repo.git(['checkout', '-q', '-b', 'wt/window'])
+      put(repo.dir, 'spa/src/main.tsx', 'export const window = 2\n')
+      repo.git(['add', '--', 'spa/src/main.tsx'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'правка окна'])
+      repo.git(['checkout', '-q', repo.trunk])
+
+      const order: string[] = []
+      const landing = createLanding({
+        cwd: repo.dir,
+        execGit: (args: string[], opts: any = {}) => {
+          if (args[0] === 'merge') order.push('merge')
+          return String(execFileSync('git', args, { cwd: opts.cwd ?? repo.dir, encoding: 'utf8' }))
+        },
+        runBuild: () => {
+          order.push('build')
+          return { built: true, ms: 42 }
+        },
+        runSuite: async ({ reportPath }: any) => {
+          order.push('tests')
+          writeFileSync(reportPath, vitestReport({ tests: 11, files: 3 }), 'utf8')
+          return { passed: true, ran: true, reportPath }
+        },
+      })
+
+      const merged: any = await runMerge({
+        branch: 'wt/window',
+        by: 'landing-case',
+        cwd: repo.dir,
+        claimsDir: repo.claimsDir,
+        journalDir: repo.journalDir,
+        // ТОТ ЖЕ git, что видит посадка: иначе слияние не попало бы в список событий, и
+        // «порядок» проверялся бы по половине происходящего.
+        execGit: (args: string[], opts: any = {}) => {
+          if (args[0] === 'merge') order.push('merge')
+          return String(execFileSync('git', args, { cwd: opts.cwd ?? repo.dir, encoding: 'utf8' }))
+        },
+        runTests: landing.runTests,
+      })
+
+      expect(merged.merged, `слияние не прошло: ${JSON.stringify(merged)}`).toBe(true)
+      // Порядок — суть провода: собрать ДО слияния значило бы собрать вчерашний исходник,
+      // а ПОСЛЕ прогона — судить дерево, раздача которого ещё старая.
+      expect(order.filter((e) => e !== 'merge')).toEqual(['build', 'tests'])
+      expect(order[0], 'сборка окна обязана идти на СВЕДЁННОМ дереве').toBe('merge')
+      expect(order.filter((e) => e === 'build').length, 'окно собирается один раз на посадку').toBe(1)
+
+      // Время сборки — в квитанции слияния, и оно же на карточке посадки.
+      expect(merged.receipt.spaBuild.built).toBe(true)
+      expect(merged.receipt.spaBuild.ms).toBe(42)
+      expect(merged.receipt.spaBuild.files).toContain('spa/src/main.tsx')
+      const stamp: any = landing.stamp({ cwd: repo.dir })
+      expect(stamp.spaBuild.ms).toBe(42)
+    } finally {
+      rmSync(repo.home, { recursive: true, force: true })
+    }
+  }, 120000)
+
+  it('ветка окна не трогала: сборку никто не зовёт', async () => {
+    const repo = repoThatBuildsWindow('spa-untouched')
+    try {
+      repo.git(['checkout', '-q', '-b', 'wt/code'])
+      put(repo.dir, 'src/worker.mjs', 'export const worker = 2\n')
+      repo.git(['add', '--', 'src/worker.mjs'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'правка кода'])
+      repo.git(['checkout', '-q', repo.trunk])
+
+      let builds = 0
+      let runs = 0
+      const landing = createLanding({
+        cwd: repo.dir,
+        runBuild: () => {
+          builds += 1
+          return { built: true, ms: 1 }
+        },
+        runSuite: async ({ reportPath }: any) => {
+          runs += 1
+          writeFileSync(reportPath, vitestReport({ tests: 11, files: 3 }), 'utf8')
+          return { passed: true, ran: true, reportPath }
+        },
+      })
+      const merged: any = await runMerge({
+        branch: 'wt/code',
+        by: 'landing-case',
+        cwd: repo.dir,
+        claimsDir: repo.claimsDir,
+        journalDir: repo.journalDir,
+        runTests: landing.runTests,
+      })
+      expect(merged.merged, `слияние не прошло: ${JSON.stringify(merged)}`).toBe(true)
+      expect(runs, 'вершина двигалась по коду — прогон обязан быть').toBe(1)
+      expect(builds, 'окно не тронуто: пересобирать нечего, и секунды тратить не на что').toBe(0)
+      expect(landing.state.spaBuild.touched).toBe(false)
+      expect(landing.state.spaBuild.note).toBe(SPA_UNTOUCHED_NOTE)
+      // Квитанция говорит и об отсутствии сборки — своими словами: «сборки не было» и
+      // «сборка молча не понадобилась» это одно и то же событие только для того, кто его не
+      // читает.
+      expect(merged.receipt.spaBuild.built).toBe(null)
+      expect(merged.receipt.spaBuild.note).toBe(SPA_UNTOUCHED_NOTE)
+    } finally {
+      rmSync(repo.home, { recursive: true, force: true })
+    }
+  }, 120000)
+
+  it('сборка окна упала: ветка НЕ входит, отказ назван сборкой, и ни один тест не запускался', async () => {
+    const repo = repoThatBuildsWindow('spa-red')
+    try {
+      repo.git(['checkout', '-q', '-b', 'wt/broken-window'])
+      put(repo.dir, 'spa/src/main.tsx', 'export const window = ((\n')
+      repo.git(['add', '--', 'spa/src/main.tsx'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'сломанное окно'])
+      repo.git(['checkout', '-q', repo.trunk])
+      const tipBefore = repo.git(['rev-parse', 'HEAD']).trim()
+
+      let runs = 0
+      const landing = createLanding({
+        cwd: repo.dir,
+        runBuild: () => ({ built: false, ms: 7, exitCode: 2, tail: 'error TS1005: ")" expected.' }),
+        runSuite: async () => {
+          runs += 1
+          return { passed: true, ran: true }
+        },
+      })
+      const merged: any = await runMerge({
+        branch: 'wt/broken-window',
+        by: 'landing-case',
+        cwd: repo.dir,
+        claimsDir: repo.claimsDir,
+        journalDir: repo.journalDir,
+        runTests: landing.runTests,
+      })
+
+      expect(merged.merged, 'ветка с несобираемым окном вошла в вершину').toBe(false)
+      expect(merged.spaBuildFailed).toBe(true)
+      expect(merged.reasonCode, 'поломка сборки обязана иметь СВОЁ имя').toBe(SPA_BUILD_FAILED_CODE)
+      expect(merged.testsPassed, 'прогона не было — утверждать о нём нечего').toBe(null)
+      expect(runs, 'тесты не имеют права идти на несобранном окне').toBe(0)
+      expect(merged.reason).toContain('TS1005')
+      expect(merged.receipt.spaBuild.ms).toBe(7)
+      expect(repo.git(['rev-parse', 'HEAD']).trim(), 'вершина двинулась на несобравшемся окне').toBe(tipBefore)
+      expect(repo.git(['status', '--porcelain']).trim()).toBe('')
+    } finally {
+      rmSync(repo.home, { recursive: true, force: true })
+    }
+  }, 120000)
+
+  /**
+   * СБОРЩИК — ЭТО ТА ЖЕ КОМАНДА, ЧТО НАБИРАЕТ ЧЕЛОВЕК. Дверь, собирающая окно чем-то своим,
+   * однажды соберёт его иначе, чем оно собирается руками, и разницу увидит только браузер.
+   * Шов здесь один — запуск ребёнка; всё остальное настоящее.
+   */
+  it('сборка зовётся именем команды из package.json, а упавший сборщик отдаёт код выхода и хвост', () => {
+    const calls: any[] = []
+    const green: any = runSpaBuild({
+      cwd: '/дерево',
+      exec: (file: string, args: string[], opts: any) => {
+        calls.push({ file, args, cwd: opts.cwd })
+        return ''
+      },
+    })
+    expect(green.built).toBe(true)
+    expect(Number.isFinite(green.ms), 'время сборки обязано быть измерено').toBe(true)
+    expect(calls).toHaveLength(1)
+    expect([calls[0].file, ...calls[0].args].join(' ')).toContain(`run ${SPA_BUILD_SCRIPT}`)
+    expect([calls[0].file, ...calls[0].args].join(' ')).toMatch(/^npm/)
+    expect(calls[0].cwd, 'собирать надо СВЕДЁННОЕ дерево, а не то, где стоит процесс').toBe('/дерево')
+
+    const red: any = runSpaBuild({
+      cwd: '/дерево',
+      exec: () => {
+        const err: any = new Error('Command failed: npm run build:spa')
+        err.status = 2
+        err.stdout = '> sma-spa@0.0.0 build\n> tsc --noEmit && vite build\n'
+        err.stderr = 'src/App.tsx(4,1): error TS1005: ")" expected.\n'
+        throw err
+      },
+    })
+    expect(red.built).toBe(false)
+    expect(red.exitCode).toBe(2)
+    expect(red.tail, 'причина сборки живёт в последних строках и больше нигде').toContain('TS1005')
+  })
+
+  it('дерево без команды сборки окна слиянию не отказывает — собирать там нечем и не за что', async () => {
+    // Установленная копия и одноразовый репозиторий окна не собирают вовсе: `makeRepo` —
+    // ровно такое дерево. Требовать с него сборку значило бы отказывать в слиянии за то,
+    // чего в дереве никогда не было.
+    const repo = makeRepo('spa-noscript')
+    try {
+      repo.git(['checkout', '-q', '-b', 'wt/no-script'])
+      put(repo.dir, 'spa/src/main.tsx', 'export const window = 1\n')
+      repo.git(['add', '--', 'spa/src/main.tsx'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'окно без команды сборки'])
+      repo.git(['checkout', '-q', repo.trunk])
+
+      let builds = 0
+      const landing = createLanding({
+        cwd: repo.dir,
+        runBuild: () => {
+          builds += 1
+          return { built: false, ms: 1, tail: 'сюда попасть нельзя' }
+        },
+        runSuite: async ({ reportPath }: any) => {
+          writeFileSync(reportPath, vitestReport({ tests: 11, files: 3 }), 'utf8')
+          return { passed: true, ran: true, reportPath }
+        },
+      })
+      const merged: any = await runMerge({
+        branch: 'wt/no-script',
+        by: 'landing-case',
+        cwd: repo.dir,
+        claimsDir: repo.claimsDir,
+        journalDir: repo.journalDir,
+        runTests: landing.runTests,
+      })
+      expect(merged.merged, `слияние не прошло: ${JSON.stringify(merged)}`).toBe(true)
+      expect(builds).toBe(0)
+      expect(landing.state.spaBuild.note).toBe(SPA_NO_SCRIPT_NOTE)
     } finally {
       rmSync(repo.home, { recursive: true, force: true })
     }
