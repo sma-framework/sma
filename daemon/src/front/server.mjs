@@ -6,7 +6,7 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-EIGHT routes
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-NINE routes
  *     (re-frozen 2026-08-28 — the growth past the V5.4 fifty-three is EXPLICIT, ELEVEN doors,
  *     each declared by the release that opened it: the chat stop button in v5.4.3, the
  *     running-task steering wheel in v5.5.0, SIX doors in v5.6.0 — the batch request,
@@ -38,10 +38,16 @@
  *     running in), the other lets a person NAME one by hand. Until they existed the window
  *     opened a NEW conversation almost every time — fifty replies had scattered across fifteen
  *     threads — showed every thread of a project as one unbroken feed, and offered no way back
- *     into any earlier one. A path outside the table is 404 BEFORE
+ *     into any earlier one. The SIXTY-NINTH SAYS THE LAST WORD ABOUT WORK THAT WILL NOT BE
+ *     DONE: a row standing on a person is closed IN WORDS — obsolete, no subject, done another
+ *     way — instead of being paid for again. Until it existed such a row had exactly one
+ *     button, «вернуть в очередь», which buys another attempt at the same wall; the stop door
+ *     takes only LIVE work and answered «nothing to stop», and the words door refuses a task
+ *     whose work is over. Four rows stood in the waiting column for three days with no way to
+ *     clear them from the window. A path outside the table is 404 BEFORE
  *     any auth-error detail (no route reflection). No command-exec endpoint exists or ever
  *     may — adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 68 is a test.
+ *     invariant that polices it. Object.keys(ROUTES).length === 69 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
@@ -110,7 +116,8 @@ import { fileURLToPath } from 'node:url'
 import { atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
-import { BATCH_PARENT, CAP_TITLE, isBatchParent, latestRowPerId, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
+import { BATCH_PARENT, CAP_TITLE, CLOSING_REASONS, closingReasonKnown, isBatchParent, latestRowPerId, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
+import { closeWithWords } from '../queue/approval-store.mjs'
 import { CHAT_STAGES, proposeBreakdown, proposeWords, SNAPSHOT_EVENT_CAP, STATUS_LABELS } from './chat.mjs'
 import { createQuestions, findPhaseDir, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
@@ -279,17 +286,17 @@ const BUILD_INSTRUCTION_HTML =
  * is dead), the door that READS THE FOLDER OF ONE PHASE — its directory as a tree, and
  * one file of it as text, both bounded, neither able to leave that directory — and the door
  * that WRITES A SKILL into this machine's skill store).
- * Exactly SIXTY-EIGHT entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * Exactly SIXTY-NINE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the five dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/phase/:id/files, /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic
  * asset segment (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 68) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 69) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time; the last twelve joined one release at a time, additively — nothing was
- * removed or renamed. ALL SIXTY-EIGHT ARE LIVE — the table carries no stub, and the shape
+ * a time; the last thirteen joined one release at a time, additively — nothing was
+ * removed or renamed. ALL SIXTY-NINE ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  *
  * THREE OF THE TEN PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
@@ -375,6 +382,10 @@ export const ROUTES = Object.freeze({
   'POST /api/wave/hold': 'handleWaveHold',
   // ── остановка задачи человеком: сначала убить живого ребёнка, потом закрыть строку ──
   'POST /api/task/cancel': 'handleTaskCancel',
+  // ── ЗАКРЫТЬ СЛОВАМИ: последнее слово о работе, которую не будут делать. Отмена берёт только
+  //    живое, возврат стоит денег ещё одного захода, а строке, чей предмет устарел или сделан
+  //    иначе, до сих пор не было чем сказать об этом из окна ──
+  'POST /api/task/close': 'handleTaskClose',
   // ── папка фазы: её каталог, как он лежит на диске, и один файл из него ТЕКСТОМ ──
   'GET /api/phase/:id/files': 'handlePhaseFiles',
   // ── НАСТРОЙКИ ОДНОГО ПОДКЛЮЧЕНИЯ: свой бот Telegram — подключить, выдать код пары, отключить ──
@@ -4023,6 +4034,90 @@ async function handleTaskCancel({ req, res, deps }) {
   return sendJson(res, 200, { cancelled, killed, attemptClosed })
 }
 
+/** Сколько знаков помещается в последнее слово о задаче — тот же потолок, что у возврата. */
+export const CLOSING_NOTE_CAP = 2000
+
+/**
+ * POST /api/task/close — body `{taskId, reason, note?}`. ПОСЛЕДНЕЕ СЛОВО ЧЕЛОВЕКА о работе,
+ * которую делать не будут: «устарело», «предмета нет», «сделано иначе».
+ *
+ * ═══════════ ПОЧЕМУ ТРЁХ СУЩЕСТВУЮЩИХ ДВЕРЕЙ НЕ ХВАТАЛО ═══════════════════════════════════
+ * Строка, стоящая на человеке, знала ровно одно действие — «вернуть в очередь», то есть
+ * заплатить за ещё один заход. Две другие двери её не берут по построению:
+ *   — ОТМЕНА закрывает ЖИВУЮ работу (queued/claimed). Работа здесь уже кончилась, pg-boss
+ *     закрыл своё задание, и `cancelTask` честно отвечает «нечего останавливать»;
+ *   — ПРАВКА СЛОВ (`/api/task/words`) правит обещание, пока по нему не судили, и по
+ *     законченной работе отвечает 409 «its words are not rewritten now».
+ * Замерено 02.09.2026: четыре строки простояли в столбике ожидания с 30.08 — ни одна не могла
+ * быть исполнена без чужой починки, ни одну нельзя было снять из окна. Возврат для них — это
+ * оплаченный заход в ту же стену; а дверь возврата их к тому же и не берёт (её CAS ищет строку
+ * в `awaiting_approval` или `failed`, а строке, вставшей у потолка ходов, приёмочной строки
+ * никто не заводил вовсе — её пишет только `complete`), и человек читает «race lost» о работе,
+ * которая никуда не бежит.
+ *
+ * ═══════════ ЧТО ЭТА ДВЕРЬ ДЕЛАЕТ И ЧЕГО НЕ ДЕЛАЕТ ═══════════════════════════════════════
+ * ДЕЛАЕТ: пишет слово человека в приёмочную строку демона (`closeWithWords`) — исход из
+ * закрытого словаря плюс его текст. После этого строка перестаёт ждать человека: столбик
+ * ожидания её не показывает, красная карточка называет закрытие рукой, а очередь не ставит её
+ * заново сама (`stoppedByAPerson` — то же одно предложение на весь продукт).
+ * НЕ ДЕЛАЕТ: не трогает pg-boss. Задание уже кончилось — тем, чем оно кончилось, — и переписать
+ * его состояние значило бы вписать мнение демона в словарь библиотеки.
+ *
+ * ═══════════ ЖИВУЮ РАБОТУ ОНА НЕ ЗАКРЫВАЕТ ═══════════════════════════════════════════════
+ * Строка `queued`/`claimed` — это работа, которая идёт или вот-вот пойдёт, и слово о ней,
+ * написанное мимо процесса, оставило бы живого ребёнка работать над закрытой карточкой: ровно
+ * та петля, ради которой дверь отмены убивает раньше, чем закрывает. Поэтому здесь 409 со
+ * словами «сначала остановите», а не тихое закрытие рядом с живым подходом.
+ *
+ * `done_otherwise` ОБЯЗАН ПОКАЗАТЬ, ЧЕМ. «Сделано иначе» без единого слова — это утверждение,
+ * которое нечем перепроверить: следующий читатель карточки не найдёт ни коммита, ни причины.
+ * Два других исхода объясняют себя сами и текстом не обязаны.
+ */
+async function handleTaskClose({ req, res, deps }) {
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['taskId', 'reason', 'note']))) return undefined
+  const taskId = b.taskId
+  if (typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
+  if (!closingReasonKnown(b.reason)) return send400(res, `reason must be one of ${CLOSING_REASONS.join('|')}`)
+  const note = b.note == null ? '' : String(b.note)
+  if (note.length > CLOSING_NOTE_CAP) return send400(res, `note exceeds ${CLOSING_NOTE_CAP} chars`)
+  if (b.reason === 'done_otherwise' && note.trim() === '') {
+    return send400(res, 'reason "done_otherwise": назовите sha или причину — иначе это утверждение нечем перепроверить')
+  }
+  if (typeof deps.casExec !== 'function' || !deps.adapter || typeof deps.adapter.list !== 'function') {
+    return send501(res)
+  }
+
+  // ЧТО ЭТА СТРОКА ДЕЛАЕТ ПРЯМО СЕЙЧАС — спрошено ДО записи, потому что отказ живой работе
+  // обязан случиться раньше, чем о ней сказано последнее слово.
+  let row = null
+  let known = false
+  try {
+    const mine = (await deps.adapter.list({})).filter((r) => r && r.id === taskId)
+    known = mine.length > 0
+    row = latestRowPerId(mine)[0] || null
+  } catch {
+    // Нечитаемая очередь — это «не знаю, что с этой строкой», и закрывать вслепую нельзя:
+    // живой подход под ней остался бы работать над закрытой карточкой.
+    return send503(res, 'queue did not answer')
+  }
+  if (!known) return send404(res)
+  if (row && (row.status === 'queued' || row.status === 'claimed')) {
+    return send409(res, 'эта работа ещё идёт — сначала остановите её, потом закройте словами')
+  }
+
+  const closed = await closeWithWords(deps.casExec, taskId, { reason: b.reason, note, log: deps.log })
+  if (closed.refused) return send409(res, 'о этой строке слово уже сказано (или идёт приёмка)')
+  if (!closed.written) return send503(res, 'closing word not written')
+
+  // КОЛОКОЛА ЗДЕСЬ НЕТ, И ЭТО ТО ЖЕ РЕШЕНИЕ, ЧТО У ДВЕРИ ОТМЕНЫ: словарь событий — зеркало,
+  // сверяемое буква-в-букву с окном, и правится оно отдельным решением. Окно узнаёт правду
+  // перечитыванием картины после действия, а не намёком, которого вторая сторона не знает.
+  return sendJson(res, 200, { ok: true, taskId, reason: b.reason, note: note === '' ? null : note })
+}
+
 /**
  * GET /api/chat/history — the tail of the transcript, oldest first. `?conversationId=`
  * narrows it; `?limit=` is clamped between one turn and CHAT_HISTORY_MAX, so no query can
@@ -6451,7 +6546,16 @@ async function handleBatchDecide({ req, res, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
   const b = body.value || {}
-  if (rejectUnknownKeys(res, b, new Set(['batchId', 'decision', 'itemId']))) return undefined
+  if (rejectUnknownKeys(res, b, new Set(['batchId', 'decision', 'itemId', 'note']))) return undefined
+
+  // СЛОВО, С КОТОРЫМ КУСОК ИДЁТ НА ПОВТОР. До него «повторить» отправляло сорвавшийся кусок
+  // ВСЛЕПУЮ: тот же текст, тот же полный потолок ходов, и приёмщику, который видит, чего именно
+  // не хватило («досдай по ритуалу», «пропущен один шаг»), сказать это было НЕКУДА — дверь
+  // возврата кусок сборки не берёт (её CAS ищет строку вне сборки и отвечает «race lost»), а
+  // дверь слов по законченной работе отказывает. Заметка едет ДАННЫМИ, тем же полем и тем же
+  // потолком, что и у возврата: это текст человека, а не команда.
+  const note = b.note == null ? '' : String(b.note)
+  if (note.length > CLOSING_NOTE_CAP) return send400(res, `note exceeds ${CLOSING_NOTE_CAP} chars`)
 
   const batchId = b.batchId
   if (typeof batchId !== 'string' || !ID_RE.test(batchId)) return send400(res, 'invalid batchId')
@@ -6459,6 +6563,9 @@ async function handleBatchDecide({ req, res, deps }) {
   if (!BATCH_DECISIONS.some((o) => o.id === decision)) {
     return send400(res, `decision must be one of ${BATCH_DECISIONS.map((o) => o.id).join('|')}`)
   }
+  // СЛОВО ЕСТЬ КОМУ СКАЗАТЬ ТОЛЬКО У ПОВТОРА. Пропуск и отмена никого никуда не посылают, и
+  // заметка, принятая ими, была бы текстом, который человек написал, а прочитать его некому.
+  if (note !== '' && decision !== 'retry') return send400(res, 'note rides with decision "retry" only')
   const itemId = b.itemId
   if (decision !== 'cancel' && (typeof itemId !== 'string' || !ID_RE.test(itemId))) {
     return send400(res, 'invalid itemId')
@@ -6505,11 +6612,15 @@ async function handleBatchDecide({ req, res, deps }) {
     // назвал бы это `role_mismatch` — и сборка, честно закреплённая за специалистом,
     // расклеилась бы на первом же повторе.
     ...(item.role ? { role: item.role } : {}),
+    // СЛОВО ЧЕЛОВЕКА ЕДЕТ С ПОВТОРОМ, а не остаётся в окне: следующая выдача этого куска
+    // получает его тем же полем, каким получает слово возвращённая работа. Не сказали ничего —
+    // поля нет вовсе: пустая строка на карточке читалась бы как сказанное и стёртое.
+    ...(note.trim() !== '' ? { note } : {}),
     attempt,
   })
   if (requeue.answered) return undefined // the database refused the text; the reason is sent
   emitSafe(deps, { event: 'task.queued', taskId: itemId, status: 'queued' })
-  return sendJson(res, 200, { ok: true, batchId, decision, itemId, attempt })
+  return sendJson(res, 200, { ok: true, batchId, decision, itemId, attempt, ...(note.trim() !== '' ? { note } : {}) })
 }
 
 /**
@@ -7225,6 +7336,8 @@ export const HANDLERS = Object.freeze({
   handleWaveHold,
   // остановка задачи человеком: сначала умирает живой ребёнок, потом закрывается строка
   handleTaskCancel,
+  // последнее слово о работе, которую не будут делать: устарело / предмета нет / сделано иначе
+  handleTaskClose,
   // папка фазы: дерево её каталога и один файл из него текстом, только чтение
   handlePhaseFiles,
   // настройки одного подключения: свой бот Telegram — токен внутрь, код пары наружу

@@ -114,6 +114,9 @@ import {
   // выдаёт. Второе выражение того же правила у окна разошлось бы с первым в первый же день.
   fileHoldsOf,
   REASON_LABELS,
+  // ЧЕМ КОНЧАЕТСЯ РАБОТА, КОТОРУЮ НЕ БУДУТ ДЕЛАТЬ — тот же закрытый словарь, что принимает
+  // дверь закрытия словами: подпись на карточке и слово в двери обязаны быть одним списком.
+  CLOSING_REASON_LABELS,
   failureAwaitsAPerson,
   awaitsAutoRetry,
   autoRetriesSpent,
@@ -3866,6 +3869,26 @@ function buildDoneRow(r, { readTaskAttempts, readReceipt, execGit, gitDir, machi
   }
   // acceptance («обещано») — carried ONLY when the task had one (roster/return exempt).
   if (r.acceptance != null && String(r.acceptance).trim() !== '') out.acceptance = r.acceptance
+  // ═══ ЗАКРЫТО СЛОВАМИ: ЧТО ЧЕЛОВЕК СКАЗАЛ О РАБОТЕ, КОТОРУЮ ДЕЛАТЬ НЕ БУДУТ ═══════════════
+  //
+  // Поле ЕСТЬ только там, где слово сказано, и это не про цвет строки: работа могла кончиться
+  // и удачей, и срывом, а закрытие словами — про то, что дальше её никто не двинет. Поэтому
+  // оно живёт РЯДОМ с `failed`, а не внутри него: закрытая словами удачная строка тоже несёт
+  // своё слово, и «сделано иначе» на зелёной карточке — законное предложение.
+  //
+  // Подпись берётся из того же словаря, которым дверь судит принятое слово: экран не сочиняет
+  // второго перевода, а незнакомое слово честно остаётся без подписи, а не выдумывает её.
+  if (r.closedByPerson && typeof r.closedByPerson === 'object') {
+    const closingReason = r.closedByPerson.reason ?? null
+    out.closed = {
+      reason: closingReason,
+      reasonLabel: closingReason ? (CLOSING_REASON_LABELS[closingReason] ?? null) : null,
+      note:
+        typeof r.closedByPerson.note === 'string' && r.closedByPerson.note.trim() !== ''
+          ? r.closedByPerson.note
+          : null,
+    }
+  }
   // failed red-card fields.
   if (r.status === 'failed') {
     const reason = r.failure_reason ?? (last && last.failureReason) ?? null

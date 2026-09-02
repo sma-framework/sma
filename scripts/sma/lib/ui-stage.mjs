@@ -751,12 +751,37 @@ export function stageQueue({ now = () => Date.now(), wordsEditableIn = [] } = {}
   const moved = new Map()
   /** id → поля, которые человек правил на этой сцене: слова задачи и её проект. */
   const edited = new Map()
+  /** id → последнее слово человека о строке, если оно на этой сцене сказано. */
+  const closed = new Map()
   const list = async () =>
     stageRows({ now: now() }).map((r) => {
       const own = { ...r, ...(edited.get(r.id) || {}) }
-      return moved.has(r.id) ? { ...own, status: moved.get(r.id) } : own
+      const withStatus = moved.has(r.id) ? { ...own, status: moved.get(r.id) } : own
+      const word = closed.get(r.id)
+      if (!word) return withStatus
+      // ЧТО ДЕЛАЕТ С ЗАКРЫТОЙ СЛОВАМИ СТРОКОЙ ЧИТАЮЩИЙ ПУТЬ — тем же в двух местах: строка,
+      // ждавшая человека, перестаёт ждать (она уже произвела), а сорвавшаяся остаётся
+      // сорвавшейся, но закрытой РУКОЙ — иначе очередь поставила бы её заново.
+      const status = withStatus.status === 'awaiting_approval' ? 'completed' : withStatus.status
+      return {
+        ...withStatus,
+        status,
+        closedByPerson: word,
+        ...(status === 'failed' ? { failure_reason: 'manual' } : {}),
+      }
     })
-  const casExec = async (_sql, params) => {
+  const casExec = async (sql, params) => {
+    // ═══ ЗАКРЫТЬ СЛОВАМИ — НЕ CAS, И СЦЕНА МОДЕЛИРУЕТ ИМЕННО ЭТО ═══════════════════════════
+    // Последнее слово человека приходит upsert-ом в приёмочную строку: `[id, 'closed', исход,
+    // текст, 'approving']`. Разобранное правилами CAS выше, оно прочиталось бы как переход
+    // «note → R-1» — то есть сцена показывала бы отказ там, где бой закрывает строку.
+    if (String(sql).includes('closed_reason')) {
+      const [id, , reason, note] = params
+      const row = (await list()).find((r) => r.id === id)
+      if (!row || closed.has(id)) return { rows: [] }
+      closed.set(id, { reason, note: note ?? null })
+      return { rows: [{ id }] }
+    }
     const to = params[0]
     const from = params[params.length - 1]
     const id = params[params.length - 2]

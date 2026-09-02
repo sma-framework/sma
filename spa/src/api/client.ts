@@ -17,6 +17,8 @@ import type {
   ChatConversations,
   ChatReply,
   ClaimClearResult,
+  CloseTaskResult,
+  ClosingReason,
   CoordinationSnapshot,
   DecisionAnswerResult,
   Diagnostics,
@@ -391,14 +393,22 @@ export function returnTask(input: {
  * само. Три слова приезжают в окно ИМЕНАМИ от движка и той же тройкой принимаются здесь —
  * кнопка, ответ которой не принимает ни одна дверь, это кнопка, которая молча ничего не делает.
  * `itemId` не нужен только отмене: она про всю сборку, а не про кусок.
+ *
+ * СЛОВО ЕДЕТ ТОЛЬКО С ПОВТОРОМ, и это единственный способ вообще что-то сказать вставшему
+ * куску сборки: дверь возврата его не берёт (её CAS ищет строку вне сборки и отвечает «race
+ * lost»), дверь слов по законченной работе отказывает. Без него «повторить» уходило вслепую —
+ * тот же текст, тот же полный потолок ходов, — а приёмщик, видящий, чего именно не хватило,
+ * молчал. Пропуск и отмена слова не несут: им некому его передать.
  */
 export function batchDecide(input: {
   batchId: string
   decision: 'skip' | 'retry' | 'cancel'
   itemId?: string
-}): Promise<{ ok: boolean; batchId: string; decision: string; itemId?: string }> {
+  note?: string
+}): Promise<{ ok: boolean; batchId: string; decision: string; itemId?: string; note?: string }> {
   return postJson('/api/batch/decide', withOptional({ batchId: input.batchId, decision: input.decision }, {
     itemId: input.itemId,
+    note: input.note,
   }))
 }
 
@@ -670,6 +680,28 @@ export function redirectTask(input: {
  */
 export function cancelTask(input: { taskId: string }): Promise<CancelTaskResult> {
   return postJson<CancelTaskResult>('/api/task/cancel', { taskId: input.taskId })
+}
+
+/**
+ * «Закрыть словами» — ПОСЛЕДНЕЕ СЛОВО о работе, которую делать не будут.
+ *
+ * СВОЙ ВЫЗОВ, И ЭТО НЕ ТРЕТИЙ ВИД ОТМЕНЫ. Отмена берёт ЖИВУЮ работу и убивает процесс под
+ * ней; здесь работа уже кончилась, убивать нечего, а строка всё равно стоит на человеке и
+ * ждёт от него слова. Возврат — тоже не то: он покупает ещё один заход, а человек как раз
+ * говорит, что захода не будет.
+ *
+ * ИСХОД — ИЗ ЗАКРЫТОГО СЛОВАРЯ ДВЕРИ, а текст свободный: «сделано иначе» дверь без текста не
+ * примет (400), потому что такое утверждение нечем перепроверить без sha или причины.
+ */
+export function closeTaskWithWords(input: {
+  taskId: string
+  reason: ClosingReason
+  note?: string
+}): Promise<CloseTaskResult> {
+  return postJson<CloseTaskResult>(
+    '/api/task/close',
+    withOptional({ taskId: input.taskId, reason: input.reason }, { note: input.note }),
+  )
 }
 
 /**

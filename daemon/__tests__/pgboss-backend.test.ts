@@ -35,7 +35,8 @@ import {
   DEAD_LETTER_QUEUE,
   BATCH_PARENT_QUEUE,
 } from '../src/queue/pgboss-backend.mjs'
-import { queueAdapterContractSuite, NoReceiptError } from '../src/queue/adapter.mjs'
+import { queueAdapterContractSuite, NoReceiptError, awaitsAutoRetry, stoppedByAPerson } from '../src/queue/adapter.mjs'
+import { closeWithWords } from '../src/queue/approval-store.mjs'
 import { countTerminalOutcomes, recordAttempt, readAttempts } from '../src/queue/attempt-ledger.mjs'
 import { STATE_MACHINE_VERSION, idempotencyKey } from '../src/queue/state-machine.mjs'
 import { defaultEnvelope, envelopeHash } from '../src/queue/capability-envelope.mjs'
@@ -281,6 +282,22 @@ function makeFakeBackend({
   const execSql = async (sql: string, params: any[]) => {
     maintain()
     if (sql.includes('CREATE TABLE')) return { rows: [] }
+    // ADD COLUMN IF NOT EXISTS: the closing word's column, added to a table that already
+    // exists on every machine this daemon has ever run on. Modelled as the no-op it is here —
+    // this fixture's approval rows are plain objects and grow a field when one is written.
+    if (sql.startsWith('ALTER TABLE')) return { rows: [] }
+    if (sql.includes('INSERT INTO sma_task_attempts') && sql.includes('closed_reason')) {
+      // closeWithWords(): ПОСЛЕДНЕЕ СЛОВО ЧЕЛОВЕКА, upsert-ом со СВОИМ сторожем. Смоделирован
+      // ровно как написан: строка, о которой слово уже сказано, и строка, по которой идёт
+      // приёмка, НЕ переписываются — и оператор возвращает тогда ноль строк, из чего дверь и
+      // узнаёт, что закрывать было нечего. Фикстура, переписывающая всё подряд, заверила бы
+      // сторожа, которого нет.
+      const [id, status, reason, note, approving] = params
+      const prev = attempts.get(String(id)) || null
+      if (prev && (prev.status === approving || prev.status === status)) return { rows: [] }
+      attempts.set(String(id), { ...(prev || {}), status, closed_reason: reason, returned_note: note })
+      return { rows: [{ id: String(id) }] }
+    }
     if (sql.includes('INSERT INTO sma_task_attempts')) {
       // markAwaitingApproval's upsert: ($1 id, $2 status), the note cleared on re-entry
       const [id, status] = params
@@ -495,6 +512,7 @@ function makeFakeBackend({
                   approval_status: a ? a.status : null,
                   returned_note: a ? a.returned_note : null,
                   merge_receipt: a ? a.merge_receipt : null,
+                  closed_reason: a ? (a.closed_reason ?? null) : null,
                 }
               : {}),
           }
@@ -1169,6 +1187,79 @@ describe('the approval row reaches the read path', () => {
 
     attempts.set('BL-196', { status: 'awaiting_approval' })
     expect((await adapter.list({}))[0].status).toBe('claimed') // still running — nobody is waiting yet
+  })
+
+  /**
+   * ═══ ПОСЛЕДНЕЕ СЛОВО ЧЕЛОВЕКА ДОЕЗЖАЕТ ДО ЧИТАЮЩЕГО ПУТИ — ОБА СЛУЧАЯ, ОДНОЙ ДОРОГОЙ ═══
+   *
+   * Провод здесь длинный и весь настоящий: слово пишется тем же `execSql`, каким `list()`
+   * читает, — то есть проверяется не «функция вернула объект», а то, что запись доезжает до
+   * строки, которую видит окно. Случая два, и второй дороже первого: работа, вставшая у
+   * потолка ходов, приёмочной строки не имела НИКОГДА (её пишет только `complete`), и
+   * закрытие обязано завести её с нуля — именно на этом отказывала дверь возврата.
+   */
+  it('сделанная работа, закрытая словами, уходит из ожидания и несёт своё слово', async () => {
+    const c = mkClock()
+    const { adapter, execSql } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-196', { receiptRef: 'reverify:green' })
+    expect((await adapter.list({}))[0].status).toBe('awaiting_approval')
+
+    const said = await closeWithWords(execSql, 'BL-196', { reason: 'obsolete', note: 'предмет изменился' })
+    expect(said.written).toBe(true)
+
+    const [row] = await adapter.list({})
+    expect(row.status).toBe('completed') // из «ЖДУТ ВАС» — в «Готово»
+    expect(row.closedByPerson).toEqual({ reason: 'obsolete', note: 'предмет изменился' })
+    expect((await adapter.stats()).awaiting_approval).toBe(0)
+  })
+
+  it('строка, вставшая у потолка ходов, закрывается словами — и очередь её больше не повторяет', async () => {
+    const c = mkClock()
+    const { adapter, execSql, attempts } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.parkForPerson('BL-196', 'turns_exhausted')
+    // ПРИЁМОЧНОЙ СТРОКИ У НЕЁ НЕТ ВОВСЕ — ровно то состояние, в котором возврат отвечал 409.
+    expect(attempts.get('BL-196')).toBeUndefined()
+
+    const said = await closeWithWords(execSql, 'BL-196', { reason: 'no_subject', note: '' })
+    expect(said.written).toBe(true)
+
+    const [row] = await adapter.list({})
+    expect(row.status).toBe('failed')
+    expect(row.closedByPerson.reason).toBe('no_subject')
+    // ТОРМОЗ, А НЕ УКРАШЕНИЕ: то же одно предложение, которым весь продукт отвечает на
+    // «решил ли здесь человек» — иначе автоповтор поставил бы закрытую работу заново.
+    expect(stoppedByAPerson(row.failure_reason)).toBe(true)
+    expect(awaitsAutoRetry(row)).toBe(false)
+    expect(await adapter.reissue('BL-196')).toBe(false)
+  })
+
+  it('второе слово о той же строке не пишется: сказанное человеком не переписывается молча', async () => {
+    const c = mkClock()
+    const { adapter, execSql } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-196', { receiptRef: 'reverify:green' })
+
+    expect((await closeWithWords(execSql, 'BL-196', { reason: 'obsolete' })).written).toBe(true)
+    const again = await closeWithWords(execSql, 'BL-196', { reason: 'done_otherwise', note: 'abc1234' })
+    expect(again).toEqual({ written: false, refused: true })
+    expect((await adapter.list({}))[0].closedByPerson.reason).toBe('obsolete')
+  })
+
+  it('идущую приёмку слово не перебивает: ритуал слияния допишет свой исход сам', async () => {
+    const c = mkClock()
+    const { adapter, execSql, attempts } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-196', { receiptRef: 'reverify:green' })
+    attempts.set('BL-196', { status: 'approving' })
+
+    expect(await closeWithWords(execSql, 'BL-196', { reason: 'obsolete' })).toEqual({ written: false, refused: true })
+    expect(attempts.get('BL-196').status).toBe('approving')
   })
 
   it('FAIL-OPEN: a database that refuses the approval join still answers about the WORK', async () => {
