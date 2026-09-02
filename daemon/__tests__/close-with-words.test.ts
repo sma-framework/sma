@@ -32,17 +32,36 @@
  */
 
 import { Readable } from 'node:stream'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
 
 import { createFrontServer } from '../src/front/server.mjs'
 import { deriveState } from '../src/front/state.mjs'
-import { CLOSING_REASONS, CLOSING_REASON_LABELS, TASK_STATUSES, closingReasonKnown } from '../src/queue/adapter.mjs'
+import { tick } from '../src/loop.mjs'
+import { resolveRoute } from '../src/policy/routing.mjs'
+import { closureOf, readAttempts, recordAttempt } from '../src/queue/attempt-ledger.mjs'
+import {
+  CLOSING_REASONS,
+  CLOSING_REASON_LABELS,
+  TASK_STATUSES,
+  claimRefusal,
+  closingReasonKnown,
+  createMemoryQueue,
+} from '../src/queue/adapter.mjs'
 import { CLOSING_OPTIONS, canCloseWithWords, closingNeedsWords } from '../../spa/src/screens/task-card/close'
 import { buildUnits, columnOf } from '../../spa/src/screens/tasks/units'
 
 const TOKEN = 'a'.repeat(64)
 const NOW = 1_000_000_000_000
+
+/** Часы, которые двигает дело, а не система: тик над ними детерминирован. */
+function mkClock(start = NOW) {
+  let t = start
+  return { clock: () => t, advance: (ms: number) => (t += ms) }
+}
 
 // ── fake req/res (та же форма, что в front-auth.test.ts) ──
 
@@ -366,5 +385,150 @@ describe('вставшему куску сборки есть что сказа�
       const res = await post(front, { batchId: 'B-1', decision, itemId: 'R-9', note: 'слово' }, '/api/batch/decide')
       expect(res.statusCode, decision).toBe(400)
     }
+  })
+})
+
+/**
+ * ═══ ЗАКРЫТОЕ СЛОВАМИ НЕ ВОСКРЕСАЕТ: СЛОВО ДОЕЗЖАЕТ ДО РЕЕСТРА ПОПЫТОК ═══════════════════
+ *
+ * ПОЧЕМУ ПРИЁМОЧНОЙ СТРОКИ МАЛО. Слово человека ложится в собственную строку демона, а читается
+ * она СОЕДИНЕНИЕМ с живым заданием очереди: законченное задание уезжает в архив по сроку
+ * хранения (часы), и после этого о закрытой словами карточке не знает ни один читатель. Обход
+ * реестра работ и захват спрашивают ВТОРОЙ источник — реестр попыток, который не забывает
+ * ничего, — и пока дверь в него не писала, закрытая карточка через полсуток чеканилась и
+ * оплачивалась заново.
+ *
+ * ПРОВОД ЗДЕСЬ НАСТОЯЩИЙ ВЕСЬ: строку пишет САМА ДВЕРЬ (не фикстура), ложится она в НАСТОЯЩИЙ
+ * файловый реестр, и читают её те же две функции, которыми её читает продукт — `closureOf` под
+ * `cardIsClosed` у обхода и `claimRefusal` у захвата. Тик прогоняется настоящий, над настоящей
+ * эталонной очередью; подставлен только сканер файла реестра работ, потому что файла здесь нет.
+ */
+describe('закрытие словами доезжает до реестра попыток', () => {
+  const ledgerDirs: string[] = []
+  const mkLedgerDir = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sma-close-ledger-'))
+    ledgerDirs.push(dir)
+    return dir
+  }
+  afterAll(() => {
+    for (const dir of ledgerDirs) rmSync(dir, { recursive: true, force: true })
+  })
+
+  /** Дверь с НАСТОЯЩИМ файловым реестром: пишет и читает его теми же функциями, что и демон. */
+  const frontWithLedger = (dir: string, rows: unknown[]) =>
+    mkFront({
+      rows,
+      deps: {
+        ledger: {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          recordAttempt: (a: any) => recordAttempt(dir, a),
+          readAttempts: (id: string) => readAttempts(dir, id),
+        },
+      },
+    })
+
+  const card = (over: Record<string, unknown> = {}) => ({
+    id: 'BL-77',
+    source: 'backlog',
+    title: 'ступень, которую во флоте исполнить нечем',
+    lane: 'prod',
+    priority: 0,
+    storyPoints: 3,
+    acceptance: 'green targeted tests + a reverify receipt',
+    ...over,
+  })
+
+  it('дверь пишет закрытие карточки в реестр — своей минутой, своей дверью и своим словом', async () => {
+    const dir = mkLedgerDir()
+    const { front } = frontWithLedger(dir, [{ id: 'BL-77', status: 'failed', attempt: 2, lane: 'prod' }])
+
+    const res = await post(front, { taskId: 'BL-77', reason: 'obsolete', note: 'ветка сведена руками' })
+    expect(res.statusCode).toBe(200)
+
+    const closed = closureOf(readAttempts(dir, 'BL-77'))
+    expect(closed).not.toBeNull()
+    expect(closed.by).toBe('close')
+    expect(closed.at).toBe(new Date(NOW).toISOString())
+    // СЛИВАТЬ БЫЛО НЕЧЕГО — и это факт строки, а не её умолчание: читатель через месяц обязан
+    // отличить «принято и слито» от «закрыто словами».
+    expect(closed.merged).toBe(false)
+    expect(closed.reason).toBe('obsolete')
+    expect(closed.note).toBe('ветка сведена руками')
+    // НОМЕР ПОДХОДА НЕ ВЫДУМЫВАЕТСЯ: строка закрытия садится на подход, который реестр уже знает.
+    expect(readAttempts(dir, 'BL-77').at(-1).attempt).toBe(1)
+  })
+
+  it('захват отказывает закрытой словами карточке — даже когда строки очереди больше нет', async () => {
+    const dir = mkLedgerDir()
+    const { front } = frontWithLedger(dir, [{ id: 'BL-77', status: 'failed', attempt: 1, lane: 'prod' }])
+    await post(front, { taskId: 'BL-77', reason: 'no_subject' })
+
+    // ОЧЕРЕДЬ МОЛЧИТ: `rows: []` — это ровно то, что она отвечает после архивации задания.
+    const refusal = claimRefusal({ id: 'BL-77', rows: [], closed: closureOf(readAttempts(dir, 'BL-77')) })
+    expect(refusal).not.toBeNull()
+    expect(refusal.code).toBe('card_closed')
+    expect(refusal.said).toContain('close')
+  })
+
+  it('обход реестра работ не чеканит закрытую словами карточку заново', async () => {
+    const dir = mkLedgerDir()
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const ledger = {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      recordAttempt: (a: any) => recordAttempt(dir, a),
+      readAttempts: (id: string) => readAttempts(dir, id),
+    }
+    // СНАЧАЛА ЧЕЛОВЕК ЗАКРЫВАЕТ СТРОКУ СЛОВАМИ — той же дверью, тем же телом запроса.
+    const { front } = mkFront({
+      rows: [{ id: 'BL-77', status: 'failed', attempt: 1, lane: 'prod' }],
+      deps: { ledger },
+    })
+    expect((await post(front, { taskId: 'BL-77', reason: 'obsolete' })).statusCode).toBe(200)
+
+    // …А ПОТОМ ПРИХОДИТ ОБХОД, и строка файла реестра работ по-прежнему открыта: файл ведёт
+    // человек, и эта дверь его не правит.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const journalled: any[] = []
+    const res = await tick({
+      adapter,
+      ledger,
+      config: { workers: [], agingHours: 24, backlogScanMinutes: 60, repoDir: '/repo', pipeline: { enabled: true } },
+      routing: { resolveRoute },
+      windows: () => true,
+      intake: { lastScanAt: 0, scan: async () => ({ items: [card()], notReady: [] }) },
+      clock: c.clock,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      journal: (e: any) => journalled.push(e),
+      report: async () => {},
+    })
+
+    expect(res.intake.enqueued, 'закрытая словами карточка поставлена в очередь заново').toBe(0)
+    expect(res.intake.known).toEqual(['BL-77'])
+    expect(await adapter.list({})).toEqual([]) // очередь осталась пустой
+  })
+
+  it('НЕзакрытая карточка ставится как обычно — это сторож, а не замок', async () => {
+    const dir = mkLedgerDir()
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    const res = await tick({
+      adapter,
+      ledger: {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        recordAttempt: (a: any) => recordAttempt(dir, a),
+        readAttempts: (id: string) => readAttempts(dir, id),
+      },
+      config: { workers: [], agingHours: 24, backlogScanMinutes: 60, repoDir: '/repo', pipeline: { enabled: true } },
+      routing: { resolveRoute },
+      windows: () => true,
+      intake: { lastScanAt: 0, scan: async () => ({ items: [card()], notReady: [] }) },
+      clock: c.clock,
+      journal: () => {},
+      report: async () => {},
+    })
+
+    expect(res.intake.enqueued).toBe(1)
+    expect((await adapter.list({})).map((r: { id: string }) => r.id)).toEqual(['BL-77'])
   })
 })
