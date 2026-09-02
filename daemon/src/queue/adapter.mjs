@@ -2442,6 +2442,34 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
   }
 
   /**
+   * payloadOf(taskId) → ПОЛЕЗНАЯ НАГРУЗКА ЗАДАЧИ ЦЕЛИКОМ, как её хранит очередь, или `null`.
+   *
+   * ЗАЧЕМ ОНА ЕСТЬ, ЕСЛИ ЕСТЬ `list`. `list` отдаёт ЧИТАЕМУЮ ФОРМУ строки (см. row выше) — то,
+   * что нужно экрану, которое перечитывает список по нескольку раз в секунду. Форма эта у́же
+   * нагрузки НАРОЧНО: снимок контекста, например, в неё не едет, потому что нужен дважды за
+   * попытку, а не в каждый полл. Значит дверь, которая ставит ТУ ЖЕ работу заново и собирает её
+   * из строк списка, собирает её из огрызка — и теряет ровно то, чего в строке нет, молча.
+   *
+   * ТА ЖЕ СТОРОНА, КАКОЙ БЕРЁТ НАГРУЗКУ ПОВТОР. `reissue` уже сегодня ставит работу заново не
+   * по строке списка, а по хранимой нагрузке: `{...rec.task}` здесь и `{...row.data}` у
+   * долговечной очереди. Второго написания этого «возьми задачу целиком» быть не должно —
+   * поэтому вопрос назван методом контракта, и обе очереди отвечают на него одинаково.
+   *
+   * НОМЕР ПОДХОДА НЕ ДОСЧИТЫВАЕТСЯ. Отдаётся то, что лежит; сколько подходов работа прожила и
+   * какой у неё следующий — вопрос спрашивающего (и в конечном счёте `enqueue`, который минтит
+   * номер сам). Считать здесь значило бы завести третий счётчик подходов рядом с двумя.
+   *
+   * @param {string} taskId
+   * @returns {Promise<object|null>}
+   */
+  async function payloadOf(taskId) {
+    if (typeof taskId !== 'string' || taskId === '') return null
+    const rec = records.get(taskId)
+    if (!rec || !rec.task || typeof rec.task !== 'object') return null
+    return { ...rec.task }
+  }
+
+  /**
    * cancelTask(taskId) — A PERSON STOPPED THIS WORK, and stopped means stopped.
    *
    * The body says exactly what the owner's word about an abandoned assembly already says
@@ -2517,7 +2545,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return s
   }
 
-  return { enqueue, claimNext, touch, assignWorker, resolveBatch, setWords, complete, fail, parkForPerson, reissue, cancelTask, list, stats }
+  return { enqueue, claimNext, touch, assignWorker, resolveBatch, setWords, complete, fail, parkForPerson, reissue, payloadOf, cancelTask, list, stats }
 }
 
 // ── the reusable contract suite (executable spec any backend must pass) ──
@@ -2882,6 +2910,43 @@ export function queueAdapterContractSuite(name, makeAdapter) {
       const c = clockOf()
       const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
       expect(await q.reissue('BL-does-not-exist')).toBe(false)
+    })
+
+    /**
+     * ═══════ НАГРУЗКА ЦЕЛИКОМ — ТО ЖЕ, ЧТО БЕРЁТ ПОВТОР, НО СПРОШЕННОЕ ВСЛУХ ═══════
+     *
+     * Повтор ставит работу заново по ХРАНИМОЙ НАГРУЗКЕ, а не по читаемой форме строки, и
+     * поэтому его работа переживает повтор целиком. Дверь возврата делает ровно то же —
+     * ставит ТУ ЖЕ работу заново, — но нагрузки у неё не было: она собирала задачу из
+     * `list`, а `list` у́же нагрузки нарочно (снимок контекста в него не едет). Так и
+     * терялись по одному конверт, полоса, слова, роль, родство сборки — каждое задним
+     * числом, после того как терялось.
+     *
+     * Дело утверждает ПРОВОД, а не вычисление, и живёт в контракте, потому что хранилищ
+     * два: памятное отдаёт нормализованную задачу, долговечное — payload джоба, собранный
+     * обратно после выборки. Проверенное на одном и не проверенное на другом — ровно тот
+     * класс, ради которого контракт и общий.
+     */
+    it('нагрузка задачи отдаётся целиком — включая то, чего в читаемой строке нет', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      const snapshot = 'счета лежат в /invoices, доступ у Ольги'
+      await q.enqueue(backlog({ id: 'BL-83', description: 'починить дверь', taskContext: snapshot, batchId: 'B-9' }))
+
+      const payload = await q.payloadOf('BL-83')
+      expect(payload.id).toBe('BL-83')
+      expect(payload.description).toBe('починить дверь')
+      expect(payload.batchId).toBe('B-9')
+      // ВОТ РАДИ ЧЕГО ЭТОТ ВОПРОС ВООБЩЕ ЗАДАН: строка списка о снимке молчит, а нагрузка — нет.
+      expect(taskContextOf(payload)).toBe(snapshot)
+      expect(taskContextOf((await q.list({})).find((r) => r.id === 'BL-83'))).toBe('')
+    })
+
+    it('нагрузка незнакомой задачи — «ничего», а не выдуманная задача', async () => {
+      const c = clockOf()
+      const q = makeAdapter({ clock: c.fn, expireMs: 600000 })
+      expect(await q.payloadOf('BL-does-not-exist')).toBeNull()
+      expect(await q.payloadOf('')).toBeNull()
     })
 
     /**

@@ -1336,6 +1336,26 @@ export function createPgBossQueue({
   }
 
   /**
+   * payloadOf(taskId) → ПОЛЕЗНАЯ НАГРУЗКА ЗАДАЧИ ЦЕЛИКОМ, как её хранит эта очередь, или `null`.
+   *
+   * ТЕМ ЖЕ ВЫРАЖЕНИЕМ, КАКИМ ЕЁ БЕРЁТ ПОВТОР (`lastRowOf`), и это здесь весь смысл: «поставить
+   * ТУ ЖЕ работу заново» — один вопрос, и второе его написание разошлось бы с первым молча.
+   * Читающая форма строки (`list`) у́же нагрузки нарочно — снимок контекста в неё не едет, —
+   * так что дверь, собирающая задачу из списка, собирает её из огрызка.
+   *
+   * FAIL-OPEN, как и у `lastRowOf`: нечитаемая строка отвечает `null`, а спрашивающий сам
+   * решает, что делать без нагрузки. Номер подхода не досчитывается (см. памятный бэкенд).
+   *
+   * @param {string} taskId
+   * @returns {Promise<object|null>}
+   */
+  async function payloadOf(taskId) {
+    const row = await lastRowOf(taskId)
+    const data = row && row.data && typeof row.data === 'object' ? row.data : null
+    return data ? { ...data } : null
+  }
+
+  /**
    * READ-ONLY resolution of a job that is WAITING TO BE HANDED OUT — in EITHER of the two
    * states this queue waits in.
    *
@@ -1703,6 +1723,7 @@ export function createPgBossQueue({
     fail,
     parkForPerson,
     reissue,
+    payloadOf,
     cancelTask,
     list,
     stats,

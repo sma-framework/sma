@@ -34,6 +34,11 @@ import {
   checkEnvironmentFitness,
   ENV_BROKEN_PREFIX,
 } from '../lib/deps-guard.mjs'
+// Стрим целиком, а не только его предикаты: список инструментов стрима — первая дверь, и
+// проверять её можно лишь тем же путём, которым в неё входит хук.
+import * as depsGuard from '../lib/deps-guard.mjs'
+import { runPre } from '../lib/pre.mjs'
+import { shellCommandOf } from '../lib/worker-danger.mjs'
 
 const IS_WIN = process.platform === 'win32'
 
@@ -193,6 +198,33 @@ describe('сырая уборка копии со ссылками — отка�
     const res: any = copyRemovalRefusal({ command: `git worktree remove --force "${copyTree}"`, cwd: copyTree, root: copyTree })
     expect(res.refuse).toBe(true)
     expect(res.links.map((l: any) => l.path)).toEqual(['daemon/node_modules'])
+  })
+
+  it('`git clean -xfd` — ТА ЖЕ рука git, и она тоже видна: цель без пути — сам рабочий каталог', () => {
+    // Внутри git обе уборки идут через одну рекурсивную функцию — ту, что 31.08 прошла ПО
+    // живой ссылке. Опасна связка `-d` (входит в каталоги) с `-x`/`-X` (берёт игнорируемое):
+    // `node_modules` игнорируется, и без `-x` до него не доходят.
+    expect(copyRemovalTargetsOf({ command: 'git clean -xfd', cwd: copyTree })).toEqual([copyTree])
+    expect(copyRemovalTargetsOf({ command: 'git clean -fdX', cwd: copyTree })).toEqual([copyTree])
+    expect(copyRemovalTargetsOf({ command: `git clean -d -f -x "${copyTree}"`, cwd: mainTree })).toEqual([copyTree])
+    // без `-d` каталоги не сносятся, без `-x`/`-X` до игнорируемого склада не доходят
+    expect(copyRemovalTargetsOf({ command: 'git clean -fx', cwd: copyTree })).toEqual([])
+    expect(copyRemovalTargetsOf({ command: 'git clean -fd', cwd: copyTree })).toEqual([])
+    // сухой прогон ничего не удаляет — отказ на нём был бы ложной тревогой
+    expect(copyRemovalTargetsOf({ command: 'git clean -nxd', cwd: copyTree })).toEqual([])
+    expect(copyRemovalTargetsOf({ command: 'git clean -xfd --dry-run', cwd: copyTree })).toEqual([])
+  })
+
+  it('`git clean -xfd` в копии со живыми ссылками — отказ теми же словами, что и уборка', () => {
+    const res: any = copyRemovalRefusal({ command: 'git clean -xfd', cwd: copyTree, root: copyTree })
+    expect(res.refuse).toBe(true)
+    expect(res.reason).toContain('worktree remove') // назван верб, который убирает безопасно
+  })
+
+  it('`rmdir /s` — форма, которой копию убирают на Windows руками', () => {
+    expect(copyRemovalTargetsOf({ command: `rmdir /s /q "${copyTree}"`, cwd: mainTree })).toEqual([copyTree])
+    expect(copyRemovalTargetsOf({ command: 'rd /S /Q copy', cwd: sandbox })).toEqual([copyTree])
+    expect(copyRemovalTargetsOf({ command: `rmdir "${copyTree}"`, cwd: mainTree })).toEqual([]) // без /s каталог с содержимым не сносится
   })
 
   it('в команде нечего убирать — до диска дело не доходит вовсе', () => {
@@ -395,5 +427,68 @@ describe('пригодность среды — «среда сломана» в
   it('на настоящем дереве этой песочницы среда годная — и через ссылки копии тоже', () => {
     expect(checkEnvironmentFitness({ root: mainTree }).fit).toBe(true)
     expect(checkEnvironmentFitness({ root: copyTree }).fit).toBe(true)
+  })
+})
+
+/**
+ * ═══════ ЧЕТВЁРТОЕ ОПУСТОШЕНИЕ: ДВЕРЬ, У КОТОРОЙ СТРАЖ НЕ СТОЯЛ ВОВСЕ ═══════════════
+ *
+ * 01.09.2026 склад опустел в четвёртый раз, и ни один из двух отказов не сработал. Разбор
+ * попытки назвал причину, и она не в разборе команд: во всех шести живых сессиях промежутка
+ * 09:54–10:10Z через гейт прошло 55 команд, и НИ ОДНА не была удалением. Рука пришла не
+ * Bash-ом. В 09:27:05Z и 09:27:20Z соседняя сессия сделала два вызова инструментом
+ * **PowerShell**; они подняли фоновый помощник песочницы, который с 09:28:04Z рекурсивно
+ * переписывал ACL по всему `…/projects` — дереву со складом — и добрался до следующего
+ * соседа по алфавиту лишь к 10:41:23Z. Унаследованная запись `CodexSandboxUsers:(I)(OI)(CI)`
+ * на `node_modules`, на `.pnpm` и на отдельных записях склада — доказательство, что обход
+ * вошёл ВНУТРЬ склада.
+ *
+ * ЧТО ИЗ ЭТОГО СЛЕДУЕТ ДЛЯ ПРОДУКТА. `worker-danger` знал про две оболочки работника
+ * (`SHELL_TOOLS = {Bash, PowerShell}`) с самого начала, а стрим склада поднимался только на
+ * `Bash` и внутри спрашивал `tool === 'Bash'` ещё раз. Список инструментов стрима — ПЕРВАЯ
+ * дверь: проверка внутри неподнятого стрима не значит ничего. Здесь проверяется, что
+ * обе двери теперь одни и те же.
+ */
+describe('обе оболочки работника, а не одна: дверь PowerShell закрыта тем же отказом', () => {
+  const ctxFor = (toolName: string, command: string, storeJournal?: any) => ({
+    now: () => 0,
+    env: {},
+    toolName,
+    toolInput: { command },
+    evt: { cwd: mainTree },
+    repoRoot: mainTree,
+    identity: { terminalId: 'тест' },
+    deps: { depsGuard, ...(storeJournal ? { storeJournal } : {}) },
+  })
+
+  it('уборка копии со живыми ссылками отказывается и вызовом PowerShell — словами и с вербом', async () => {
+    const res: any = await runPre(ctxFor('PowerShell', `Remove-Item "${copyTree}" -Recurse -Force`))
+    expect(res.deny, 'PowerShell шёл мимо стража — ровно этой дверью пришло 4-е опустошение').toBeTruthy()
+    expect(res.deny.text).toContain('worktree remove')
+  })
+
+  it('та же команда Bash-ом отказывается ровно так же — закрытая дверь осталась закрытой', async () => {
+    const res: any = await runPre(ctxFor('Bash', `rm -rf "${copyTree}"`))
+    expect(res.deny).toBeTruthy()
+  })
+
+  it('безобидный PowerShell не останавливается: страж стережёт склад, а не оболочку', async () => {
+    const res: any = await runPre(ctxFor('PowerShell', 'Get-ChildItem -Path . | Select-Object -First 3'))
+    expect(res.deny).toBeNull()
+  })
+
+  it('вахта видит вызов PowerShell так же, как Bash — свидетель без слепой двери', async () => {
+    const seen: string[] = []
+    const spy = { noteStoreAccess: (o: any) => { seen.push(`${o.command}`); return { gone: [], entry: null } }, blameSentence: () => '' }
+    await runPre(ctxFor('PowerShell', 'Get-ChildItem -Path .', spy))
+    expect(seen, 'рука, невидимая свидетелю, — это рука без имени в журнале').toEqual(['Get-ChildItem -Path .'])
+  })
+
+  it('shellCommandOf — один судья: обе оболочки да, всё остальное нет', () => {
+    expect(shellCommandOf('Bash', { command: 'ls' })).toBe('ls')
+    expect(shellCommandOf('PowerShell', { command: 'Get-ChildItem' })).toBe('Get-ChildItem')
+    expect(shellCommandOf('Read', { command: 'ls' })).toBe('')
+    expect(shellCommandOf('Bash', { command: '   ' })).toBe('')
+    expect(shellCommandOf('Bash', {})).toBe('')
   })
 })
