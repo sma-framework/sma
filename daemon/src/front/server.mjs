@@ -2200,6 +2200,49 @@ async function handleApprove({ req, res, config, deps }) {
     ...(merge && merge.receipt ? { extra: { merge_receipt: JSON.stringify(merge.receipt) } } : {}),
   })
 
+  // ═══ РЕЕСТР УЗНАЁТ О ЗАКРЫТИИ КАРТОЧКИ, И УЗНАЁТ ОТ ЭТОЙ ДВЕРИ ═══════════════════
+  //
+  // Решение человека до сих пор не записывалось НИГДЕ, кроме строки очереди. Минуту приёмки
+  // окно выводило из следа уборки (`cleanup.by === 'approve'`) — из следствия, которого может не
+  // быть вовсе, — а сама строка очереди смертна: pg-boss уносит законченную работу в архив по
+  // сроку хранения. После этого на вопрос «эту карточку закрывали?» ответить было НЕЧЕМ, и
+  // обход беклога честно ставил принятую и слитую работу в очередь заново: строка файла осталась
+  // открытой (файл беклога ведёт человек, и эта дверь его не правит), а закрытия карточки не
+  // помнил никто. Замерено 31.08.2026 на живой доске.
+  //
+  // ПОЭТОМУ ЗАПИСЬ ИДЁТ В РЕЕСТР ПОПЫТОК: он один переживает и срок хранения очереди, и уборку
+  // копии. Отдельная строка того же подхода, как `cleanup` и `memoryHarvest`, — без `outcome` и
+  // `endedAt`, чтобы свёртка подходов не переписала то, чем попытка кончилась.
+  //
+  // ВЫШЕ СБОРА И УБОРКИ, ПОТОМУ ЧТО ЭТО ФАКТ, А ОНИ — ЕГО ПОСЛЕДСТВИЯ: сбор памяти и снос копии
+  // могут не удаться, и карточка от этого не перестаёт быть закрытой. И FAIL-OPEN, по тому же
+  // закону, что у соседей: непишущийся реестр никогда не превращает `merged:true` в ложь.
+  if (green && deps.ledger && typeof deps.ledger.recordAttempt === 'function') {
+    try {
+      const approveClock = typeof deps.clock === 'function' ? deps.clock : Date.now
+      // НОМЕР ПОДХОДА — ТОТ ЖЕ, ЧТО У УБОРКИ, и берётся тем же правилом (worktree-cleanup):
+      // наибольший из записанных, а на молчащем реестре — первый. Второе правило для одного
+      // числа означало бы две строки об одной попытке под разными номерами.
+      const approvedAttempt =
+        attemptRows.reduce((max, r) => (Number.isFinite(r && r.attempt) && r.attempt > max ? r.attempt : max), 0) || 1
+      const { mergeSha } = mergeRollbackFields(merge && merge.receipt)
+      deps.ledger.recordAttempt({
+        taskId,
+        attempt: approvedAttempt,
+        closed: {
+          at: new Date(approveClock()).toISOString(),
+          by: 'approve',
+          // «Слито» и «принято» — не одно и то же: документарная ступень, которой нечего было
+          // сливать, тоже закрыта человеком, и строка обязана различать эти два случая.
+          merged: !(merge && merge.nothingToMerge === true),
+          ...(mergeSha ? { mergeSha } : {}),
+        },
+      })
+    } catch {
+      /* реестр, который не пишется, стоит картины и никогда — принятой работы */
+    }
+  }
+
   // ═══ THE COPY THE WORK WAS DONE IN GOES AWAY WITH THE APPROVAL, AND ONLY WITH IT ═══
   //
   // Merged work needs no copy: the branch is in the main tree, and every task that was ever
