@@ -244,9 +244,23 @@ export const ENV_UNFIT_NOTE = 'среда прогона непригодна �
  * причина остаётся на месте.
  */
 export const RED_RUN_NAME_MISSING = 'имя упавшего теста прогонятель не назвал — смотрите вывод прогона'
-export function redRunReason(failedTest) {
+
+/**
+ * …А ВЫВОД ПРОГОНА НАДО ГДЕ-ТО СМОТРЕТЬ, И ЭТО ТОЖЕ НАЗЫВАЕТСЯ ЗДЕСЬ.
+ *
+ * 02.09.2026, первая ночная приёмка: отказ отослал к выводу прогона, а самого вывода не было
+ * нигде — отчёт полного набора писался во временный каталог и умирал вместе с отказом.
+ * Приёмщик не мог отличить настоящий красный от ложного, который полный прогон даёт под
+ * нагрузкой. Прогонятель теперь кладёт отчёт в дом данных демона и называет путь; ритуал его
+ * ДОНОСИТ — как и имя теста, ничего не выясняя сам.
+ */
+export function redRunReason(failedTest, savedReport) {
   const named = typeof failedTest === 'string' && failedTest.trim() ? failedTest.trim() : null
-  return `тесты на сведённом рабочем дереве красные — слияние не зафиксировано; упал: ${named ?? RED_RUN_NAME_MISSING}`
+  const kept = typeof savedReport === 'string' && savedReport.trim() ? savedReport.trim() : null
+  return (
+    `тесты на сведённом рабочем дереве красные — слияние не зафиксировано; упал: ${named ?? RED_RUN_NAME_MISSING}` +
+    (kept ? `; отчёт прогона: ${kept}` : '')
+  )
 }
 
 /** The tree is left mid-merge only when the undo itself failed — and then it is NAMED. */
@@ -424,6 +438,11 @@ export async function runMerge(o = {}) {
     // отказ ниже скажет об этом словами вместо правдоподобной выдумки.
     let failedTest = null
     let failureDetail = null
+    // ИМЕНА ВСЕХ УПАВШИХ И ГДЕ ЛЕЖИТ ОТЧЁТ — та же роль доносчика: ритуал не открывает
+    // отчёта и не считает падений, он передаёт то, что сказал прогонятель.
+    let failedTests = []
+    let savedReport = null
+    let savedLog = null
 
     // (4a) ПЕРЕД ПРОГОНОМ — ГОДИТСЯ ЛИ СРЕДА. Спрашивается ТОЛЬКО когда прогонятель есть:
     // сборке без прогонятеля нечего защищать, и отказ там остановил бы работу ни за что.
@@ -509,6 +528,11 @@ export async function runMerge(o = {}) {
         testsNote = null
         failedTest = typeof tr.failedTest === 'string' && tr.failedTest.trim() ? tr.failedTest.trim() : null
         failureDetail = typeof tr.failureDetail === 'string' && tr.failureDetail.trim() ? tr.failureDetail.trim() : null
+        failedTests = (Array.isArray(tr.failedTests) ? tr.failedTests : [])
+          .filter((s) => typeof s === 'string' && s.trim())
+          .map((s) => s.trim())
+        savedReport = typeof tr.savedReport === 'string' && tr.savedReport.trim() ? tr.savedReport.trim() : null
+        savedLog = typeof tr.savedLog === 'string' && tr.savedLog.trim() ? tr.savedLog.trim() : null
       }
     }
 
@@ -530,9 +554,12 @@ export async function runMerge(o = {}) {
         repo: cwd,
         testsPassed: false,
         refused: true,
-        reason: redRunReason(failedTest),
+        reason: redRunReason(failedTest, savedReport),
         ...(failedTest ? { failedTest } : {}),
+        ...(failedTests.length ? { failedTests } : {}),
         ...(failureDetail ? { failureDetail } : {}),
+        ...(savedReport ? { savedReport } : {}),
+        ...(savedLog ? { savedLog } : {}),
         ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
       }
       try {
@@ -549,7 +576,10 @@ export async function runMerge(o = {}) {
         branch,
         receipt,
         ...(failedTest ? { failedTest } : {}),
+        ...(failedTests.length ? { failedTests } : {}),
         ...(failureDetail ? { failureDetail } : {}),
+        ...(savedReport ? { savedReport } : {}),
+        ...(savedLog ? { savedLog } : {}),
         ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
       }
     }
