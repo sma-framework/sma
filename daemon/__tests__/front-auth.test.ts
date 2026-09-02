@@ -692,6 +692,158 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
   })
 
   /**
+   * ═══════ РЕЕСТР УЗНАЁТ О ЗАКРЫТИИ КАРТОЧКИ, И УЗНАЁТ ЗДЕСЬ ═══════════════════════
+   *
+   * Решение человека не записывалось никуда, кроме смертной строки очереди: минуту приёмки окно
+   * выводило из следа УБОРКИ (`cleanup.by === 'approve'`) — из следствия, которого может не быть
+   * вовсе, — а pg-boss уносит законченную работу в архив по сроку хранения. После этого «эту
+   * карточку закрывали?» оставался вопросом без ответа, и обход беклога честно ставил принятую и
+   * слитую работу в очередь заново (парный случай — в loop.test.ts).
+   *
+   * Строка закрытия — ОТДЕЛЬНАЯ, того же подхода, и БЕЗ `outcome`/`endedAt`: свёртка подходов не
+   * имеет права ни растянуть длительность попытки до минуты решения, ни переписать то, чем
+   * попытка кончилась. Ровно тот же закон, что у `cleanup` и `memoryHarvest`.
+   */
+  describe('приёмка пишет закрытие карточки в реестр попыток', () => {
+    function ledgerSpy(rows: any[] = []) {
+      const written: any[] = []
+      return {
+        written,
+        seam: {
+          readAttempts: () => rows,
+          recordAttempt: (row: any) => {
+            written.push(row)
+            return row
+          },
+        },
+      }
+    }
+
+    it('зелёная приёмка кладёт строку `closed` с минутой, дверью и отпечатком слияния', async () => {
+      const spy = ledgerSpy([{ taskId: 'R-81', attempt: 2, outcome: 'completed', branch: 'wt/R-81' }])
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({
+            merged: true,
+            testsPassed: true,
+            branch: o.branch,
+            receipt: { branch: o.branch, testsPassed: true, resultSha: 'a'.repeat(40) },
+          }),
+          repoDir: '/repo',
+          ledger: spy.seam,
+          clock: () => Date.parse('2026-08-31T11:12:00.000Z'),
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-81' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(JSON.parse(res.body).merged).toBe(true)
+      const closing = spy.written.filter((r) => r.closed)
+      expect(closing, 'реестр не узнал о закрытии карточки').toHaveLength(1)
+      expect(closing[0].taskId).toBe('R-81')
+      expect(closing[0].attempt, 'номер подхода взят не из реестра').toBe(2)
+      expect(closing[0].closed).toEqual({
+        at: '2026-08-31T11:12:00.000Z',
+        by: 'approve',
+        merged: true,
+        mergeSha: 'a'.repeat(40),
+      })
+      // строка РЕШЕНИЯ, а не строка попытки: ни исхода, ни конца попытки на ней нет
+      expect(Object.hasOwn(closing[0], 'outcome')).toBe(false)
+      expect(Object.hasOwn(closing[0], 'endedAt')).toBe(false)
+    })
+
+    it('красная приёмка не пишет закрытия: работа осталась ждать решения', async () => {
+      const spy = ledgerSpy([{ taskId: 'R-82', attempt: 1, outcome: 'completed', branch: 'wt/R-82' }])
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: false, branch: o.branch }),
+          repoDir: '/repo',
+          ledger: spy.seam,
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-82' },
+      })
+
+      expect(JSON.parse(res.body).ok).toBe(false)
+      expect(spy.written.filter((r) => r.closed)).toEqual([])
+    })
+
+    /**
+     * ДОКУМЕНТАРНАЯ СТУПЕНЬ, КОТОРОЙ НЕЧЕГО БЫЛО СЛИВАТЬ, ТОЖЕ ЗАКРЫТА ЧЕЛОВЕКОМ — и строка
+     * обязана различать «принято» и «слито»: закрытие есть, `merged:false`.
+     */
+    it('приёмка без слияния закрывает карточку и говорит вслух, что слияния не было', async () => {
+      const spy = ledgerSpy([{ taskId: 'R-83', attempt: 1, outcome: 'completed' }]) // ни одна попытка не назвала ветки
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async () => {
+            throw new Error('слияния быть не должно')
+          },
+          repoDir: '/repo',
+          ledger: spy.seam,
+          clock: () => Date.parse('2026-08-31T11:12:00.000Z'),
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-83' },
+      })
+
+      expect(JSON.parse(res.body).ok).toBe(true)
+      const [closing] = spy.written.filter((r) => r.closed)
+      expect(closing.closed).toEqual({ at: '2026-08-31T11:12:00.000Z', by: 'approve', merged: false })
+    })
+
+    it('реестр, который не пишется, не превращает принятую работу в отказ', async () => {
+      const front = createFrontServer({
+        config: { token: TOKEN },
+        deps: {
+          casExec: makeCasExec('awaiting_approval'),
+          verbRunner: async (o: any) => ({ merged: true, testsPassed: true, branch: o.branch }),
+          repoDir: '/repo',
+          ledger: {
+            readAttempts: () => [{ taskId: 'R-84', attempt: 1, outcome: 'completed', branch: 'wt/R-84' }],
+            recordAttempt: () => {
+              throw new Error('ledger is read-only')
+            },
+          },
+        },
+      })
+
+      const res = await call(front, {
+        method: 'POST',
+        url: '/api/approve',
+        headers: { ...bearer(), 'content-type': 'application/json' },
+        body: { taskId: 'R-84' },
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(JSON.parse(res.body).merged).toBe(true)
+    })
+  })
+
+  /**
    * ═══════ A REFUSAL OF THIS DOOR SAYS WHY, IN WORDS, OR IT IS NOT A REFUSAL ═══════
    *
    * Пресс на «Одобрить» отвечал `ok:false` и НИ ОДНОГО слова. Человек у окна не мог отличить
