@@ -5080,6 +5080,23 @@ export async function tick(deps = {}) {
       // corrections module, the same producer the gate inside the worker's child and the next
       // run's task text use. An agreement written down in three places is three agreements,
       // and the founder would be quoted differently depending on which road his sentence took.
+      //
+      // И ЕСЛИ ХОД ОБОРВАЛИ РАДИ ЭТОГО СЛОВА — ЗАДАЧА ВОЗВРАЩАЕТСЯ ЗА НИМ, А НЕ УМИРАЕТ ПУСТОЙ.
+      // Дверь поправки отвечает «принято» и убивает живого ребёнка ОДИНАКОВО на обеих полосах:
+      // у нашей полосы за этим стоит возобновление сессии прямо здесь, у чужой — не стоит
+      // ничего. Замерено 01.09: «перебить сейчас» по задаче стороннего вендора ответило
+      // {accepted:true, live:true}, ход был убит, в журнале осталось `redirect_skipped ·
+      // provider`, и на этом всё кончилось — снаружи неотличимо от доставки. Слово при этом
+      // лежало на диске целым (его никто не съел), но ехать ему было НЕ НА ЧЕМ: следующего
+      // захода задачи не случилось.
+      // Дорога у такого слова ровно одна и она уже построена выше — ЗАДАНИЕ СЛЕДУЮЩЕГО
+      // ЗАХОДА. Значит попытка, которую оборвали ради поправки, обязана кончиться так, чтобы
+      // этот заход состоялся: она объявляется перевыдаваемым отказом со своим словом
+      // (`redirect_restart`), очередь возвращает строку, и записка уезжает в промпте.
+      // ТОЛЬКО ПО ОБОРВАННОМУ ХОДУ, и это граница намеренная: попытка, доработавшая сама,
+      // — законченная работа, и валить её ради слова, сказанного «после хода», значило бы
+      // выбрасывать сделанное. Такое слово по-прежнему ждёт на диске и записывается пропуском.
+      let redirectRestart = null
       if (config.dataDir) {
         let hops = 0
         for (;;) {
@@ -5088,11 +5105,27 @@ export async function tick(deps = {}) {
           const sessionId = sessionOf()
           const resumable = spec.bin === CLAUDE_BIN && typeof sessionId === 'string' && /^[0-9a-f-]{32,40}$/i.test(sessionId)
           if (!resumable || hops >= REDIRECT_HOP_CAP) {
-            writeLog(deps, {
-              type: 'task.redirect_skipped',
-              taskId: task.id,
-              reason: hops >= REDIRECT_HOP_CAP ? 'hop_cap' : spec.bin !== CLAUDE_BIN ? 'provider' : 'no_session',
-            })
+            const reason = hops >= REDIRECT_HOP_CAP ? 'hop_cap' : spec.bin !== CLAUDE_BIN ? 'provider' : 'no_session'
+            // УБИЛА ЛИ ЭТОТ ХОД ИМЕННО ДВЕРЬ — спрашивается у той же ручки, которой дверь его и
+            // убивала, и ДО `done` ниже, пока ручка ещё зарегистрирована. Демон, собранный без
+            // реестра ручек, отвечает «нет» и ведёт себя ровно как прежде.
+            const shot =
+              reason === 'provider' &&
+              Boolean(deps.attemptTurns && typeof deps.attemptTurns.wasStopped === 'function' && deps.attemptTurns.wasStopped(task.id))
+            if (shot) {
+              redirectRestart =
+                `поправка не доезжает до живого хода этого работника (${spec.bin}): ход оборван дверью, ` +
+                'задача возвращается в очередь — записка едет в задании следующего захода'
+              writeLog(deps, {
+                type: 'task.redirect_deferred',
+                taskId: task.id,
+                mode: pending[pending.length - 1].mode,
+                delivery: 'next_run',
+                detail: redirectRestart,
+              })
+            } else {
+              writeLog(deps, { type: 'task.redirect_skipped', taskId: task.id, reason })
+            }
             break
           }
           hops += 1
@@ -5233,6 +5266,21 @@ export async function tick(deps = {}) {
         approach: note,
         tokens: attemptTokens,
       })
+
+      // ═══ ХОД, ОБОРВАННЫЙ РАДИ ПОПРАВКИ, — НЕ ПЛОХАЯ РАБОТА, А НЕДОДЕЛАННАЯ ═══════════════
+      //
+      // Развилка стоит ВЫШЕ всех гейтов и раньше всякого суждения о качестве: попытку убил
+      // человек своей поправкой, и судить её тем же гейтом, что и работу, дошедшую до конца, —
+      // значит назвать чужим именем («нет квитанции», «тесты красные») то, чего никто не делал.
+      // Конец перевыдаваемый по устройству (слова нет в `AWAITS_A_PERSON`), поэтому строка
+      // возвращается в очередь, следующий заход собирается с запиской в задании — тем самым
+      // кодом, что стоит перед первым запуском выше, — и поправка доезжает.
+      if (redirectRestart) {
+        writeLog(deps, { type: 'task.refused', taskId: task.id, reason: 'redirect_restart', detail: redirectRestart })
+        await failTask(deps, task, { reason: 'redirect_restart', failureDetail: redirectRestart, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
+        result.failed = { taskId: task.id, reason: 'redirect_restart', detail: redirectRestart }
+        return result
+      }
 
       // An infra failure, a provider abort or a worker marker is the SHARPER signal and wins
       // over either gate below: a crashed attempt must not complete on a document that was

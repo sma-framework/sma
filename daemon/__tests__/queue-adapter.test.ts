@@ -455,7 +455,7 @@ describe("taskContext — the human's snapshot of what this task is about, livin
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 28-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 29-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -527,6 +527,12 @@ describe('constants — taxonomy', () => {
       'worker_process_gone',
       'attempt_lifetime_exceeded',
       'window_exhausted',
+      // ПОПРАВКА ЧЕЛОВЕКА ОБОРВАЛА ХОД У РАБОТНИКА, КОТОРОМУ ЕЁ НЕ ВРУЧИТЬ ЖИВЬЁМ. Дверь
+      // «перебить сейчас» убивает ребёнка на всякой полосе, а возобновить сессию умеет не на
+      // всякой: у стороннего вендора у поправки остаётся одна дорога — задание следующего
+      // захода, и попытка обязана кончиться так, чтобы этот заход состоялся. Отдельно от
+      // agent_error и no_receipt: работу не сломали, её прервали — и своим же словом
+      'redirect_restart',
       // THE FOUR THE DISPATCHER DECIDES BEFORE ANY PROCESS EXISTS. They are named apart from
       // window_exhausted because that one word used to be written over all of them: a person
       // whose own spending ceiling stopped the task was told to wait for a window, and waiting

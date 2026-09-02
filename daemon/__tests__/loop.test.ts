@@ -67,7 +67,7 @@ import {
 } from '../src/loop.mjs'
 import { tokenHash } from '../../scripts/sma/lib/registry.mjs'
 import { createAgingMemory } from '../src/policy/aging-memory.mjs'
-import { createMemoryQueue, REASON_LABELS, failureAwaitsAPerson, AUTO_RETRY_LIMIT, AUTO_RETRY_BASE_MS } from '../src/queue/adapter.mjs'
+import { createMemoryQueue, FAIL_REASONS, REASON_LABELS, failureAwaitsAPerson, AUTO_RETRY_LIMIT, AUTO_RETRY_BASE_MS } from '../src/queue/adapter.mjs'
 // Единый журнал срывов — читается и пишется здесь через те же две функции, что демон
 // подаёт тику швом `ledger`: тест о том, что срыв доезжает до журнала САМ, не имеет права
 // подсовывать проходу свой журнал в памяти.
@@ -99,6 +99,9 @@ import {
 // the module that owns what a correction IS, never a sentence retyped into a test. A hand
 // written expectation would go on passing after the two forms drifted apart.
 import { appendRedirect, readPendingRedirects, redirectFileOf, correctionsPreamble } from '../src/runner/redirects.mjs'
+// Реестр живых ручек берётся НАСТОЯЩИЙ — тот же, что держит демон и дёргает дверь поправки:
+// подделка здесь закрыла бы ровно тот провод, ради которого случай ниже и написан.
+import { createTurnRegistry } from '../src/front/chat.mjs'
 import { attemptRunDir, runsDirOf } from '../src/queue/run-dir.mjs'
 import { formatDecision, parseDecision, ticketIdFor, readWaitingTicket } from '../../scripts/sma/lib/tool-gate.mjs'
 import { writeWaveHold } from '../src/queue/wave-holds.mjs'
@@ -2641,6 +2644,88 @@ describe('поправка потребляется только тогда, к�
     expect(spawns[0].prompt).toContain('правь шапку, не подвал')
     expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toHaveLength(2)
     expect(doneMarks(dataDir, 'BL-1')).toEqual([])
+  })
+
+  /**
+   * ═══ «ПЕРЕБИТЬ СЕЙЧАС» ПО РАБОТНИКУ БЕЗ КАНАЛА: УБИЛИ ХОД — ЗНАЧИТ ВЕРНИТЕ ЗАДАЧУ ═══
+   *
+   * Замерено 01.09: дверь по задаче стороннего вендора ответила {accepted:true, live:true},
+   * ход был убит, а в журнале осталось `redirect_skipped · provider` — перевыдачи не было, и
+   * задача умерла пустой. Снаружи это неотличимо от доставки: человек сказал слово, получил
+   * «принято» и не получил ничего. Дело красное ровно на этом: исход «принято + пропуск»
+   * запрещён, у слова обязана быть дорога, и дорога у него одна — ЗАДАНИЕ СЛЕДУЮЩЕГО ЗАХОДА.
+   *
+   * ДВЕРЬ ЗДЕСЬ НЕ ПОДДЕЛАНА ПО СУЩЕСТВУ: она делает ровно две вещи (пишет слово в то самое
+   * хранилище и дёргает ту самую ручку из реестра попыток), и обе делаются настоящими —
+   * `appendRedirect` и `createTurnRegistry`, тот же реестр, который цикл потом и спрашивает.
+   */
+  it('(г) «перебить сейчас» по работнику без канала: ход оборван — задача возвращается, записка едет в задании', async () => {
+    const c = mkClock()
+    const dataDir = mkDir()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue(backlogTask())
+    const attemptTurns = createTurnRegistry()
+
+    const spawns: any[] = []
+    const spawnWorker = (spec: any) => {
+      spawns.push({ args: spec.args.slice(), prompt: String(spec.prompt ?? '') })
+      if (spawns.length === 1) {
+        // ДВЕРЬ СРАБАТЫВАЕТ ПО ЖИВОМУ РЕБЁНКУ — после того, как ручка попала в реестр (это
+        // делает `steeredSpawn` уже ПОСЛЕ возврата отсюда), поэтому выстрел откладывается.
+        setTimeout(() => {
+          appendRedirect({ dataDir, taskId: 'BL-1', text: 'стой, не трогай подвал', mode: 'interrupt', clock: c.clock })
+          attemptTurns.stop('BL-1')
+        }, 0)
+        return { pid: 1, kill: () => spec.onExit?.({ code: 143, signal: 'SIGTERM' }) }
+      }
+      spec.onLine?.('APPROACH_NOTE: прямой путь')
+      spec.onLine?.('LESSON_NONE: тестовый работник')
+      spec.onExit?.({ code: 0, signal: null })
+      return { pid: 1, kill: () => {} }
+    }
+
+    const { deps, journalled } = makeDeps({
+      adapter,
+      clockObj: c,
+      spawnWorker,
+      config: { dataDir },
+      responses: RESPONSES,
+      deps: { buildArgs: lane('codex'), attemptTurns },
+    })
+
+    const first = await tick(deps)
+
+    // (1) ИСХОД НАЗВАН СЛОВАМИ, И ЭТО НЕ ПРОПУСК. Пропуск здесь запрещён: он означал бы
+    // «слово потеряно молча», а слово поедет.
+    expect(journalled.filter((e: any) => e.type === 'task.redirect_skipped')).toEqual([])
+    const deferred = journalled.filter((e: any) => e.type === 'task.redirect_deferred')
+    expect(deferred).toHaveLength(1)
+    expect(deferred[0].delivery).toBe('next_run')
+    expect(deferred[0].detail).toContain('следующего захода')
+
+    // (2) ПОПЫТКА КОНЧИЛАСЬ ПЕРЕВЫДАВАЕМЫМ КОНЦОМ СО СВОИМ СЛОВОМ — не «нет квитанции» и не
+    // «ошибка работника»: работу не сломали, её прервали.
+    expect(first.failed?.reason).toBe('redirect_restart')
+    expect(FAIL_REASONS).toContain('redirect_restart')
+    expect(failureAwaitsAPerson('redirect_restart')).toBe(false) // за этим концом стоит попытка, а не человек
+    expect(REASON_LABELS.redirect_restart).toContain('перевыдана')
+
+    // (3) СЛОВО ЦЕЛО: доставить его было нечем, значит и потреблять было нечего.
+    expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toHaveLength(1)
+    expect(doneMarks(dataDir, 'BL-1')).toEqual([])
+
+    // ═══ И ДОСТАВКА, ИЗМЕРЕННАЯ НА АРГУМЕНТАХ СЛЕДУЮЩЕГО ЗАПУСКА ═══
+    c.advance(AUTO_RETRY_BASE_MS + 1000) // пауза автоповтора — она же граница «не долбить»
+    await tick(deps)
+
+    expect(spawns).toHaveLength(2) // перевыдача СОСТОЯЛАСЬ
+    expect(spawns[1].prompt).toContain(TASK_PROMPT) // задание не подменено, слово ДОПИСАНО
+    expect(spawns[1].prompt).toContain(correctionsPreamble([{ text: 'стой, не трогай подвал' }]))
+    expect(readPendingRedirects({ dataDir, taskId: 'BL-1' })).toEqual([]) // употреблено ровно теперь
+    expect(doneMarks(dataDir, 'BL-1')).toHaveLength(1)
+    const delivered = journalled.filter((e: any) => e.type === 'task.redirected')
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0].delivery).toBe('prompt')
   })
 
   it('(д) слово ЖИВОМУ ходу, которого ход не подобрал, подбирает продолжение — та же сессия', async () => {
