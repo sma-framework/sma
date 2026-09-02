@@ -3211,6 +3211,23 @@ describe('deriveState — придержанная по файлам строк�
     expect(row.heldBy.files).toEqual(['daemon/src/loop.mjs'])
   })
 
+  // ШТАМПЫ НЕ ПОПАДАЮТ В ПРИЧИНУ. Оба README называет КАЖДАЯ карточка — таков закон дома, — и
+  // если бы они держали, доска показывала бы «ждёт README.md» на всей очереди сразу, а спор о
+  // них всё равно разводится механически. В составе удержания остаётся только то, из-за чего
+  // строка действительно стоит.
+  it('в составе удержания нет ни README, ни квитанции прогона — только настоящий файл', async () => {
+    const withStamps = { ...busy, title: 'движок daemon/src/loop.mjs, README.md, README.ru.md, test-receipt.json' }
+    const alsoStamps = { ...waiting, title: 'тоже daemon/src/loop.mjs, README.md и README.ru.md' }
+    const payload = await deriveState({
+      adapter: mkAdapter([withStamps, alsoStamps]),
+      windows: makeWindows({}),
+      config: running,
+      clock: () => NOW,
+    })
+    const row = rowOf(payload, 'r-wait')
+    expect(row.heldBy.files).toEqual(['daemon/src/loop.mjs'])
+  })
+
   // ФАЙЛ ОДИН НА ДЕРЕВО, А ВЗГЛЯД ЧЕЛОВЕКА СУЖЕН ПРОЕКТОМ. Держатель из соседнего проекта в
   // сужённые строки не попадает — и правило, прочитанное по ним, объявило бы файл свободным.
   it('держатель из другого проекта тоже держит: правило читается по несужённым строкам', async () => {

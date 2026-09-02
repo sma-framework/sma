@@ -218,10 +218,17 @@
  * tests; the randomness is NOT injected, because a test that could predict a token would be
  * certifying a fence with a hole in it. The contract suite reads the vitest API from
  * globalThis (test.globals) — NO top-level vitest import, so the production daemon can
- * import this module without dev dependencies.
+ * import this module without dev dependencies. The one non-builtin import is a LOCAL module —
+ * the merge-side list of paths that resolve without a human — imported so the queue and the
+ * merge ritual answer «is this file mechanical?» from one place; it adds no npm dependency.
  */
 
 import { randomBytes } from 'node:crypto'
+
+// ЧТО РАЗВОДИТСЯ БЕЗ ЧЕЛОВЕКА — спрошено у той самой стороны, которая это и разводит на
+// приёмке. Список один на дерево; свой перечень тех же имён здесь разошёлся бы с ним в первый
+// же день, и очередь начала бы держать работы из-за файлов, спор о которых снимает машина.
+import { isMechanicalPath } from '../../../scripts/sma/lib/branch-sync.mjs'
 
 // ── constants (the closed vocabularies) ──
 
@@ -1592,6 +1599,15 @@ export const DECLARED_FILES_CAP = 40
  * `files` на самой задаче, если она когда-нибудь появится, читается первой и отменяет разбор
  * текста: объявленное явно всегда сильнее вычитанного.
  *
+ * ШТАМПЫ НЕ ОБЪЯВЛЯЮТСЯ. Файл, спор о котором развод снимает механически — оба README, карта
+ * графа, квитанция прогона, индекс памяти, — из этого списка выпадает, и вопрос о нём задаётся
+ * той самой стороне, которая его и разводит (`isMechanicalPath`), а не второму перечню тех же
+ * имён. Причина не в аккуратности, а в замере: закон дома велит КАЖДОЙ карточке, меняющей
+ * продукт, назвать оба README, поэтому по штампам пересекаются все работы со всеми — очередь,
+ * честно исполняя правило, выстраивала весь флот в одну линию (замерено 02.09.2026: одиннадцать
+ * строк, свободный работник, ни одного захвата). Держать имеет смысл там, где спор пришлось бы
+ * разводить человеку; здесь его разводит машина, а числа штампов посадка ставит заново сама.
+ *
  * ПОЧЕМУ РАВЕНСТВО, А НЕ БЛИЗОСТЬ. Пересечение считается ТОЧНЫМ совпадением пути. Слово,
  * похожее на путь, но путём не бывшее, тогда просто ни с чем не совпадает и никого не
  * придерживает — цена ошибки разбора равна нулю. Догадка «эти двое, наверное, про один
@@ -1611,6 +1627,9 @@ export function declaredFiles(row) {
       .replace(/^\.\//, '')
       .trim()
     if (!clean || clean.length > 200) return
+    // Штамп объявленным не считается — ни разобранный из текста, ни названный явно: удержание
+    // по нему стоит человеческого времени ровно ноль, а очереди — всей её параллельности.
+    if (isMechanicalPath(clean)) return
     if (!out.includes(clean) && out.length < DECLARED_FILES_CAP) out.push(clean)
   }
   // ОБЪЯВЛЕННОЕ ЯВНО — первым и вместо разбора текста.
