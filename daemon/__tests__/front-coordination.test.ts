@@ -337,7 +337,18 @@ describe('GET /api/backlog — THE BACKLOG IS PARSED BY SHAPE, NEVER BY DICTIONA
     // an identifier nobody in this product has ever seen is a row like any other
     const io = fakeFs({ [`${PROJECT}/.planning/BACKLOG.md`]: '- [ ] **XYZW-42** · Чужой реестр, чужие буквы.' })
     const { rows } = deriveBacklog({ config: CONNECTED, fsImpl: io }) as any
-    expect(rows).toEqual([{ id: 'XYZW-42', title: 'Чужой реестр, чужие буквы.', ageLine: '' }])
+    expect(rows).toEqual([
+      {
+        id: 'XYZW-42',
+        title: 'Чужой реестр, чужие буквы.',
+        ageLine: '',
+        // …и триаж строки считается тем же чтением, что у скана: заголовок будущей строки
+        // очереди, её приоритет и причина, по которой скан её не берёт.
+        headline: 'Чужой реестр, чужие буквы.',
+        priority: 0,
+        notReady: 'не готово к выдаче: нет оценки',
+      },
+    ])
     // and the door's own guard is the SAME shape, not a second one
     expect(BACKLOG_ID_RE.test('XYZW-42')).toBe(true)
     expect(BACKLOG_ID_RE.test('не-идентификатор')).toBe(false)
@@ -422,6 +433,70 @@ describe('POST /api/backlog/promote — PROMOTING A LINE DOES NOT TOUCH THE FILE
     expect(slots).toHaveLength(0)
     expect(enqueued[0].title.startsWith('AB-205')).toBe(true)
     expect(JSON.parse(String(JSON.stringify(enqueued[0])))).not.toHaveProperty('slot')
+  })
+})
+
+// ═══════════════ ТРИАЖ СТРОКИ — ОДИН НА ДОСКУ, ДВЕРЬ И ЧАСОВОЙ СКАН ═══════════════
+//
+// Номера фикстур ВЫДУМАНЫ и живут только здесь: проверяется формат строки реестра, не чей-то
+// список задач.
+
+describe('доска реестра говорит, ПОЧЕМУ строка не взята, и чем она поедет в очередь', () => {
+  /** Строка в форме карточки 02.09: абзац, в котором название — только первая фраза. */
+  const HEAD = 'СКАН РЕЕСТРА МОЛЧА ОТБРАСЫВАЕТ КАРТОЧКИ С ДЛИННЫМ НАЗВАНИЕМ'
+  const TRIAGE_FILE = [
+    '## Backlog',
+    `- [ ] **BL-070** · ${HEAD} (вскрыто 02.09 проверкой триажа). ЗАМЕРЕНО: 15 карточек из 17 ` +
+      'пропущены воротами, слова отказа остались в журнале демона, на доске причины нет. ЧТО ПОСТРОИТЬ: ' +
+      '(а) пометка срочности становится приоритетом строки; (б) отказ виден словами. ' +
+      '`size:M` `added:2026-09-02` `sp:3` `priority:critical`',
+    '- [ ] **BL-071** · Работа без оценки — её никто не мерил. `size:S` `added:2026-09-02`',
+    '- [ ] **BL-072** · Ждущая работа — после первой половины. `size:S` `added:2026-09-02` `sp:2` `deps:BL-071`',
+  ].join('\n')
+
+  const triageFront = () =>
+    mkFront({ fsImpl: fakeFs({ [`${PROJECT}/.planning/BACKLOG.md`]: TRIAGE_FILE }) })
+
+  it('каждая строка несёт причину отказа словами — раньше она была только в журнале', async () => {
+    const { front } = triageFront()
+    const { rows } = JSON.parse((await call(front, { url: '/api/backlog' })).body)
+    const by = Object.fromEntries(rows.map((r: any) => [r.id, r]))
+    expect(by['BL-070'].notReady).toBe('') // готова — скан её возьмёт
+    expect(by['BL-071'].notReady).toMatch(/нет оценки/)
+    expect(by['BL-072'].notReady).toContain('BL-071')
+  })
+
+  it('строка несёт заголовок будущей строки очереди и число, на котором она в ней встанет', async () => {
+    const { front } = triageFront()
+    const { rows } = JSON.parse((await call(front, { url: '/api/backlog' })).body)
+    const row = rows.find((r: any) => r.id === 'BL-070')
+    expect(row.headline).toBe(HEAD)
+    // критическая крупнее обычной — то самое число, которым очередь и упорядочивает
+    expect(row.priority).toBeGreaterThan(rows.find((r: any) => r.id === 'BL-071').priority)
+  })
+
+  it('ДВЕРЬ «В РАБОТУ» И СКАН — ОДИН ПУТЬ: первая фраза заголовком, срочность строки на строке', async () => {
+    const { front, enqueued } = triageFront()
+    const res = await call(front, { method: 'POST', url: '/api/backlog/promote', body: { id: 'BL-070', lane: 'prod' } })
+
+    expect(res.statusCode).toBe(200)
+    // абзац целиком в заголовок не влезал, и ворота отвечали отказом на всю постановку
+    expect(enqueued[0].title).toBe(`BL-070 · ${HEAD}`)
+    expect(enqueued[0].title.endsWith('…')).toBe(false)
+    // …и то же число, что посчитала бы доска и посчитал бы скан
+    const { rows } = JSON.parse((await call(front, { url: '/api/backlog' })).body)
+    expect(enqueued[0].priority).toBe(rows.find((r: any) => r.id === 'BL-070').priority)
+    expect(enqueued[0].priority).toBeGreaterThan(0)
+  })
+
+  it('строка без пометки срочности едет размером — той же полосой, что и у скана', async () => {
+    const { front, enqueued } = triageFront()
+    await call(front, { method: 'POST', url: '/api/backlog/promote', body: { id: 'BL-071', lane: 'prod' } })
+    // `size:S` без пометки — обычная полоса, размер вторым ключом: то же число, что у скана
+    expect(enqueued[0].priority).toBe(2)
+    // …и оно МЕНЬШЕ числа критической строки: полоса срочности через размер не перепрыгивается
+    const { rows } = JSON.parse((await call(front, { url: '/api/backlog' })).body)
+    expect(enqueued[0].priority).toBeLessThan(rows.find((r: any) => r.id === 'BL-070').priority)
   })
 })
 

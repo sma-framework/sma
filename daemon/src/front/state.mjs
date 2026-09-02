@@ -120,6 +120,10 @@ import {
   autoRetryLimitFor,
   turnCapOffer,
 } from '../queue/adapter.mjs'
+// ТРИАЖ СТРОКИ РЕЕСТРА — ОДНО ЧТЕНИЕ НА ОБА ПУТИ ВХОДА. Часовой скан и дверь «в работу»
+// обязаны отвечать одинаково на «какой у строки приоритет», «чего она ждёт» и «почему она не
+// взята»: два читателя одного файла — это два триажа, и тише выигрывает случайный.
+import { depsOf, headlineOf, intakeVerdict, queuePriority, readLineTags } from '../intake/backlog-scan.mjs'
 import { readWaveHolds } from '../queue/wave-holds.mjs'
 // ПОТОЛОК МЕСТ читается ТЕМ ЖЕ выражением, которым его читает тик перед тем, как отказать в
 // месте: у дома идущих попыток. Своё чтение настройки здесь означало бы подпись под экраном,
@@ -148,8 +152,6 @@ import {
 
 const HOUR_MS = 3600000
 const DAY_MS = 24 * HOUR_MS
-/** Touch freshness for the «работает» presence: a claimed task touched within this. */
-const FRESH_TOUCH_SEC = 180
 const DONE_COMMIT_CAP = 10
 
 /** Generated / registry artifacts of the corpus — structural files, not notes. */
@@ -188,18 +190,37 @@ function round2(n) {
 
 /**
  * derivePresence({windowOpen, hasActiveTask, pulseAgeSec}) → 'работает'|'ждёт окно'|
- * 'свободен'. PURE: a CLOSED window dominates (→ «ждёт окно») even with
- * queued work; an OPEN window with an active task freshly touched → «работает»;
- * everything else → «свободен». No storage is ever read — the fixtures carry no such
- * field to read.
+ * 'свободен'. PURE: no storage is ever read — the fixtures carry no such field to read.
+ *
+ * ВЗЯТАЯ СТРОКА ДОМИНИРУЕТ, и это главное правило здесь: работник, у которого в руках
+ * захваченная строка, — «работает». Три слова отвечают на два разных вопроса, и порядок
+ * между ними именно такой:
+ *
+ *   · «работает»  — держит взятую строку. Что делает.
+ *   · «ждёт окно» — не держит ничего, окно закрыто: взять работу НЕ МОЖЕТ.
+ *   · «свободен»  — не держит ничего, окно открыто: взять работу может.
+ *
+ * ПОЧЕМУ УШЛА ПРОВЕРКА СВЕЖЕСТИ. Раньше «работает» требовало ещё и касания не старше
+ * FRESH_TOUCH_SEC, и работник, замолчавший дольше трёх минут (аренда продлевается только на
+ * ЦЕЛЫХ кадрах потока — TOUCH_THROTTLE_MS в loop.mjs, — а думать молча дольше он имеет
+ * полное право), становился «свободен», не выпуская из рук ни строки, ни места. В одной и той
+ * же выдаче доска говорила «в работе 4» и рисовала четыре карточки со словом «свободен» —
+ * доска спорила сама с собой (замерено 31.08 сверкой счётчика со списком). Молчание — это НЕ
+ * освобождение: строку у замолчавшего забирает сторож живости (queue/liveness.mjs), и вот
+ * ТОГДА она перестаёт быть взятой и слово меняется само. А насколько давно был сигнал жизни,
+ * карточка и так говорит рядом — `pulseAgeSec` едет отдельным полем именно за этим.
+ *
+ * ЗАКРЫТОЕ ОКНО БОЛЬШЕ НЕ ПЕРЕБИВАЕТ ВЗЯТУЮ РАБОТУ. Оно перебивает ожидающую («даже при
+ * непустой очереди» — ради этого правило и заводилось): вопрос окна — «может ли он ВЗЯТЬ
+ * работу», а не «делает ли он её сейчас». Карточка, показывающая название задачи в руках и
+ * слово «ждёт окно» под ним, — то же самое противоречие, только другими словами.
  *
  * @param {{windowOpen:boolean, hasActiveTask:boolean, pulseAgeSec?:(number|null|undefined)}} o
  * @returns {'работает'|'ждёт окно'|'свободен'}
  */
-export function derivePresence({ windowOpen, hasActiveTask, pulseAgeSec } = {}) {
+export function derivePresence({ windowOpen, hasActiveTask } = {}) {
+  if (hasActiveTask) return 'работает'
   if (!windowOpen) return 'ждёт окно'
-  const fresh = pulseAgeSec == null || pulseAgeSec <= FRESH_TOUCH_SEC
-  if (hasActiveTask && fresh) return 'работает'
   return 'свободен'
 }
 
@@ -1758,7 +1779,7 @@ export async function deriveCoordination({ config, readLedger, clock } = {}) {
 }
 
 /**
- * deriveBacklog({config, fsImpl}) → {rows:[{id, title, ageLine}]}.
+ * deriveBacklog({config, fsImpl}) → {rows:[{id, title, ageLine, headline, priority, notReady}]}.
  *
  * ЧИТАЕТСЯ ИЗ ДОМА ПЛАНИРОВАНИЯ, А НЕ ИЗ ДЕРЕВА КОДА. Беклог — планирование, и в доме, где
  * код и планирование разведены по репозиториям, он лежит в другом каталоге. Пока адрес был
@@ -1773,6 +1794,18 @@ export async function deriveCoordination({ config, readLedger, clock } = {}) {
  * The parser knows one SHAPE and no vocabulary (see BACKLOG_LINE_RE). A line that does not
  * carry an identifier is not a row — it is prose, a heading or a note to self, and the board
  * shows what the file marked as an entry rather than everything it happens to contain.
+ *
+ * ═══════ ПОЧЕМУ СТРОКА НЕ ВЗЯТА — ВИДНО ЗДЕСЬ, А НЕ ТОЛЬКО В ЖУРНАЛЕ ═══════
+ *
+ * Часовой скан отказывал молча: 15 из 17 карточек с весом не доезжали до очереди, слова
+ * отказа оставались в журнале демона, и человек у окна видел ровно то же, что и всегда, —
+ * строку, которая просто не поехала. Поэтому каждая строка доски несёт ТРИ вычисленных факта,
+ * и все три считаются ТЕМИ ЖЕ функциями, которыми считает скан: `headline` — заголовок,
+ * которым строка поедет в очередь; `priority` — число, на котором она там встанет; `notReady`
+ * — почему скан её не берёт, словами человека (пусто — возьмёт).
+ *
+ * `title` при этом остаётся строкой ФАЙЛА целиком, с тегами: доска показывает то, что
+ * написано, а не то, что из этого поняла машина.
  *
  * @param {{config?:object, fsImpl?:object}} [deps]
  * @returns {{rows:object[]}}
@@ -1789,8 +1822,18 @@ export function deriveBacklog({ config, fsImpl } = {}) {
     return { rows: [] }
   }
 
+  // ЧТО В РЕЕСТРЕ ОТКРЫТО — по ВСЕМУ файлу и до сборки строк: зависимость называет карточку,
+  // которая может стоять ниже по списку, и цикл, спрашивающий только уже пройденное, ответил
+  // бы «ничего не ждёт» ровно в половине случаев.
+  const lines = text.split(/\r?\n/)
+  const openIds = new Set()
+  for (const line of lines) {
+    const m = BACKLOG_LINE_RE.exec(line)
+    if (m && !(m[1] && m[1].toLowerCase() === 'x')) openIds.add(m[2])
+  }
+
   const rows = []
-  for (const line of text.split(/\r?\n/)) {
+  for (const line of lines) {
     const m = BACKLOG_LINE_RE.exec(line)
     if (!m) continue
     // A finished line is not work waiting to be done. The file's own checkbox says so, and
@@ -1798,10 +1841,25 @@ export function deriveBacklog({ config, fsImpl } = {}) {
     if (m[1] && m[1].toLowerCase() === 'x') continue
     const tail = String(m[3] ?? '').trim()
     const age = BACKLOG_AGE_TAG_RE.exec(tail)
+    const { text: words, tags } = readLineTags(tail)
+    const sp = tags.sp !== undefined ? Number.parseInt(tags.sp, 10) : NaN
+    const verdict = intakeVerdict(
+      {
+        id: m[2],
+        open: true,
+        phase: tags.phase ?? null,
+        storyPoints: Number.isFinite(sp) ? sp : null,
+        deps: depsOf(tags),
+      },
+      openIds,
+    )
     rows.push({
       id: m[2],
       title: tail.replace(/^[·—–\-:]\s*/, '').slice(0, BACKLOG_TITLE_CAP),
       ageLine: age ? age[1] : '',
+      headline: headlineOf(words).title,
+      priority: queuePriority({ size: tags.size ?? null, priority: tags.priority ?? null }),
+      notReady: verdict.reason,
     })
     if (rows.length >= BACKLOG_CAP) break
   }
@@ -3081,6 +3139,19 @@ export async function deriveState(deps = {}) {
   const queuedRows = foldedRows.filter((r) => r.status === 'queued')
   const claimedRows = foldedRows.filter((r) => r.status === 'claimed')
   const awaitingRows = foldedRows.filter((r) => r.status === 'awaiting_approval')
+  // ═══ РАБОТА, КОТОРУЮ ПРЯМО СЕЙЧАС САЖАЮТ, ОСТАЁТСЯ НА ЭКРАНЕ ══════════════════════
+  //
+  // `approving` — это НЕ мгновение между двумя состояниями. За кнопкой приёмки стоит посадка:
+  // свод с вершиной, полный прогон набора, когда квитанция работника это дерево уже не
+  // описывает, и штамп чисел. Это минуты, и всё это время строка не попадала НИ В ОДИН
+  // список: ни в очередь (там ждут работника), ни в «ждут вас», ни в «сделано». Человек
+  // нажимал — и работа исчезала с экрана до конца прогона, то есть ровно тогда, когда ему
+  // важнее всего видеть, что она идёт.
+  //
+  // СЧЁТЧИК «ЖДУТ ВАС» ЕЁ НЕ СЧИТАЕТ, И ЭТО НАМЕРЕННО: он мерит работу, которая ДОЛЖНА
+  // человеку слово, а эта своё слово уже получила и его исполняет. Список и счётчик здесь
+  // отвечают на разные вопросы, поэтому и читают разные наборы строк.
+  const landingRows = foldedRows.filter((r) => r.status === 'approving')
   const doneRows = foldedRows.filter((r) => r.status === 'completed' || r.status === 'failed')
 
   // ── ONE task row, named field by field. An adapter row may carry anything at all; a
@@ -3126,7 +3197,7 @@ export async function deriveState(deps = {}) {
     // and waiting for a person is the whole cost of the row, so no span of it is «не считается».
     // Where the stop was never marked (a row reconstructed after the fact) the field is ABSENT —
     // a zero would read as «остановилась только что», which is a claim about work nobody watched.
-    if (r.status === 'awaiting_approval') {
+    if (r.status === 'awaiting_approval' || r.status === 'approving') {
       const stoppedAt = toMs(r.completedAt)
       if (Number.isFinite(stoppedAt) && now - stoppedAt >= 0) out.agedForHours = (now - stoppedAt) / HOUR_MS
     } else if (ageMs > agingMs) {
@@ -3155,7 +3226,7 @@ export async function deriveState(deps = {}) {
     const stopped = toMs(r.completedAt)
     return Number.isFinite(stopped) ? stopped : toMs(r.enqueuedAt) || 0
   }
-  const awaiting = [...awaitingRows].sort((a, b) => waitingSince(a) - waitingSince(b)).map(toTaskRow)
+  const awaiting = [...awaitingRows, ...landingRows].sort((a, b) => waitingSince(a) - waitingSince(b)).map(toTaskRow)
 
   // ── ЧТО ЭТОТ РАБОТНИК ВЁЛ — the ledger's durable spine, joined to the words of the queue ──
   //
@@ -3336,9 +3407,17 @@ export async function deriveState(deps = {}) {
   // ЗАНЯТЫЕ СЧИТАЮТСЯ ПО ТОМУ ЖЕ НАБОРУ. Пара «занято X из N» обязана быть парой об одном и том
   // же множестве: занятые по всем сорока пяти против общего по шести давали бы «занято 3 из 6»
   // сегодня и «занято 8 из 6» в тот день, когда человек позовёт специалистов поимённо.
+  //
+  // СЧЁТЧИК СЧИТАЕТ КАРТОЧКИ, А НЕ РЕШАЕТ ЗАНОВО, КТО ЗАНЯТ. «Занято» жило здесь СВОИМ
+  // выражением (`!!w.taskId`), а слово под работником — своим (derivePresence), и два
+  // правила об одном факте разошлись ровно так, как расходятся всегда: в одной выдаче
+  // `workersBusy = 4` и четыре карточки со словом «свободен» (31.08). Теперь читается тот же
+  // `presence`, который увидит человек, — счётчик и список не могут разойтись по построению,
+  // потому что выражение осталось одно. Тот же закон уже записан на карточке работника
+  // («вторая копия вывода была бы вторым мнением») и на снимке доски для разговора.
   const queuePool = workers.filter((w) => w.inQueue)
   const kpis = {
-    workersBusy: queuePool.filter((w) => !!w.taskId).length,
+    workersBusy: queuePool.filter((w) => w.presence === 'работает').length,
     workersTotal: queuePool.length,
     queued: queuedRows.length,
     awaitingApproval: awaitingRows.length,

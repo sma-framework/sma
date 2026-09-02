@@ -2200,6 +2200,49 @@ async function handleApprove({ req, res, config, deps }) {
     ...(merge && merge.receipt ? { extra: { merge_receipt: JSON.stringify(merge.receipt) } } : {}),
   })
 
+  // ═══ РЕЕСТР УЗНАЁТ О ЗАКРЫТИИ КАРТОЧКИ, И УЗНАЁТ ОТ ЭТОЙ ДВЕРИ ═══════════════════
+  //
+  // Решение человека до сих пор не записывалось НИГДЕ, кроме строки очереди. Минуту приёмки
+  // окно выводило из следа уборки (`cleanup.by === 'approve'`) — из следствия, которого может не
+  // быть вовсе, — а сама строка очереди смертна: pg-boss уносит законченную работу в архив по
+  // сроку хранения. После этого на вопрос «эту карточку закрывали?» ответить было НЕЧЕМ, и
+  // обход беклога честно ставил принятую и слитую работу в очередь заново: строка файла осталась
+  // открытой (файл беклога ведёт человек, и эта дверь его не правит), а закрытия карточки не
+  // помнил никто. Замерено 31.08.2026 на живой доске.
+  //
+  // ПОЭТОМУ ЗАПИСЬ ИДЁТ В РЕЕСТР ПОПЫТОК: он один переживает и срок хранения очереди, и уборку
+  // копии. Отдельная строка того же подхода, как `cleanup` и `memoryHarvest`, — без `outcome` и
+  // `endedAt`, чтобы свёртка подходов не переписала то, чем попытка кончилась.
+  //
+  // ВЫШЕ СБОРА И УБОРКИ, ПОТОМУ ЧТО ЭТО ФАКТ, А ОНИ — ЕГО ПОСЛЕДСТВИЯ: сбор памяти и снос копии
+  // могут не удаться, и карточка от этого не перестаёт быть закрытой. И FAIL-OPEN, по тому же
+  // закону, что у соседей: непишущийся реестр никогда не превращает `merged:true` в ложь.
+  if (green && deps.ledger && typeof deps.ledger.recordAttempt === 'function') {
+    try {
+      const approveClock = typeof deps.clock === 'function' ? deps.clock : Date.now
+      // НОМЕР ПОДХОДА — ТОТ ЖЕ, ЧТО У УБОРКИ, и берётся тем же правилом (worktree-cleanup):
+      // наибольший из записанных, а на молчащем реестре — первый. Второе правило для одного
+      // числа означало бы две строки об одной попытке под разными номерами.
+      const approvedAttempt =
+        attemptRows.reduce((max, r) => (Number.isFinite(r && r.attempt) && r.attempt > max ? r.attempt : max), 0) || 1
+      const { mergeSha } = mergeRollbackFields(merge && merge.receipt)
+      deps.ledger.recordAttempt({
+        taskId,
+        attempt: approvedAttempt,
+        closed: {
+          at: new Date(approveClock()).toISOString(),
+          by: 'approve',
+          // «Слито» и «принято» — не одно и то же: документарная ступень, которой нечего было
+          // сливать, тоже закрыта человеком, и строка обязана различать эти два случая.
+          merged: !(merge && merge.nothingToMerge === true),
+          ...(mergeSha ? { mergeSha } : {}),
+        },
+      })
+    } catch {
+      /* реестр, который не пишется, стоит картины и никогда — принятой работы */
+    }
+  }
+
   // ═══ THE COPY THE WORK WAS DONE IN GOES AWAY WITH THE APPROVAL, AND ONLY WITH IT ═══
   //
   // Merged work needs no copy: the branch is in the main tree, and every task that was ever
@@ -2286,6 +2329,13 @@ async function handleApprove({ req, res, config, deps }) {
     merged: green,
     ...(merge && merge.receipt ? { receipt: merge.receipt } : {}),
     ...(merge && merge.softDenied ? { softDenied: true } : {}),
+    // ═══ ЧЕМ КОНЧИЛАСЬ ПОСАДКА — ОТДЕЛЬНЫМ ПОЛЕМ, А НЕ ВНУТРИ КВИТАНЦИИ ═══════════════
+    //
+    // Слияние — половина нажатия; вторая половина в том, ЗЕЛЁНАЯ ЛИ ВЕРШИНА после него:
+    // сошлись ли числа значка, квитанции и карты и гонялся ли ради этого полный набор.
+    // Окно обязано сказать это словами, а квитанция слияния объявлена в окне как `unknown`
+    // — читать оттуда значило бы разбирать в разметке то, что дверь уже знает.
+    ...(merge && merge.landing ? { landing: merge.landing } : {}),
     ...(refusal ? { reasonCode: refusal.reasonCode, reason: refusal.reason } : {}),
     ...(cleanup ? { cleanup } : {}),
     ...(harvest ? { memoryHarvest: { ok: harvest.ok, mode: harvest.mode, copied: harvest.copied, applied: harvest.applied, drafted: harvest.drafted, refused: harvest.refused, ...(harvest.reason ? { reason: harvest.reason } : {}) } } : {}),
@@ -6141,6 +6191,13 @@ function handleBacklog({ res, config, deps }) {
  * The row is minted like every other roster task (`R-<epochMs>`, source `roster`, DoR-exempt
  * because a person pressed it) and goes through the SAME `validateTask` gate: this door adds no
  * second way into the queue.
+ *
+ * THE TRIAGE THE LINE ALREADY CARRIES RIDES WITH IT. The words are the line's own FIRST PHRASE
+ * (`row.headline`, cut by the same function the hourly scan cuts by) rather than the whole
+ * annotated paragraph, and the urgency the line declares (`priority:critical|urgent|high`,
+ * `row.priority`) becomes the number the row stands at in the queue. Both are computed once, in
+ * the intake module, and read here — a door doing its own triage would be a second triage, and
+ * a line promoted by hand would then queue differently from the same line taken by the scan.
  */
 async function handleBacklogPromote({ req, res, config, deps }) {
   const adapter = deps.adapter
@@ -6164,13 +6221,26 @@ async function handleBacklogPromote({ req, res, config, deps }) {
   const row = (Array.isArray(rows) ? rows : []).find((r) => r && r.id === id)
   if (!row) return send404(res)
 
-  const typed = typeof b.title === 'string' && b.title.trim() !== '' ? b.title.trim() : row.title
+  // Слова строки, если человек не перепечатал свои: ПЕРВАЯ ФРАЗА карточки, а не весь абзац.
+  // Абзац целиком заголовком не помещался, и ворота отказывали — это и есть тот отказ.
+  const words = typeof row.headline === 'string' && row.headline !== '' ? row.headline : row.title
+  const typed = typeof b.title === 'string' && b.title.trim() !== '' ? b.title.trim() : words
   const clock = typeof deps.clock === 'function' ? deps.clock : Date.now
   // The identifier rides in front of the text so a queue row can be read back to the line it
   // came from. Both halves are the project's own words — nothing is composed by this file.
   // The stamp rides here for the same reason it rides on the roster button: a line becoming
   // work belongs to the project whose backlog it was read out of — see doorProject.
-  const task = { id: `R-${clock()}`, source: 'roster', ...doorProject(config), title: queueTitleFor(id, typed), lane }
+  const task = {
+    id: `R-${clock()}`,
+    source: 'roster',
+    ...doorProject(config),
+    title: queueTitleFor(id, typed),
+    lane,
+    // Срочность, объявленная самой строкой, — ТЕМ ЖЕ числом, каким её считает часовой скан.
+    // Размер внутри него по-прежнему второй ключ, поэтому мелкая работа, поставленная рукой,
+    // встаёт там же, где встала бы взятая сканом: две постановки одной строки — одно место.
+    ...(typeof row.priority === 'number' ? { priority: row.priority } : {}),
+  }
   let norm
   try {
     norm = validateTask(task)

@@ -9,6 +9,7 @@ import {
   clockLabel,
   hoursLabel,
   initialOf,
+  landingWords,
   plural,
   receiptChecks,
 } from '../../shell/format'
@@ -136,8 +137,11 @@ function DecisionCard({
           </span>
           {row.agedForHours ? <AgedPill hours={row.agedForHours} stuck={false} /> : null}
         </div>
+        {/* ПОКА ИДЁТ ПОСАДКА, СТРОКА ГОВОРИТ О ПОСАДКЕ. За кнопкой стоит свод с вершиной,
+            прогон набора и штамп чисел — минуты; строка, которая всё это время повторяет
+            «ждёт вашего решения», врёт о том, что решение уже принято и исполняется. */}
         <div className="mt-2 text-[11.5px] text-tx3">
-          {row.lane ?? 'без направления'} · проверено, ждёт вашего решения
+          {row.lane ?? 'без направления'} · {landingWords(row.status) ?? 'проверено, ждёт вашего решения'}
         </div>
       </button>
       {canApprove(row) ? (
