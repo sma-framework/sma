@@ -30,7 +30,8 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { EventEmitter } from 'node:events'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -39,11 +40,13 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import {
   createLanding,
   receiptCoversTree,
+  runFullSuiteAsync,
   runSpaBuild,
   SPA_BUILD_SCRIPT,
   SPA_NO_SCRIPT_NOTE,
   SPA_UNTOUCHED_NOTE,
   STAMP_PATHS,
+  summarizeVitestReport,
   versionMarkerIsCosmetic,
 } from '../lib/landing.mjs'
 import { runMerge, SPA_BUILD_FAILED_CODE } from '../lib/merge-gate.mjs'
@@ -688,6 +691,177 @@ describe('честна ли квитанция для сведённого де�
       rmSync(repo.home, { recursive: true, force: true })
     }
   })
+})
+
+/**
+ * ОТЧЁТ КРАСНОЙ ПОСАДКИ — ЛЕЖИТ ТАМ, ГДЕ ЕГО МОЖНО ОТКРЫТЬ ПОСЛЕ ОТКАЗА.
+ *
+ * Дверь приёмки вернула «тесты красные», имени упавшего теста не назвала и отослала к выводу
+ * прогона — а вывода не было нигде: отчёт полного набора писался во временный каталог и
+ * умирал вместе с отказом. Полный прогон при живых соседних сессиях умеет краснеть ложно, и
+ * отличить такой красный от настоящего можно ТОЛЬКО по отчёту.
+ *
+ * Подделан ровно один шов — запуск дочернего процесса, — и подделка отвечает ТЕМ ЖЕ, чем
+ * отвечает настоящий сьютер: отчётом на диске и ненулевым кодом выхода.
+ */
+function redReport() {
+  return JSON.stringify({
+    success: false,
+    numTotalTests: 4,
+    numPassedTests: 2,
+    numFailedTests: 2,
+    startTime: Date.now(),
+    testResults: [
+      { name: 'scripts/sma/__tests__/green.test.ts', status: 'passed', assertionResults: [] },
+      {
+        name: 'scripts/sma/__tests__/landing.test.ts',
+        status: 'failed',
+        assertionResults: [
+          { status: 'passed', fullName: 'посадка > зелёный случай' },
+          {
+            status: 'failed',
+            fullName: 'посадка > красный прогон не пускает ветку',
+            failureMessages: ['AssertionError: expected false to be true\n  at landing.test.ts:260:24'],
+          },
+        ],
+      },
+      {
+        name: 'daemon/__tests__/broken-import.test.ts',
+        status: 'failed',
+        message: 'Error: Cannot find module ./nowhere.mjs',
+        assertionResults: [],
+      },
+    ],
+  })
+}
+
+/** Дочерний процесс сьютера: пишет отчёт в названный файл, печатает пару строк и падает. */
+function fakeSuiteSpawn(report: string, said: string) {
+  return (_bin: string, args: string[]) => {
+    const flag = args.find((a) => String(a).startsWith('--outputFile='))
+    const target = flag ? String(flag).slice('--outputFile='.length) : null
+    const child: any = new EventEmitter()
+    for (const name of ['stdout', 'stderr']) {
+      const stream: any = new EventEmitter()
+      stream.setEncoding = () => {}
+      child[name] = stream
+    }
+    child.kill = () => {}
+    setTimeout(() => {
+      if (target) writeFileSync(target, report, 'utf8')
+      child.stdout.emit('data', said)
+      child.emit('exit', 1, null)
+    }, 0)
+    return child
+  }
+}
+
+describe('красный полный прогон: имена берутся из отчёта, а сам отчёт переживает отказ', () => {
+  it('имена и файлы читаются из ОТЧЁТА — печати на экране у полного прогона почти нет', () => {
+    const said: any = summarizeVitestReport(redReport())
+    expect(said.failedTest).toContain('landing.test.ts')
+    expect(said.failedTest).toContain('красный прогон не пускает ветку')
+    // Файл, упавший на сборке, назван САМИМ ФАЙЛОМ: имени теста там не существует.
+    expect(said.failedTests.join('\n')).toContain('daemon/__tests__/broken-import.test.ts')
+    expect(said.failureDetail).toContain('AssertionError')
+  })
+
+  it('отчёт, который не разобрался, НЕ выдумывает ни одного имени', () => {
+    const said: any = summarizeVitestReport('не отчёт вовсе')
+    expect(said.failedTest).toBe(null)
+    expect(said.failedTests).toEqual([])
+  })
+
+  it('прогонятель кладёт отчёт и хвост вывода в названный дом данных и называет пути', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sma-landing-keep-'))
+    try {
+      const keepDir = join(home, 'landing')
+      const answer: any = await runFullSuiteAsync({
+        cwd: home,
+        keepDir,
+        label: 'R-42',
+        reportPath: join(home, 'tmp-report.json'),
+        exists: () => true,
+        resolveEntry: () => join(home, 'suite-entry.mjs'),
+        spawn: fakeSuiteSpawn(redReport(), 'печать сьютера, которой у полного прогона почти нет\n'),
+      })
+
+      expect(answer.passed).toBe(false)
+      expect(answer.ran).toBe(true)
+      // (а) ПУТИ НАЗВАНЫ И ФАЙЛЫ ЛЕЖАТ.
+      expect(answer.savedReport, JSON.stringify(answer)).toBeTruthy()
+      expect(existsSync(answer.savedReport), 'отчёт назван, но его нет на диске').toBe(true)
+      expect(existsSync(answer.savedLog), 'хвоста вывода нет на диске').toBe(true)
+      expect(String(answer.savedReport)).toContain('R-42')
+      expect(JSON.parse(readFileSync(answer.savedReport, 'utf8')).numFailedTests).toBe(2)
+      expect(readFileSync(answer.savedLog, 'utf8')).toContain('печать сьютера')
+      // (б) ИМЕНА ЗАПОЛНЕНЫ ВСЕГДА, КОГДА ЕСТЬ ОТЧЁТ.
+      expect(answer.failedTest).toContain('landing.test.ts')
+      expect(answer.failedTests.length).toBeGreaterThan(1)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  }, 60000)
+
+  it('квитанция отказа несёт имена и путь, и путь ОТКРЫВАЕТСЯ после отката слияния', async () => {
+    const repo = makeRepo('kept')
+    try {
+      repo.git(['checkout', '-q', '-b', 'wt/R-red'])
+      put(repo.dir, 'src/worker.mjs', 'export const worker = 2\n')
+      repo.git(['add', '--', 'src/worker.mjs'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'work'])
+      repo.git(['checkout', '-q', repo.trunk])
+      put(repo.dir, 'src/other.mjs', 'export const other = 3\n')
+      repo.git(['add', '--', 'src/other.mjs'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'someone else'])
+      const tipBefore = repo.git(['rev-parse', 'HEAD']).trim()
+
+      // Дом данных демона — там же, где он лежит у живого демона: СНАРУЖИ репозитория.
+      const dataDir = join(repo.home, 'data')
+      const landing = createLanding({
+        cwd: repo.dir,
+        dataDir,
+        // Настоящий прогонятель посадки; подделан только запуск дочернего процесса.
+        runSuite: (call: any) =>
+          runFullSuiteAsync({
+            ...call,
+            exists: () => true,
+            resolveEntry: () => join(repo.home, 'suite-entry.mjs'),
+            spawn: fakeSuiteSpawn(redReport(), 'вывод красного прогона\n'),
+          }),
+      })
+
+      const merged: any = await runMerge({
+        branch: 'wt/R-red',
+        by: 'landing-case',
+        cwd: repo.dir,
+        claimsDir: repo.claimsDir,
+        journalDir: repo.journalDir,
+        runTests: landing.runTests,
+      })
+
+      expect(merged.merged).toBe(false)
+      expect(merged.testsPassed).toBe(false)
+      expect(repo.git(['rev-parse', 'HEAD']).trim(), 'вершина двинулась на красном прогоне').toBe(tipBefore)
+
+      // (г) КВИТАНЦИЯ НЕСЁТ ПУТЬ И ИМЕНА…
+      const receipt = merged.receipt
+      expect(receipt.savedReport, JSON.stringify(receipt)).toBeTruthy()
+      expect(String(receipt.savedReport)).toContain('R-red')
+      expect(receipt.failedTest).toContain('landing.test.ts')
+      expect(receipt.failedTests.length).toBeGreaterThan(1)
+      expect(receipt.reason, 'путь к отчёту сказан словами отказа').toContain(receipt.savedReport)
+
+      // …И ПУТЬ СУЩЕСТВУЕТ ПОСЛЕ ОТКАЗА. Слияние откачено, дерево вернулось на место —
+      // а объяснение отказа лежит снаружи и открывается.
+      expect(repo.git(['status', '--porcelain']).trim()).toBe('')
+      expect(existsSync(receipt.savedReport), 'отчёт отказанной посадки исчез вместе с отказом').toBe(true)
+      expect(existsSync(receipt.savedLog)).toBe(true)
+      expect(JSON.parse(readFileSync(receipt.savedReport, 'utf8')).numFailedTests).toBe(2)
+    } finally {
+      rmSync(repo.home, { recursive: true, force: true })
+    }
+  }, 120000)
 })
 
 describe('маркер версии: косметика возвращается, настоящая смена — нет', () => {

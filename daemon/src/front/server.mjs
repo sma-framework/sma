@@ -134,6 +134,9 @@ import { readWaitingTicket } from '../../../scripts/sma/lib/tool-gate.mjs'
 // СКОЛЬКО ИМЁН КОНФЛИКТА ПОКАЗЫВАТЬ — потолок один на весь продукт и живёт там, где живёт сам
 // словарь конфликта. Второе число здесь однажды разошлось бы с тем, от которого считается «ещё N».
 import { CONFLICT_FILES_CAP as MERGE_CONFLICT_FILES_SHOWN } from '../../../scripts/sma/lib/branch-sync.mjs'
+// …И ПО ТОЙ ЖЕ ПРИЧИНЕ — сколько имён упавших тестов показывать: потолок живёт рядом с тем,
+// кто эти имена собирает, иначе «ещё N» однажды посчитается от другого числа.
+import { FAILED_TESTS_SHOWN as RED_RUN_TESTS_SHOWN } from '../../../scripts/sma/lib/landing.mjs'
 // Код отказа сборки окна берётся у ритуала, а не пишется здесь второй раз: одно слово, один
 // хозяин — иначе дверь и квитанция однажды назовут одну беду двумя разными именами.
 import { SPA_BUILD_FAILED_CODE } from '../../../scripts/sma/lib/merge-gate.mjs'
@@ -1502,7 +1505,7 @@ function mergeRollbackFields(raw) {
 }
 
 /**
- * mergeReceiptWords(raw) → `{branch, sha, testsPassed, testsNote}`, или `null`.
+ * mergeReceiptWords(raw) → `{branch, sha, testsPassed, testsNote, failedTests, report}`, или `null`.
  *
  * ТА ЖЕ КВИТАНЦИЯ, ДРУГОЙ ВОПРОС. `mergeRollbackFields` выше — граница КОМАНДЫ: из неё
  * выходит только то, что человек скопирует и запустит, и потому оттуда не выходит ничего,
@@ -1553,11 +1556,22 @@ function mergeReceiptWords(raw) {
   const sha = typeof receipt.resultSha === 'string' ? receipt.resultSha.trim() : ''
   const branchName = typeof receipt.branch === 'string' ? receipt.branch.trim() : ''
   const note = typeof receipt.testsNote === 'string' ? receipt.testsNote.trim() : ''
+  // ЧТО ИМЕННО УПАЛО И ГДЕ ЭТО ЧИТАТЬ — на карточке, а не только в отказе двери. Отказ
+  // читают один раз, в секунду нажатия; карточка остаётся, и именно к ней возвращаются,
+  // решая, настоящий это красный или ложный (полный прогон при живых соседних сессиях умеет
+  // краснеть ни за что). Путь к отчёту — единственное, чем эти два случая различаются.
+  const failedTests = (Array.isArray(receipt.failedTests) ? receipt.failedTests : [])
+    .filter((s) => typeof s === 'string' && s.trim())
+    .map((s) => s.trim().slice(0, 200))
+    .slice(0, RED_RUN_TESTS_SHOWN)
+  const oneFailed = typeof receipt.failedTest === 'string' && receipt.failedTest.trim() ? receipt.failedTest.trim() : null
   const out = {
     branch: branchName || null,
     sha: sha && OBJECT_NAME_RE.test(sha) ? sha : null,
     testsPassed: typeof receipt.testsPassed === 'boolean' ? receipt.testsPassed : null,
     testsNote: note || null,
+    failedTests: failedTests.length ? failedTests : oneFailed ? [oneFailed] : [],
+    report: typeof receipt.savedReport === 'string' && receipt.savedReport.trim() ? receipt.savedReport.trim() : null,
   }
   // Квитанция, не сказавшая НИЧЕГО из четырёх, — это не квитанция, а разобравшийся объект.
   return out.branch || out.sha || out.testsPassed !== null || out.testsNote ? out : null
@@ -2041,8 +2055,19 @@ function refusalClass(m) {
   // доводит их до глаз, потому что квитанцию на карточке никто не разворачивает. Имя не
   // выдумывается: прогонятель, промолчавший о нём, назван промолчавшим — по правдоподобному
   // имени человек пошёл бы чинить не тот тест.
+  // …А ЕЩЁ — ГДЕ ЛЕЖИТ ОТЧЁТ ПРОГОНА. Отсылка «смотрите вывод прогона» была отсылкой в
+  // пустоту: отчёт полного набора писался во временный каталог и умирал вместе с отказом
+  // (02.09.2026, первая ночная приёмка). Полный прогон при живых соседних сессиях умеет
+  // краснеть ложно, и отличить такой красный от настоящего можно ТОЛЬКО по отчёту —
+  // поэтому путь к нему стоит в отказе рядом с именами, а не в квитанции под карточкой.
   if (m.testsPassed === false) {
-    const named = typeof m.failedTest === 'string' && m.failedTest.trim() ? m.failedTest.trim() : null
+    const receipt = m.receipt && typeof m.receipt === 'object' ? m.receipt : {}
+    const list = (Array.isArray(m.failedTests) ? m.failedTests : Array.isArray(receipt.failedTests) ? receipt.failedTests : [])
+      .filter((s) => typeof s === 'string' && s.trim())
+      .map((s) => s.trim())
+    const one = typeof m.failedTest === 'string' && m.failedTest.trim() ? m.failedTest.trim() : null
+    const shown = list.length ? list.slice(0, RED_RUN_TESTS_SHOWN) : one ? [one] : []
+    const rest = Math.max(0, list.length - shown.length)
     const detail =
       typeof m.failureDetail === 'string' && m.failureDetail.trim()
         ? m.failureDetail
@@ -2051,12 +2076,20 @@ function refusalClass(m) {
             .filter(Boolean)
             .join(' · ')
         : null
+    const report =
+      (typeof m.savedReport === 'string' && m.savedReport.trim() ? m.savedReport.trim() : null) ||
+      (typeof receipt.savedReport === 'string' && receipt.savedReport.trim() ? receipt.savedReport.trim() : null)
     return {
       reasonCode: 'tests_red',
       reason:
         'слияние не выполнено: тесты на сведённом результате красные — работа осталась ждать вас. ' +
-        (named ? `Упал: ${named}` : 'Имя упавшего теста прогонятель не назвал — смотрите вывод прогона') +
-        (detail ? `. Причина: ${detail}` : ''),
+        (shown.length
+          ? `Упало ${list.length || shown.length}: ${shown.join(' · ')}${rest ? ` … ещё ${rest}` : ''}`
+          : 'Имя упавшего теста прогонятель не назвал') +
+        (detail ? `. Причина: ${detail}` : '') +
+        (report
+          ? `. Отчёт прогона: ${report}`
+          : '. Отчёта прогона не сохранилось — смотрите вывод в журнале демона'),
     }
   }
 

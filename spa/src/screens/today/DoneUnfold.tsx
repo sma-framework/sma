@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { AcceptanceRecord, DoneRow, TaskAttempt, TaskDetail } from '../../api/types'
+import type { AcceptanceRecord, DoneRow, MergeReceiptWords, TaskAttempt, TaskDetail } from '../../api/types'
 import { useTaskQuery } from '../../api/queries'
 import { AttemptLog } from '../../shell/AttemptLog'
 import { acceptanceList, clockLabel, plural } from '../../shell/format'
@@ -57,6 +57,29 @@ export function mergeTestWords(passed: boolean | null, note: string | null): str
   if (passed === true) return 'тесты гонялись — зелено'
   if (passed === false) return 'тесты гонялись — красно'
   return note ? `тесты не гонялись: ${note}` : 'тесты не гонялись'
+}
+
+/**
+ * ЧТО ИМЕННО УПАЛО — списком, а не отсылкой к выводу прогона.
+ *
+ * «Красно» без имён — это приглашение искать причину руками, и однажды оно уже стоило часа
+ * чужого времени и возвращённой работнику здоровой работы. Имена приходят от прогонятеля и
+ * НИКОГДА не выдумываются здесь: пустой список — это фраза о том, что имён не назвали.
+ */
+export function failedTestWords(merge: MergeReceiptWords | null): string {
+  const names = merge?.failedTests ?? []
+  if (names.length === 0) return 'имён упавших тестов прогонятель не назвал'
+  return names.join(' · ')
+}
+
+/**
+ * ГДЕ ЧИТАТЬ ОТЧЁТ ОТКАЗАННОЙ ПОСАДКИ. Полный прогон при живых соседних сессиях умеет
+ * краснеть ложно, и отличить такой красный от настоящего можно ТОЛЬКО по отчёту. Пока путь
+ * не приезжал на карточку, отчёт лежал во временном каталоге и после отказа исчезал.
+ */
+export function runReportWords(merge: MergeReceiptWords | null): { text: string; known: boolean } {
+  const path = merge?.report ?? null
+  return path ? { text: path, known: true } : { text: 'отчёта прогона не сохранилось', known: false }
 }
 
 /**
@@ -146,6 +169,14 @@ function MergeReceipt({ detail }: { detail: TaskDetail }) {
             known={!!merge.sha}
           />
           <Fact label="Тесты" value={mergeTestWords(merge.testsPassed, merge.testsNote)} known={merge.testsPassed !== null} />
+          {/* Только у красного прогона: у зелёного называть нечего, а «упало: —» читалось бы
+              как молчание о падении, которого не было. */}
+          {merge.testsPassed === false ? (
+            <>
+              <Fact label="Упало" value={failedTestWords(merge)} known={(merge.failedTests ?? []).length > 0} />
+              <Fact label="Отчёт прогона" value={runReportWords(merge).text} known={runReportWords(merge).known} />
+            </>
+          ) : null}
         </>
       ) : (
         <Fact label="Слито" value="квитанции слияния нет" known={false} />

@@ -34,6 +34,13 @@ export interface WindowFact {
   /** The provider's own percentage, ONLY when it sent one. Null means it did not. */
   pct: number | null
   /**
+   * When this reading was taken. A percentage with no hour on it is read as «now» — which is
+   * how a week measured nineteen hours earlier passed for the current one on the board. The
+   * moment travels rather than an age, because an age computed on the daemon is already wrong
+   * by the time the screen draws it.
+   */
+  observedAt: string | null
+  /**
    * Where this fact came from, when it was not the account's own reading. `terminal` means a
    * status line signed into this account's config directory reported it — the same
    * subscription, said by another mouth — and the screen names that instead of passing it off
@@ -1657,6 +1664,17 @@ export interface MergeReceiptWords {
   sha: string | null
   testsPassed: boolean | null
   testsNote: string | null
+  /**
+   * Имена упавших тестов, как их назвал прогонятель. Пусто — имён он не назвал, и экран
+   * говорит именно это: выдуманное имя отправляет человека чинить не тот тест.
+   */
+  failedTests?: string[]
+  /**
+   * Где лежит отчёт красного прогона. Полный набор при живых соседних сессиях умеет
+   * краснеть ложно, и отличить такой красный от настоящего можно только по отчёту —
+   * поэтому путь стоит на карточке словами. `null` — отчёта не сохранилось.
+   */
+  report?: string | null
 }
 
 /**

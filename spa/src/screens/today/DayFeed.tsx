@@ -16,6 +16,7 @@ import {
 import { actOf, actableActions, spentLine, spentOf } from './offer'
 import type { OfferAct } from './offer'
 import { approveWord, canApprove, refusalFor } from './approve'
+import { orphanNote } from './orphans'
 import { DoneUnfold } from './DoneUnfold'
 
 /**
@@ -436,6 +437,34 @@ function DoneCard({ row, selected, onOpen }: { row: DoneRow; selected: boolean; 
   )
 }
 
+/**
+ * ЧТО СИТО ВЫБРОСИЛО, НЕ СПРОСИВ, — ОДНОЙ СТРОКОЙ И С ДОРОГОЙ ТУДА, ГДЕ ЭТО ВИДНО.
+ *
+ * Сито «Сегодня» — фильтр одного проекта, и таким оно и остаётся. Но готовая работа, у которой
+ * владельца нет вовсе, отбрасывалась им МОЛЧА: 14 закрытых строк из 46 не были нарисованы
+ * нигде, и утренний отчёт честно называл число, которое человек прочитал как правду о ночи.
+ *
+ * Не карточками: карточка чужой (никакой) работы вперемешку со своей отменяет само решение, ради
+ * которого сито и стоит. Числом и направлением — этого хватает, чтобы работа перестала быть
+ * невидимой, и не хватает, чтобы экран перестал быть экраном одного проекта.
+ */
+function OrphanLine({ count }: { count: number }) {
+  const words = orphanNote(count)
+  if (!words) return null
+  return (
+    <button
+      type="button"
+      onClick={() => openScreen({ screen: 'tasks' })}
+      className="flex w-full items-center gap-2 rounded-[9px] border border-bd px-3 py-2 text-left text-[11.5px] text-tx2 hover:bg-card-hov"
+    >
+      <span aria-hidden className="flex-none text-tx3">
+        ?
+      </span>
+      <span className="min-w-0">{words}</span>
+    </button>
+  )
+}
+
 function QueueLine({ row, selected, onOpen }: { row: QueueRow; selected: boolean; onOpen: (id: string) => void }) {
   return (
     <button
@@ -463,6 +492,7 @@ export function DayFeed({
   stalled,
   failed,
   finished,
+  orphanFinished,
   waiting,
   selectedId,
   onOpen,
@@ -482,6 +512,12 @@ export function DayFeed({
   stalled: BatchRow[]
   failed: DoneRow[]
   finished: DoneRow[]
+  /**
+   * СКОЛЬКО ГОТОВОГО СИТО ПРОЕКТА ВЫБРОСИЛО ЗА ОТСУТСТВИЕ ВЛАДЕЛЬЦА. Приезжает числом, а не
+   * строками: лента о них ничего не рисует и рисовать не должна — она называет их и показывает
+   * дорогу. Считает не разметка, а `orphans.ts`, и там же это проверяется прогоном.
+   */
+  orphanFinished: number
   waiting: QueueRow[]
   selectedId: string | null
   onOpen: (id: string) => void
@@ -543,6 +579,14 @@ export function DayFeed({
     return (
       <section className="flex flex-1 flex-col items-center justify-center gap-3 rounded-[14px] border border-bd bg-card py-16 shadow-panel">
         <p className="m-0 text-[13px] text-tx2">Пока тихо — команда ждёт задач.</p>
+        {/* «ТИХО» — ЭТО ВЫВОД, И ДЕЛАТЬ ЕГО НЕЛЬЗЯ ПОВЕРХ ОТБРОШЕННОГО. Пустой день, у которого
+            всё закрытое лежит без владельца, — это не тишина, а невидимая ночь; ровно так
+            выглядел бы экран, если бы сито выбросило ВСЕ строки смены. */}
+        {orphanFinished > 0 ? (
+          <div className="w-full max-w-[420px] px-6">
+            <OrphanLine count={orphanFinished} />
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-center justify-center gap-2">
           <button
             type="button"
@@ -619,6 +663,9 @@ export function DayFeed({
             ))
           )
         ) : null}
+        {/* Стоит ВНЕ раскрытия: число в заголовке «Готово (N)» — это N нарисованных карточек, и
+            строка о том, скольких карточек здесь нет, обязана быть видна вместе с ним. */}
+        <OrphanLine count={orphanFinished} />
       </section>
 
       {waiting.length > 0 ? (
