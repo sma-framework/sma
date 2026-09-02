@@ -121,6 +121,7 @@ const wire = (status: string, resetsAt: number | null = null) => ({
   status,
   resetsAt: resetsAt === null ? null : new Date(resetsAt).toISOString(),
   pct: null,
+  observedAt: null,
 })
 
 /** A window-state function keyed by account name (the injected seam). */

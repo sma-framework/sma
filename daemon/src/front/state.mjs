@@ -1413,6 +1413,12 @@ function windowFact(fact) {
     // so an unknown window went on the wire as «0%», which is the one wrong answer this whole
     // change exists to stop: a zero bar is read as «the quota is free».
     pct: f.pct == null ? null : numOrNull(f.pct),
+    // WHEN THIS WAS MEASURED. A percentage with no hour on it is read as «now», and on
+    // 02.09.2026 that is exactly how a week measured nineteen hours earlier was read: the board
+    // said 67 %, the person's own terminal said 7 %, and nothing on the screen said which of the
+    // two was older. The screens say the age in words beside the number; the wire carries the
+    // moment, because an age computed here would be stale by the time it was drawn.
+    observedAt: typeof f.observedAt === 'string' ? f.observedAt : null,
     ...(f.source === 'terminal' ? { source: 'terminal' } : {}),
   }
 }
