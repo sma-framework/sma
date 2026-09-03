@@ -1,5 +1,12 @@
 import type { Kpis, SpendAccount, WindowFact } from '../../api/types'
-import { WINDOW_UNKNOWN_HINT, plural, windowWords } from '../../shell/format'
+import {
+  WINDOW_STALE_HINT,
+  WINDOW_UNKNOWN_HINT,
+  plural,
+  readingAgeWords,
+  readingIsStale,
+  windowWords,
+} from '../../shell/format'
 import { elapsedLabel } from '../../shell/stats'
 
 /**
@@ -11,9 +18,11 @@ import { elapsedLabel } from '../../shell/stats'
  * screens can disagree about.
  *
  * The windows are words, not bars. The provider says whether a window is still allowing work
- * and when it resets; it does not say how full it is, and the percentage that used to stand
- * here was worked out from this daemon's own token count — near zero on a subscription a
- * person had nearly spent in his own terminal.
+ * and when it resets, and — in the unified block of its own rate-limit frames — how much of it
+ * is spent. The percentage that used to stand here was a different animal: it was worked out
+ * from this daemon's own token count, near zero on a subscription a person had nearly spent in
+ * his own terminal. This one is the provider's own number, and it never stands without the hour
+ * it was measured at, because that is the difference between the two.
  *
  * Money is deliberately absent. Sums belong to «Расходы» and are shown there once; a
  * figure repeated in two places is a figure that will one day contradict itself.
@@ -29,16 +38,38 @@ function Figure({ label, value, note }: { label: string; value: string; note?: s
   )
 }
 
-/** One window, said in the words the whole product uses for it. */
+/**
+ * One window, said in the words the whole product uses for it — WITH THE HOUR IT WAS MEASURED.
+ *
+ * «Сегодня» — первый экран, который человек открывает утром, и до сих пор он был единственным
+ * местом, где окно говорило только состояние. Процент поставщика сюда не доезжал вовсе, а
+ * состояние без даты читается как сегодняшнее: «принимает работу», снятое вчера вечером, стоит
+ * здесь тем же тоном, что и снятое минуту назад. Число и его час приходят вместе или не
+ * приходят вовсе — это одно утверждение, разорванное на два, и разрывать его нельзя.
+ */
 function WindowLine({ label, fact }: { label: string; fact: WindowFact | undefined }) {
   const words = windowWords(fact)
   const unknown = fact?.status !== 'open' && fact?.status !== 'exhausted'
+  const age = unknown ? null : readingAgeWords(fact?.observedAt)
+  const stale = !unknown && readingIsStale(fact?.observedAt)
   return (
-    <div className="flex items-baseline justify-between gap-3" title={unknown ? WINDOW_UNKNOWN_HINT : undefined}>
+    <div
+      className="flex items-baseline justify-between gap-3"
+      title={unknown ? WINDOW_UNKNOWN_HINT : stale ? WINDOW_STALE_HINT : undefined}
+    >
       <span className="flex-none text-[12px] text-tx2">{label}</span>
       <span className="flex min-w-0 items-center gap-[6px]">
         <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${words.dot}`} />
         <span className={`truncate text-[12px] ${words.muted ? 'text-tx3' : 'text-tx'}`}>{words.text}</span>
+        {typeof fact?.pct === 'number' ? (
+          <span className="flex-none text-[11.5px] text-tx3 tabular-nums">{Math.round(fact.pct)}%</span>
+        ) : null}
+        {age ? (
+          <span className={`flex-none text-[11px] whitespace-nowrap ${stale ? 'text-warn-tx' : 'text-tx3'}`}>
+            · {age}
+            {stale ? ' · устарело' : ''}
+          </span>
+        ) : null}
       </span>
     </div>
   )

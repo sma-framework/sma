@@ -1,5 +1,12 @@
 import type { AccountEntry, WindowFact } from '../../api/types'
-import { WINDOW_UNKNOWN_HINT, clockLabel, windowWords } from '../../shell/format'
+import {
+  WINDOW_STALE_HINT,
+  WINDOW_UNKNOWN_HINT,
+  clockLabel,
+  readingAgeWords,
+  readingIsStale,
+  windowWords,
+} from '../../shell/format'
 
 /**
  * AccountRow — one subscription: its windows, the workers riding it, and the machine it
@@ -13,12 +20,13 @@ import { WINDOW_UNKNOWN_HINT, clockLabel, windowWords } from '../../shell/format
  * place. The rule used to live in people's heads; here it is a line under every row, which is
  * what makes «why did that account not pick anything up» answerable without asking anyone.
  *
- * The windows are stated in words, never in money and no longer in percentages. A plan is
- * already paid for, so the useful question is whether it is still taking work and when it
- * turns over — and those two are exactly what the provider tells us. It does not tell us how
- * much of a window is spent, and the bar that used to stand here filled that hole with the
- * daemon's own token count against an invented capacity: near zero on a subscription that was
- * nearly spent. A window nothing has been heard about now says «нет данных».
+ * The windows are stated in words, never in money. A plan is already paid for, so the useful
+ * question is whether it is still taking work and when it turns over — and those two are
+ * exactly what the provider tells us. The percentage beside them is its number too, out of the
+ * unified block of its own rate-limit frames; the bar that used to stand here was something
+ * else entirely — the daemon's own token count against an invented capacity, near zero on a
+ * subscription that was nearly spent. A window nothing has been heard about says «нет данных»,
+ * and every number that IS shown carries the hour it was measured at.
  */
 
 /** The two letters in the square. Two words give two initials; one word gives its first two. */
@@ -55,17 +63,38 @@ function statusOf(a: AccountEntry): { text: string; dot: string; tone: string } 
   return { text: 'состояние неизвестно', dot: 'bg-tx3', tone: 'bg-idle-s text-idle-tx' }
 }
 
-/** One window, named and said. No bar: there is no percentage to draw one from. */
+/**
+ * One window, named and said — with the provider's own percentage and the hour it was taken.
+ *
+ * No bar still: a bar is a shape, and the shape is what made the old zero look like a
+ * measurement. What stands here is the number the provider itself sent, and it never stands
+ * alone — «этот счёт исчерпан» без даты не отличить от «был исчерпан вчера», а это и есть
+ * вопрос, ради которого на строку счёта смотрят.
+ */
 function WindowCell({ label, fact }: { label: string; fact: WindowFact | undefined }) {
   const words = windowWords(fact)
   const unknown = fact?.status !== 'open' && fact?.status !== 'exhausted'
+  const age = unknown ? null : readingAgeWords(fact?.observedAt)
+  const stale = !unknown && readingIsStale(fact?.observedAt)
   return (
-    <div className="w-[196px] flex-none" title={unknown ? WINDOW_UNKNOWN_HINT : undefined}>
+    <div
+      className="w-[196px] flex-none"
+      title={unknown ? WINDOW_UNKNOWN_HINT : stale ? WINDOW_STALE_HINT : undefined}
+    >
       <div className="mb-[5px] text-[10.5px] text-tx3">{label}</div>
       <div className="flex items-center gap-[6px]">
         <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${words.dot}`} />
         <span className={`truncate text-[11.5px] ${words.muted ? 'text-tx3' : 'text-tx2'}`}>{words.text}</span>
+        {typeof fact?.pct === 'number' ? (
+          <span className="flex-none text-[11px] text-tx3 tabular-nums">{Math.round(fact.pct)}%</span>
+        ) : null}
       </div>
+      {age ? (
+        <div className={`mt-[3px] text-[10.5px] whitespace-nowrap ${stale ? 'text-warn-tx' : 'text-tx3'}`}>
+          чтение {age}
+          {stale ? ' · устарело' : ''}
+        </div>
+      ) : null}
     </div>
   )
 }
