@@ -46,6 +46,21 @@
  * отвечает человеку «попытка закрылась». Одно выражение, два потребителя: разойтись нечему.
  * Последний `finally` прохода остаётся на месте и остаётся правым — он ловит выходы, у которых
  * ребёнка не было вовсе, — но он больше не единственная дорога к свободному месту.
+ *
+ * ── А ЗАНЯТОСТЬ РАБОТНИКА — ЭТО ВТОРОЙ СЧЁТ, И ОН ДЛИННЕЕ ──────────────────────────────────
+ *
+ * Карта мест была двойного назначения: ею же отвечали на вопрос «все ли работники заняты». Пока
+ * место жило до конца прохода, два ответа совпадали. Как только место стало отдаваться на смерти
+ * ребёнка, они разошлись — и разошлись в опасную сторону: между смертью ребёнка и концом ворот
+ * (маркер, квитанция, переповерка, коммиты, свод — минуты) работник переставал числиться занятым,
+ * а тик заводится таймером и НЕ ЖДЁТ конца предыдущего прохода. Ближайший тик выдавал тому же
+ * работнику вторую задачу, пока первая ещё коммитила его же копию.
+ *
+ * Поэтому счётов ДВА, и каждый отвечает на свой вопрос. Место (`seats`) — про живого ребёнка и
+ * про потолок: сколько процессов этот демон жжёт прямо сейчас. Занятость (`busy`) — про человека
+ * за работой: она берётся, когда маршрут назвал работника, и отдаётся ТОЛЬКО последним `finally`
+ * прохода, то есть после ворот. Один жетон держит обе записи, поэтому третьего счёта не заводится
+ * и разойтись им негде: `release(token)` снимает обе, `releaseAttempt` — только место.
  */
 
 import { isOrchestrator } from '../policy/orchestrator.mjs'
@@ -141,18 +156,27 @@ export function seatCeiling(config) {
  *   workers:()=>Set<string>,
  *   held:()=>Array<{taskId:string|null, workerId:string|null}>,
  *   reserve:(cap:number)=>string|null,
- *   name:(token:string, taskId:string|null, workerId?:string|null)=>void,
+ *   name:(token:string, taskId:string|null, workerId?:string|null, attemptId?:string|null)=>void,
  *   release:(token:string)=>void,
- *   releaseTask:(taskId:string)=>boolean,
+ *   releaseAttempt:(attemptId:string)=>boolean,
  * }}
  */
 export function createInFlight() {
-  const seats = new Map() // token → {taskId, workerId}
+  const seats = new Map() // token → {taskId, attemptId, workerId} — ЖИВЫЕ дети, ими держится потолок
+  const busy = new Map() // token → {taskId, workerId} — работник за работой, до конца ворот попытки
   let counter = 0
   return {
     size: () => seats.size,
+    /**
+     * КТО ИЗ РАБОТНИКОВ СЕЙЧАС ВЕДЁТ ПОПЫТКУ — и «ведёт» здесь длиннее, чем «жжёт процесс».
+     *
+     * Читается из ВТОРОЙ карты, а не из мест, и это вся разница между «работник свободен» и
+     * «ребёнка больше нет». Ворота попытки — коммиты, свод, сдача — идут минутами после смерти
+     * ребёнка, в его же копии и его же ветке; работник, отпущенный на этой границе, получал от
+     * ближайшего тика вторую задачу поверх первой, ещё не закрытой.
+     */
     workers: () =>
-      new Set([...seats.values()].map((s) => s && s.workerId).filter((id) => typeof id === 'string' && id !== '')),
+      new Set([...busy.values()].map((s) => s && s.workerId).filter((id) => typeof id === 'string' && id !== '')),
     /**
      * КТО СИДИТ В МЕСТАХ — поимённо, тем же одним чтением, каким называется их число.
      *
@@ -171,38 +195,59 @@ export function createInFlight() {
       if (seats.size >= ceiling) return null
       counter += 1
       const token = `seat-${counter}`
-      seats.set(token, { taskId: null, workerId: null })
+      seats.set(token, { taskId: null, attemptId: null, workerId: null })
       return token
     },
-    /** Say WHO is in the seat, once the claim and then the route have answered. */
-    name(token, taskId, workerId = null) {
+    /**
+     * Say WHO is in the seat, once the claim and then the route have answered.
+     *
+     * ИМЯ ПОПЫТКИ, А НЕ ТОЛЬКО ЗАДАЧИ. Задача — это строка, попытка — один её заход, и на одной
+     * строке их может идти две (возврат в очередь, пока прежний проход ещё разматывает ворота).
+     * Место принадлежит ЗАХОДУ; без его имени отдать место можно было только скопом по строке.
+     *
+     * И ЗДЕСЬ ЖЕ БЕРЁТСЯ ЗАНЯТОСТЬ РАБОТНИКА — в ту секунду, когда маршрут его назвал. Отдаётся
+     * она отдельно (`release`), потому что живёт дольше: до конца ворот, а не до смерти ребёнка.
+     */
+    name(token, taskId, workerId = null, attemptId = null) {
       const seat = seats.get(token)
       if (!seat) return
       if (typeof taskId === 'string' && taskId !== '') seat.taskId = taskId
-      if (typeof workerId === 'string' && workerId !== '') seat.workerId = workerId
+      if (typeof attemptId === 'string' && attemptId !== '') seat.attemptId = attemptId
+      if (typeof workerId === 'string' && workerId !== '') {
+        seat.workerId = workerId
+        busy.set(token, { taskId: seat.taskId, workerId })
+      }
     },
+    /** Отдать ВСЁ, что держал этот проход: и место под потолком, и занятость работника. */
     release(token) {
-      if (typeof token === 'string') seats.delete(token)
+      if (typeof token !== 'string') return
+      seats.delete(token)
+      busy.delete(token)
     },
     /**
-     * ОТДАТЬ МЕСТО ПО ИМЕНИ ЗАДАЧИ — дорога для того, кто жетона места не держит.
+     * ОТДАТЬ МЕСТО ПО ИМЕНИ ПОПЫТКИ — дорога для того, кто жетона места не держит.
      *
      * Жетон знает только проход, который место взял; смерть же ребёнка подтверждает дверь
-     * отмены, у которой на руках одно имя задачи. Без этой дороги дверь могла бы честно
-     * ответить «попытка закрылась» и не иметь ни одного способа сообщить об этом дому — что и
-     * произошло. Идемпотентно: отдать уже отданное место — не ошибка, а обычный порядок вещей,
-     * потому что тот же `finally` прохода отдаст его вторым разом.
+     * отмены, у которой жетона нет. Без этой дороги дверь могла бы честно ответить «попытка
+     * закрылась» и не иметь ни одного способа сообщить об этом дому — что и произошло.
+     *
+     * ПОЧЕМУ ПО ЗАХОДУ, А НЕ ПО СТРОКЕ. Прежняя дорога снимала ВСЕ места этой задачи. На одной
+     * строке живут два захода — прежний ещё идёт воротами, новый уже запущен, — и смерть одного
+     * освобождала место второму, живому: потолок переставал считать настоящий процесс, и на
+     * освободившееся место садилась третья работа. Имя захода различает их; строка — нет.
+     *
+     * Идемпотентно: отдать уже отданное место — не ошибка, а обычный порядок вещей, потому что
+     * тот же `finally` прохода отдаст его вторым разом.
      */
-    releaseTask(taskId) {
-      if (typeof taskId !== 'string' || taskId === '') return false
-      let freed = false
+    releaseAttempt(attemptId) {
+      if (typeof attemptId !== 'string' || attemptId === '') return false
       for (const [token, seat] of seats) {
-        if (seat && seat.taskId === taskId) {
+        if (seat && seat.attemptId === attemptId) {
           seats.delete(token)
-          freed = true
+          return true
         }
       }
-      return freed
+      return false
     },
   }
 }
@@ -230,11 +275,17 @@ export function createInFlight() {
  * дверь отмены спрашивает только после удавшегося убийства, тик — только после того, как его
  * собственный запуск вернулся.
  *
+ * И ЧЬЁ ИМЕННО МЕСТО ОТДАЁТСЯ — СПРАШИВАЕТСЯ ОТДЕЛЬНО. Имя строки не различает два её захода, а
+ * место принадлежит заходу (см. `releaseAttempt`). Тик знает имя своего захода сам; дверь берёт
+ * его у ручки, которую только что убила. Имени нет — место не отдаётся вовсе: снять чужое место
+ * по совпадению строки дороже, чем подождать `finally` прохода, который отдаст своё в любом случае.
+ *
  * @param {{attemptTurns?:object, inFlight?:object}} deps — те же зависимости, что у двери и у тика
  * @param {string} taskId
+ * @param {string|null} attemptId — имя захода, чьё место освобождается
  * @returns {boolean}
  */
-export function confirmProcessGone(deps, taskId) {
+export function confirmProcessGone(deps, taskId, attemptId = null) {
   const registry = deps && deps.attemptTurns
   if (!registry) return false
   const probe = typeof registry.alive === 'function' ? registry.alive(taskId) : null
@@ -247,6 +298,9 @@ export function confirmProcessGone(deps, taskId) {
       : // Реестр без вопроса «есть ли ручка» — старое наблюдение двери: пока запись помечена
         // остановленной, попытка ещё разматывается; исчезла пометка — исчезла и запись.
         typeof registry.wasStopped === 'function' && registry.wasStopped(taskId) !== true)
-  if (gone && deps.inFlight && typeof deps.inFlight.releaseTask === 'function') deps.inFlight.releaseTask(taskId)
+  const named = typeof attemptId === 'string' && attemptId !== ''
+  if (gone && named && deps.inFlight && typeof deps.inFlight.releaseAttempt === 'function') {
+    deps.inFlight.releaseAttempt(attemptId)
+  }
   return gone
 }
