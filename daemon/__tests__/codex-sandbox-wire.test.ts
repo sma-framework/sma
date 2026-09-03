@@ -29,7 +29,7 @@ import { describe, it, expect, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { tick } from '../src/loop.mjs'
 import { resolveRoute } from '../src/policy/routing.mjs'
@@ -37,6 +37,7 @@ import { createMemoryQueue } from '../src/queue/adapter.mjs'
 import { recordAttempt, readAttempts, createAttemptLogWriter } from '../src/queue/attempt-ledger.mjs'
 import {
   buildCodexArgs,
+  codexConfigSeed,
   codexHomeFor,
   CODEX_WINDOWS_SANDBOX_MARKER,
   CODEX_SANDBOX_ARTIFACTS,
@@ -94,7 +95,7 @@ const makeCopy = () => {
  * репозитории, СНАРУЖИ рабочего каталога. Песочница `workspace-write` открывает на запись
  * рабочий каталог и ничего больше — то есть правку сделать можно, а сдать её нельзя.
  */
-const makeWorktreeCopy = () => {
+const makeWorktreeCopy = ({ work = true, branch = 'wt/BL-1', name = 'wt-BL-1' } = {}) => {
   const root = mkDir('sma-codexbox-main-')
   const main = join(root, 'main')
   mkdirSync(main, { recursive: true })
@@ -103,15 +104,23 @@ const makeWorktreeCopy = () => {
   git(['config', 'user.name', 'wire'], main)
   git(['config', 'core.autocrlf', 'false'], main)
   writeFileSync(join(main, 'CLAUDE.md'), '# правила проекта\n', 'utf8')
-  git(['add', 'CLAUDE.md'], main)
+  // `docs/` есть в основании НАМЕРЕННО: иначе работа, положившая туда файл, упёрлась бы в
+  // отдельный вопрос гейта — «работа завела каталог верхнего уровня, которого в дереве не
+  // было», — и случай был бы не о песочнице, а об устройстве дерева.
+  mkdirSync(join(main, 'docs'), { recursive: true })
+  writeFileSync(join(main, 'docs', 'README.md'), '# документация\n', 'utf8')
+  git(['add', 'CLAUDE.md', 'docs/README.md'], main)
   git(['commit', '-qm', 'база'], main)
   const base = git(['rev-parse', 'HEAD'], main).trim()
-  const dir = join(root, 'wt-BL-1')
-  git(['worktree', 'add', '-q', '-b', 'wt/BL-1', dir], main)
-  writeFileSync(join(dir, 'product.txt'), 'работа сделана\n', 'utf8')
-  git(['add', 'product.txt'], dir)
-  git(['commit', '-qm', 'работа'], dir)
-  return { dir, base, gitDir: join(main, '.git') }
+  const dir = join(root, name)
+  git(['worktree', 'add', '-q', '-b', branch, dir], main)
+  if (work) {
+    writeFileSync(join(dir, 'product.txt'), 'работа сделана\n', 'utf8')
+    git(['add', 'product.txt'], dir)
+    git(['commit', '-qm', 'работа'], dir)
+  }
+  // СВОЙ каталог этой копии — не общий: индекс и HEAD рабочего дерева лежат здесь.
+  return { dir, base, gitDir: join(main, '.git'), ownGitDir: join(main, '.git', 'worktrees', name) }
 }
 
 /**
@@ -192,12 +201,17 @@ async function runTick(over: {
   lines?: string[]
   sandbox?: string
   worktreeCopy?: boolean
-  failGitCommonDir?: boolean
+  failGitDirs?: boolean
+  failGitCommonDirOnly?: boolean
+  emptyBranch?: boolean
+  // Что сессия ОСТАВЛЯЕТ В КОПИИ НЕЗАКОММИЧЕННЫМ: ровно то, чем кончается попытка, которой
+  // песочница запретила запись в индекс, — файлы на диске есть, коммита нет.
+  sessionLeaves?: Record<string, string>
 } = {}) {
   const accountDir = mkDir('sma-codexbox-acct-')
   const projectDir = mkDir('sma-codexbox-proj-')
   const ledgerDir = mkDir('sma-codexbox-ledger-')
-  const copy = over.worktreeCopy ? makeWorktreeCopy() : makeCopy()
+  const copy = over.worktreeCopy ? makeWorktreeCopy({ work: !over.emptyBranch }) : makeCopy()
   const workDir = copy.dir
   const worker = { ...CODEX_WORKER, account: { ...CODEX_WORKER.account, configDir: accountDir, spendLogsDir: join(accountDir, 'spend') } }
 
@@ -273,6 +287,13 @@ async function runTick(over: {
     }),
     spawnWorker: (spec: Record<string, unknown>) => {
       spawned.push(spec)
+      // СЕССИЯ ПИШЕТ ФАЙЛЫ И НЕ КОММИТИТ ИХ — то, чем кончилась живая проба: работник дошёл до
+      // конца, а `git add` ответил отказом, потому что песочница закрыла служебный каталог git.
+      for (const [rel, text] of Object.entries(over.sessionLeaves ?? {})) {
+        const abs = join(workDir, rel)
+        mkdirSync(dirname(abs), { recursive: true })
+        writeFileSync(abs, text, 'utf8')
+      }
       for (const l of lines) (spec.onLine as (l: string) => void)?.(l)
       ;(spec.onExit as (e: unknown) => void)?.({ code: 0, signal: null })
       return { pid: 4242, kill: () => {} }
@@ -281,8 +302,9 @@ async function runTick(over: {
     clock: c.clock,
     journal: (e: Record<string, unknown>) => logged.push(e),
     execGit: (args: string[], opts: { cwd?: string } = {}) => {
-      if (over.failGitCommonDir && args[0] === 'rev-parse' && args[1] === '--git-common-dir') {
-        throw new Error('git недоступен')
+      if (args[0] === 'rev-parse' && String(args[1]).startsWith('--git-')) {
+        if (over.failGitDirs) throw new Error('git недоступен')
+        if (over.failGitCommonDirOnly && args[1] === '--git-common-dir') throw new Error('git недоступен')
       }
       return git(args, opts.cwd || workDir)
     },
@@ -465,11 +487,18 @@ const forgeTask = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
-async function runForgeTick(over: { provisioned?: boolean; platform?: string; worktreeCopy?: boolean } = {}) {
+async function runForgeTick(
+  over: {
+    provisioned?: boolean
+    platform?: string
+    worktreeCopy?: boolean
+    sessionLeaves?: Record<string, string>
+  } = {},
+) {
   const accountDir = mkDir('sma-codexforge-acct-')
   const projectDir = mkDir('sma-codexforge-proj-')
   const ledgerDir = mkDir('sma-codexforge-ledger-')
-  const copy = over.worktreeCopy ? makeWorktreeCopy() : makeCopy()
+  const copy = over.worktreeCopy ? makeWorktreeCopy({ branch: 'wt/F-1', name: 'wt-F-1' }) : makeCopy()
   const workDir = copy.dir
   const worker = {
     id: 'creator',
@@ -530,6 +559,11 @@ async function runForgeTick(over: { provisioned?: boolean; platform?: string; wo
     }),
     spawnWorker: (spec: Record<string, unknown>) => {
       spawned.push(spec)
+      for (const [rel, text] of Object.entries(over.sessionLeaves ?? {})) {
+        const abs = join(workDir, rel)
+        mkdirSync(dirname(abs), { recursive: true })
+        writeFileSync(abs, text, 'utf8')
+      }
       ;(spec.onLine as (l: string) => void)?.(codexSaid(NOTE))
       ;(spec.onExit as (e: unknown) => void)?.({ code: 0, signal: null })
       return { pid: 4243, kill: () => {} }
@@ -587,19 +621,43 @@ describe('полоса кузницы на codex: та же граница, та
 // нельзя сдать. Границу это не снимает: называется ОДИН каталог, `danger-full-access`
 // по-прежнему отклонён структурно.
 describe('копия — рабочее дерево: git-каталог снаружи её едет в границу запуска', () => {
-  it('пишущая задача: назван РОВНО git-каталог копии, и он лежит СНАРУЖИ рабочего каталога', async () => {
+  it('пишущая задача: названы ОБА каталога — общий и свой каталог копии, — и оба СНАРУЖИ её', async () => {
     const { builtWith, copy, workDir, spawned } = await runTick({ provisioned: true, worktreeCopy: true })
 
     expect(spawned).toHaveLength(1)
-    const roots = (builtWith[0].writableRoots as string[]) ?? []
-    expect(roots).toHaveLength(1)
-    // ТОТ САМЫЙ каталог, а не «какой-нибудь снаружи»: индекс и ссылки лежат именно здесь.
-    expect(samePlace(roots[0])).toBe(samePlace((copy as { gitDir: string }).gitDir))
-    // …и он ВНЕ копии — то есть песочница рабочего каталога его не покрывает, ради чего всё это.
-    expect(samePlace(roots[0]).startsWith(`${samePlace(workDir)}/`)).toBe(false)
+    const roots = ((builtWith[0].writableRoots as string[]) ?? []).map(samePlace)
+    const { gitDir, ownGitDir } = copy as { gitDir: string; ownGitDir: string }
+    // ОБЩИЙ каталог — там объекты и ссылки; СВОЙ каталог копии — там индекс и HEAD, то есть
+    // ровно то, что трогает `git add`. Вложенность второго в первый не повод его не называть:
+    // «писаемый корень» — договор с чужим кодом, а не наше рассуждение о деревьях.
+    expect(roots).toContain(samePlace(gitDir))
+    expect(roots).toContain(samePlace(ownGitDir))
+    expect(roots).toHaveLength(2)
+    // …и оба ВНЕ копии — то есть песочница рабочего каталога их не покрывает, ради чего всё это.
+    for (const r of roots) expect(r.startsWith(`${samePlace(workDir)}/`)).toBe(false)
   })
 
-  it('обычный клон: каталог всё равно назван — относительный ответ git развёрнут от копии', async () => {
+  it('оба пути доезжают до [sandbox_workspace_write] writable_roots — не до промежуточного списка', async () => {
+    const { builtWith, copy } = await runTick({ provisioned: true, worktreeCopy: true })
+
+    // ЧИТАТЕЛЬ НАСТОЯЩИЙ: тот же `codexConfigSeed`, которым дом задачи пишет свой `config.toml`,
+    // получает РОВНО то, что тик отдал сборщику аргументов. Список, доехавший до опций и не
+    // доехавший до текста конфига, — это «вычислено», а не «подключено».
+    const toml = codexConfigSeed({ writableRoots: builtWith[0].writableRoots as string[] })
+    const { gitDir, ownGitDir } = copy as { gitDir: string; ownGitDir: string }
+    expect(toml).toContain('[sandbox_workspace_write]')
+    const rootsLine = toml.split('\n').find((l) => l.startsWith('writable_roots = ')) ?? ''
+    // Прочитано КАК ЧИТАТЕЛЬ: строки TOML разбираются обратно, экранирование снимается. Так
+    // утверждение говорит о путях, а не о том, как они записаны, — и всё равно ловит писателя,
+    // забывшего удвоить обратный слэш Windows.
+    const declared = (rootsLine.match(/"(?:[^"\\]|\\.)*"/g) ?? []).map((q) =>
+      samePlace(q.slice(1, -1).replace(/\\\\/g, '\\').replace(/\\"/g, '"')),
+    )
+    expect(declared).toContain(samePlace(gitDir))
+    expect(declared).toContain(samePlace(ownGitDir))
+  })
+
+  it('обычный клон: каталог всё равно назван ОДИН — оба вопроса git отвечают одно и то же', async () => {
     const { builtWith, workDir } = await runTick({ provisioned: true })
 
     const roots = (builtWith[0].writableRoots as string[]) ?? []
@@ -608,18 +666,150 @@ describe('копия — рабочее дерево: git-каталог сна�
   })
 
   it('git молчит → корней нет, спавн идёт прежним, а промах лежит в журнале', async () => {
-    const { builtWith, spawned, logged } = await runTick({ provisioned: true, failGitCommonDir: true })
+    const { builtWith, spawned, logged } = await runTick({ provisioned: true, failGitDirs: true })
 
     expect(spawned).toHaveLength(1) // отказ убил бы и полосу Claude, которая этот список не читает
     expect(builtWith[0].writableRoots).toBeUndefined()
     expect(logged.some((e) => e.type === 'task.copy_git_dir_unknown')).toBe(true)
   })
 
-  it('вторая дверь спавна — кузница — получает тот же каталог, а не остаётся без него', async () => {
+  it('git ответил на один вопрос из двух — ответ второго всё равно едет: половина лучше нуля', async () => {
+    const { builtWith, copy, logged } = await runTick({
+      provisioned: true,
+      worktreeCopy: true,
+      failGitCommonDirOnly: true,
+    })
+
+    const roots = ((builtWith[0].writableRoots as string[]) ?? []).map(samePlace)
+    expect(roots).toEqual([samePlace((copy as { ownGitDir: string }).ownGitDir)])
+    expect(logged.some((e) => e.type === 'task.copy_git_dir_unknown')).toBe(true)
+  })
+
+  it('вторая дверь спавна — кузница — получает те же каталоги, а не остаётся без них', async () => {
     const { builtWith, copy, spawned } = await runForgeTick({ provisioned: true, worktreeCopy: true })
 
     expect(spawned).toHaveLength(1)
-    const roots = (builtWith[0].writableRoots as string[]) ?? []
-    expect(samePlace(roots[0])).toBe(samePlace((copy as { gitDir: string }).gitDir))
+    const roots = ((builtWith[0].writableRoots as string[]) ?? []).map(samePlace)
+    const { gitDir, ownGitDir } = copy as { gitDir: string; ownGitDir: string }
+    expect(roots).toContain(samePlace(gitDir))
+    expect(roots).toContain(samePlace(ownGitDir))
+  })
+})
+
+// ═══════════ И ВСЁ РАВНО НЕ ДАЁТ: ЗАПРЕТ СИЛЬНЕЕ РАЗРЕШЕНИЯ ════════════════════════════════
+//
+// ЧТО ЗАМЕРЕНО 03.09.2026 ЖИВОЙ ПРОБОЙ ЧЕРЕЗ ДЕМОНА, и почему предыдущий раздел — это ещё не
+// починка. В доме задачи стоял конфиг с общим git-каталогом в `writable_roots`, а журнал
+// песочницы этой самой попытки читается так: сперва `granting write ACE` по названным корням,
+// а СЛЕДОМ `applied deny ACE to protect …\.git\worktrees\<копия>` — на подкаталог УЖЕ
+// разрешённого корня. В правах Windows запрет сильнее разрешения: сессия написала файл и
+// получила `Permission denied` на `index.lock`. Тот же журнал показывает такой же запрет на
+// `.git` ОБЫЧНОГО клона — значит песочница закрывает служебный каталог git как класс, и
+// никакой список корней этого не отменяет. Снять запрет нечем: его ставит помощник установки,
+// поставляемый вместе с CLI провайдера.
+//
+// ПОЭТОМУ КОММИТ ДЕЛАЕТ ХОЗЯИН — демон, снаружи песочницы, после сессии, на ветке работника.
+// Утверждения ниже — про продукт, а не про файлы этой работы: настоящий git, настоящая копия
+// как рабочее дерево, настоящий тик, и вопрос ровно один — доходит ли работа сессии до ветки,
+// на которой её ждёт гейт.
+describe('песочница запретила индекс — коммит за работника делает демон', () => {
+  it('файлы сессии не закоммичены → на ветке появляется РОВНО ОДИН коммит с ними, и попытка зелёная', async () => {
+    const { res, logged, workDir, copy } = await runTick({
+      provisioned: true,
+      worktreeCopy: true,
+      emptyBranch: true,
+      sessionLeaves: { 'docs/probe-codex-write.md': 'проба записи\n' },
+    })
+
+    // ДО ПОЧИНКИ ЭТО БЫЛО `dirty_tree` И НОЛЬ КОММИТОВ — ровно то, чем кончилась живая проба.
+    const log = git(['log', '--oneline', `${copy.base}..HEAD`], workDir).trim().split('\n').filter(Boolean)
+    expect(log).toHaveLength(1)
+    const files = git(['show', '--name-only', '--format=', 'HEAD'], workDir).trim()
+    expect(files).toContain('docs/probe-codex-write.md')
+    // Работы работника в дереве больше нет — она СДАНА, и гейт видит сдачу, а не пустую попытку.
+    // (Обстановка, которую положил сам демон, остаётся неотслеживаемой — её не сдают.)
+    expect(git(['status', '--porcelain', '-uall'], workDir)).not.toContain('docs/probe-codex-write.md')
+    expect(res.completed).toBe('BL-1')
+    // NEVER SILENT: чья рука поставила коммит — сказано в журнале оператора.
+    expect(logged.some((e) => e.type === 'task.host_commit')).toBe(true)
+  })
+
+  it('слова коммита называют причину — человек читает историю, а не гадает, откуда взялся коммит', async () => {
+    const { workDir } = await runTick({
+      provisioned: true,
+      worktreeCopy: true,
+      emptyBranch: true,
+      sessionLeaves: { 'docs/probe-codex-write.md': 'проба записи\n' },
+    })
+
+    const message = git(['log', '-1', '--format=%B'], workDir)
+    expect(message).toContain('демоном за работника')
+    expect(message).toMatch(/песочниц/i)
+  })
+
+  it('обстановка демона в коммит НЕ идёт: берётся то, что оставил работник, и только оно', async () => {
+    const { workDir, copy } = await runTick({
+      provisioned: true,
+      worktreeCopy: true,
+      emptyBranch: true,
+      sessionLeaves: { 'docs/probe-codex-write.md': 'проба записи\n', 'task_context.md': 'снимок задачи\n' },
+    })
+
+    const files = git(['show', '--name-only', '--format=', 'HEAD'], workDir).trim().split('\n').filter(Boolean)
+    expect(files).toEqual(['docs/probe-codex-write.md'])
+    // …а снимок задачи так и остался неотслеживаемым — демон положил его, демон и уберёт.
+    expect(git(['status', '--porcelain', '-uall'], workDir)).toContain('task_context.md')
+    expect(copy.base).toBeTruthy()
+  })
+
+  it('имя файла написано не по-английски — работа всё равно доезжает до ветки', async () => {
+    // По умолчанию git отдаёт такое имя восьмеричными escape-последовательностями в кавычках,
+    // и путь, снятый с такой строки, не открывается ничем: работа потерялась бы молча.
+    const { workDir } = await runTick({
+      provisioned: true,
+      worktreeCopy: true,
+      emptyBranch: true,
+      sessionLeaves: { 'docs/проба-записи.md': 'проба записи\n' },
+    })
+
+    const files = git(['-c', 'core.quotePath=false', 'show', '--name-only', '--format=', 'HEAD'], workDir).trim()
+    expect(files).toContain('docs/проба-записи.md')
+  })
+
+  it('в копии нечего фиксировать → коммита нет вовсе: пустого «чтобы был» эта рука не делает', async () => {
+    const { workDir, copy, logged } = await runTick({ provisioned: true, worktreeCopy: true })
+
+    const log = git(['log', '--oneline', `${copy.base}..HEAD`], workDir).trim().split('\n').filter(Boolean)
+    expect(log).toHaveLength(1) // тот единственный коммит, что был в копии до сессии
+    expect(logged.some((e) => e.type === 'task.host_commit')).toBe(false)
+  })
+
+  it('не-Windows: песочницу держит ядро, запрета никто не ставит — рука хозяина молчит', async () => {
+    const { logged, workDir } = await runTick({
+      provisioned: true,
+      platform: 'linux',
+      worktreeCopy: true,
+      emptyBranch: true,
+      sessionLeaves: { 'docs/probe-codex-write.md': 'проба записи\n' },
+    })
+
+    expect(logged.some((e) => e.type === 'task.host_commit')).toBe(false)
+    // Работа осталась несданной, и это ЧЕСТНО: там, где сессия могла закоммитить сама, забытый
+    // коммит — ошибка работника, а не стена, и гейт обязан назвать её своим именем.
+    expect(git(['status', '--porcelain', '-uall'], workDir)).toContain('docs/probe-codex-write.md')
+  })
+
+  it('вторая дверь спавна — кузница — получает ту же руку: черновик доезжает до гейта', async () => {
+    // Каталог черновика — `.claude/agents/`, то есть РОВНО под префиксом, которым помечена
+    // обстановка демона. Общее правило прошло бы мимо него; здесь каталог назван явно.
+    const { workDir, logged } = await runForgeTick({
+      provisioned: true,
+      worktreeCopy: true,
+      sessionLeaves: { '.claude/agents/lenta.md': '# черновик агента\n' },
+    })
+
+    expect(logged.some((e) => e.type === 'task.host_commit')).toBe(true)
+    const files = git(['show', '--name-only', '--format=', 'HEAD'], workDir).trim()
+    expect(files).toContain('.claude/agents/lenta.md')
   })
 })
