@@ -43,8 +43,8 @@ const windows = () => ({ fiveHour: win('open'), week: win('open') })
 /** Настоящий реестр в трёх строках: столько, сколько нужно, чтобы скан выдал задачу. */
 const BACKLOG = [
   '## Backlog',
-  '- [ ] **SB-186** · Сведение веток перед сдачей — делает работник, а не приёмщик. `size:M` `sp:3`',
-  '- [ ] **SB-189** · Возврат несёт нагрузку целиком — дверь не собирает задачу из строк. `size:S` `sp:2`',
+  '- [ ] **R-186** · Сведение веток перед сдачей — делает работник, а не приёмщик. `size:M` `sp:3`',
+  '- [ ] **R-189** · Возврат несёт нагрузку целиком — дверь не собирает задачу из строк. `size:S` `sp:2`',
 ].join('\n')
 
 const scanOf = (extra: Record<string, unknown> = {}) =>
@@ -108,24 +108,24 @@ describe('готовое без проекта не исчезает с «Сег
   it('сито остаётся фильтром одного проекта, но отброшенное за бесхозность названо числом', async () => {
     const rows = [
       // Своё — его человек и видит карточками.
-      { ...completed({ id: 'SB-199', title: 'своя работа', project: PROJECT }) },
-      { ...completed({ id: 'SB-201', title: 'вторая своя', project: PROJECT }) },
+      { ...completed({ id: 'R-199', title: 'своя работа', project: PROJECT }) },
+      { ...completed({ id: 'R-201', title: 'вторая своя', project: PROJECT }) },
       // Бесхозное — сито выбрасывает, и вот об этом экран обязан сказать.
-      { ...completed({ id: 'SB-178', title: 'флагман смены' }) },
-      { ...completed({ id: 'SB-180', title: 'второй флагман' }) },
-      { ...completed({ id: 'SB-195', title: 'третий флагман' }) },
+      { ...completed({ id: 'R-178', title: 'флагман смены' }) },
+      { ...completed({ id: 'R-180', title: 'второй флагман' }) },
+      { ...completed({ id: 'R-195', title: 'третий флагман' }) },
       // Чужое — спрятано по делу: у него есть свой экран, и в счёт бесхозного оно не идёт.
-      { ...completed({ id: 'SB-300', title: 'работа соседнего проекта', project: 'other' }) },
+      { ...completed({ id: 'R-300', title: 'работа соседнего проекта', project: 'other' }) },
     ]
     const state = await derive(rows)
     expect(state.done.length).toBe(6)
 
     const shown = ofProject(state.done, PROJECT)
     const hidden = orphansOf(state.done, PROJECT)
-    expect(shown.map((r: { id: string }) => r.id)).toEqual(['SB-199', 'SB-201'])
-    expect(hidden.map((r: { id: string }) => r.id)).toEqual(['SB-178', 'SB-180', 'SB-195'])
+    expect(shown.map((r: { id: string }) => r.id)).toEqual(['R-199', 'R-201'])
+    expect(hidden.map((r: { id: string }) => r.id)).toEqual(['R-178', 'R-180', 'R-195'])
     // Чужой проект — не бесхозность: он не в счёте и не в показе.
-    expect(hidden.some((r: { id: string }) => r.id === 'SB-300')).toBe(false)
+    expect(hidden.some((r: { id: string }) => r.id === 'R-300')).toBe(false)
 
     const words = orphanNote(hidden.length)
     expect(words).toBe('ещё 3 готовые без проекта — экран «Задачи»')
