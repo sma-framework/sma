@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { DoneRow } from '../../api/types'
 import { DoneUnfold } from '../today/DoneUnfold'
 import { UnitRow } from './UnitRow'
-import { ARCHIVE_AFTER_DAYS, doneUnfoldRow } from './units'
+import { ARCHIVE_AFTER_DAYS, DONE_PAGE, donePage, doneUnfoldRow } from './units'
 import type { DoneTab, DoneView, WorkUnit } from './units'
 
 /**
@@ -17,6 +17,26 @@ import type { DoneTab, DoneView, WorkUnit } from './units'
  * решила проекция (`doneView`), и её проверяет прогон; этот файл рисует её ответ. Своё сито,
  * живущее в разметке, стало бы вторым мнением о том, что человек видит.
  */
+
+/**
+ * «ПОКАЗАТЬ ЕЩЁ» — ОДНА КНОПКА НА ОБА СПИСКА, И ОНА НАЗЫВАЕТ ОБА ЧИСЛА.
+ *
+ * Сколько приедет следующим нажатием и сколько всего осталось — разные вопросы, и человек,
+ * читающий одно «показать ещё», не знает ни ответа: нажимать ли ему один раз или четыре.
+ */
+function MorePage({ rest, onMore }: { rest: number; onMore: () => void }) {
+  if (rest <= 0) return null
+  return (
+    <button
+      type="button"
+      onClick={onMore}
+      className="flex w-full items-center gap-2 border-t border-bd px-4 py-2.5 text-left text-[12px] text-tx2 hover:bg-row-hover hover:text-tx"
+    >
+      <span className="font-semibold">показать ещё {Math.min(DONE_PAGE, rest)}</span>
+      <span className="text-[11px] text-tx3">осталось {rest}</span>
+    </button>
+  )
+}
 
 /** Одна вкладка сита. Нажатая называется словом и цветом — цвет здесь никогда не один. */
 function Tab({
@@ -110,6 +130,23 @@ export function DoneList({
   }, [focus])
   const [archiveOpen, setArchiveOpen] = useState(false)
 
+  /**
+   * ДОКУДА ЧЕЛОВЕК ДОЧИТАЛ — ЧИСЛОМ СТРАНИЦ, И ЭТО НЕ ЭКОНОМИЯ ПАМЯТИ.
+   *
+   * Лента рисовала `view.rows` целиком: сто восемьдесят три закрытые работы — сто восемьдесят
+   * три живых кнопки в одном кадре, и обещание карточки «раскрывать постранично» было словом
+   * без страниц. Страницы считает проекция (`donePage`), а здесь живёт ровно одно — сколько их
+   * открыто, отдельно у ленты и у архива.
+   *
+   * Число страниц НАРОЧНО не сбрасывается опросом состояния: список приезжает новым каждые
+   * несколько секунд, и память, устроенная как «последняя показанная строка», теряла бы место
+   * при каждом обновлении. Число же применяется к тому списку, который приехал.
+   */
+  const [pages, setPages] = useState(1)
+  const [archivePages, setArchivePages] = useState(1)
+  const page = donePage(view.rows, pages)
+  const archivePage = donePage(view.archive, archivePages)
+
   const line = (unit: WorkUnit, i: number) => (
     <DoneLine
       key={`${unit.kind}:${unit.id}`}
@@ -158,7 +195,10 @@ export function DoneList({
             : 'Под эти слова не подошла ни одна строка — попробуйте другие или снимите сито.'}
         </p>
       ) : (
-        view.rows.map(line)
+        <>
+          {page.rows.map(line)}
+          <MorePage rest={page.rest} onMore={() => setPages((n) => n + 1)} />
+        </>
       )}
 
       {/*
@@ -184,7 +224,15 @@ export function DoneList({
               снятое рукой и провалы старше {ARCHIVE_AFTER_DAYS} дней · {archiveOpen ? 'свернуть' : 'показать'}
             </span>
           </button>
-          {archiveOpen ? view.archive.map(line) : null}
+          {/* Архив раскрывается ТЕМИ ЖЕ страницами: в нём лежит всё снятое рукой за всё время
+              работы, и «свёрнут по умолчанию» не делает его коротким — он делает его
+              невидимым до первого нажатия. */}
+          {archiveOpen ? (
+            <>
+              {archivePage.rows.map(line)}
+              <MorePage rest={archivePage.rest} onMore={() => setArchivePages((n) => n + 1)} />
+            </>
+          ) : null}
         </div>
       ) : null}
     </div>
