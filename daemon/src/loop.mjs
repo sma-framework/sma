@@ -920,7 +920,9 @@ function hostCommitAfterSession(deps, { task, route, workDir, include } = {}) {
   const mine = workerDirt(dirty, { include })
   if (mine.length === 0) return null
 
-  const paths = [...new Set(mine.map((d) => d.path).filter((p) => p !== ''))]
+  // Сведение повтором по списку, а не набором: этот файл держит дисциплину «никаких ключевых
+  // коллекций в памяти тика», и она проверяется чтением исходника, а не намерением.
+  const paths = mine.map((d) => d.path).filter((p, i, all) => p !== '' && all.indexOf(p) === i)
   try {
     for (let i = 0; i < paths.length; i += HOST_COMMIT_ADD_BATCH) {
       deps.execGit(['add', '--', ...paths.slice(i, i + HOST_COMMIT_ADD_BATCH)], { cwd: workDir })
