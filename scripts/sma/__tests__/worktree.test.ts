@@ -433,7 +433,7 @@ describe('removeWorktreeSafely — выжившая ссылка останав�
     }
   }
 
-  const trees = 'worktree /main\nHEAD aaa\nbranch refs/heads/main\n\nworktree /copy\nHEAD bbb\nbranch refs/heads/wt/SB-195\n\n'
+  const trees = 'worktree /main\nHEAD aaa\nbranch refs/heads/main\n\nworktree /copy\nHEAD bbb\nbranch refs/heads/wt/R-195\n\n'
 
   it('ссылка не снялась → уборка ОТКАЗАНА, и git к копии не подпускают', () => {
     const calls: string[][] = []

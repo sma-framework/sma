@@ -285,8 +285,8 @@ const ACTIONS_FIXTURE = `## Actions
 // Verbatim-format excerpt of a phase *-CONTEXT.md decision block.
 const CONTEXT_FIXTURE = `## Decisions
 
-- **D-9.1-14** · Первое решение фазы.
-- **D-9.1-15** · Второе решение фазы.
+- **D-11-14** · Первое решение фазы.
+- **D-11-15** · Второе решение фазы.
 `
 
 // Verbatim-format excerpt of .planning/ROADMAP.md phase headings (incl. a dotted N.M).
@@ -329,13 +329,13 @@ describe('nextCounterSlot — all-counter slots (B11)', () => {
     expect(res.id).toBe('A-203') // outliers never collide again — numeric max wins
   })
 
-  it('Test 3: next-slot decision --phase 9.1 scans the phase CONTEXT.md and returns the next', () => {
-    const contextPath = join(planningRoot, '9.1-CONTEXT.md')
+  it('Test 3: next-slot decision --phase 11 scans the phase CONTEXT.md and returns the next', () => {
+    const contextPath = join(planningRoot, '11-CONTEXT.md')
     writeFileSync(contextPath, CONTEXT_FIXTURE)
-    const res = nextCounterSlot('decision', { phase: '9.1', contextPath, by: 'alice', claimsDir })
+    const res = nextCounterSlot('decision', { phase: '11', contextPath, by: 'alice', claimsDir })
     expect(res.won).toBe(true)
     expect(res.number).toBe(16)
-    expect(res.id).toBe('D-9.1-16')
+    expect(res.id).toBe('D-11-16')
   })
 
   it('decision without --phase is refused (no source to scan)', () => {

@@ -91,7 +91,7 @@ function gitOfAcceptedWork(seen: string[][]) {
     if (range === `${BASE}..${TIP}`) {
       return 'e1e1e1e первый шаг: красный тест\nf2f2f2f второй шаг: починка\n'
     }
-    throw new Error("fatal: ambiguous argument 'HEAD..wt/SB-177': unknown revision")
+    throw new Error("fatal: ambiguous argument 'HEAD..wt/R-177': unknown revision")
   }
 }
 
@@ -121,7 +121,7 @@ function ledgerOfAcceptedWork(taskId: string) {
         cleanup: {
           at: '2026-08-31T10:00:00.000Z',
           by: 'approve',
-          removedPath: '/copies/wt-SB-177',
+          removedPath: '/copies/wt-R-177',
           removedBranch: `wt/${taskId}`,
           branchTip: TIP,
           ok: true,
@@ -139,7 +139,7 @@ afterAll(() => {
 
 describe('раскрытие готовой работы — дверь карточки несёт доказательства, а не одну строку', () => {
   it('принятая человеком: непустая квитанция слияния, непустой список коммитов, кто принял и когда', async () => {
-    const id = 'SB-177'
+    const id = 'R-177'
     const seen: string[][] = []
     const { res, body } = await askTaskDoor(
       {
@@ -215,8 +215,8 @@ describe('раскрытие готовой работы — дверь карт
    * «тесты гонялись — красно» и ни слова о том, что смотреть.
    */
   it('красная квитанция несёт до карточки имена упавших тестов и путь к отчёту прогона', async () => {
-    const id = 'SB-177-r'
-    const report = '/var/sma/data/landing/SB-177-r-2026-09-02T18-58-00-000Z.json'
+    const id = 'R-177-r'
+    const report = '/var/sma/data/landing/R-177-r-2026-09-02T18-58-00-000Z.json'
     const { body } = await askTaskDoor(
       {
         adapter: {
@@ -257,7 +257,7 @@ describe('раскрытие готовой работы — дверь карт
   })
 
   it('принятая терминалом: приёмщик назван словом и своим именем, квитанция — из его журнала', async () => {
-    const id = 'SB-177-t'
+    const id = 'R-177-t'
     const { body } = await askTaskDoor(
       {
         adapter: {
@@ -298,7 +298,7 @@ describe('раскрытие готовой работы — дверь карт
   })
 
   it('о чём записи нет, о том дверь молчит: ни выдуманного приёмщика, ни выдуманных кругов', async () => {
-    const id = 'SB-177-q'
+    const id = 'R-177-q'
     const { body } = await askTaskDoor(
       {
         adapter: {

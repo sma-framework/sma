@@ -1974,7 +1974,7 @@ const ROADMAP_HEADING = /^#{2,4}\s*Phase\s+(\d+(?:\.\d+)?)\s*[:.—-]\s*(.+?)\s*
 
 /**
  * A title that OPENS with a bracketed aside is carrying bookkeeping in front of its name —
- * «(экс-49.7) SMA V5.1 — Импорт…», «(new, split out by the audit) …». The aside is written for
+ * «(экс-28.7) SMA V5.1 — Импорт…», «(new, split out by the audit) …». The aside is written for
  * whoever maintains the roadmap; the person looking at the screen wants the name. Only a
  * LEADING group is removed, and only when something is left after it: a bracket in the middle
  * is part of the sentence, and a title that is nothing but an aside keeps it rather than
@@ -2000,7 +2000,7 @@ const ROADMAP_CHECKBOX = /^\s*[-*]\s*\[([ xX])\]\s*(?:\*\*)?\s*Phase\s+(\d+(?:\.
  * roadmapTitles(projectDir, io) → Map(phase number → the title the ROADMAP gives it).
  *
  * WHY THE ROADMAP AND NOT THE DIRECTORY NAME. A directory name is a file-system identifier and
- * it reads like one: `11-49-9-sma-v5-3`, `49.2-sma-v3-trust-spine`. Shown on a screen that is
+ * it reads like one: `11-28-9-sma-v5-3`, `28.2-sma-v3-trust-spine`. Shown on a screen that is
  * the whole point of not using a terminal, that is noise — the person recognises none of their
  * own work in it. The roadmap already holds the phase's name in the words its author chose,
  * and those words are what the person is looking for.
@@ -2049,13 +2049,13 @@ function roadmapTitles(projectDir, io) {
 
   // SECOND PASS — the old number a phase used to carry, when the roadmap says so plainly.
   //
-  // Directories outlive renumbering: `49.2-sma-v3-trust-spine` is «Phase 3» in the roadmap now,
-  // and its heading says which one it used to be — «(экс-49.2)». Reading that turns six historic
+  // Directories outlive renumbering: `28.2-sma-v3-trust-spine` is «Phase 3» in the roadmap now,
+  // and its heading says which one it used to be — «(экс-28.2)». Reading that turns six historic
   // directories from slugs into names.
   //
   // THE RULE IS DELIBERATELY NARROW, because the naive version is WRONG here and it is worth
-  // saying how. Phase 8's aside reads «(новая — «дни 1–30» канона, выделена из экс-49.7 аудитом
-  // K1)» — it MENTIONS 49.7, which belongs to Phase 9, and a rule that scanned asides for any
+  // saying how. Phase 8's aside reads «(новая — «дни 1–30» канона, выделена из экс-28.7 аудитом
+  // K1)» — it MENTIONS 28.7, which belongs to Phase 9, and a rule that scanned asides for any
   // number would have given Phase 9's directory Phase 8's name. So an alias is taken only from a
   // SHORT aside carrying EXACTLY ONE number: prose is refused, and «is this an identifier or a
   // sentence» is decided by shape rather than by hope. A number already claimed by a heading of
@@ -2079,7 +2079,7 @@ function roadmapTitles(projectDir, io) {
 }
 
 /**
- * `(экс-49.2)` → 49.2. `(ex-3)` → 3. Long prose, or a bracket holding two numbers, or none →
+ * `(экс-28.2)` → 28.2. `(ex-3)` → 3. Long prose, or a bracket holding two numbers, or none →
  * null. Fourteen characters is the whole of the judgement: an identifier is short, a sentence
  * is not.
  */
@@ -2191,7 +2191,7 @@ function phaseTitleOf(dir, titles) {
   const dirNumber = phaseNumberOf(dir)
   const entry = dirNumber === null ? null : titles.get(dirNumber)
   // The ROADMAP's number when the roadmap knows this phase — including through the old number
-  // its directory still carries. `49.2-sma-v3-trust-spine` is «3 · SMA V3 — The Trust Spine»,
+  // its directory still carries. `28.2-sma-v3-trust-spine` is «3 · SMA V3 — The Trust Spine»,
   // because three is what the phase is called now and the directory is only where it lives.
   if (entry) return `${entry.n} · ${entry.title}`
   const words = readableSlug(phaseNameOf(dir))
@@ -2204,7 +2204,7 @@ function phaseTitleOf(dir, titles) {
  * they open, and it is the highest number, not the first line of an alphabet.
  *
  * Sorting by directory name put `10-…` before `9-…` and buried phase 12 under six directories
- * numbered 49.x that are, in the roadmap's own numbering, the OLDEST work in the project.
+ * numbered 28.x that are, in the roadmap's own numbering, the OLDEST work in the project.
  */
 function phaseOrderOf(dir, titles) {
   const dirNumber = phaseNumberOf(dir)

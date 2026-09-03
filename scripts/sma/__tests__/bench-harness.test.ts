@@ -152,7 +152,7 @@ describe('compaction exam (S3)', () => {
       gates: ['GATE-PUSH'],
       nextMigration: '046',
       phaseWave: '9.2 wave 0',
-      lockedDecisions: ['D-9.2-02'],
+      lockedDecisions: ['D-11-02'],
       predictions: ['P9.2-01-A threshold 8'],
     }
     const now = '2026-07-08T00:00:00.000Z'
