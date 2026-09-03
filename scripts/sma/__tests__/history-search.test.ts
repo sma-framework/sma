@@ -218,6 +218,78 @@ describe('searchHistory — one run, four books', () => {
     const res = await run({ query: 'пели' })
     expect(res.hits).toEqual([])
   })
+
+  it('называет дерево, по которому искали, — иначе путь находки не от чего отмерить', async () => {
+    const res = await run({ repoRoot: root })
+    expect(res.repoRoot).toBe(root)
+    // и без имени корня остаётся честный ответ, а не пустое поле
+    const bare = await run()
+    expect(typeof bare.repoRoot).toBe('string')
+    expect(bare.repoRoot.length).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * ДВА ЗАПРОСА — ОДНО ЧТЕНИЕ КНИГ.
+ *
+ * Спрашивающему нередко нужен и запасной запрос: не нашлось по трём словам — поискать по
+ * одному. Двумя вызовами это стоит второго прохода по всем четырём книгам за один вопрос
+ * человека, и на стенограммах рабочей машины повтор — сотни мегабайт. Считается здесь
+ * именно число ОТКРЫТЫХ файлов, а не форма ответа: ответ у одного прохода и у двух
+ * одинаков, и тест по ответу остался бы зелёным на любом числе чтений.
+ */
+describe('несколько запросов идут по книгам одним проходом', () => {
+  it('открывает каждый файл один раз на оба запроса — не по разу на каждый', async () => {
+    const openedOnce: string[] = []
+    const both = await run({
+      query: [WORD, 'словокотороготочнонет'],
+      onOpen: (p: string) => openedOnce.push(p),
+    })
+
+    const openedTwice: string[] = []
+    await run({ query: WORD, onOpen: (p: string) => openedTwice.push(p) })
+    await run({ query: 'словокотороготочнонет', onOpen: (p: string) => openedTwice.push(p) })
+
+    const files = (list: string[]) => list.filter((p) => /session-a\.jsonl|a-lesson\.md|99-01\.jsonl/.test(p))
+    expect(new Set(files(openedOnce)).size).toBe(3) // стенограмма, урок, прогон
+    expect(files(openedOnce)).toHaveLength(3) // …и каждый открыт РОВНО один раз
+    expect(files(openedTwice)).toHaveLength(6) // два вызова — шесть открытий, вот цена повтора
+    expect(both.perQuery).toHaveLength(2)
+  })
+
+  it('каждая выборка своя: находки первого запроса не текут во второй', async () => {
+    const res = await run({ query: [WORD, 'словокотороготочнонет'] })
+    // верхний уровень — по-прежнему ПЕРВЫЙ запрос, буква в букву как у одиночного вызова
+    expect(res.query).toBe(WORD)
+    expect(res.hits.length).toBeGreaterThan(0)
+    expect(res.perQuery[0].hits).toBe(res.hits)
+    expect(res.perQuery[1].query).toBe('словокотороготочнонет')
+    expect(res.perQuery[1].hits).toEqual([])
+
+    // и наоборот: пустой первый не отнимает находок у второго
+    const flipped = await run({ query: ['словокотороготочнонет', WORD] })
+    expect(flipped.hits).toEqual([])
+    expect(flipped.perQuery[1].hits.length).toBeGreaterThan(0)
+  })
+
+  it('лимит принадлежит запросу, а не проходу — добравший не глушит соседа', async () => {
+    for (let i = 0; i < 4; i++) {
+      writeFileSync(
+        join(logsDir(), `session-c${i}.jsonl`),
+        JSON.stringify({ timestamp: `2026-03-0${i + 1}T00:00:00.000Z`, text: `${WORD} и ${WORD}-другое` }) + '\n',
+        'utf8',
+      )
+    }
+    // первый запрос добирает лимит сразу, второй ищет слово, которого много в тех же файлах
+    const res = await run({ query: [WORD, 'другое'], limit: 2 })
+    expect(res.hits.filter((h: any) => h.source === 'transcript')).toHaveLength(2)
+    expect(res.perQuery[1].hits.filter((h: any) => h.source === 'transcript')).toHaveLength(2)
+  })
+
+  it('одиночный запрос отвечает прежней формой — без списка, которого не спрашивали', async () => {
+    const res = await run()
+    expect('perQuery' in res).toBe(false)
+  })
 })
 
 describe('the transcript path never reads a whole file into memory', () => {
