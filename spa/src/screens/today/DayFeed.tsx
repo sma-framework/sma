@@ -457,8 +457,10 @@ function OrphanLine({ count }: { count: number }) {
       onClick={() => openScreen({ screen: 'tasks' })}
       className="flex w-full items-center gap-2 rounded-[9px] border border-bd px-3 py-2 text-left text-[11.5px] text-tx2 hover:bg-card-hov"
     >
+      {/* Тот же знак, каким лента метит пункт обещанного: это строка того же рода, а голый
+          вопросительный знак читался как «непонятно что» — про работу, о которой всё понятно. */}
       <span aria-hidden className="flex-none text-tx3">
-        ?
+        ·
       </span>
       <span className="min-w-0">{words}</span>
     </button>

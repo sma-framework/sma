@@ -3,7 +3,7 @@ import { useApprove, useCancelTask, useReturnTask, useStateQuery } from '../../a
 import { openScreen } from '../../shell/navigation'
 import type { BatchRow, DoneRow, QueueRow, WorkerRow } from '../../api/types'
 import { DayFeed } from './DayFeed'
-import { ofProject, orphansOf } from './orphans'
+import { closedWords, ofProject, orphansOf } from './orphans'
 import type { OfferAct } from './offer'
 import { KpiStrip } from './KpiStrip'
 import { TaskPanel } from '../../shell/TaskPanel'
@@ -190,8 +190,11 @@ export function Screen() {
    */
   const answered = data !== undefined
 
+  // ИТОГ НОЧИ СЧИТАЕТ ОБЕ ПОЛОВИНЫ ЗАКРЫТОГО — и просеянное, и отброшенное за бесхозность.
+  // Слова принадлежат модулю, а не разметке: то же самое число говорит строка-счёт под лентой,
+  // и разойтись им нельзя (см. `closedWords` в `orphans.ts`).
   const parts: string[] = answered
-    ? [`Пока вас не было, команда закрыла ${finished.length} ${plural(finished.length, 'задачу', 'задачи', 'задач')}`]
+    ? [closedWords(finished.length, orphanFinished)]
     : ['Читаю, что было ночью — пока ничего не сосчитано']
   if (failed.length > 0) parts.push(`${failed.length} не получилось`)
   if (decisions.length > 0) {
