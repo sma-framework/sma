@@ -538,13 +538,14 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
     // exactly what a person saw when a stage started from the window reached the queue and
     // stopped. So a task carrying a stage envelope gets the bare command as its prompt.
     //
-    // AND THE COMMAND IS REBUILT, NOT READ OFF THE ROW. The door also writes the command into
-    // the title, and taking it from there would be the shorter path — but a title is an
-    // ordinary text field that can be edited, restored from a backup, or written by some
-    // other path, and the one string in this product that becomes a BARE INSTRUCTION must not
-    // be one of those. `stageCommand` rebuilds it from the frozen four, so the only text that
-    // can ever reach a worker unfenced is one of them. The suite pins this equal to what the
-    // door wrote, so the two cannot drift.
+    // AND THE COMMAND IS REBUILT, NOT READ OFF THE ROW — from the stage envelope, never from
+    // the title. A title is an ordinary text field that can be edited, restored from a backup,
+    // or written by some other path, and the one string in this product that becomes a BARE
+    // INSTRUCTION must not be one of those. That posture is now also visible from the outside:
+    // the door writes the title in WORDS («Фаза 21 · обсуждение — ждёт…»), because nothing
+    // reads the command from there and a person reading the board should not have to.
+    // `stageCommand` rebuilds it from the frozen five, so the only text that can ever reach a
+    // worker unfenced is one of them.
     //
     // И КОНСПЕКТ ПРОШЛОГО ПОДХОДА ЕДЕТ ТЕМ ЖЕ ПУТЁМ — через строителя, а не мимо него. Тик
     // читает файл (только он знает, где лежит каталог прогона прошлой попытки), а забор

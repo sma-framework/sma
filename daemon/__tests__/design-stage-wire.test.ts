@@ -455,7 +455,11 @@ describe('Г · из дизайна можно вернуть работу в п
     const rows = await adapter.list({})
     const fresh = rows.filter((r: any) => r.id !== id)
     expect(fresh, 'новой задачи планирования не появилось').toHaveLength(1)
-    expect(fresh[0].title).toBe(stageCommand('plan', PHASE))
+    // Заголовок новой ступени — СЛОВА, а не командная строка (см. `stageTitle`): фаза по имени,
+    // ступень своим словом. Команду человек читает следом внутри карточки, а не в заголовке.
+    expect(String(fresh[0].title).startsWith('/')).toBe(false)
+    expect(fresh[0].title).toContain('план')
+    expect(fresh[0].title).toContain(PHASE)
     expect(fresh[0].lane).toBe('paperwork')
     expect(fresh[0].data).toEqual({ kind: 'document', stage: 'plan', phase: PHASE })
     expect(fresh[0].status).toBe('queued')
