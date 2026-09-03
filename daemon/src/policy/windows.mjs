@@ -135,6 +135,50 @@ function toMs(resetAt) {
 }
 
 /**
+ * utilizationFraction(value) → the fraction of a window spent, IN THE ONE SCALE THIS MODULE
+ * SPEAKS, plus the scale the wire used to say it.
+ *
+ * WHY A GUESS ABOUT SCALE IS SAFER THAN NO GUESS HERE. Everything downstream reads this number
+ * as a FRACTION: 0.67 is «две трети израсходовано», and one whole window means the vendor is
+ * done letting work through (`readingSaysExhausted`). That reading came off a documented block
+ * and off the worker's own fixtures — never off a frame anybody has captured from a live
+ * stream, because the vendor has not sent one on this machine yet. If it turns out to send
+ * PERCENTS, every reading arrives at 18 or 67 — both « >= 1 » — and the whole subscription
+ * reads «исчерпано» from the first frame. That failure has no floor and no way back: `isOpen`
+ * answers false, the router stops spawning on the account, and nothing corrects it until the
+ * reset the reading names, which for the weekly window is SEVEN DAYS away. A stopped conveyor
+ * that nobody said stopped is the worst outcome this file can produce.
+ *
+ * So the scale is decided by the value, and each decision errs where a mistake is cheap:
+ *
+ *   - `0…1` is a FRACTION, unchanged. This is what the block is documented to carry, and 1
+ *     stays a full window — «исчерпано» on a genuine one is the answer that must survive.
+ *   - `>1…100` is PERCENT, divided by a hundred. A fraction cannot exceed one, so nothing
+ *     legitimate lands here; reading 67 as «67 %» costs nothing if the vendor never sends it
+ *     and saves the account if it does. The caller writes the scale into the journal, because
+ *     a value we RE-INTERPRETED must be visible to a person, not quietly right.
+ *   - anything else — negative, or past a hundred — is DROPPED, and said out loud. It is not
+ *     a number this model can place in either scale, and inventing a placement for it is how
+ *     the zero this whole module exists to remove got onto the screen in the first place.
+ *     A dropped fraction is «нет данных», which is honest; a wrong one is a claim.
+ *
+ * @param {unknown} value
+ * @returns {{fraction:number|null, scale:'absent'|'fraction'|'percent'|'out-of-range'}}
+ */
+export function utilizationFraction(value) {
+  // An ABSENT fraction must not become a zero one: `Number(null)` and `Number('')` are both 0,
+  // and 0 is finite — the exact cast that once filed «0 % spent» for a window the provider had
+  // said nothing about. Only something that really is a number is read as one.
+  if (value == null || value === '' || typeof value === 'boolean') return { fraction: null, scale: 'absent' }
+  const n = Number(value)
+  if (!Number.isFinite(n)) return { fraction: null, scale: 'absent' }
+  if (n < 0) return { fraction: null, scale: 'out-of-range' }
+  if (n <= 1) return { fraction: n, scale: 'fraction' }
+  if (n <= 100) return { fraction: n / 100, scale: 'percent' }
+  return { fraction: null, scale: 'out-of-range' }
+}
+
+/**
  * readingSaysExhausted(reading) — does this reading mean the vendor has stopped letting work
  * through on that window?
  *
@@ -144,15 +188,18 @@ function toMs(resetAt) {
  * refusal spelling then reads as a refusal — the cautious direction — instead of quietly
  * passing as healthy, and a new healthy spelling in that family still reads as open.
  *
- * A utilization of 1 is honoured too, for the day the vendor starts sending the fraction.
+ * A utilization of 1 is honoured too, for the day the vendor starts sending the fraction — but
+ * only after `utilizationFraction` has decided WHICH SCALE it arrived in. Read raw, a vendor
+ * that starts sending percents would say «исчерпано» at 18 % spent and shut the account until
+ * its reset.
  *
  * @param {{status?:string, utilization?:number}} reading
  * @returns {boolean}
  */
 export function readingSaysExhausted(reading) {
   if (!reading || typeof reading !== 'object') return false
-  const util = Number(reading.utilization)
-  if (Number.isFinite(util) && util >= 1) return true
+  const { fraction } = utilizationFraction(reading.utilization)
+  if (fraction != null && fraction >= 1) return true
   const status = typeof reading.status === 'string' ? reading.status.trim().toLowerCase() : ''
   if (!status) return false
   return !status.startsWith('allowed')
@@ -174,15 +221,16 @@ function factOf(rec, keys, clock) {
     if (!one || typeof one !== 'object') continue
     const resetMs = toMs(one.resetsAt)
     if (!Number.isFinite(resetMs) || resetMs <= clock()) continue
-    const util = Number(one.utilization)
+    const { fraction } = utilizationFraction(one.utilization)
     const said = typeof one.status === 'string' && one.status.trim() ? one.status.trim() : null
     return {
       status: readingSaysExhausted(one) ? 'exhausted' : 'open',
       resetsAt: resetMs,
       // Present ONLY when the vendor sent a fraction — which it does, for BOTH windows, in the
       // unified block of every rate-limit frame. The number on the glass is its number and
-      // nobody's arithmetic; null still means it said nothing.
-      pct: Number.isFinite(util) ? Math.max(0, Math.min(100, Math.round(util * 100))) : null,
+      // nobody's arithmetic; null still means it said nothing. Readings written before the
+      // scale guard existed pass through it unchanged: they are already fractions.
+      pct: fraction == null ? null : Math.max(0, Math.min(100, Math.round(fraction * 100))),
       observedAt: typeof one.at === 'string' ? one.at : null,
       // THE VENDOR'S HEALTH WORD, VERBATIM, and only where it really said one. A reading taken
       // out of the unified block carries a fraction and a reset and no word at all — it is
@@ -554,11 +602,13 @@ export function markWindowObserved({ dataDir, accountName, observation, clock = 
   const resetsAt = toMs(o.resetsAt)
   if (!dataDir || !accountName || !limitType) return null
   if (!Number.isFinite(resetsAt)) return null
-  // AN ABSENT FRACTION MUST NOT BECOME A ZERO ONE. The parser hands `utilization: null` on
-  // every real frame, and `Number(null)` is 0 — which is finite, so a bare Number() here stored
-  // «0% spent» for a window the provider said nothing about, and the screen drew the same
-  // confident zero this whole change exists to remove. Null is checked before the cast.
-  const utilization = o.utilization == null ? NaN : Number(o.utilization)
+  // AN ABSENT FRACTION MUST NOT BECOME A ZERO ONE, AND A PERCENT MUST NOT BECOME A FULL WINDOW.
+  // Both hazards live in the same cast, and `utilizationFraction` answers both: null stays
+  // absent, a value the wire sent in percents is brought into this file's one scale, and a
+  // value that fits neither scale is dropped rather than filed as a measurement. WHAT IS STORED
+  // IS ALWAYS A FRACTION — the file is read by `factOf` and by every later version of it, so
+  // the scale is settled once, here, at the door.
+  const { fraction: utilization } = utilizationFraction(o.utilization)
 
   const path = join(dataDir, 'windows', `${accountName}.json`)
   const previous = readJsonSafe(path, { readFn: fsImpl?.readFileSync }) || {}
@@ -569,7 +619,7 @@ export function markWindowObserved({ dataDir, accountName, observation, clock = 
       ...(previous.observed && typeof previous.observed === 'object' ? previous.observed : {}),
       [limitType]: {
         resetsAt,
-        ...(Number.isFinite(utilization) ? { utilization } : {}),
+        ...(utilization != null ? { utilization } : {}),
         ...(typeof o.status === 'string' && o.status ? { status: o.status } : {}),
         ...(o.usingOverage === true ? { usingOverage: true } : {}),
         at: new Date(clock()).toISOString(),

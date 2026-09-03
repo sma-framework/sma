@@ -3438,6 +3438,94 @@ describe('a rate-limit frame travels from the worker stream to the screen', () =
     expect(account.week.observedAt).toBe(new Date(now).toISOString())
   })
 
+  /**
+   * ═════ ЕСЛИ ПОСТАВЩИК ПРИШЛЁТ ПРОЦЕНТЫ — СЧЁТ НЕ ЗАКРЫВАЕТСЯ НА СЕМЬ ДНЕЙ ══════════════
+   *
+   * Доля израсходованного читается как ЧАСТЬ ЕДИНИЦЫ, и единица означает «поставщик больше не
+   * пропускает работу». Пришли бы те же числа процентами — 18, 47, 67, — и каждое из них
+   * больше единицы: с первого же кадра оба окна читались бы «исчерпано», `isOpen` отвечал бы
+   * ложью, маршрутизатор перестал бы выдавать этому счёту работу, и поправить это было бы
+   * нечем до сброса окна — для недельного это семь суток. Отказ, которого поставщик не
+   * объявлял, и конвейер, вставший молча.
+   *
+   * Кадр ниже — тот же настоящий кадр с долями, но в процентной шкале. Он идёт через живой тик
+   * и заканчивается там же, где смотрит человек, плюс в журнале: перетолкованное число обязано
+   * быть видно, иначе смена формы провода пройдёт незамеченной.
+   */
+  it('a spent share sent in PERCENTS is read as percents — the account keeps working, and the journal says so', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-scale-pct-'))
+    dirs.push(dataDir)
+    const WEEK_RESETS_AT_SEC = RESETS_AT_SEC + 3 * 24 * 60 * 60
+    const now = RESETS_AT_SEC * 1000 - 60 * 60 * 1000
+    const inPercents = JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status: 'allowed',
+        resetsAt: RESETS_AT_SEC,
+        rateLimitType: 'five_hour',
+        isUsingOverage: false,
+        unifiedWindows: {
+          five_hour: { utilization: 18, resetsAt: RESETS_AT_SEC },
+          seven_day: { utilization: 67, resetsAt: WEEK_RESETS_AT_SEC },
+        },
+      },
+    })
+
+    const { journalled } = await tickWith(inPercents, dataDir, now)
+
+    const state = windowState({ account: { name: 'max-2' }, clock: () => now, dataDir })
+    // NOT «исчерпано» — which is what a raw read of 18 and 67 would have made of them
+    expect(state.fiveHour.status).toBe('open')
+    expect(state.week.status).toBe('open')
+    expect(isOpen(state, () => now)).toBe(true) // and the router goes on using the account
+    expect(state.fiveHour.pct).toBe(18) // …with the number meaning what it says
+    expect(state.week.pct).toBe(67)
+
+    // A NUMBER WE RE-INTERPRETED IS SAID OUT LOUD. Quietly right is how nobody learns the wire
+    // changed shape — and the frame that proves it is the one worth capturing.
+    const noted = journalled.filter((e: any) => e && e.type === 'window-utilization-scale')
+    expect(noted.length).toBeGreaterThan(0)
+    expect(noted.every((e: any) => e.scale === 'percent')).toBe(true)
+    expect(noted.map((e: any) => e.limitType).sort()).toEqual(['five_hour', 'seven_day'])
+    expect(noted[0].account).toBe('max-2')
+  })
+
+  /**
+   * И ЧИСЛО, КОТОРОЕ НЕ ЛОЖИТСЯ НИ В ОДНУ ШКАЛУ, ОТБРАСЫВАЕТСЯ СЛОВАМИ. 150 — это не доля и не
+   * процент; поставить его на экран значило бы выдать за измерение то, что никто прочитать не
+   * смог, а промолчать — потерять единственный признак, что провод поехал. Окно говорит «нет
+   * данных» (это честно), состояние окна не трогается, счёт продолжает работать, а в журнале
+   * остаётся строка с исходным числом.
+   */
+  it('a spent share that is neither a fraction nor a percent is dropped — «нет данных», not a claim', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-scale-bad-'))
+    dirs.push(dataDir)
+    const now = RESETS_AT_SEC * 1000 - 60 * 60 * 1000
+    const nonsense = JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status: 'allowed',
+        resetsAt: RESETS_AT_SEC,
+        rateLimitType: 'five_hour',
+        isUsingOverage: false,
+        unifiedWindows: { five_hour: { utilization: 150, resetsAt: RESETS_AT_SEC } },
+      },
+    })
+
+    const { journalled } = await tickWith(nonsense, dataDir, now)
+
+    const state = windowState({ account: { name: 'max-2' }, clock: () => now, dataDir })
+    expect(state.fiveHour.status).toBe('open') // the vendor said «allowed» and nothing overrode it
+    expect(state.fiveHour.pct).toBeNull() // the unreadable number never reaches the glass
+    expect(isOpen(state, () => now)).toBe(true)
+
+    const noted = journalled.find((e: any) => e && e.type === 'window-utilization-scale')
+    expect(noted).toBeDefined()
+    expect(noted.scale).toBe('out-of-range')
+    expect(noted.raw).toBe(150)
+    expect(noted.limitType).toBe('five_hour')
+  })
+
   it('a machine that has heard nothing says so — no reading is ever invented as a zero', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'sma-wire-quiet-'))
     dirs.push(dataDir)
