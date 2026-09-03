@@ -26,29 +26,37 @@
 
 import { join } from 'node:path'
 
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect } from 'vitest'
 import {
   BLOCKER,
   DESTRUCTIVE_RE,
   READY_CEILING_MS,
   READY_SETTLE_MS,
   RECEIPTS_ENV,
+  SECRET_FRAME_TAIL,
   STREAM_RESOURCE_TYPES,
   SWEEP_CAP,
   WARNING,
   classify,
+  collectSecretValues,
+  createFrameMask,
+  createLeave,
   dedupe,
+  forgetSecretValues,
   imageFacts,
   isStreamClose,
+  knownSecretValues,
   missingDriverMessage,
   parseSteps,
   readiness,
   receiptsRoot,
   redactText,
   redactUrl,
+  registerSecretValues,
   renderCoverage,
   renderReceipt,
   resolveDriveViewport,
+  secretFrameTail,
   sweepSparseNote,
   typeText,
   verdict,
@@ -893,5 +901,170 @@ describe('redactText — the credential inside a sentence, not inside a parsed a
     for (const junk of ['', null, undefined, 42]) {
       expect(() => redactText(junk as any), `threw on ${String(junk)}`).not.toThrow()
     }
+  })
+})
+
+/**
+ * ═══════ THE SHAPES A CREDENTIAL WEARS, AND THE VALUE UNDERNEATH ALL OF THEM ═══════
+ *
+ * The form rule as first written asked one question — «is there a `?`, a name and an `=`?» — and
+ * a library that answers «no» is not thereby printing something safe. The same token rides out as
+ * `Authorization: Bearer …`, as `token: …` in a sentence, as a query string quoted from its second
+ * half, as `%3Ftoken%3D…` inside an encoded address, and finally as itself, with no name in front
+ * of it at all. The last shape cannot be recognised by any rule about form, so the FIRST net is
+ * the value: this process knows the daemon's token, the window token and the key in the address it
+ * was pointed at before it prints a line, and the form rules stand behind that as the second net.
+ */
+const KEY = 'ab7f'.repeat(16)
+
+describe('redactText — every shape, and the value under all of them', () => {
+  afterEach(() => forgetSecretValues())
+
+  it('catches the shapes that carry no «?» in front of the name', () => {
+    expect(redactText(`Authorization: Bearer ${KEY}`)).toBe('Authorization: Bearer REDACTED')
+    expect(redactText(`the door opened with token: ${KEY}`)).toBe('the door opened with token: REDACTED')
+    // a query string quoted from its second half — no leading separator anywhere
+    expect(redactText(`token=${KEY}&view=queue`)).toBe('token=REDACTED&view=queue')
+    // the same address after something percent-encoded it
+    expect(redactText(`log: http%3A%2F%2Fh%2F%3Ftoken%3D${KEY}%26view%3Dq`)).toBe(
+      'log: http%3A%2F%2Fh%2F%3Ftoken%3DREDACTED%26view%3Dq'
+    )
+    // and the machine-readable half of a receipt keeps its punctuation, so it still parses
+    expect(JSON.parse(redactText(`{"token": "${KEY}", "url": "http://h/"}`))).toEqual({
+      token: 'REDACTED',
+      url: 'http://h/',
+    })
+  })
+
+  it('removes a known value with no name and no separator anywhere near it', () => {
+    expect(redactText(`handshake refused for ${KEY} — retrying`), 'nothing knew this value yet').toContain(KEY)
+    registerSecretValues([KEY])
+    expect(redactText(`handshake refused for ${KEY} — retrying`)).toBe('handshake refused for REDACTED — retrying')
+    // and in a shape no rule covers either: the value alone is enough
+    expect(redactText(`Cookie: sid=${KEY}`)).not.toContain(KEY)
+  })
+
+  it('learns a key from the environment, the daemon config and the address it was pointed at', () => {
+    const values = collectSecretValues({
+      env: { SMA_WINDOW_TOKEN: 'window-90ce-0000', PATH: '/usr/bin', SMA_UI_PASSWORD: 'hunter-2222' },
+      config: { port: 7777, token: 'config-d41f-0000', federation: { peers: [{ id: 'a', token: 'peer-4c8b-0000' }] } },
+      url: `http://127.0.0.1:7777/?token=${KEY}&view=queue`,
+    })
+    expect(values).toContain('window-90ce-0000')
+    expect(values).toContain('config-d41f-0000')
+    expect(values, 'a federated peer key is a key too').toContain('peer-4c8b-0000')
+    expect(values, 'a password typed by the env: step form is one this run can name').toContain('hunter-2222')
+    expect(values).toContain(KEY)
+    expect(values, 'PATH is not a credential').not.toContain('/usr/bin')
+
+    // The credential behind a scheme is registered without it, so the same token is caught in
+    // whatever the next line writes it as.
+    expect(collectSecretValues({ env: { API_AUTHORIZATION: 'Bearer abc-9182-7364' } })).toContain('abc-9182-7364')
+  })
+
+  it('refuses a value too short to be a key, and survives what is not a string', () => {
+    registerSecretValues(['abc', 42 as any, null as any, { a: 1 } as any])
+    expect(knownSecretValues(), 'a three-letter «secret» would eat the prose').toEqual([])
+    expect(redactText('abc is a perfectly ordinary word')).toBe('abc is a perfectly ordinary word')
+    expect(() => collectSecretValues({ env: null as any, config: 'not an object' as any, url: 'not a url' })).not.toThrow()
+  })
+
+  it('leaves the receipt prose alone — a keystroke is not a key', () => {
+    // the path walked is printed step by step: `key:Control+K` must survive as itself
+    expect(redactText('1. `key:Control+K`')).toBe('1. `key:Control+K`')
+    expect(redactText('- verdict: **PASS** (0 blocking, 0 warning)')).toBe('- verdict: **PASS** (0 blocking, 0 warning)')
+    expect(redactText('Bearer of bad news')).toBe('Bearer of bad news')
+  })
+})
+
+/**
+ * A CHUNK IS NOT A SENTENCE. Nothing obliges a writer to hand the mask a whole line — a driver
+ * that writes its message in two calls used to print the key whole, in order, with neither half
+ * matching any rule and neither half being a known value. The mask therefore holds back whatever
+ * follows the last newline and scans it with its continuation attached.
+ */
+describe('createFrameMask — the key cut in half by a write boundary', () => {
+  afterEach(() => forgetSecretValues())
+
+  it('holds the unfinished line until its continuation arrives, and loses nothing', () => {
+    const frame = createFrameMask(redactText)
+    expect(frame.push(`opening ?token=${KEY.slice(0, 20)}`), 'an unfinished line left early').toBe('')
+    const out = frame.push(`${KEY.slice(20)}&view=queue\n`)
+    expect(out).toBe('opening ?token=REDACTED&view=queue\n')
+    expect(frame.flush()).toBe('')
+  })
+
+  it('lets finished lines through at once and keeps only the tail', () => {
+    const frame = createFrameMask(redactText)
+    expect(frame.push('first line\nsecond ')).toBe('first line\n')
+    expect(frame.held()).toBe('second '.length)
+    expect(frame.flush()).toBe('second ')
+    expect(frame.flush(), 'a flushed tail is not printed twice').toBe('')
+  })
+
+  it('a stream that never sends a newline still moves, and the cap covers the longest key known', () => {
+    const frame = createFrameMask(redactText, 8)
+    expect(frame.push('0123456789abcdef')).toBe('01234567')
+    expect(frame.held()).toBe(8)
+
+    expect(secretFrameTail()).toBe(SECRET_FRAME_TAIL)
+    registerSecretValues(['x'.repeat(SECRET_FRAME_TAIL * 2)])
+    expect(secretFrameTail(), 'a key longer than the cap could be split past the mask').toBeGreaterThan(
+      SECRET_FRAME_TAIL * 2
+    )
+  })
+})
+
+/**
+ * ═══════ THE LAST LINE IS THE ONE THAT MATTERS, AND IT WAS THE ONE BEING LOST ═══════
+ *
+ * `process.exit()` does not flush. On POSIX a stdout that is a pipe — which it is whenever anything
+ * is reading the run — is written asynchronously, so everything still queued at the moment of the
+ * call is dropped. The lines at risk are exactly the ones a reader came for: «NOT RUN — this is not
+ * a pass», the receipt, and the absolute path on the last line. The streams are injected here
+ * because the defect is about ORDER, and order is the same on every platform even where the
+ * operating system happens to be forgiving enough to hide it.
+ */
+describe('createLeave — the door does not shut on a line still in the air', () => {
+  it('waits for every stream to report its queue empty before it exits', () => {
+    const said: string[] = []
+    const pending: Array<() => void> = []
+    const handle = (name: string) => ({
+      close: (done: () => void) => pending.push(() => (said.push(name), done())),
+    })
+    let code: number | null = null
+    const leave = createLeave({ handles: [handle('stdout'), handle('stderr')], exit: (c) => (code = c) })
+
+    leave(3)
+    expect(code, 'left while a line was still queued').toBe(null)
+    pending[0]()
+    expect(code, 'left while the second stream was still queued').toBe(null)
+    pending[1]()
+    expect(code).toBe(3)
+    expect(said).toEqual(['stdout', 'stderr'])
+  })
+
+  it('is bounded: a reader that walked away turns a failed run into a slow one, never a hung one', () => {
+    let fired: (() => void) | null = null
+    let code: number | null = null
+    const leave = createLeave({
+      handles: [{ close: () => {} }], // a stream that never reports — the queue never drains
+      exit: (c) => (code = c),
+      grace: 2000,
+      timer: (fn: () => void) => ((fired = fn), { unref: () => {} }),
+    })
+
+    leave(1)
+    expect(code, 'left before the wait it promised').toBe(null)
+    fired!()
+    expect(code).toBe(1)
+  })
+
+  it('leaves once: a crash during the wait cannot exit with a second code', () => {
+    const codes: number[] = []
+    const leave = createLeave({ handles: [], exit: (c) => codes.push(c) })
+    leave(3)
+    leave(0)
+    expect(codes).toEqual([3])
   })
 })

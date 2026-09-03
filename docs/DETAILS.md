@@ -742,9 +742,31 @@ launched the run. Measured on a live run: the receipt was masked exactly as desi
 token stood bare one line below it, inside the failure that produced the receipt. So the mask now
 stands on the **exit** rather than at each writer: everything `ui-drive` says out loud — its own
 lines, the driver's lines, the text of any exception, caught or not — and everything it writes to
-disk passes through it, and there is no way to print past it. Only the credential's *value* is
-replaced; the address, the ordinary parameters and the error's own words survive, because a receipt
-nobody can follow trades one defect for another.
+disk passes through it. Only the credential's *value* is replaced; the address, the ordinary
+parameters and the error's own words survive, because a receipt nobody can follow trades one defect
+for another.
+
+**And the mask knows the key by its value, not only by the shape it usually wears.** A rule about
+form asks «does this look like a credential?», and that question has an endless supply of wrong
+answers: the same token rides out as `Authorization: Bearer …`, as `token: …` in a sentence, as a
+query string quoted from its second half with no `?` in front of it, as `%3Ftoken%3D…` inside an
+encoded address — and, in the end, entirely bare, because nothing obliges a driver to name what it
+is printing. So the run learns the values it can know before it says a word — the daemon's own
+configured token and every federated peer's, the window token in its environment, whatever an
+`Authorization` value carries, the credential in the address it was pointed at, the password a step
+types by name — and removes those wherever they occur, in any form and in none. The shape rules
+stay as the second net, for the key this run was never told about; both were widened to the forms
+above. A key cut in half by a write boundary is caught as well: a chunk is not a sentence, so the
+mask holds back whatever follows the last newline and scans it with its continuation attached.
+
+**And the last line is not dropped in the doorway.** `process.exit()` does not flush, and on POSIX a
+stdout that is a pipe — which it is whenever anything is reading the run: a scene, a CI job, a shell
+redirect — is written asynchronously, so everything still queued at the moment of the call was lost.
+The lines at risk are exactly the ones the reader came for: «NOT RUN — this is not a pass», the
+receipt itself, and the absolute path printed on the last line. A run that failed could therefore be
+read as a run that said nothing. The engine now leaves only after the streams report their queues
+empty, and the wait is bounded — a reader that walked away turns a failed run into a slow one, never
+into a hung one.
 
 That sideways measurement follows the CONTENT, not the document. A window that carries its minimum
 width on a container inside the page measures perfectly clean at phone width while most of the
