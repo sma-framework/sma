@@ -17,6 +17,23 @@
  * rebuilds the command from a frozen constant. The only text that can ever become a bare
  * instruction is one of these frozen templates, whatever the row says.
  *
+ * ═══════ И ПОТОМУ ЖЕ ЗАГОЛОВОК СТУПЕНИ — СЛОВА, А НЕ КОМАНДНАЯ СТРОКА ═══════
+ * Раз командой на строке никто не пользуется, командой на строке нечего и писать. Дверь долго
+ * ставила ступени заголовок ровно той строки, которой ступень запускается, — и в столбике
+ * «ждут вас» стояла карточка `/sma-discuss-phase 21 --batch --text`. Замерено 31.08 словами
+ * основателя: «висит /sma-discuss-phase… какое-то непонятное задание». Заголовок не называл
+ * ни фазы по имени, ни ступени словом, ни того, чего от человека ждут; остальные карточки
+ * доски говорят по-человечески, и одна эта говорила на языке запуска.
+ *
+ * `stageTitle` — вторая половина того же словаря: КАК ступень называется человеку. Она стоит
+ * рядом с командой намеренно — слово ступени и команда ступени обязаны меняться одной рукой, —
+ * и она не выводится из команды: заголовок, собранный из командной строки, снова был бы
+ * командной строкой, только причёсанной. Сама команда с карточки не исчезает: дверь карточки
+ * перестраивает её тем же `stageCommand` и кладёт СЛЕДОМ внутрь карточки, где ей и место.
+ *
+ * Zero imports on purpose: a frozen vocabulary that everything may depend on must depend on
+ * nothing.
+ *
  * THE PAIR CANNOT DRIFT, AND THAT IS PROVED RATHER THAN INTENDED. The door and the runner
  * call the SAME function with the same arguments, and the suite pins their outputs equal byte
  * for byte for every stage. If the two ever diverged, the screen would show a person one
@@ -50,9 +67,6 @@
  * Every OTHER question the plan guide can reach is answered by the guide's own headless
  * section, which reads the env marker the spawn sets; a question that can only be answered by
  * a founder is PARKED as an artifact, as it always was.
- *
- * Zero imports on purpose: a frozen vocabulary that everything may depend on must depend on
- * nothing.
  */
 
 /**
@@ -127,4 +141,72 @@ export function stageCommand(stage, phase) {
   const text = phase === undefined || phase === null ? '' : String(phase)
   if (!PHASE_RE.test(text)) return null
   return assertNoAutomation(STAGE_COMMANDS[stage].replace('{phase}', text))
+}
+
+/**
+ * ЧЕМ СТУПЕНЬ НАЗЫВАЕТСЯ ЧЕЛОВЕКУ — одно слово на ступень, и оно не выводится из команды.
+ *
+ * Слово стоит здесь, а не на стороне окна, потому что заголовок строки пишет ДВЕРЬ: карточка
+ * доски, столбик «сделано», история работника и журнал читают одно и то же поле, и словарь,
+ * живущий только в окне, оставил бы четыре из пяти этих мест говорящими командной строкой.
+ */
+export const STAGE_WORDS = Object.freeze({
+  discuss: 'обсуждение',
+  plan: 'план',
+  design: 'дизайн',
+  execute: 'исполнение',
+  verify: 'проверка',
+})
+
+/**
+ * ЧЕГО СТУПЕНЬ ЖДЁТ — предложение, которое человек читает вместо флагов запуска.
+ *
+ * Одно на ступень и в настоящем времени: карточка попадается человеку на глаза, ПОКА ступень
+ * стоит или идёт, и вопрос у него ровно один — «что от меня хотят». Прошедшее время («обсудила
+ * фазу») отвечало бы на другой.
+ */
+export const STAGE_AWAITS = Object.freeze({
+  discuss: 'ждёт разговора: чем фаза кончится и что в ней спорно',
+  plan: 'ждёт плана работ по фазе',
+  design: 'ждёт чертежа — и вашего слова о нём',
+  execute: 'ждёт работы по плану фазы',
+  verify: 'ждёт приёмки сделанного',
+})
+
+/**
+ * Сколько букв имени фазы влезает в заголовок. Название строки ограничено (`CAP_TITLE`), а
+ * имя фазы приходит из роадмапа — чужого текста, длину которого эта дверь не назначает. Режется
+ * ИМЯ, а не собранный заголовок: обрубленное с хвоста предложение потеряло бы ровно ту часть,
+ * ради которой всё и затевалось, — слова о том, чего ступень ждёт.
+ */
+const NAME_CAP = 72
+
+/**
+ * stageTitle(stage, phase, phaseName) → ЗАГОЛОВОК КАРТОЧКИ СТУПЕНИ, словами, или null для
+ * ступени, которой никто не объявлял.
+ *
+ * «Фаза 21 · Фронт-полировка · обсуждение — ждёт разговора: чем фаза кончится и что в ней
+ * спорно». Три вещи в одной строке, и каждая отвечает на свой вопрос человека: КАКАЯ фаза,
+ * КАКАЯ её ступень и ЧЕГО от него ждут. Команда сюда не попадает вовсе — она лежит следом
+ * внутри карточки, и её перестраивает `stageCommand`.
+ *
+ * ИМЯ ФАЗЫ НЕОБЯЗАТЕЛЬНО, и его отсутствие не выдумывается. Проекции фаз может не быть
+ * подключено вовсе; тогда заголовок называет фазу номером — тем самым, которым её называет и
+ * человек, и команда. Пустое «Фаза «» » было бы хуже номера.
+ *
+ * `null` — той же границей, что и у команды: неизвестная ступень или фаза, не прошедшая
+ * грамматику. Дверь отказывает по имени, а не собирает заголовок вокруг чего-то безграничного.
+ *
+ * @param {string} stage
+ * @param {string|number} phase
+ * @param {string|null} [phaseName]
+ * @returns {string|null}
+ */
+export function stageTitle(stage, phase, phaseName) {
+  if (!Object.prototype.hasOwnProperty.call(STAGE_WORDS, stage)) return null
+  const text = phase === undefined || phase === null ? '' : String(phase)
+  if (!PHASE_RE.test(text)) return null
+  const named = typeof phaseName === 'string' ? phaseName.trim() : ''
+  const who = named === '' ? text : named.length > NAME_CAP ? `${named.slice(0, NAME_CAP - 1)}…` : named
+  return `Фаза ${who} · ${STAGE_WORDS[stage]} — ${STAGE_AWAITS[stage]}`
 }

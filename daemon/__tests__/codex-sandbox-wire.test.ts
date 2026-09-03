@@ -26,7 +26,7 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -204,6 +204,8 @@ async function runTick(over: {
   failGitDirs?: boolean
   failGitCommonDirOnly?: boolean
   emptyBranch?: boolean
+  // Лежит ли в доме задачи журнал помощника песочницы — тот, что уходит вместе с домом.
+  sandboxJournal?: boolean
   // Что сессия ОСТАВЛЯЕТ В КОПИИ НЕЗАКОММИЧЕННЫМ: ровно то, чем кончается попытка, которой
   // песочница запретила запись в индекс, — файлы на диске есть, коммита нет.
   sessionLeaves?: Record<string, string>
@@ -219,6 +221,22 @@ async function runTick(over: {
   if (over.provisioned) {
     mkdirSync(join(home, '.sandbox'), { recursive: true })
     writeFileSync(join(home, CODEX_WINDOWS_SANDBOX_MARKER), '{"version":5}', 'utf8')
+  }
+  if (over.sandboxJournal) {
+    // Форма — та же, что у настоящего журнала помощника на этой машине: раздача прав, запрет на
+    // подкаталог уже разрешённого корня, итог обхода и строка запуска команды.
+    mkdirSync(join(home, '.sandbox'), { recursive: true })
+    writeFileSync(
+      join(home, '.sandbox', 'sandbox.2026-09-03.log'),
+      [
+        '[2026-09-03T03:59:01Z] granting write ACE to C:\\projects\\sma\\.git for sandbox group',
+        '[2026-09-03T03:59:02Z] applied deny ACE to protect C:\\projects\\sma\\.git\\worktrees\\wt-1',
+        '[2026-09-03T03:59:02Z] setup refresh: processed 3 write roots (read roots delegated); errors=[]',
+        '[2026-09-03 05:59:03 codex.exe] START: git commit -m проба',
+      ].join('\n'),
+      'utf8',
+    )
+    writeFileSync(join(home, '.sandbox', 'deny_read_acl_state.json'), '{"principals":{}}', 'utf8')
   }
   if (over.accountProvisioned) {
     // ВЕСЬ след, а не один маркер: ровно те три каталога, что оставляет элевированная установка,
@@ -632,8 +650,11 @@ describe('копия — рабочее дерево: git-каталог сна�
     // «писаемый корень» — договор с чужим кодом, а не наше рассуждение о деревьях.
     expect(roots).toContain(samePlace(gitDir))
     expect(roots).toContain(samePlace(ownGitDir))
-    expect(roots).toHaveLength(2)
-    // …и оба ВНЕ копии — то есть песочница рабочего каталога их не покрывает, ради чего всё это.
+    // …и ХРАНИЛИЩЕ ОБЪЕКТОВ общего каталога: раздача прав идёт списком, а не деревом, и
+    // подкаталог, которого в списке нет, остаётся при прежних правах — на нём и падало чтение.
+    expect(roots).toContain(samePlace(join(gitDir, 'objects')))
+    expect(roots).toHaveLength(3)
+    // …и все ВНЕ копии — то есть песочница рабочего каталога их не покрывает, ради чего всё это.
     for (const r of roots) expect(r.startsWith(`${samePlace(workDir)}/`)).toBe(false)
   })
 
@@ -655,14 +676,14 @@ describe('копия — рабочее дерево: git-каталог сна�
     )
     expect(declared).toContain(samePlace(gitDir))
     expect(declared).toContain(samePlace(ownGitDir))
+    expect(declared).toContain(samePlace(join(gitDir, 'objects')))
   })
 
-  it('обычный клон: каталог всё равно назван ОДИН — оба вопроса git отвечают одно и то же', async () => {
+  it('обычный клон: два вопроса git отвечают одно и то же — корень один, и при нём его объекты', async () => {
     const { builtWith, workDir } = await runTick({ provisioned: true })
 
-    const roots = (builtWith[0].writableRoots as string[]) ?? []
-    expect(roots).toHaveLength(1)
-    expect(samePlace(roots[0])).toBe(`${samePlace(workDir)}/.git`)
+    const roots = ((builtWith[0].writableRoots as string[]) ?? []).map(samePlace)
+    expect(roots).toEqual([`${samePlace(workDir)}/.git`, `${samePlace(workDir)}/.git/objects`])
   })
 
   it('git молчит → корней нет, спавн идёт прежним, а промах лежит в журнале', async () => {
@@ -693,6 +714,54 @@ describe('копия — рабочее дерево: git-каталог сна�
     const { gitDir, ownGitDir } = copy as { gitDir: string; ownGitDir: string }
     expect(roots).toContain(samePlace(gitDir))
     expect(roots).toContain(samePlace(ownGitDir))
+    expect(roots).toContain(samePlace(join(gitDir, 'objects')))
+  })
+})
+
+// ═══════════ ЖУРНАЛ ПЕСОЧНИЦЫ ПЕРЕЖИВАЕТ ДОМ, В КОТОРОМ ЛЕЖАЛ ══════════════════════════════
+//
+// ЧТО БЫЛО СЛОМАНО. Помощник песочницы ведёт единственную запись о том, какие права он раздал и
+// какие запреты положил, — и ведёт её В ДОМЕ ЗАДАЧИ, который закрытие попытки выметает целиком.
+// То есть улику, по которой разбирают «почему у работника не получилось», уничтожал тот же
+// `finally`, что и мусор: разбор 03.09.2026 пришлось вести по дому СОСЕДНЕЙ задачи, случайно
+// пережившей свою, — от самой пробы не осталось ни строки, и обе догадки о причине
+// («не запрет ли чтения?») нечем было ни подтвердить, ни опровергнуть.
+//
+// Утверждения ниже — про продукт: настоящий тик, настоящая уборка, и вопрос ровно один —
+// доезжают ли строки песочницы до журнала, который никто не выметает.
+describe('дом задачи выметается — строки песочницы о правах остаются у оператора', () => {
+  it('строки про раздачу прав и запреты уходят в журнал демона ДО того, как дом убран', async () => {
+    const { logged, home } = await runTick({
+      provisioned: true,
+      worktreeCopy: true,
+      sandboxJournal: true,
+    })
+
+    const kept = logged.find((e) => e.type === 'task.codex_sandbox_journal')
+    expect(kept).toBeTruthy()
+    const lines = (kept?.lines as string[]) ?? []
+    expect(lines.some((l) => l.includes('granting write ACE'))).toBe(true)
+    expect(lines.some((l) => l.includes('applied deny ACE'))).toBe(true)
+    // Строка запуска команды — не про права, и в выжимку не идёт: журнал оператора читают глазами.
+    expect(lines.some((l) => l.includes('START: git commit'))).toBe(false)
+    // …а дома, из которого это снято, на диске уже нет — снимали ДО уборки, а не после.
+    expect(existsSync(home as string)).toBe(false)
+    expect(logged.some((e) => e.type === 'task.codex_home_discarded')).toBe(true)
+  })
+
+  it('счёт запретов чтения назван числом — вопрос «не запрет ли закрыл объекты» закрывается им', async () => {
+    const { logged } = await runTick({ provisioned: true, worktreeCopy: true, sandboxJournal: true })
+
+    const kept = logged.find((e) => e.type === 'task.codex_sandbox_journal')
+    // Ноль — это «запретов чтения не ставили вовсе», и это ответ, а не отсутствие ответа.
+    expect(kept?.denyReadPaths).toBe(0)
+  })
+
+  it('журнала нет вовсе (машина без песочницы) → и записи нет: шума на каждую попытку не будет', async () => {
+    const { logged } = await runTick({ provisioned: true, worktreeCopy: true })
+
+    expect(logged.some((e) => e.type === 'task.codex_sandbox_journal')).toBe(false)
+    expect(logged.some((e) => e.type === 'task.codex_home_discarded')).toBe(true)
   })
 })
 

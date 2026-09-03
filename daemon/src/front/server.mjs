@@ -124,7 +124,7 @@ import { closeWithWords } from '../queue/approval-store.mjs'
 import { CHAT_STAGES, proposeBreakdown, proposeWords, SNAPSHOT_EVENT_CAP, STATUS_LABELS } from './chat.mjs'
 import { createQuestions, findPhaseDir, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
 import { casTransition } from '../queue/cas.mjs'
-import { STAGE_COMMANDS, PHASE_RE, stageCommand } from '../policy/phase-cycle.mjs'
+import { STAGE_COMMANDS, PHASE_RE, stageCommand, stageTitle } from '../policy/phase-cycle.mjs'
 // КАКУЮ РОЛЬ ДЕРЖИТ РАБОТНИК — спрашивается у того же чистого словаря, у которого её спрашивает
 // применитель. Дверь считает ответ про НАБОР, названный на кнопке; свой список имён здесь стал
 // бы вторым мнением о том, кого эта кнопка включила.
@@ -907,6 +907,36 @@ function accountDirOf(config, workerId) {
   return typeof dir === 'string' && dir !== '' ? dir : null
 }
 
+/**
+ * stageTrace(row) → чем эта строка является в конвейере фаз: `{stage, stageWord, phase, command}`,
+ * или пустой объект, когда строка ступенью не является.
+ *
+ * СЛЕД, А НЕ ЗАГОЛОВОК. Заголовок карточки ступени говорит словами — какая фаза, какая ступень,
+ * чего она ждёт, — и командной строке там места нет. Но командная строка человеку нужна: ею
+ * ступень запускается руками, ею же она воспроизводится в терминале, когда карточка не
+ * объясняет. Поэтому она едет ВНУТРЬ карточки, отдельным полем, и карточка печатает её следом
+ * мелким шрифтом.
+ *
+ * ПЕРЕСТРАИВАЕТСЯ, А НЕ ЧИТАЕТСЯ СО СТРОКИ — тем же `stageCommand`, что и промпт работника.
+ * Дверь, показавшая одну команду, и работник, запустивший другую, — ровно тот класс, ради
+ * которого таблица команд когда-то и переехала в общий замороженный модуль.
+ *
+ * СЛОВА СТУПЕНИ ЗДЕСЬ НЕТ НАРОЧНО: она уже стоит в заголовке строки, который эта же дверь
+ * отдаёт рядом. Второе поле с тем же словом окно бы не нарисовало, а разойтись с заголовком
+ * оно бы могло — договор окна такие поля и ловит.
+ *
+ * @param {object|null} row
+ * @returns {{stage?:string, phase?:string, command?:string}}
+ */
+function stageTrace(row) {
+  const data = row && typeof row.data === 'object' && row.data !== null ? row.data : null
+  const stage = data ? data.stage : undefined
+  if (typeof stage !== 'string' || !TASK_STAGES.includes(stage)) return {}
+  const phase = data.phase === undefined || data.phase === null ? '' : String(data.phase)
+  const command = stageCommand(stage, phase)
+  return { stage, phase, ...(command ? { command } : {}) }
+}
+
 async function handleTask({ res, params, config, deps }) {
   const id = params.id
   const adapter = deps.adapter
@@ -1422,6 +1452,8 @@ async function handleTask({ res, params, config, deps }) {
       // вслепую: человек не видел, откуда переставляет. Число строки, а не выдуманное окном:
       // `null` значит «строка о нём не говорит», и тогда карточка молчит вместо нуля.
       priority: typeof row.priority === 'number' ? row.priority : null,
+      // ЧЕМ ЭТА СТУПЕНЬ ЗАПУСКАЕТСЯ — следом внутри карточки, а не заголовком над ней.
+      ...stageTrace(row),
       // ═══ СКОЛЬКО ХОДОВ ЭТОЙ РАБОТЕ ДАДУТ — СКАЗАНО ДО ЗАПУСКА, А НЕ ПОСЛЕ ══════
       //
       // Число считалось и раньше, но человеку его не показывали НИГДЕ: оно ехало на командную
@@ -2576,7 +2608,8 @@ async function handleReturn({ req, res, config, deps }) {
       id: `S-${clock()}`,
       source: 'return',
       ...ownProject,
-      title: stageCommand(toStage, phase),
+      // Словами, а не командной строкой, — тем же правилом, что и у двери диспатча.
+      title: stageTitle(toStage, phase, phaseNameFor({ config, deps, phase })),
       lane: STAGE_LANE,
       data: { kind: stageKind(toStage), stage: toStage, phase },
       note,
@@ -5130,6 +5163,12 @@ async function handleSearch({ res, query, deps }) {
 //
 // NO PATH TO AUTO-MODE EXISTS, BY CONSTRUCTION — the guard moved with the dictionary and is
 // applied inside `stageCommand`, so neither caller can assemble a command around it.
+//
+// И ПОТОМУ ЖЕ СТРОКА НАЗЫВАЕТСЯ СЛОВАМИ. Команду с этой строки не читает никто — ни работник,
+// ни тик, — а человек с неё читает всё: карточка доски, столбик «сделано», история работника и
+// журнал печатают ровно её заголовок. Дверь пишет туда `stageTitle`: фаза по имени, ступень
+// словом, и чего она ждёт. Команда попадает человеку на глаза одним местом — следом внутри
+// карточки задачи (`stageTrace`), — и перестраивается там тем же `stageCommand`.
 
 /** Re-exported for the tests and readers that have always asked this module for the table. */
 export { STAGE_COMMANDS }
@@ -5377,9 +5416,16 @@ async function rowById(deps, taskId) {
 }
 
 /**
- * stageHomeRefusal({config, deps, phase}) → предложение, которым дверь ОТКАЗЫВАЕТ поставить
- * ступень, или null, если ставить есть куда.
+ * stageHome({config, deps, phase}) → ДВА ОТВЕТА ОДНОГО ЧТЕНИЯ: `refusal` — предложение, которым
+ * дверь ОТКАЗЫВАЕТ поставить ступень (null, если ставить есть куда), и `name` — имя этой фазы
+ * словами (null, когда спросить было не у кого).
  *
+ * ПОЧЕМУ ДВА, А НЕ ДВЕ ФУНКЦИИ. Оба ответа читаются из ОДНОЙ карточки фазы, и карточка эта
+ * стоит недёшево: каталог фазы, роадмап, припаркованные вопросы. Второе такое же чтение ради
+ * одного имени было бы вторым обходом диска на каждое нажатие — и вторым мнением о том, есть
+ * ли у фазы дом, в тот день, когда одно из двух чтений отстанет от другого.
+ *
+
  * ОТКАЗ ДО РАСХОДА, А НЕ ПОСЛЕ. Ступень фазы работает в ДОМЕ ПЛАНИРОВАНИЯ своего проекта —
  * во втором его адресе. Когда адреса нет или названной фазы в нём нет, работник узнавал об
  * этом изнутри копии: замерено 31.08 — ступень plan фазы 21 получила копию продукта, где
@@ -5394,7 +5440,7 @@ async function rowById(deps, taskId) {
  * и «этого нет» разные предложения, и отказывать по первому значило бы закрыть дверь на
  * установке, где фазы просто лежат в обслуживаемом дереве.
  */
-function stageHomeRefusal({ config, deps, phase }) {
+function stageHome({ config, deps, phase }) {
   const stamped = doorProjectEntry(config)
   const entry = stamped ? projectEntry(config, stamped.id) : null
   const dir = (entry ? planningHomeOf(entry) : null) ?? phaseCycleDir(deps)
@@ -5406,20 +5452,56 @@ function stageHomeRefusal({ config, deps, phase }) {
   // СМОТРЕТЬ НЕГДЕ ИЛИ НЕЧЕМ — значит НЕ СМОТРЕЛИ, и отказывать не на что: «я не заглядывал» и
   // «этого там нет» разные предложения, а отказ по первому закрыл бы дверь на всякой установке,
   // где проекции фаз просто не подключено.
-  if (!dir || typeof deps.derivePhaseCard !== 'function') return null
+  if (!dir || typeof deps.derivePhaseCard !== 'function') return SILENT_HOME
   let card = null
   try {
     card = deps.derivePhaseCard({ projectDir: dir, phaseId: phase, fsImpl: deps.fsImpl })
   } catch {
-    return null // проекция не ответила — это не доказательство отсутствия фазы
+    return SILENT_HOME // проекция не ответила — это не доказательство отсутствия фазы
   }
-  if (card) return null
-  if (named) return `фазы "${phase}" нет в доме планирования ${who}: каталога .planning/phases с этой фазой там нет`
+  // ИМЯ ФАЗЫ БЕРЁТСЯ У ТОЙ ЖЕ КАРТОЧКИ, что и ответ «дом есть»: карточка — единственное место
+  // продукта, где фаза названа словами, и своё правило именования здесь разошлось бы с экраном.
+  if (card) return { refusal: null, name: typeof card.name === 'string' && card.name.trim() !== '' ? card.name.trim() : null }
+  if (named) {
+    return { refusal: `фазы "${phase}" нет в доме планирования ${who}: каталога .planning/phases с этой фазой там нет`, name: null }
+  }
   const looked = codeTreeOf(entry) ? 'дерево кода' : 'обслуживаемое демоном дерево'
-  return (
-    `фазы "${phase}" нет у ${who}, а ВТОРОЙ АДРЕС — дом планирования — не задан: смотрели в ${looked}. ` +
-    `Назовите каталог, в котором лежит .planning этого продукта`
-  )
+  return {
+    refusal:
+      `фазы "${phase}" нет у ${who}, а ВТОРОЙ АДРЕС — дом планирования — не задан: смотрели в ${looked}. ` +
+      `Назовите каталог, в котором лежит .planning этого продукта`,
+    name: null,
+  }
+}
+
+/** «Смотреть было негде или нечем»: ни отказа, ни имени — и оба молчания сказаны одним словом. */
+const SILENT_HOME = Object.freeze({ refusal: null, name: null })
+
+/**
+ * phaseNameFor({config, deps, phase}) → имя фазы словами, или null.
+ *
+ * Тот же вопрос и то же чтение, что у `stageHome`, — для дверей, которым отказывать не за что:
+ * они ставят ступень по строке, которая УЖЕ существует, и дом у неё есть по построению.
+ */
+function phaseNameFor({ config, deps, phase }) {
+  return stageHome({ config, deps, phase }).name
+}
+
+/**
+ * ЗАГОЛОВОК СТУПЕНИ, ВОЗВРАЩАЮЩЕЙСЯ В ОЧЕРЕДЬ, — её собственный, когда он у неё есть.
+ *
+ * Припаркованный раунд, разбуженный ответом человека, — ТА ЖЕ работа: переименовывать её на
+ * обратном пути не за что, и второе чтение карточки фазы ради имени, которое уже написано на
+ * строке, было бы обходом диска на каждый ответ.
+ *
+ * ЕДИНСТВЕННОЕ ИСКЛЮЧЕНИЕ — строка, поставленная до того, как заголовки стали словами: она
+ * несёт командную строку, и воскрешать её нельзя. Такая переименовывается при первом же
+ * возвращении — фазу она называет номером, потому что имени здесь спросить не у кого.
+ */
+function stageTitleAgain(row, stage, phase) {
+  const own = typeof (row && row.title) === 'string' ? row.title.trim() : ''
+  if (own !== '' && !own.startsWith('/')) return own
+  return stageTitle(stage, phase, null)
 }
 
 /**
@@ -5465,8 +5547,8 @@ async function handlePhaseStage({ req, res, config, deps }) {
   }
 
   // ЕСТЬ ЛИ У ЭТОЙ ФАЗЫ ДОМ — спрошено ДО постановки, потому что цена ошибки платится ПОСЛЕ.
-  const homeless = stageHomeRefusal({ config, deps, phase })
-  if (homeless) return send409(res, homeless)
+  const home = stageHome({ config, deps, phase })
+  if (home.refusal) return send409(res, home.refusal)
 
   // И ТОЛЬКО ПОТОМ — ВОРОТА ЧЕРТЕЖА. Ровно одна ступень их проходит, и ровно поэтому они
   // стоят здесь, в двери диспатча: другого пути поставить исполнение фазы у продукта нет,
@@ -5482,10 +5564,12 @@ async function handlePhaseStage({ req, res, config, deps }) {
     source: 'roster',
     // A stage is work OF a project, and which one is known only here — see doorProject.
     ...doorProject(config),
-    // THE COMMAND RIDES AS THE TASK'S OWN TEXT. It is a constant of this file with one bounded
-    // substitution — never anything a person composed — and it is the whole instruction: what
-    // the stage should do about the phase is written down in the workflow, not in this door.
-    title: stageCommand(stage, phase),
+    // ЗАГОЛОВОК — СЛОВА, А НЕ КОМАНДНАЯ СТРОКА. Пока дверь писала сюда `stageCommand`, в
+    // столбике «ждут вас» стояла карточка `/sma-discuss-phase 21 --batch --text`: человек не
+    // мог прочитать с неё ни фазы, ни ступени, ни того, чего от него хотят. Команда никуда не
+    // делась — её перестраивает `stageCommand` там, где она нужна (промпт работника, след на
+    // карточке), и ровно поэтому на строке ей делать нечего.
+    title: stageTitle(stage, phase, home.name),
     lane: STAGE_LANE,
     data: { kind: stageKind(stage), stage, phase },
     ...(b.priority !== undefined ? { priority: b.priority } : {}),
@@ -5933,7 +6017,7 @@ async function wakeParkedRound(res, deps, { taskId, phase }) {
     // The round that was parked is the SAME work; it comes back owned by whoever owned it —
     // see inheritedProject. The row this door already read is where that is written.
     ...inheritedProject(row ? [row] : []),
-    title: stageCommand(stage, rowPhase),
+    title: stageTitleAgain(row, stage, rowPhase),
     lane: STAGE_LANE,
     data: { kind: stageKind(stage), stage, phase: rowPhase },
     attempt: attempt + 1,

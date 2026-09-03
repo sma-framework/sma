@@ -40,6 +40,7 @@ import { createFrontServer, STAGE_COMMANDS, PENDING_ROUTES } from '../src/front/
 import { derivePhaseIndex, derivePhaseCard } from '../src/front/state.mjs'
 import { STAGE_ARTIFACTS, CHECKPOINT_SUFFIX, EXEC_CHECKPOINT_SUFFIX } from '../src/front/questions.mjs'
 import { createBuildArgs } from '../src/runner/build-args.mjs'
+import { stageCommand } from '../src/policy/phase-cycle.mjs'
 
 const TOKEN = 'd'.repeat(64)
 const PROJECT = '/proj'
@@ -271,7 +272,7 @@ function mkFront(deps: any = {}) {
 // ═══════════════════════════════ THE STAGE DOOR ═══════════════════════════════
 
 describe('POST /api/phase/stage — A STAGE IS A TASK, NEVER A REQUEST', () => {
-  it('enqueues a paperwork task whose envelope names the stage and whose text is the command', async () => {
+  it('enqueues a paperwork task whose envelope names the stage and whose text names it in WORDS', async () => {
     const { front, enqueued, emitted } = mkFront()
     const res = await call(front, { method: 'POST', url: '/api/phase/stage', body: { phase: '12', stage: 'discuss' } })
 
@@ -280,7 +281,9 @@ describe('POST /api/phase/stage — A STAGE IS A TASK, NEVER A REQUEST', () => {
     const [task] = enqueued
     expect(task.lane).toBe('paperwork')
     expect(task.data).toEqual({ kind: 'document', stage: 'discuss', phase: '12' })
-    expect(task.title.startsWith('/sma-discuss-phase')).toBe(true)
+    // ЗАГОЛОВОК — СЛОВА, А НЕ КОМАНДНАЯ СТРОКА: фаза, ступень своим словом и чего она ждёт.
+    expect(task.title.startsWith('/')).toBe(false)
+    expect(task.title).toContain('обсуждение')
     expect(task.title).toContain('12')
     // the hint names the identifiers and nothing about what the stage will do
     expect(emitted).toContainEqual({ event: 'phase.stage', taskId: task.id, phase: '12', stage: 'discuss' })
@@ -291,7 +294,8 @@ describe('POST /api/phase/stage — A STAGE IS A TASK, NEVER A REQUEST', () => {
     const { front, enqueued } = mkFront()
     await call(front, { method: 'POST', url: '/api/phase/stage', body: { phase: '12', stage: 'execute' } })
     expect(enqueued[0].data).toEqual({ kind: 'code', stage: 'execute', phase: '12' })
-    expect(enqueued[0].title.startsWith('/sma-execute-phase')).toBe(true)
+    expect(enqueued[0].title.startsWith('/')).toBe(false)
+    expect(enqueued[0].title).toContain('исполнение')
   })
 
   it('NO PATH TO AUTO-MODE: neither the frozen dictionary nor an assembled command automates', async () => {
@@ -841,7 +845,10 @@ describe('POST /api/decision/answer — THE ANSWER WAKES THE ROUND, NOT THE KEYS
       attempt: 3, // the SAME round, one attempt further on — never a new row
       data: { kind: 'document', stage: 'discuss', phase: '14' },
     })
-    expect(enqueued[0].title).toBe('/sma-discuss-phase 14 --batch --text')
+    // Строка возвращается в очередь названной СЛОВАМИ — командной строки на ней нет и не было
+    // с тех пор, как заголовок ступени стал предложением. Команду перестроит работник.
+    expect(enqueued[0].title.startsWith('/')).toBe(false)
+    expect(enqueued[0].title).toContain('обсуждение')
     expect(emitted).toContainEqual({ event: 'discussion.updated', phase: '14' })
   })
 
@@ -881,8 +888,11 @@ describe('POST /api/decision/answer — THE ANSWER WAKES THE ROUND, NOT THE KEYS
     })
 
     expect(res.statusCode).toBe(200)
-    // byte-identical to the string that STARTS an execute stage — the door carries no position
-    expect(enqueued[0].title).toBe('/sma-execute-phase 15')
+    // The command the woken round will be RUN with is byte-identical to the one that STARTS an
+    // execute stage — the door carries no position. Rebuilt from the envelope, as the worker
+    // rebuilds it; the row itself is named in words.
+    expect(stageCommand(enqueued[0].data.stage, enqueued[0].data.phase)).toBe('/sma-execute-phase 15')
+    expect(enqueued[0].title.startsWith('/')).toBe(false)
     expect(enqueued[0].data).toEqual({ kind: 'code', stage: 'execute', phase: '15' })
     expect(JSON.stringify(enqueued)).not.toContain('15-03')
     // and the position block is still in the artefact, untouched by the write
@@ -1270,10 +1280,10 @@ describe('a question carries the task id of the round it is blocking', () => {
 // ════════ the door and the worker cannot end up with different commands ════════
 
 describe('the command the door writes down is the command the worker is given', () => {
-  it('byte for byte, for every stage of the cycle', async () => {
-    // The door writes the command onto the task; the runner REBUILDS it from the frozen
-    // dictionary rather than reading the title. That is only safe while the two agree — so the
-    // agreement is measured here rather than intended in a comment.
+  it('byte for byte, for every stage of the cycle — and the title is words, not the command', async () => {
+    // Дверь пишет на строку СЛОВА, а работник получает КОМАНДУ, перестроенную из замороженной
+    // таблицы. Ровно поэтому здесь две проверки, а не одна: промпт равен команде ступени
+    // (провод цел), и он НЕ равен заголовку (заголовок больше не командная строка).
     const buildArgs: any = createBuildArgs({
       config: { workers: [{ id: 'w', provider: 'claude', account: { name: 'a', configDir: '/a', spendLogsDir: '/a/s' } }] },
       env: {},
@@ -1285,7 +1295,8 @@ describe('the command the door writes down is the command the worker is given', 
       await call(front, { method: 'POST', url: '/api/phase/stage', body: { phase: '12', stage } })
       const [row] = enqueued
       const spec = buildArgs(row, { workerId: 'w', provider: 'claude' })
-      expect(spec.prompt, stage).toBe(row.title)
+      expect(spec.prompt, stage).toBe(stageCommand(stage, '12'))
+      expect(spec.prompt, stage).not.toBe(row.title)
     }
   })
 })

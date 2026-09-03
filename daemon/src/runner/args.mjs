@@ -78,7 +78,16 @@
  * at the top take an injectable `fsImpl`, so tests touch no real home. Zero deps.
  */
 
-import { copyFileSync as fsCopyFileSync, cpSync as fsCpSync, existsSync as fsExistsSync, mkdirSync as fsMkdirSync, rmSync as fsRmSync } from 'node:fs'
+import {
+  copyFileSync as fsCopyFileSync,
+  cpSync as fsCpSync,
+  existsSync as fsExistsSync,
+  mkdirSync as fsMkdirSync,
+  readdirSync as fsReaddirSync,
+  readFileSync as fsReadFileSync,
+  rmSync as fsRmSync,
+  writeFileSync as fsWriteFileSync,
+} from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
 
 import { atomicWriteJson, atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
@@ -639,7 +648,9 @@ export function codexSandboxFor(allowedTools) {
  * «writing is blocked by read-only sandbox» и не могла запустить даже `rg`. Десять минут
  * подписки, ноль файлов, ноль коммитов — и ни одной строки нигде, которая назвала бы причину.
  */
-export const CODEX_WINDOWS_SANDBOX_MARKER = join('.sandbox', 'setup_marker.json')
+export const CODEX_SANDBOX_DIR = '.sandbox'
+
+export const CODEX_WINDOWS_SANDBOX_MARKER = join(CODEX_SANDBOX_DIR, 'setup_marker.json')
 
 /**
  * Каталог, внутри которого живут дома задач, — ОДНО написание на три читателя: тот, кто дом
@@ -706,6 +717,110 @@ export function discardCodexHome({ home, taskId, fsImpl } = {}) {
   } catch (err) {
     return { removed: false, reason: String((err && err.message) || err) }
   }
+}
+
+/** Снимок запретов чтения, который помощник песочницы держит в доме. */
+const CODEX_SANDBOX_DENY_READ_STATE = 'deny_read_acl_state.json'
+
+/** Сколько строк журнала уносится с собой: журнал длинный, а решают в нём строки про права. */
+const CODEX_SANDBOX_JOURNAL_LINES = 24
+
+/** Строки, ради которых журнал вообще читают: раздача прав, запреты и ошибки помощника. */
+const CODEX_SANDBOX_JOURNAL_RE = /ACE|read ACL|errors=\[|denied|failed/i
+
+/**
+ * Отметка времени в начале строки — то единственное, чем ПОВТОР отличается от первого раза.
+ * Помощник пишет своё двумя штампами сразу («[2026-09-03T…+00:00]» и «[2026-09-03 … codex.exe]»),
+ * поэтому снимается ведущая скобка целиком, какой бы из двух она ни была.
+ */
+const CODEX_SANDBOX_JOURNAL_STAMP_RE = /^\[[^\]]*\]\s*/
+
+/**
+ * readCodexSandboxJournal({home, fsImpl}) → `{lines, denyReadPaths, files}` — то, что помощник
+ * песочницы записал О ПРАВАХ этой попытки, снятое ДО того, как дом задачи уберут.
+ *
+ * ЗАЧЕМ ЭТО ВООБЩЕ ЕСТЬ. Журнал песочницы — единственное место, где написано, какие права были
+ * розданы и какие запреты положены; он лежит В ДОМЕ ЗАДАЧИ, а дом уходит вместе с попыткой
+ * (discardCodexHome). То есть ровно та улика, по которой разбирают «почему у работника не
+ * получилось», уничтожалась закрытием попытки — и разбор 03.09.2026 пришлось вести по дому
+ * СОСЕДНЕЙ задачи, случайно пережившей свою. Здесь строки переезжают в журнал демона, который
+ * никто не выметает.
+ *
+ * `denyReadPaths` — СЧЁТ ЗАПРЕТОВ ЧТЕНИЯ, а не их список: он отвечает на вопрос, который в этом
+ * доме задавали дважды («не запрет ли чтения закрыл объекты?»), и отвечает числом, которое можно
+ * прочитать в журнале, не открывая ничего. Ноль — это «запретов чтения не ставили вовсе».
+ *
+ * `lines` — ПЕРВЫЙ раз каждой строки, а не последние `limit` строк подряд: раздача прав пишется
+ * однажды, на подъёме песочницы, а повтор на каждую команду сессии вытеснял её из выжимки
+ * целиком (см. замер ниже по коду).
+ *
+ * НИКОГДА НЕ БРОСАЕТ И НИЧЕГО НЕ ТРЕБУЕТ: зовут это на закрытии попытки, и нечитаемый журнал —
+ * пустой ответ, а не второй провал поверх первого.
+ *
+ * @param {{home?:string, fsImpl?:object, limit?:number}} [args]
+ * @returns {{lines:string[], denyReadPaths:(number|null), files:string[]}}
+ */
+export function readCodexSandboxJournal({ home, fsImpl, limit = CODEX_SANDBOX_JOURNAL_LINES } = {}) {
+  const empty = { lines: [], denyReadPaths: null, files: [] }
+  if (typeof home !== 'string' || home.trim() === '') return empty
+  const dir = join(home.trim(), CODEX_SANDBOX_DIR)
+  const readdirFn = (fsImpl && fsImpl.readdirSync) || fsReaddirSync
+  const readFn = (fsImpl && fsImpl.readFileSync) || fsReadFileSync
+
+  let entries = []
+  try {
+    entries = readdirFn(dir).map((e) => String((e && e.name) || e))
+  } catch {
+    return empty
+  }
+
+  const files = entries.filter((n) => n.startsWith('sandbox.') && n.endsWith('.log')).sort()
+  const lines = []
+  for (const name of files) {
+    let text = ''
+    try {
+      text = String(readFn(join(dir, name), 'utf8') || '')
+    } catch {
+      continue
+    }
+    for (const line of text.split(/\r?\n/)) {
+      if (line.trim() !== '' && CODEX_SANDBOX_JOURNAL_RE.test(line)) lines.push(line.trim())
+    }
+  }
+
+  let denyReadPaths = null
+  try {
+    const state = JSON.parse(String(readFn(join(dir, CODEX_SANDBOX_DENY_READ_STATE), 'utf8') || '{}'))
+    const principals = (state && state.principals) || {}
+    // Запреты лежат по принципалам; считается ровно то, о чём спрашивают, — сколько ПУТЕЙ закрыто.
+    denyReadPaths = Object.keys(principals).reduce((sum, who) => {
+      const paths = principals[who]
+      return sum + (Array.isArray(paths) ? paths.length : Object.keys(paths || {}).length)
+    }, 0)
+  } catch {
+    /* снимка нет или он нечитаем — это «неизвестно», а не «нуль» */
+  }
+
+  // ── ПЕРВЫЙ РАЗ КАЖДОЙ СТРОКИ, А НЕ ПОСЛЕДНИЕ N СТРОК ПОДРЯД ────────────────────
+  //
+  // Замерено на настоящем журнале этой машины (309 строк, 118 из них подходят фильтру):
+  // раздача прав и запреты пишутся ОДИН раз, на подъёме песочницы, а дальше каждая команда
+  // сессии добавляет свои «read ACL run completed» и «setup refresh: … errors=[]». Хвост из
+  // последних двух десятков — это ровно они: `granting write ACE` по корням и
+  // `applied deny ACE to protect …` из выжимки выпадали целиком, то есть уносилось всё, кроме
+  // того единственного, ради чего журнал и снимают. Повтор ничего не добавляет к первому разу,
+  // поэтому одинаковые строки складываются в одну (сравниваются БЕЗ отметки времени — иначе
+  // одинаковыми не окажутся никогда), и берётся начало, а не конец.
+  const seen = new Set()
+  const distinct = []
+  for (const line of lines) {
+    const key = line.replace(CODEX_SANDBOX_JOURNAL_STAMP_RE, '')
+    if (seen.has(key)) continue
+    seen.add(key)
+    distinct.push(line)
+  }
+  const kept = Number.isFinite(limit) && limit > 0 ? distinct.slice(0, limit) : distinct
+  return { lines: kept, denyReadPaths, files }
 }
 
 /** Песочница, которую эта машина обещала, но не исполнит — названа, чтобы отказ был словами. */
@@ -1043,6 +1158,91 @@ export function codexGitWritableRoot({ workDir, gitCommonDir } = {}) {
   return resolvePath(workDir, gitCommonDir.trim())
 }
 
+/** Имя хранилища объектов внутри общего каталога git — одно написание на всех читателей. */
+const GIT_OBJECTS_DIR = 'objects'
+
+/**
+ * codexGitObjectsRoot(commonDir) → ХРАНИЛИЩЕ ОБЪЕКТОВ общего каталога git, названное ОТДЕЛЬНОЙ
+ * строкой, либо `null`, когда общего каталога нет.
+ *
+ * ЗАЧЕМ ОТДЕЛЬНАЯ СТРОКА ДЛЯ ПОДКАТАЛОГА УЖЕ НАЗВАННОГО КОРНЯ. По той же причине, по какой рядом
+ * называется каталог рабочего дерева: помощник установки на Windows раздаёт права ПОШТУЧНО, по
+ * каждому названному пути, а не по дереву. Замерено 03.09.2026 живой пробой: с общим каталогом и
+ * каталогом копии в корнях ЗАПИСЬ индекса пошла, а `git commit` трижды подряд ответил
+ * `error: invalid object 100644 <хеш> for <файл>` — то есть упёрся в ЧТЕНИЕ уже лежащих объектов
+ * (`.github/workflows/…`, `assets/…`), которых сессия не трогала; четвёртая попытка прошла, потому
+ * что к ней те же содержимые уже были переписаны заново рукой самой сессии. Каталог, который
+ * никто не назвал, получает права от родителя только там, где раздача идёт деревом; здесь она
+ * идёт списком, и подкаталог в этом списке отсутствовал.
+ *
+ * ЧЕГО ЗДЕСЬ НЕТ И ПОЧЕМУ. `packed-refs` — ФАЙЛ, а корень песочницы — каталог; ссылки в той же
+ * пробе читались, и называть файл наравне с каталогами значило бы лечить то, что не болело.
+ * `deny_read` тоже ни при чём: снимок запретов чтения (`.sandbox/deny_read_acl_state.json`) во
+ * всех домах этой машины пуст — ни одного пути, и ни одной строки про `objects/` в журнале
+ * песочницы нет вовсе.
+ *
+ * @param {string|null} [commonDir]
+ * @returns {string|null}
+ */
+export function codexGitObjectsRoot(commonDir) {
+  if (typeof commonDir !== 'string' || commonDir.trim() === '') return null
+  return join(commonDir.trim(), GIT_OBJECTS_DIR)
+}
+
+/** Пустой список исключений git, лежащий в доме ЗАДАЧИ, — одно имя на посев и на окружение. */
+export const CODEX_GIT_EXCLUDES_FILE = 'git-excludes'
+
+/** Что в нём написано: файл существует нарочно, поэтому он говорит о себе сам. */
+const CODEX_GIT_EXCLUDES_TEXT =
+  '# SMA — пустой список исключений git для сессии в песочнице.\n' +
+  '# Стоит здесь, чтобы git не ходил за ним в профиль пользователя, закрытый песочницей.\n'
+
+/**
+ * codexGitExcludesFor(home) → путь к тому файлу, ОДНИМ выражением на посев и на окружение.
+ *
+ * @param {string} home
+ * @returns {string}
+ */
+export function codexGitExcludesFor(home) {
+  return join(codexTempFor(home), CODEX_GIT_EXCLUDES_FILE)
+}
+
+/**
+ * codexGitEnv({home}) → ключи окружения, которыми git СЕССИИ перестаёт ходить в профиль
+ * пользователя за списком исключений.
+ *
+ * ЧТО ЗАМЕРЕНО 03.09.2026. Каждая команда сессии в песочнице несла в выводе строку
+ * `warning: unable to access '~/.config/git/ignore': Permission denied` — на КАЖДУЮ команду, а не
+ * однажды. Причина не в git и не в запрете чтения: помощник песочницы прячет профиль
+ * пользователя от заведённых им ограниченных пользователей (журнал: `hide users: …current user
+ * profile dir`), а список чтения раздаётся только по тем путям, что помощник знает сам. Git
+ * спрашивает `$XDG_CONFIG_HOME/git/ignore` ровно тогда, когда `core.excludesFile` НЕ задан, и
+ * получает отказ вместо «нет такого файла» — то есть предупреждение, а не тишину.
+ *
+ * ПОЭТОМУ ФАЙЛ НАЗЫВАЕТСЯ, И НАЗЫВАЕТСЯ В ДОМЕ ЗАДАЧИ. `core.excludesFile` уезжает переопределением
+ * окружения (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`) и указывает во ВРЕМЕННЫЙ
+ * каталог этой задачи — тот самый, что песочница открывает на запись и потому наверняка читает.
+ * Файл кладёт посев (seedCodexHome): «названо в окружении и не сделано на диске» — уже случавшаяся
+ * здесь ошибка.
+ *
+ * ПОЧЕМУ НЕ `GIT_CONFIG_NOSYSTEM`. Он выключил бы СИСТЕМНЫЙ конфиг целиком, а на Windows там живут
+ * `core.autocrlf`, фильтры и помощник учётных данных: предупреждение ушло бы, а вместе с ним
+ * изменилось бы то, ЧТО работник кладёт в коммит. Лечится ровно та строка, которая болит.
+ *
+ * ДОМА НЕТ — КЛЮЧЕЙ НЕТ: пустая карта складывается в окружение без следа, и спавн выходит прежним.
+ *
+ * @param {{home?:string}} [args]
+ * @returns {object}
+ */
+export function codexGitEnv({ home } = {}) {
+  if (typeof home !== 'string' || home.trim() === '') return {}
+  return {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'core.excludesFile',
+    GIT_CONFIG_VALUE_0: codexGitExcludesFor(home.trim()),
+  }
+}
+
 /**
  * codexSandboxDeniesGitDir({platform, provider}) → ПРАВДА ЛИ, ЧТО СЕССИЯ ЭТОГО РАБОТНИКА НЕ
  * СМОЖЕТ СДЕЛАТЬ КОММИТ САМА, сколько бы каталогов ей ни назвали писаемыми.
@@ -1133,9 +1333,10 @@ function tomlString(value) {
  *     Корней нет — секции нет, и текст выходит в точности прежним: обычный клон, чей `.git`
  *     лежит ВНУТРИ рабочего каталога, ничего сюда не приносит.
  *
- *     КАТАЛОГОВ ЗДЕСЬ БЫВАЕТ ДВА, И ЭТО НЕ ПОВТОР: общий (`<главный>/.git`) и свой каталог
+ *     КАТАЛОГОВ ЗДЕСЬ НЕСКОЛЬКО, И ЭТО НЕ ПОВТОР: общий (`<главный>/.git`), его хранилище
+ *     объектов (`<общий>/objects`, откуда читаются уже лежащие содержимые) и свой каталог
  *     рабочего дерева (`<общий>/worktrees/<имя>`), в котором лежат индекс и `HEAD` копии. Тик
- *     называет оба; список приходит уже сведённым, и у обычного клона он остаётся одним.
+ *     называет все; список приходит уже сведённым, и у обычного клона в нём остаётся два.
  *
  *     И ЭТОГО ВСЁ РАВНО НЕ ХВАТАЕТ НА WINDOWS — замерено 03.09.2026. Помощник установки кладёт
  *     явный запрет на служебные каталоги git ПОСЛЕ того, как раздал право по этим корням, а
@@ -1260,6 +1461,22 @@ export function seedCodexHome({ home, authSources, sandboxSource, writableRoots,
   const mkdirFn = (fsImpl && fsImpl.mkdirSync) || fsMkdirSync
   mkdirFn(tempDir, { recursive: true })
 
+  // ── И ПУСТОЙ СПИСОК ИСКЛЮЧЕНИЙ GIT — ТУДА ЖЕ, ПО ТОЙ ЖЕ ПРИЧИНЕ ────────────────
+  //
+  // Окружение спавна называет этот файл (`core.excludesFile`, см. codexGitEnv), чтобы git сессии
+  // не ходил за списком исключений в профиль пользователя: песочница прячет профиль от своих
+  // ограниченных пользователей, и каждая команда работника несла в выводе отказ доступа вместо
+  // тишины. Названный и не сделанный файл был бы той же ошибкой, что каталог выше, — только
+  // тише: git не пожаловался бы, а просто вернулся бы к профилю.
+  const gitExcludesFile = join(tempDir, CODEX_GIT_EXCLUDES_FILE)
+  try {
+    const writeFn = (fsImpl && fsImpl.writeFileSync) || fsWriteFileSync
+    writeFn(gitExcludesFile, CODEX_GIT_EXCLUDES_TEXT, 'utf8')
+  } catch {
+    // Файла нет — git спросит его, получит «нет такого файла» и промолчит: это худший исход
+    // здесь, и он всё равно тише прежнего. Спавн из-за списка исключений не отменяется.
+  }
+
   const sandboxSeeded = []
   const sandboxFrom = typeof sandboxSource === 'string' && sandboxSource.trim() !== '' ? sandboxSource : null
   if (sandboxFrom && codexSandboxTrailWhole({ home: sandboxFrom, fsImpl }).whole) {
@@ -1314,6 +1531,8 @@ export function seedCodexHome({ home, authSources, sandboxSource, writableRoots,
     writableRoots: roots,
     // Куда ушёл Temp этой задачи — тем же именем, каким его назвало окружение спавна.
     tempDir,
+    // …и лежащий в нём пустой список исключений git, названный тем же выражением.
+    gitExcludesFile,
   }
 }
 
@@ -1382,6 +1601,13 @@ export function buildAccountEnv({
     const taskTemp = codexTempFor(out.CODEX_HOME)
     out.TEMP = taskTemp
     out.TMP = taskTemp
+    // ── И СПИСОК ИСКЛЮЧЕНИЙ GIT — В ТОТ ЖЕ ДОМ ──────────────────────────────────
+    //
+    // Без этого git сессии спрашивает его в профиле пользователя, который песочница прячет от
+    // своих ограниченных пользователей, и КАЖДАЯ команда работника несёт в выводе
+    // `warning: unable to access '~/.config/git/ignore': Permission denied`. Файл кладёт посев
+    // (seedCodexHome) в тот же временный каталог, что назван строкой выше. См. codexGitEnv.
+    Object.assign(out, codexGitEnv({ home: out.CODEX_HOME }))
   } else {
     out.CLAUDE_CONFIG_DIR = account.configDir
     if (account.oauthTokenEnv) {
