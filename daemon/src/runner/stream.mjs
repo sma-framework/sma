@@ -31,8 +31,9 @@
  *     "rate_limit_info": {"status":"allowed","resetsAt":1786539600,
  *                         "rateLimitType":"five_hour","isUsingOverage":false}
  *
- * The top level of that object carries NO fraction of the window spent — `utilization` is null
- * there on every real frame — and the window model once filled the hole with an estimate from
+ * The top level of that object carries no fraction of the window spent on an ordinary frame —
+ * it appears there only on the warning frames, beside the window they warn about, which is far
+ * too rarely to keep a screen current — and the window model once filled the hole with an estimate from
  * this daemon's own token accounting, which read near zero on a subscription mostly spent by a
  * person's own terminal sessions. That estimate is gone.
  *
@@ -118,6 +119,19 @@ function epochMs(v) {
  * vendor's coat, and a refusal is the one thing that must always be his.
  *
  * A reading with no reset time is dropped: the store cannot age what it cannot date.
+ *
+ * THE FRACTION IS PASSED THROUGH IN THE UNITS THE WIRE USED, and it is the window model
+ * (policy/windows.mjs, `utilizationFraction`) that decides what scale those units are in. This
+ * file states what the frame said and never re-interprets it, so the one decision about scale
+ * lives in one place and is journalled on the day it has to act.
+ *
+ * AND THE SCALE IS NOW SETTLED BY EVIDENCE, not by the documentation it was read out of. Three
+ * frames lifted verbatim off this machine's own stream logs (29.08–30.08.2026) stand as
+ * `__tests__/fixtures/claude-stream-rate-limit-unified.ndjson`, and across every rate-limit
+ * frame those logs hold, the unified fractions run 0…1 inclusive and never once above it — a
+ * refused five-hour window reads exactly `1`. So `0.18` is 18 % and not 18, the guard
+ * downstream is a guard and not a translation, and the day it fires is the day the wire
+ * changed shape under us.
  */
 function windowReadings(obj, info, named) {
   const unified =
