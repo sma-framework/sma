@@ -197,6 +197,7 @@ import {
   codexWorkspaceWriteOutlook,
   codexSandboxRefusal,
   codexGitWritableRoot,
+  codexSandboxDeniesGitDir,
 } from './runner/args.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
@@ -397,26 +398,39 @@ function gateSpawnOptions(deps, config, task) {
  * репозиторий. Ответ приводится к абсолютному одним выражением (codexGitWritableRoot), тем же
  * на обеих дверях спавна.
  *
+ * СПРАШИВАЕТСЯ ДВАЖДЫ, И ЭТО НЕ ПОВТОР. `--git-common-dir` называет ОБЩИЙ каталог (`<главный>/
+ * .git`), а `--git-dir` — СВОЙ каталог этой копии; у рабочего дерева это разные пути, и всё,
+ * что трогает `git add`, — индекс и `HEAD` — лежит во втором (`<общий>/worktrees/<имя>`). Да,
+ * второй вложен в первый; называется он всё равно, потому что «писаемый корень» — это договор
+ * с чужим кодом, а не наше рассуждение о вложенности: песочница, раздающая права поштучно,
+ * получила бы разрешение на родителя и ничего на ребёнка. У обычного клона оба ответа
+ * совпадают, и список выходит ровно прежним — одна строка.
+ *
  * FAIL-OPEN, НО ВСЛУХ. Git молчит или его нет — спавн идёт прежним (полоса Claude этот список
  * не читает вовсе, и отказ убил бы её ни за что), а промах ложится в журнал: молчание здесь
- * вернуло бы ровно ту попытку без квитанции, ради которой всё это и написано.
+ * вернуло бы ровно ту попытку без квитанции, ради которой всё это и написано. Промах ОДНОГО
+ * из двух вопросов не отменяет ответ второго: половина границы лучше, чем ничего.
  */
 function copyWriteSpawnOptions(deps, workDir) {
   if (typeof deps.execGit !== 'function') return {}
   if (typeof workDir !== 'string' || workDir.trim() === '') return {}
-  let common = ''
-  try {
-    common = String(deps.execGit(['rev-parse', '--git-common-dir'], { cwd: workDir }) || '').trim()
-  } catch (err) {
-    writeLog(deps, { type: 'task.copy_git_dir_unknown', workDir, error: String((err && err.message) || err) })
-    return {}
+  const roots = []
+  for (const flag of ['--git-common-dir', '--git-dir']) {
+    let answer = ''
+    try {
+      answer = String(deps.execGit(['rev-parse', flag], { cwd: workDir }) || '').trim()
+    } catch (err) {
+      writeLog(deps, { type: 'task.copy_git_dir_unknown', workDir, error: `${flag}: ${String((err && err.message) || err)}` })
+      continue
+    }
+    const root = codexGitWritableRoot({ workDir, gitCommonDir: answer })
+    if (!root) {
+      writeLog(deps, { type: 'task.copy_git_dir_unknown', workDir, error: `git не назвал ${flag} копии` })
+      continue
+    }
+    if (!roots.includes(root)) roots.push(root)
   }
-  const root = codexGitWritableRoot({ workDir, gitCommonDir: common })
-  if (!root) {
-    writeLog(deps, { type: 'task.copy_git_dir_unknown', workDir, error: 'git не назвал общий каталог копии' })
-    return {}
-  }
-  return { writableRoots: [root] }
+  return roots.length > 0 ? { writableRoots: roots } : {}
 }
 
 /**
@@ -768,6 +782,185 @@ function answerReceipt(attemptId) {
 }
 
 /**
+ * WHAT THE DAEMON ITSELF PUT IN THE COPY. The personal layer (`.claude/`, `CLAUDE.md`), its own
+ * state (`.sma/`), the linked dependencies and the task-context snapshot are the DAEMON's hand,
+ * not the worker's — and the memory draft under `.claude/memory/` is REQUIRED of an answer by
+ * lessonCheck, so counting it as dirt made «ответ обязан оставить урок» and «ответ обязан
+ * оставить чистое дерево» mutually exclusive. Measured live 24.08.2026: «?? .claude/» closed
+ * the answer door on a question round, the round went out «нет квитанции», and the queue burned
+ * two more sessions re-asking.
+ */
+const FURNISHED_BY_DAEMON = Object.freeze(['.claude/', 'CLAUDE.md', '.sma/', 'node_modules/', TASK_CONTEXT_FILE])
+
+/** The path out of one `git status --porcelain` line; a rename is named by where it landed. */
+function porcelainPath(line) {
+  let p = String(line).slice(3).trim()
+  const arrow = p.lastIndexOf(' -> ')
+  if (arrow !== -1) p = p.slice(arrow + 4)
+  return p.replace(/^"|"$/g, '')
+}
+
+/**
+ * workerDirt(porcelain) → `[{line, path}]` — то из грязного дерева копии, что оставил РАБОТНИК.
+ *
+ * ОДНО ВЫРАЖЕНИЕ, ДВА ЧИТАТЕЛЯ, И ЭТО НЕ УБОРКА. Одна и та же строка `git status` решает две
+ * разные судьбы: дверь ответа закрывается по ней («дерево не чисто»), а хозяйский коммит по
+ * ней же выбирает, ЧТО закоммитить за работника, которому песочница не дала это сделать самому.
+ * Два прочтения одного правила означали бы дверь, считающую файл работой, и руку, считающую
+ * тот же файл обстановкой, — то есть коммит мимо того, что судят, или суд над тем, чего в
+ * коммите нет.
+ *
+ * ОТСЛЕЖИВАЕМЫЙ файл под теми же путями — по-прежнему работа работника: прощается только
+ * НЕотслеживаемая обстановка, положенная сюда демоном.
+ *
+ * `include` — ИМЕНОВАННОЕ ИСКЛЮЧЕНИЕ ИЗ ИСКЛЮЧЕНИЯ, и оно есть ровно у одной полосы. Черновик
+ * кузницы кладётся в `.claude/agents/` — под тот самый префикс, которым помечена обстановка
+ * демона, — и её гейт требует, чтобы он был ЗАКОММИЧЕН. Без этой оговорки рука хозяина прошла
+ * бы мимо единственного файла, ради которого полоса работала. Спрашивающий называет каталог
+ * сам (`draftDirFor`), потому что знает вид черновика; общее правило остаётся общим.
+ *
+ * @param {string} porcelain
+ * @param {{include?:string[]}} [opts]
+ * @returns {{line:string, path:string}[]}
+ */
+function workerDirt(porcelain, { include = [] } = {}) {
+  const kept = (Array.isArray(include) ? include : []).filter((p) => typeof p === 'string' && p.trim() !== '')
+  return String(porcelain || '')
+    .split('\n')
+    .map((line) => line.replace(/\r$/, ''))
+    .filter((line) => line.trim() !== '')
+    .map((line) => ({ line, path: porcelainPath(line) }))
+    .filter(({ line, path }) => {
+      if (line.slice(0, 2) !== '??') return true
+      if (kept.some((f) => path === f.replace(/\/$/, '') || path.startsWith(f))) return true
+      return !FURNISHED_BY_DAEMON.some((f) => path === f || path === f.replace(/\/$/, '') || path.startsWith(f))
+    })
+}
+
+/** Слова коммита, который делает хозяин, — и причина, по которой его делает не работник. */
+const HOST_COMMIT_SUBJECT = 'работа сессии, зафиксированная демоном за работника'
+const HOST_COMMIT_BODY =
+  'Песочница провайдера кладёт явный запрет записи на служебный каталог git копии — сколько бы ' +
+  'каталогов ей ни назвали писаемыми, — поэтому сама сессия закоммитить не может. Коммит делает ' +
+  'демон снаружи песочницы, на ветке работника и явными путями: берётся то, что оставил работник, ' +
+  'и не берётся обстановка, поставленная в копию самим демоном.'
+
+/** Сколько путей уходит в один `git add`: командная строка не бесконечна, а правок бывает много. */
+const HOST_COMMIT_ADD_BATCH = 100
+
+/**
+ * hostCommitAfterSession(deps, {task, route, workDir}) → `{sha, files}`, если демон зафиксировал
+ * за работника то, что тот оставил в копии, иначе `null`.
+ *
+ * ЧТО СЛОМАНО БЕЗ ЭТОГО, ЗАМЕРЕНО ЖИВОЙ ПРОБОЙ 03.09.2026. Сессия полосы codex дошла до конца
+ * честно: файл написан, слова сказаны. А `git add` ответил `Permission denied` на `index.lock` —
+ * потому что помощник песочницы, раздав право записи по названным корням, кладёт СЛЕДОМ явный
+ * запрет на служебный каталог git (см. codexSandboxDeniesGitDir: тот же журнал показывает запрет
+ * и на разрешённый корень, и на `.git` обычного клона). Работник запрет увидел, честно не полез
+ * в обход индекса и закончил ход; попытка ушла `dirty_tree`, ноль коммитов, и на карточке был
+ * виноват он. Право писать без каталога, в который сдают, — это половина права; вторая половина
+ * не покупается никаким списком корней, потому что запрет сильнее разрешения.
+ *
+ * ПОЭТОМУ КОММИТ ДЕЛАЕТ ХОЗЯИН. Демон стоит СНАРУЖИ песочницы, его git не ограничен ничем — он
+ * и фиксирует работу на ветке работника, ровно там, где её ждёт гейт. Это не поблажка гейту:
+ * судить будет тот же reverify по тому же дереву, и красные тесты останутся красными.
+ *
+ * ГРАНИЦА УЗКАЯ, И ЭТО ГЛАВНОЕ. Рука срабатывает ТОЛЬКО там, где стена измерена
+ * (`codexSandboxDeniesGitDir`), и ТОЛЬКО по тому, что оставил работник (`workerDirt`). Работник
+ * полосы Claude ходит без песочницы и коммитит сам; забытый им коммит — его ошибка, и
+ * замазывать её значило бы отнять у гейта единственный вопрос, который он задаёт про сдачу.
+ * Пустое дерево, обстановка демона и чужая полоса — три отдельных `null`, и ни один из них не
+ * создаёт коммита «чтобы был».
+ *
+ * FAIL-OPEN, НО ВСЛУХ: git не ответил или коммит не встал — попытка идёт дальше ровно как
+ * прежде (её судьбу решит гейт), а промах ложится в журнал под своим именем. Молчание здесь
+ * вернуло бы ту же карточку с виноватым работником, ради которой всё это и написано.
+ *
+ * @param {object} deps
+ * @param {{task?:object, route?:object, workDir?:string, include?:string[]}} [args]
+ * @returns {{sha:string, files:string[]}|null}
+ */
+function hostCommitAfterSession(deps, { task, route, workDir, include } = {}) {
+  if (!deps || typeof deps.execGit !== 'function') return null
+  if (typeof workDir !== 'string' || workDir.trim() === '') return null
+  const taskId = (task && task.id) || null
+  const config = (deps && deps.config) || {}
+  // ПРОВАЙДЕР ЧИТАЕТСЯ ТЕМ ЖЕ ПРАВИЛОМ, ЧТО У СТРАЖА ПЕСОЧНИЦЫ: маршрут, потом профиль
+  // работника, — иначе полоса, назвавшая исполнителя без слова о провайдере, прошла бы мимо.
+  const worker = ((config.workers || []).find((w) => w && w.id === ((route && route.workerId) || null))) || null
+  const provider = String((route && route.provider) || (worker && worker.provider) || 'claude')
+  if (!codexSandboxDeniesGitDir({ platform: deps.platform, provider })) return null
+
+  // `--untracked-files=all` — И ЭТО НЕ ПРИДИРКА К ФЛАГУ. По умолчанию `git status` СХЛОПЫВАЕТ
+  // неотслеживаемый каталог в одну строку (`?? .claude/`), и рука, которая по этой строке
+  // выбирает пути, видит либо всё дерево целиком, либо ничего: черновик кузницы, лежащий под
+  // тем же каталогом, что и обстановка демона, стал бы неотличим от неё, а `git add` по
+  // схлопнутой строке утащил бы в коммит и обстановку. Дверь ответа выше спрашивает то же
+  // самое крупнее — ей достаточно знать, ЕСТЬ ли грязь; здесь нужно знать, ЧТО именно, и
+  // правило «чьё это» обе читают одно (workerDirt).
+  //
+  // `core.quotePath=false` — ПО ТОЙ ЖЕ ПРИЧИНЕ: по умолчанию git отдаёт неанглийское имя
+  // файла в восьмеричных escape-последовательностях внутри кавычек, и путь, снятый с такой
+  // строки, не откроется ничем. Дверь ответа этого не замечает — она считает строки; рука,
+  // которая по ним коммитит, потеряла бы ровно ту работу, чьё имя написано не по-английски.
+  let dirty = ''
+  try {
+    dirty = String(
+      deps.execGit(['-c', 'core.quotePath=false', 'status', '--porcelain', '--untracked-files=all'], { cwd: workDir }) || '',
+    ).trim()
+  } catch (err) {
+    writeLog(deps, {
+      type: 'task.host_commit_failed',
+      taskId,
+      detail: `git status в копии не ответил: ${String((err && err.message) || err)}`,
+    })
+    return null
+  }
+  if (!dirty) return null
+  const mine = workerDirt(dirty, { include })
+  if (mine.length === 0) return null
+
+  // Сведение повтором по списку, а не набором: этот файл держит дисциплину «никаких ключевых
+  // коллекций в памяти тика», и она проверяется чтением исходника, а не намерением.
+  const paths = mine.map((d) => d.path).filter((p, i, all) => p !== '' && all.indexOf(p) === i)
+  try {
+    for (let i = 0; i < paths.length; i += HOST_COMMIT_ADD_BATCH) {
+      deps.execGit(['add', '--', ...paths.slice(i, i + HOST_COMMIT_ADD_BATCH)], { cwd: workDir })
+    }
+    // `--no-verify`: хуки основного репозитория живут в общем каталоге git и написаны для
+    // человека за клавиатурой; здесь их некому ни спросить, ни прочитать.
+    deps.execGit(['commit', '--no-verify', '-m', HOST_COMMIT_SUBJECT, '-m', HOST_COMMIT_BODY], { cwd: workDir })
+  } catch (err) {
+    writeLog(deps, {
+      type: 'task.host_commit_failed',
+      taskId,
+      detail:
+        `демон не смог зафиксировать работу за работника в ${workDir}: ` +
+        `${String((err && err.message) || err)} (путей: ${paths.length})`,
+    })
+    return null
+  }
+
+  let sha = ''
+  try {
+    sha = String(deps.execGit(['rev-parse', 'HEAD'], { cwd: workDir }) || '').trim()
+  } catch {
+    /* коммит уже встал; неназванный хеш — это плохая запись, а не отменённая работа */
+  }
+  // NEVER SILENT: человек, читающий историю ветки, обязан видеть, ЧЬЯ рука поставила коммит.
+  writeLog(deps, {
+    type: 'task.host_commit',
+    taskId,
+    sha: sha || null,
+    files: paths.length,
+    detail:
+      `песочница работника запрещает запись в служебный каталог git копии — демон зафиксировал ` +
+      `за него ${paths.length} путей${sha ? ` коммитом ${sha.slice(0, 12)}` : ''}: ${paths.slice(0, 6).join(' | ')}`,
+  })
+  return { sha, files: paths }
+}
+
+/**
  * answerOnlyGate(deps, task, branch, workDir, noteWritten, base) → {receiptRef} when this
  * attempt is an ANSWER — it changed nothing whatsoever and explained itself — or null when
  * it is not, and the caller's own gate decides.
@@ -855,26 +1048,14 @@ function answerOnlyGate(deps, task, branch, workDir, noteWritten, base) {
     return closed('status_failed', `git status в копии не ответил: ${String((err && err.message) || err)}`)
   }
   if (dirty) {
-    // WHOSE DIRT IS IT. The daemon itself furnishes the copy: the personal layer (.claude/,
-    // CLAUDE.md), its own state (.sma/), linked dependencies (node_modules/) and the task
-    // context snapshot. Untracked entries under those paths are the DAEMON's hand, not the
-    // worker's — and the memory-corpus draft under .claude/memory/ is REQUIRED of an answer
-    // by lessonCheck, so counting it as dirt made «ответ обязан оставить урок» and «ответ
-    // обязан оставить чистое дерево» mutually exclusive: this door could not open for any
-    // lesson-carrying answer at all. Measured live 24.08.2026: «?? .claude/» closed the door
-    // on a question round, the round went out «нет квитанции», and the queue burned two more
-    // sessions re-asking. A MODIFIED tracked file under the same paths is still the worker's
-    // work and still closes the door — only the daemon's own untracked furniture is excused.
-    const FURNISHED = ['.claude/', 'CLAUDE.md', '.sma/', 'node_modules/', TASK_CONTEXT_FILE]
-    const foreign = dirty.split('\n').filter((line) => {
-      if (line.slice(0, 2) !== '??') return true
-      const p = line.slice(3).trim().replace(/^"|"$/g, '')
-      return !FURNISHED.some((f) => p === f || p === f.replace(/\/$/, '') || p.startsWith(f))
-    })
+    const foreign = workerDirt(dirty)
     if (foreign.length) {
       // THE NAMES, not the fact: a person deciding whether this is unfinished code work or
       // some artefact standing in the copy needs to see WHAT git names.
-      return closed('dirty_tree', `дерево копии не чисто (строк: ${foreign.length}): ${foreign.slice(0, 6).join(' | ')}`)
+      return closed(
+        'dirty_tree',
+        `дерево копии не чисто (строк: ${foreign.length}): ${foreign.slice(0, 6).map((d) => d.line).join(' | ')}`,
+      )
     }
   }
   if (!noteWritten) {
@@ -5863,6 +6044,18 @@ export async function tick(deps = {}) {
         })
       }
 
+      // (7a-pre) КОММИТ ЗА РАБОТНИКА, КОТОРОМУ ПЕСОЧНИЦА НЕ ДАЛА СДЕЛАТЬ ЕГО САМОМУ.
+      //
+      // Стоит ПЕРЕД всеми тремя гейтами и ни одному из них не льстит: дверь запаркованного
+      // вопроса ищет закоммиченный чекпойнт, дверь ответа доказывает пустоту по коммитам и
+      // чистоте дерева, дверь кода зовёт reverify по ветке — и все трое читают дерево, в
+      // котором работа уже лежит незакоммиченной. Без этой строки они читают одно и то же
+      // «работник ничего не сдал» о сессии, которой запретили запись в индекс.
+      //
+      // Только когда сессия ДОШЛА ДО КОНЦА. Оборванный процесс оставляет полуправку, и
+      // фиксировать её значит строить следующий заход на том, чего никто не доводил.
+      if (!infraReason) hostCommitAfterSession(deps, { task, route, workDir })
+
       // (7a) A PARKED QUESTION IS A SUCCESSFUL ROUND — and it is asked BEFORE either gate.
       // A discussion round that stopped on a question, and an execute stage that reached a
       // blocking checkpoint, are the same event: the work went as far as it honestly could
@@ -6687,6 +6880,14 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
     result.failed = { taskId: task.id, reason: 'provider_error' }
     return result
   }
+
+  // ВТОРАЯ ДВЕРЬ СПАВНА — ТА ЖЕ РУКА ХОЗЯИНА. Гейт ниже спрашивает у git ЗАКОММИЧЕННЫЙ черновик,
+  // а песочница этой полосы запрещает запись в служебный каталог git копии ровно так же, как на
+  // полосе кода: без этой строки написанный черновик читался бы как «draft not committed», то
+  // есть как ошибка работника, который сделал всё, что мог. Каталог черновика назван явно —
+  // он лежит под тем же префиксом, каким помечена обстановка демона, и общее правило прошло бы
+  // мимо единственного файла, ради которого эта попытка работала.
+  hostCommitAfterSession(deps, { task, route, workDir: worktreePath, include: [draftDirFor(kind)] })
 
   // (7) EXIT GATE = deterministic draft lint + committed-on-branch assertion (NOT reverify).
   const drafts = listCommittedDrafts(deps.execGit, branch, worktreePath, kind)
