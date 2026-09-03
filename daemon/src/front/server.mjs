@@ -1520,7 +1520,8 @@ function mergeRollbackFields(raw) {
 }
 
 /**
- * mergeReceiptWords(raw) → `{branch, sha, testsPassed, testsNote, failedTests, report}`, или `null`.
+ * mergeReceiptWords(raw) → `{branch, sha, testsPassed, testsNote, failedTests, failedCount, report,
+ * reportNote}`, или `null`.
  *
  * ТА ЖЕ КВИТАНЦИЯ, ДРУГОЙ ВОПРОС. `mergeRollbackFields` выше — граница КОМАНДЫ: из неё
  * выходит только то, что человек скопирует и запустит, и потому оттуда не выходит ничего,
@@ -1580,13 +1581,20 @@ function mergeReceiptWords(raw) {
     .map((s) => s.trim().slice(0, 200))
     .slice(0, RED_RUN_TESTS_SHOWN)
   const oneFailed = typeof receipt.failedTest === 'string' && receipt.failedTest.trim() ? receipt.failedTest.trim() : null
+  // …И СКОЛЬКО ИХ ВСЕГО. Список выше срезан дважды — прогонятелем и этой строкой, — поэтому
+  // его длина отвечает на «сколько показали», а не на «сколько упало». Число несёт квитанция;
+  // карточка его только доносит и никогда не считает сама.
+  const failedCount = Number.isFinite(receipt.failedCount) && receipt.failedCount > 0 ? Math.trunc(receipt.failedCount) : 0
   const out = {
     branch: branchName || null,
     sha: sha && OBJECT_NAME_RE.test(sha) ? sha : null,
     testsPassed: typeof receipt.testsPassed === 'boolean' ? receipt.testsPassed : null,
     testsNote: note || null,
     failedTests: failedTests.length ? failedTests : oneFailed ? [oneFailed] : [],
+    failedCount,
     report: typeof receipt.savedReport === 'string' && receipt.savedReport.trim() ? receipt.savedReport.trim() : null,
+    // Отчёта нет — карточка называет ПОЧЕМУ теми же словами, что и отказ двери.
+    reportNote: typeof receipt.keepNote === 'string' && receipt.keepNote.trim() ? receipt.keepNote.trim() : null,
   }
   // Квитанция, не сказавшая НИЧЕГО из четырёх, — это не квитанция, а разобравшийся объект.
   return out.branch || out.sha || out.testsPassed !== null || out.testsNote ? out : null
@@ -2082,7 +2090,18 @@ function refusalClass(m) {
       .map((s) => s.trim())
     const one = typeof m.failedTest === 'string' && m.failedTest.trim() ? m.failedTest.trim() : null
     const shown = list.length ? list.slice(0, RED_RUN_TESTS_SHOWN) : one ? [one] : []
-    const rest = Math.max(0, list.length - shown.length)
+    // СКОЛЬКО УПАЛО — НЕ ДЛИНА ПОКАЗАННОГО СПИСКА. Прогонятель режет имена до пяти (отказ
+    // читают глазами), и пока число бралось отсюда, сорок красных тестов приезжали к человеку
+    // как «Упало 5», а фраза «… ещё N» не могла показаться ни разу: она вычиталась из уже
+    // обрезанного списка. Общее число теперь несёт сам прогонятель; его нет — считаем по
+    // списку, потому что выдумывать разницу не из чего.
+    const counted = Number.isFinite(m.failedCount) && m.failedCount > 0
+      ? m.failedCount
+      : Number.isFinite(receipt.failedCount) && receipt.failedCount > 0
+        ? receipt.failedCount
+        : 0
+    const total = Math.max(counted, list.length, shown.length)
+    const rest = Math.max(0, total - shown.length)
     const detail =
       typeof m.failureDetail === 'string' && m.failureDetail.trim()
         ? m.failureDetail
@@ -2094,17 +2113,27 @@ function refusalClass(m) {
     const report =
       (typeof m.savedReport === 'string' && m.savedReport.trim() ? m.savedReport.trim() : null) ||
       (typeof receipt.savedReport === 'string' && receipt.savedReport.trim() ? receipt.savedReport.trim() : null)
+    // ПОЧЕМУ ОТЧЁТА НЕТ — словами прогонятеля, а не общей фразой. «Дом данных демона не назван»
+    // чинится в настройке демона, «запись не удалась» — на диске; одна фраза на оба случая
+    // отправляла человека искать файл, которого не могло быть.
+    const keepNote =
+      (typeof m.keepNote === 'string' && m.keepNote.trim() ? m.keepNote.trim() : null) ||
+      (typeof receipt.keepNote === 'string' && receipt.keepNote.trim() ? receipt.keepNote.trim() : null)
     return {
       reasonCode: 'tests_red',
       reason:
         'слияние не выполнено: тесты на сведённом результате красные — работа осталась ждать вас. ' +
         (shown.length
-          ? `Упало ${list.length || shown.length}: ${shown.join(' · ')}${rest ? ` … ещё ${rest}` : ''}`
+          ? rest
+            ? `Упало ${total}, первые ${shown.length}: ${shown.join(' · ')}`
+            : `Упало ${total}: ${shown.join(' · ')}`
           : 'Имя упавшего теста прогонятель не назвал') +
         (detail ? `. Причина: ${detail}` : '') +
         (report
           ? `. Отчёт прогона: ${report}`
-          : '. Отчёта прогона не сохранилось — смотрите вывод в журнале демона'),
+          : keepNote
+            ? `. Отчёта прогона нет: ${keepNote}`
+            : '. Отчёта прогона не сохранилось — смотрите вывод в журнале демона'),
     }
   }
 

@@ -48,6 +48,11 @@ import { describe, it, expect, beforeAll } from 'vitest'
 
 import {
   createLanding,
+  FAILED_TESTS_SHOWN,
+  keepRedRun,
+  LANDING_REPORTS_KEEP,
+  NO_KEEP_DIR_NOTE,
+  pruneKeptRuns,
   receiptCoversTree,
   runFullSuiteAsync,
   runSpaBuild,
@@ -64,6 +69,7 @@ import {
   versionMarkerIsCosmetic,
 } from '../lib/landing.mjs'
 import { runMerge, SPA_BUILD_FAILED_CODE } from '../lib/merge-gate.mjs'
+import { mergeRefusal } from '../../../daemon/src/front/server.mjs'
 import { freshnessVerdict, sourceHistory, SPA_BUNDLE_PATH } from '../lib/spa-freshness.mjs'
 import { checkBadge, readChangedSince, readHead } from '../lib/badge.mjs'
 import { audit } from '../lib/doc-audit.mjs'
@@ -1328,6 +1334,221 @@ describe('красный полный прогон: имена берутся и
       rmSync(repo.home, { recursive: true, force: true })
     }
   }, 120000)
+})
+
+/**
+ * Отчёт с ЛЮБЫМ числом красных в одном файле — фикстура для вопроса «сколько их всего».
+ * Имён в отказе показывается пять; отчёт при этом знает про все сорок, и число обязано
+ * доехать отдельно от списка.
+ */
+function redReportMany(n: number) {
+  const cases = Array.from({ length: n }, (_, i) => ({
+    status: 'failed',
+    fullName: `набор посадки > случай ${i + 1}`,
+    failureMessages: [`AssertionError: случай ${i + 1} ждал зелёного`],
+  }))
+  return JSON.stringify({
+    success: false,
+    numTotalTests: n + 10,
+    numPassedTests: 10,
+    numFailedTests: n,
+    startTime: Date.now(),
+    testResults: [
+      { name: 'scripts/sma/__tests__/many.test.ts', status: 'failed', assertionResults: cases },
+    ],
+  })
+}
+
+describe('сколько упало — число, а не длина показанного списка', () => {
+  it('разбор отчёта отдаёт общее число ОТДЕЛЬНО от пяти показываемых имён', () => {
+    const said: any = summarizeVitestReport(redReportMany(40))
+    expect(said.failedTests.length).toBe(FAILED_TESTS_SHOWN)
+    expect(said.failedCount, 'общее число упавших срезано вместе со списком').toBe(40)
+  })
+
+  it('прогонятель несёт это число наружу вместе с именами', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sma-landing-count-'))
+    try {
+      const answer: any = await runFullSuiteAsync({
+        cwd: home,
+        keepDir: join(home, 'landing'),
+        label: 'wt-many',
+        reportPath: join(home, 'tmp-report.json'),
+        exists: () => true,
+        resolveEntry: () => join(home, 'suite-entry.mjs'),
+        spawn: fakeSuiteSpawn(redReportMany(40), 'печать сьютера\n'),
+      })
+      expect(answer.passed).toBe(false)
+      expect(answer.failedCount).toBe(40)
+      expect(answer.failedTests.length).toBe(FAILED_TESTS_SHOWN)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  }, 60000)
+
+  it('сорок красных доезжают до отказа числом, пятью именами и обоими словами — об отчёте и о раздаче', async () => {
+    const repo = makeRepo('many-red')
+    try {
+      repo.git(['checkout', '-q', '-b', 'wt/R-many'])
+      put(repo.dir, 'src/worker.mjs', 'export const worker = 2\n')
+      repo.git(['add', '--', 'src/worker.mjs'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'work'])
+      repo.git(['checkout', '-q', repo.trunk])
+      put(repo.dir, 'src/other.mjs', 'export const other = 3\n')
+      repo.git(['add', '--', 'src/other.mjs'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'someone else'])
+
+      // ДОМА ДАННЫХ У ЭТОЙ ПОСАДКИ НЕТ — и это второй вопрос случая: сохранять отчёт было
+      // некуда, и человек обязан прочитать ПОЧЕМУ, а не «отчёта не сохранилось».
+      const landing = createLanding({
+        cwd: repo.dir,
+        runSuite: (call: any) =>
+          runFullSuiteAsync({
+            ...call,
+            exists: () => true,
+            resolveEntry: () => join(repo.home, 'suite-entry.mjs'),
+            spawn: fakeSuiteSpawn(redReportMany(40), 'вывод красного прогона\n'),
+          }),
+      })
+
+      const merged: any = await runMerge({
+        branch: 'wt/R-many',
+        by: 'landing-case',
+        cwd: repo.dir,
+        claimsDir: repo.claimsDir,
+        journalDir: repo.journalDir,
+        runTests: landing.runTests,
+        // …И ВОЗВРАТ РАЗДАЧИ ЗДЕСЬ ЖЕ — ради четвёртого вопроса случая: у красного отказа
+        // теперь ЧЕТЫРЕ слова, и два из них некоторое время делили одно место в подписи.
+        restoreWindow: landing.restoreWindow,
+      })
+
+      expect(merged.merged).toBe(false)
+      expect(merged.testsPassed).toBe(false)
+      // (а) ЧИСЛО ПРОШЛО РИТУАЛ, А СПИСОК ОСТАЛСЯ ЧИТАЕМЫМ.
+      expect(merged.receipt.failedCount).toBe(40)
+      expect(merged.receipt.failedTests.length).toBe(FAILED_TESTS_SHOWN)
+      // (б) ОТКАЗ ДВЕРИ НАЗЫВАЕТ ОБА: сорок всего и первые пять поимённо.
+      const refusal: any = mergeRefusal(merged)
+      expect(refusal.reasonCode).toBe('tests_red')
+      expect(refusal.reason, refusal.reason).toContain(`Упало 40, первые ${FAILED_TESTS_SHOWN}:`)
+      expect(refusal.reason).toContain('случай 1')
+      // (в) …И ПОЧЕМУ ОТЧЁТА НЕТ — словами прогонятеля, а не общей фразой.
+      expect(merged.receipt.savedReport).toBeUndefined()
+      expect(merged.receipt.keepNote).toBe(NO_KEEP_DIR_NOTE)
+      expect(merged.receipt.reason).toContain(NO_KEEP_DIR_NOTE)
+      expect(refusal.reason).toContain(`Отчёта прогона нет: ${NO_KEEP_DIR_NOTE}`)
+      // (г) …И СЛОВО О РАЗДАЧЕ СТОИТ РЯДОМ, А НЕ ВМЕСТО. Оба слова приходят к одному отказу
+      //     и одно время делили третью позицию подписи: подпись у неё теперь именная, и
+      //     проверяется здесь именно то, что ни одно из двух не вытеснило другого.
+      expect(merged.receipt.spaRestored, JSON.stringify(merged.receipt)).toBeTruthy()
+      expect(merged.receipt.spaRestored.note).toBeTruthy()
+      expect(merged.receipt.reason).toContain(merged.receipt.spaRestored.note)
+      expect(merged.receipt.reason.indexOf(NO_KEEP_DIR_NOTE)).toBeGreaterThan(-1)
+    } finally {
+      rmSync(repo.home, { recursive: true, force: true })
+    }
+  }, 120000)
+})
+
+describe('сохранённые прогоны: каталог убирается, а вывод просеивается', () => {
+  it('уборка при записи оставляет последние прогоны целиком, а старые уносит обеими половинами', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sma-landing-prune-'))
+    try {
+      const keepDir = join(home, 'landing')
+      const at = Date.parse('2026-09-03T00:00:00.000Z')
+      // Ярлыки идут ПРОТИВ времени: сортировка по всему имени убрала бы самые свежие.
+      let last: any = null
+      for (let i = 0; i < 5; i++) {
+        last = keepRedRun({
+          keepDir,
+          label: `branch-${9 - i}`,
+          reportText: '{"numFailedTests":1}',
+          output: `вывод прогона ${i}\n`,
+          clock: () => at + i * 60000,
+          keep: 3,
+        })
+      }
+      const left = readdirSync(keepDir).sort()
+      expect(left.filter((n) => n.endsWith('.log')).length, left.join(' ')).toBe(3)
+      expect(left.filter((n) => n.endsWith('.json')).length).toBe(3)
+      // Последний прогон на месте и открывается…
+      expect(existsSync(last.savedLog)).toBe(true)
+      expect(left.some((n) => n.startsWith('branch-5'))).toBe(true)
+      // …а два самых старых по ВРЕМЕНИ ушли, хотя по имени они были бы самыми свежими.
+      expect(left.some((n) => n.startsWith('branch-9'))).toBe(false)
+      expect(left.some((n) => n.startsWith('branch-8'))).toBe(false)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('чужой файл в том же каталоге уборке не принадлежит и остаётся на месте', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sma-landing-foreign-'))
+    try {
+      const keepDir = join(home, 'landing')
+      mkdirSync(keepDir, { recursive: true })
+      writeFileSync(join(keepDir, 'README.log'), 'положено сюда не посадкой\n', 'utf8')
+      const at = Date.parse('2026-09-03T00:00:00.000Z')
+      for (let i = 0; i < 4; i++) {
+        keepRedRun({ keepDir, label: 'wt-x', output: `вывод ${i}\n`, clock: () => at + i * 60000, keep: 1 })
+      }
+      expect(existsSync(join(keepDir, 'README.log')), 'уборка унесла чужой файл').toBe(true)
+      expect(readdirSync(keepDir).filter((n) => n.startsWith('wt-x')).length).toBe(1)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('глубина хранения соблюдается и без записи — уборка отвечает списком унесённого', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sma-landing-prune-only-'))
+    try {
+      const keepDir = join(home, 'landing')
+      const at = Date.parse('2026-09-03T00:00:00.000Z')
+      for (let i = 0; i < 3; i++) {
+        keepRedRun({ keepDir, label: 'wt-y', output: 'вывод\n', clock: () => at + i * 60000 })
+      }
+      expect(readdirSync(keepDir).length, 'глубина по умолчанию убрала лишнее раньше времени').toBe(3)
+      const swept: any = pruneKeptRuns({ keepDir, keep: 1 })
+      expect(swept.removed.length).toBe(2)
+      expect(readdirSync(keepDir).length).toBe(1)
+      expect(LANDING_REPORTS_KEEP).toBeGreaterThan(1)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('учётные данные из вывода набора в сохранённый лог не попадают', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sma-landing-mask-'))
+    try {
+      const keepDir = join(home, 'landing')
+      const token = 'sk-abcdef1234567890ABCDEF'
+      const kept: any = keepRedRun({
+        keepDir,
+        label: 'wt-secret',
+        output: `настройка окружения: KEY=${token}\nупал один тест\n`,
+      })
+      const text = readFileSync(kept.savedLog, 'utf8')
+      expect(text, 'учётные данные уехали в файл, который лежит месяцами').not.toContain(token)
+      expect(text, 'вместе с находкой просеяли весь вывод').toContain('упал один тест')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('запись не удалась — названа ПРИЧИНА записи, а не «сохранять некуда»', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sma-landing-blocked-'))
+    try {
+      const blocked = join(home, 'landing')
+      writeFileSync(blocked, 'я файл, а не каталог\n', 'utf8')
+      const kept: any = keepRedRun({ keepDir: blocked, label: 'wt-z', output: 'вывод\n' })
+      expect(kept.savedLog).toBeUndefined()
+      expect(kept.keepNote, JSON.stringify(kept)).toContain('отчёт красного прогона не сохранён')
+      expect(kept.keepNote).not.toBe(NO_KEEP_DIR_NOTE)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('маркер версии: косметика возвращается, настоящая смена — нет', () => {
