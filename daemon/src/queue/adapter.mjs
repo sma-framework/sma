@@ -953,7 +953,14 @@ export function resolveExpireMs(config) {
   return raw
 }
 
-const PROVIDERS = Object.freeze(['claude', 'codex', 'api'])
+/**
+ * КОГО ЗАДАЧА ВПРАВЕ НАЗВАТЬ СВОИМ ИСПОЛНИТЕЛЕМ. Отдаётся наружу по той же причине, что и
+ * список полос: список полос, которые демон УМЕЕТ ЗАПУСКАТЬ, живёт своей таблицей
+ * (`runner/provider-adapter.mjs`), и два списка, о которых нельзя спросить разом, однажды
+ * разойдутся — дверь примет задачу поставщику, которого нечем запустить. `api` в этом списке
+ * есть и в таблице запуска нет намеренно: это платный канал без работника и без командной строки.
+ */
+export const TASK_PROVIDERS = Object.freeze(['claude', 'codex', 'api'])
 const FORGE_KINDS = Object.freeze(['agent', 'skill', 'mcp'])
 const STORY_POINTS = Object.freeze([1, 2, 3, 5, 8, 13]) // Fibonacci ONLY
 
@@ -2055,7 +2062,7 @@ export function validateTask(task) {
   if (typeof task.title !== 'string' || task.title.length === 0) throw new InvalidTaskError(`task "${task.id}" missing "title"`)
   if (task.title.length > CAP_TITLE) throw new InvalidTaskError(capRefusal('название', task.title.length, CAP_TITLE))
   if (!TASK_LANES.includes(task.lane)) throw new InvalidTaskError(`task "${task.id}" has invalid lane "${task.lane}"`)
-  if (task.provider !== undefined && !PROVIDERS.includes(task.provider)) {
+  if (task.provider !== undefined && !TASK_PROVIDERS.includes(task.provider)) {
     throw new InvalidTaskError(`task "${task.id}" has invalid provider "${task.provider}"`)
   }
   // РОЛЬ — СТРУКТУРНО, И ОТКАЗОМ, А НЕ ТИХИМ СБРОСОМ. Роль, которую дверь молча выбросила бы,
