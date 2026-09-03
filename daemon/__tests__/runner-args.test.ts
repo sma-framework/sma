@@ -76,7 +76,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, exists
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
 import {
   buildClaudeArgs,
   buildCodexArgs,
@@ -92,6 +92,7 @@ import {
   codexSandboxSourceFor,
   codexGitWritableRoot,
   codexHomeFor,
+  readCodexSandboxJournal,
   CODEX_WINDOWS_SANDBOX_MARKER,
   seedCodexHome,
   CODEX_APPROVAL_POLICY,
@@ -1627,5 +1628,69 @@ describe('the envelope refusal travels as --disallowedTools, and the boundary is
   it('the produced refusal itself passes the guard — delivering what the envelope forbade is not smuggling a flag', () => {
     expect(() => buildClaudeArgs({ disallowedTools: DENIALS })).not.toThrow()
     expect(() => buildClaudeArgs({ allowedTools: ['Bash'] })).not.toThrow()
+  })
+})
+
+// ═══════ ВЫЖИМКА ЖУРНАЛА ПЕСОЧНИЦЫ — ТО, РАДИ ЧЕГО ЕЁ СНИМАЮТ, А НЕ ПОСЛЕДНИЕ N СТРОК ═══════
+//
+// ЧТО ЗАМЕРЕНО НА НАСТОЯЩЕМ ЖУРНАЛЕ ЭТОЙ МАШИНЫ (309 строк, 118 под фильтром). Помощник пишет
+// раздачу прав и запреты ОДИН раз, на подъёме песочницы, а дальше каждая команда сессии
+// дописывает свои «read ACL run completed» и «setup refresh: … errors=[]». Хвост из последних
+// двух десятков строк — это ровно они: `granting write ACE` по корням и `applied deny ACE …`
+// в выжимку не попадали ВОВСЕ, то есть у оператора оставалось всё, кроме того единственного,
+// по чему разбирают «почему у работника не получилось». Файл настоящий, каталог настоящий:
+// вопрос здесь — что доедет до журнала демона, а не как устроена функция внутри.
+describe('журнал песочницы: в выжимке остаются права, а не повтор последней команды', () => {
+  const homes: string[] = []
+  const journalHome = (lines: string[]) => {
+    const home = mkdtempSync(join(tmpdir(), 'sma-codex-journal-'))
+    homes.push(home)
+    mkdirSync(join(home, '.sandbox'), { recursive: true })
+    writeFileSync(join(home, '.sandbox', 'sandbox.2026-09-03.log'), lines.join('\n'), 'utf8')
+    return home
+  }
+  // Форма — с живого журнала: сперва раздача по корням и запреты, потом повтор на каждую команду.
+  const OPENING = [
+    '[2026-09-03T03:59:01Z] granting write ACE to C:\\tasks\\R-1\\tmp for sandbox group and capability SID',
+    '[2026-09-03T03:59:01Z] granting write ACE to C:\\projects\\sma\\.git for sandbox group and capability SID',
+    '[2026-09-03T03:59:02Z] applied deny ACE to protect C:\\projects\\sma\\.git\\worktrees\\wt-1',
+    '[2026-09-03 05:59:02 codex-command-runner.exe] hide users: failed to hide current user profile dir (C:\\Users\\Default): 5',
+  ]
+  const perCommand = (n: number) =>
+    Array.from({ length: n }, (_, i) => [
+      `[2026-09-03T04:0${i % 10}:00Z] setup refresh: processed 3 write roots (read roots delegated); errors=[]`,
+      `[2026-09-03T04:0${i % 10}:01Z] read-acl-only mode: applying read ACLs`,
+      `[2026-09-03T04:0${i % 10}:02Z] read ACL run completed`,
+      `[2026-09-03 06:0${i % 10}:03 codex.exe] START: git commit -m проба`,
+    ]).flat()
+
+  afterAll(() => {
+    for (const home of homes) rmSync(home, { recursive: true, force: true })
+  })
+
+  it('сорок команд шума не вытесняют раздачу прав и запреты — снимается ПЕРВЫЙ раз каждой строки', () => {
+    const { lines } = readCodexSandboxJournal({ home: journalHome([...OPENING, ...perCommand(40)]) })
+
+    expect(lines.some((l) => l.includes('granting write ACE to C:\\projects\\sma\\.git'))).toBe(true)
+    expect(lines.some((l) => l.includes('applied deny ACE to protect'))).toBe(true)
+    // …и строка, которой объясняется «unable to access ~/.config/git/ignore»: профиль спрятан.
+    expect(lines.some((l) => l.includes('hide users: failed to hide current user profile dir'))).toBe(true)
+    // Строка запуска команды — не про права: журнал оператора читают глазами.
+    expect(lines.some((l) => l.includes('START: git commit'))).toBe(false)
+  })
+
+  it('повтор одной и той же строки не занимает места: сто одинаковых записей стоят одной', () => {
+    const { lines } = readCodexSandboxJournal({ home: journalHome([...OPENING, ...perCommand(25)]) })
+
+    const refreshes = lines.filter((l) => l.includes('setup refresh: processed 3 write roots'))
+    expect(refreshes).toHaveLength(1)
+    // Сравнение идёт БЕЗ отметки времени — иначе одинаковых строк не бывает вовсе.
+    const bodies = lines.map((l) => l.replace(/^\[[^\]]*\]\s*/, ''))
+    expect(new Set(bodies).size).toBe(bodies.length)
+  })
+
+  it('дома нет и журнала нет — пустой ответ, а не второй провал поверх первого', () => {
+    expect(readCodexSandboxJournal({ home: join(tmpdir(), 'sma-codex-journal-нет-такого') }).lines).toEqual([])
+    expect(readCodexSandboxJournal({}).lines).toEqual([])
   })
 })
