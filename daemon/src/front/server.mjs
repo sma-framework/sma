@@ -4027,6 +4027,10 @@ async function handleRedirect({ req, res, config, deps }) {
   journalRedirect(b, wrote.id, deps)
   let live = false
   if (b.mode === 'interrupt' && deps.attemptTurns && typeof deps.attemptTurns.stop === 'function') {
+    // «ПЕРЕБИТЬ СЕЙЧАС» НЕ ВЫНОСИТ ПРИГОВОРА, и это не мелочь умолчания. Эта дверь обрывает ход,
+    // чтобы работа поехала ДАЛЬШЕ с поправкой; строку она не закрывает. Пока приговор выносился
+    // из любого зова `stop`, поправка, сказанная задаче, которая ещё не запущена, ложилась на
+    // диск целой — и убивала её же следующий законный запуск, молча и в течение двух минут.
     live = deps.attemptTurns.stop(b.taskId)
   }
   emitSafe(deps, { event: 'task.running', taskId: b.taskId, status: 'claimed' })
@@ -4083,15 +4087,15 @@ const defaultNap = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * освобождение места — ОДНО выражение (`confirmProcessGone`), поэтому «закрылась» на экране и
  * «место свободно» в тике не могут разойтись.
  */
-async function waitForAttemptClose({ registry, taskId, deps }) {
+async function waitForAttemptClose({ registry, taskId, deps, attemptId = null }) {
   if (!registry || typeof registry.wasStopped !== 'function') return false
   const nap = typeof deps.sleep === 'function' ? deps.sleep : defaultNap
   const looks = Math.max(1, Math.ceil(CANCEL_ATTEMPT_CLOSE_WAIT_MS / CANCEL_ATTEMPT_POLL_MS))
   for (let i = 0; i < looks; i += 1) {
-    if (confirmProcessGone(deps, taskId)) return true
+    if (confirmProcessGone(deps, taskId, attemptId)) return true
     await nap(CANCEL_ATTEMPT_POLL_MS)
   }
-  return confirmProcessGone(deps, taskId)
+  return confirmProcessGone(deps, taskId, attemptId)
 }
 
 /**
@@ -4140,9 +4144,15 @@ async function handleTaskCancel({ req, res, deps }) {
   if (typeof b.taskId !== 'string' || !ID_RE.test(b.taskId)) return send400(res, 'invalid taskId')
 
   const registry = deps.attemptTurns
+  // ЧЬЁ МЕСТО ОСВОБОДИТСЯ — СПРАШИВАЕТСЯ ДО УБИЙСТВА. Ручка исчезает выходной дорогой самого
+  // ребёнка, то есть в любую секунду после `stop`; имя строки к этому моменту у двери есть, а
+  // имя ЗАХОДА — только у ручки, и место в доме идущих попыток принадлежит именно заходу.
+  const attemptId = registry && typeof registry.attemptOf === 'function' ? registry.attemptOf(b.taskId) : null
+  // И ПРИГОВОР ПРОСИТ ТОЛЬКО ЭТА ДВЕРЬ. Она одна закрывает строку насовсем, поэтому только у
+  // неё «убивать было нечего» законно означает «и следующему ходу этой работы не жить».
   const killed =
-    registry && typeof registry.stop === 'function' ? registry.stop(b.taskId) === true : false
-  const attemptClosed = killed ? await waitForAttemptClose({ registry, taskId: b.taskId, deps }) : null
+    registry && typeof registry.stop === 'function' ? registry.stop(b.taskId, { condemn: true }) === true : false
+  const attemptClosed = killed ? await waitForAttemptClose({ registry, taskId: b.taskId, deps, attemptId }) : null
   const cancelled = (await adapter.cancelTask(b.taskId)) === true
   return sendJson(res, 200, { cancelled, killed, attemptClosed })
 }

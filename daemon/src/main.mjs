@@ -738,7 +738,13 @@ export function createDaemon(o = {}) {
   // The redirect door (front) tells a live child to die; the tick registers each child's
   // kill-handle here. One object, both consumers, same law as the event hub: hint plumbing,
   // never truth — a restart loses only the ability to kill children that died with it.
-  const attemptTurns = createTurnRegistry()
+  //
+  // И ЖУРНАЛ — ТОТ ЖЕ, ЧТО У ТИКА. Приговор, исполненный при рождении хода, убивает работу до
+  // первого её кадра: карточке рассказать нечего, потока ещё нет, и человек, чья работа не
+  // поехала, не имел ни одной строки, объясняющей почему. Сшивка отложенная (`daemonJournal`
+  // объявлен ниже, рядом с остальными швами рассказа), и это безопасно: реестр зовёт её только
+  // после того, как сборка кончилась.
+  const attemptTurns = createTurnRegistry({ clock, journal: (entry) => daemonJournal(entry) })
 
   // ── ДОМ ИДУЩИХ ПОПЫТОК: ОДИН НА ОБЕ СТОРОНЫ ──────────────────────────────────────────────
   //
