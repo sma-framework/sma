@@ -52,13 +52,10 @@
  */
 
 import {
-  buildClaudeArgs,
-  buildCodexArgs,
   buildAccountEnv,
   buildTaskPrompt,
   assertProfileParity,
   expectedModelEffort,
-  codexSandboxFor,
   codexWorkspaceWriteSupport,
   codexSandboxSourceFor,
   codexSandboxRefusal,
@@ -72,6 +69,10 @@ import { homedir as osHomedir } from 'node:os'
 import { join } from 'node:path'
 
 import { expandHome } from './readiness.mjs'
+// КАКАЯ ЭТО ПОЛОСА — ОДНОЙ СТРОКОЙ ТАБЛИЦЫ, а не сравнением имени в четырёх местах этого
+// файла. Двоичный файл, раскладка решений по флагам и перевод гранта в границу запуска
+// спрашиваются у неё; всё, что таблица о полосе не говорит, по-прежнему решается здесь.
+import { laneAdapter } from './provider-adapter.mjs'
 // HOW a named program is started on this operating system — the last step of the composition,
 // and the only one that is about the machine rather than about the task. See step (7).
 import { resolveWorkerBin } from './resolve-bin.mjs'
@@ -112,9 +113,13 @@ export class UnknownStageError extends Error {
   }
 }
 
-/** The default binaries. Which one runs is the route's provider; WHERE it lives is PATH's job. */
-export const CLAUDE_BIN = 'claude'
-export const CODEX_BIN = 'codex'
+/**
+ * The default binaries. Which one runs is the route's provider; WHERE it lives is PATH's job.
+ *
+ * ОБЪЯВЛЕНЫ ТЕПЕРЬ В ТАБЛИЦЕ ПОЛОС и отдаются отсюда наружу прежними именами: имя двоичного
+ * файла — свойство полосы, и этот сборщик его спрашивает, а не выбирает.
+ */
+export { CLAUDE_BIN, CODEX_BIN } from './provider-adapter.mjs'
 
 /** Names that carry an account secret and are set for the child DELIBERATELY, never inherited. */
 const ALWAYS_STRIPPED = Object.freeze(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'])
@@ -294,8 +299,11 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
     }
 
     // ── (2) WHICH CLI ───────────────────────────────────────────────────────────
+    // ПОЛОСА БЕРЁТСЯ ИЗ ТАБЛИЦЫ, А НЕ УГАДЫВАЕТСЯ ИМЕНЕМ. Маршрут, не назвавший поставщика,
+    // читается полосой по умолчанию — ровно как читался веткой `else` до таблицы, только
+    // теперь это объявлено там, где о полосах говорят, а не подразумевается здесь.
     const provider = String(route.provider ?? worker.provider ?? 'claude')
-    const isCodex = provider === 'codex'
+    const lane = laneAdapter(provider)
 
     // ── (3) MODEL AND EFFORT ────────────────────────────────────────────────────
     // Taken from the SAME function the parity guard measures against, so the assertion below
@@ -329,72 +337,66 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
     if (model !== null) argOpts.model = model
     if (effort !== null) argOpts.effort = effort
 
-    let bin
-    let args
     // ОДНО ЧТЕНИЕ КОНВЕРТА НА ДВА ВОПРОСА: какую песочницу поставить на командную строку и
     // сможет ли эта машина её исполнить (шаг 5b). Второе решение, посчитанное из второго
     // выражения, — это ровно тот способ отказать в одной песочнице, а запустить в другой.
-    const codexSandbox = isCodex ? codexSandboxFor(options.allowedTools) : null
-    if (isCodex) {
-      bin = CODEX_BIN
-      // THE ENVELOPE REACHES THIS LANE TOO — as a sandbox, because that is the only shape
-      // its CLI has for the question. The other lane hands the same grant over as
-      // `--allowedTools`; here the grant that includes an editor and a shell becomes
-      // `workspace-write`, and a grant that includes neither becomes `read-only`. One
-      // derivation, so the checker and the worker cannot end up bounded by two different
-      // readings of one envelope.
-      args = buildCodexArgs({ ...argOpts, sandbox: codexSandbox })
-    } else {
-      bin = CLAUDE_BIN
-      // The live attempt log is the reason for this flag: without it a session that delegates
-      // to subagents goes silent for minutes and the screen has a spinner and nothing else.
-      // The envelope's tool grant travels WITH the spawn. Policy that is computed and never
-      // reaches the process is not policy but bookkeeping — and for this fleet's whole life
-      // it left every worker read-only: the child refused Edit on sight, the attempt died as
-      // «no receipt», and no screen could name the cause (12.08.2026).
-      args = buildClaudeArgs({
-        ...argOpts,
-        // HOW FAR THIS ATTEMPT MAY WALK, carried to the process rather than kept as a setting.
-        //
-        // A headless worker has nobody to stop it: handed work it cannot finish, it re-reads,
-        // re-tries and re-reasons until the money runs out, and every one of those turns is a
-        // subscription minute burnt in a circle at three in the morning. The ceiling is the one
-        // number that turns that into a stop — and a stop only exists if the number is HERE, in
-        // the argument array of the spawn, rather than in a field somebody means to read later.
-        //
-        // ЧИСЛО ТЕПЕРЬ НЕ ОДНО НА ВСЁ. Настройка человека осталась базой; сколько получит эта
-        // работа — посчитано выше по её объявленному размеру и по потолкам, которые она уже
-        // сожгла. Эта строка по-прежнему остаётся последним отрезком дороги между решением и
-        // процессом, который обязан ему подчиниться.
-        maxTurns: turnBudget.cap,
-        // WHAT WOKE THIS ATTEMPT, AND WHETHER IT MAY CONTINUE THE PREVIOUS SESSION — decided by
-        // the tick, which is the only place that knows, and DELIVERED HERE so the builder's own
-        // fresh-session lock finally stands on the path a task takes.
-        //
-        // It did not, until this line. The lock refuses a continuation to every wake that must
-        // start clean, and the tick used to append the continuation onto an ALREADY ASSEMBLED
-        // array — past the builder and therefore past the lock. Written, covered, green, and
-        // guarding nothing on this road. Nothing new is invented here: the wake kind travels,
-        // and the rule that was always there does the refusing.
-        ...(options.wakeKind ? { wakeKind: String(options.wakeKind) } : {}),
-        ...(options.resumeId ? { resumeId: String(options.resumeId) } : {}),
-        // The per-spawn MCP config, when the tick wrote one. The path is all that travels: the
-        // file itself is built by the arg module from the ENABLED registry entries only.
-        ...(options.mcpConfigPath ? { mcpConfigPath: String(options.mcpConfigPath) } : {}),
-        forwardSubagentText: options.forwardSubagentText === true,
-        ...(Array.isArray(options.allowedTools) && options.allowedTools.length > 0
-          ? { allowedTools: options.allowedTools }
-          : {}),
-        // AND THE REFUSAL TRAVELS BESIDE THE GRANT. The envelope's human-only actions —
-        // the ones a person keeps for himself — arrive here already translated into tool
-        // patterns, and this line is the last stretch of road between that decision and the
-        // process that has to obey it. An empty list changes the argument array by not one
-        // byte, so every spawn that names no refusal is assembled exactly as before.
-        ...(Array.isArray(options.disallowedTools) && options.disallowedTools.length > 0
-          ? { disallowedTools: options.disallowedTools }
-          : {}),
-      })
-    }
+    //
+    // THE ENVELOPE REACHES EVERY LANE — each in the shape its CLI has for the question. One
+    // lane hands the grant over as `--allowedTools`, and its sandbox is therefore null; the
+    // other has no tool flags at all, so a grant that includes an editor and a shell becomes
+    // `workspace-write` and a grant that includes neither becomes `read-only`. ОДНО
+    // ВЫРАЖЕНИЕ НА ОБЕ ДВЕРИ (таблица полос): страж и работник не могут оказаться ограничены
+    // двумя разными прочтениями одного конверта.
+    const codexSandbox = lane.sandboxOf(options.allowedTools)
+    let bin = lane.bin
+    // ЧТО РЕШЕНО О ЗАПУСКЕ — ОДНИМ НАБОРОМ, А РАСКЛАДКА ПО ФЛАГАМ — ЗА ПОЛОСОЙ. Раньше здесь
+    // стояли две ветки, и каждая знала про свой CLI; теперь набор один, а КАКИЕ из этих решений
+    // командная строка правда унесёт, объявлено в строке полосы — включая то, чего она унести
+    // не может (у `codex exec` нет флага ни для потолка ходов, ни для списка инструментов).
+    //
+    // The live attempt log is the reason the tool grant is in this bag at all: policy that is
+    // computed and never reaches the process is not policy but bookkeeping — and for this
+    // fleet's whole life it left every worker read-only: the child refused Edit on sight, the
+    // attempt died as «no receipt», and no screen could name the cause (12.08.2026).
+    let args = lane.argsOf({
+      ...argOpts,
+      sandbox: codexSandbox,
+      // HOW FAR THIS ATTEMPT MAY WALK, carried to the process rather than kept as a setting.
+      //
+      // A headless worker has nobody to stop it: handed work it cannot finish, it re-reads,
+      // re-tries and re-reasons until the money runs out, and every one of those turns is a
+      // subscription minute burnt in a circle at three in the morning. The ceiling is the one
+      // number that turns that into a stop — and a stop only exists if the number is HERE, in
+      // the argument array of the spawn, rather than in a field somebody means to read later.
+      //
+      // ЧИСЛО ТЕПЕРЬ НЕ ОДНО НА ВСЁ. Настройка человека осталась базой; сколько получит эта
+      // работа — посчитано выше по её объявленному размеру и по потолкам, которые она уже
+      // сожгла. Эта строка по-прежнему остаётся последним отрезком дороги между решением и
+      // процессом, который обязан ему подчиниться.
+      maxTurns: turnBudget.cap,
+      // WHAT WOKE THIS ATTEMPT, AND WHETHER IT MAY CONTINUE THE PREVIOUS SESSION — decided by
+      // the tick, which is the only place that knows, and DELIVERED HERE so the builder's own
+      // fresh-session lock finally stands on the path a task takes.
+      //
+      // It did not, until this line. The lock refuses a continuation to every wake that must
+      // start clean, and the tick used to append the continuation onto an ALREADY ASSEMBLED
+      // array — past the builder and therefore past the lock. Written, covered, green, and
+      // guarding nothing on this road. Nothing new is invented here: the wake kind travels,
+      // and the rule that was always there does the refusing.
+      ...(options.wakeKind ? { wakeKind: String(options.wakeKind) } : {}),
+      ...(options.resumeId ? { resumeId: String(options.resumeId) } : {}),
+      // The per-spawn MCP config, when the tick wrote one. The path is all that travels: the
+      // file itself is built by the arg module from the ENABLED registry entries only.
+      ...(options.mcpConfigPath ? { mcpConfigPath: String(options.mcpConfigPath) } : {}),
+      forwardSubagentText: options.forwardSubagentText === true,
+      allowedTools: options.allowedTools,
+      // AND THE REFUSAL TRAVELS BESIDE THE GRANT. The envelope's human-only actions —
+      // the ones a person keeps for himself — arrive here already translated into tool
+      // patterns, and this line is the last stretch of road between that decision and the
+      // process that has to obey it. An empty list changes the argument array by not one
+      // byte, so every spawn that names no refusal is assembled exactly as before.
+      disallowedTools: options.disallowedTools,
+    })
 
     // THE GUARD THAT SCREAMS — imported, never re-implemented here. It throws
     // ProfileParityError naming the field that diverged. It is handed the account's OWN
@@ -445,7 +447,10 @@ export function createBuildArgs({ config = {}, env = process.env, fsImpl, homedi
     // starts, burns a window and dies inside the child process on an authentication error no
     // screen out here can name — which is precisely the failure class this file was written
     // to end.
-    if (isCodex) {
+    // КОМУ ЧЕКАНИТСЯ ДОМ ЗАДАЧИ — СПРАШИВАЕТСЯ У ПОЛОСЫ, а не у её имени. Сам посев остался
+    // здесь: он трогает диск и бросает именованные отказы, и переносить его в таблицу вместе с
+    // объявлением полосы значило бы менять две вещи одним движением.
+    if (lane.seedsTaskHome) {
       const seeded = seedCodexHome({
         home: spawnEnv.CODEX_HOME,
         authSources: codexAuthSources(worker.account, env, homedir),
