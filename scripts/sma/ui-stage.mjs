@@ -99,7 +99,7 @@ import { fileURLToPath } from 'node:url'
 
 import { readConfigOnDisk } from '../../daemon/src/config-restart.mjs'
 import { selectProject } from '../../daemon/src/config.mjs'
-import { appendTurn, readHistory } from '../../daemon/src/front/chat.mjs'
+import { appendTurn, handleChatTurn, listConversations, readHistory } from '../../daemon/src/front/chat.mjs'
 import { createEventHub } from '../../daemon/src/front/events.mjs'
 import { readHarness } from '../../daemon/src/front/harness.mjs'
 import { attemptIdFor } from '../../daemon/src/front/journal.mjs'
@@ -114,6 +114,7 @@ import {
 import { WORDS_EDITABLE_STATUSES } from '../../daemon/src/queue/adapter.mjs'
 import { createAttemptLogWriter, readAttemptLog, recordAttempt } from '../../daemon/src/queue/attempt-ledger.mjs'
 import { readCoordinationLedger, readMergeJournal } from '../../daemon/src/main.mjs'
+import { searchHistory } from './lib/history-search.mjs'
 import { MERGE_SLOT_NAME } from './lib/constants.mjs'
 import { scopeClaimSlug } from './lib/collision.mjs'
 import { claimSlot } from './lib/claims.mjs'
@@ -431,10 +432,35 @@ async function main() {
       // composition root hands over the very same reader, so the scene grows no second parser
       // of `.sma/` and cannot show a shape the product stopped writing.
       deriveCoordination: (args) => deriveCoordination({ ...args, readLedger: readCoordinationLedger }),
-      // The transcript, read the way the daemon reads it. The engine that would WRITE a turn
-      // (handleChatTurn, which spawns a child) is deliberately absent: a scene may show a
-      // conversation, it may not start one.
+      // The transcript, read the way the daemon reads it — and the list of threads beside it,
+      // which is how the screen finds a past conversation at all.
       readChatHistory: readHistory,
+      listChatConversations: listConversations,
+      // ═══ СЦЕНА ВЕДЁТ РАЗГОВОР, КОТОРЫЙ ЧИТАЕТ, И НЕ ВЕДЁТ ТОГО, КОТОРЫЙ ЗАПУСКАЕТ ═══
+      // Прежде движок хода не выдавался вовсе — «сцена может показать разговор, но не начать
+      // его», — и это отрезало от живого прогона ВСЕ ветки-факты, которые ничего не начинают:
+      // они отвечают по данным, мгновенно и бесплатно. Теперь движок выдан, а способность, из-за
+      // которой он был отрезан, — нет: порождатель сессий здесь ОТКАЗЫВАЕТ вслух, поэтому
+      // открытый вопрос на сцене честно говорит, что ответить не вышло, и ни один процесс не
+      // поднимается. Ровно тот же шов подставляет сьют, доказывая, что ответ-факт не зовёт модель.
+      handleChatTurn,
+      spawnWorker: () => {
+        throw new Error('сцена не поднимает сессий — здесь можно только читать')
+      },
+      // ЧЕТЫРЕ КНИГИ — КНИГИ ЭТОЙ СЦЕНЫ, а не машины оператора. Каталоги названы поимённо, и
+      // стенограммы указаны в пустой каталог сцены с пустым окружением: настоящие стенограммы
+      // движка — это переписка человека, и живому прогону окна в ней делать нечего.
+      searchHistory: ({ query, limit } = {}) =>
+        searchHistory({
+          query,
+          limit,
+          journalDir: join(projects[0].path, '.sma', 'journal'),
+          execDir: join(projects[0].path, '.sma', 'exec'),
+          corpusDir: join(projects[0].path, '.claude', 'memory'),
+          logsDir: join(home, 'logs'),
+          env: {},
+          repoRoot: projects[0].path,
+        }),
       // Agents, skills, both stores and the connections state. Read-only; every applier that
       // could change any of it stays unwired.
       readHarness,

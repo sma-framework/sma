@@ -1281,6 +1281,28 @@ export function createDaemon(o = {}) {
         // the «Разговор» engine — INJECTED, because its free branch spawns a child: a
         // capability like that reaches a request path only through deliberate wiring.
         handleChatTurn,
+        // ЧЕТЫРЕ КНИГИ РАЗГОВОРУ — ТЕМ ЖЕ ЧИТАТЕЛЕМ, КОТОРЫМ ИХ ЧИТАЕТ ТЕРМИНАЛ. Второго
+        // читателя журналов, уроков и стенограмм в продукте не заводится: потоковое чтение
+        // стенограмм написано и измерено в одном месте, и вопрос из окна идёт туда же. Что
+        // композируется ЗДЕСЬ — только адреса книг подключённого проекта; ленивый импорт по
+        // образцу соседних читателей, чтобы старт демона за это не платил.
+        searchHistory:
+          o.searchHistory ??
+          (async ({ query, limit } = {}) => {
+            const projectDir = connectedProjectDir() ?? repoDir ?? process.cwd()
+            const [books, constants] = await Promise.all([
+              import('../../scripts/sma/lib/history-search.mjs'),
+              import('../../scripts/sma/lib/constants.mjs'),
+            ])
+            return books.searchHistory({
+              query,
+              limit,
+              journalDir: join(projectDir, constants.JOURNAL_DIR),
+              execDir: join(projectDir, constants.EXEC_DIR),
+              corpusDir: join(projectDir, '.claude', 'memory'),
+              repoRoot: projectDir,
+            })
+          }),
         readChatHistory: readHistory,
         // СПИСОК РАЗГОВОРОВ и имя, данное рукой: книга та же, читается она по-другому —
         // сгруппированной по нити, а не одной сплошной лентой (слово владельца 31.08).

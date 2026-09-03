@@ -1,4 +1,12 @@
-import type { ChatAnswerLink, ChatAttachment, ChatDecision, ChatDraft, ChatSpendShare, ChatTaskRef } from '../../api/types'
+import type {
+  ChatAnswerLink,
+  ChatAttachment,
+  ChatDecision,
+  ChatDraft,
+  ChatSource,
+  ChatSpendShare,
+  ChatTaskRef,
+} from '../../api/types'
 import { statusTone, statusWord } from '../../shell/format'
 import { DecisionProposal } from './DecisionProposal'
 import { DraftCard } from './DraftCard'
@@ -36,6 +44,8 @@ export interface ChatEntry {
   link?: ChatAnswerLink
   /** Documents this reply named. The transcript DOES keep these — a reply still points. */
   attachments?: ChatAttachment[]
+  /** Записи книг, которыми отвечен вопрос о прошлом. Книга тоже их хранит — см. Sources. */
+  sources?: ChatSource[]
 }
 
 /** The clock face of a turn. A turn with no moment shows nothing rather than a guess. */
@@ -174,6 +184,34 @@ function Attachments({
   )
 }
 
+/**
+ * Записи книг, которыми отвечен вопрос о прошлом — цитата за цитатой.
+ *
+ * НЕ КНОПКИ, И ЭТО ЧЕСТНО. Дверь документов открывает один корень дерева планирования, а
+ * журналы, прогоны и стенограммы лежат в других местах; кнопка, которой заведомо ответят
+ * отказом, учит не доверять и тем кнопкам, которые работают. Поэтому здесь ТЕКСТ — книга, путь
+ * и время сверху, сама строка записи ниже, — и путь показан целиком, чтобы цитату можно было
+ * найти своей рукой.
+ */
+function Sources({ sources }: { sources: ChatSource[] }) {
+  return (
+    <div className="flex max-w-[640px] flex-col gap-1.5">
+      {sources.map((s, i) => (
+        <div key={`${s.path}-${i}`} className="rounded-[10px] border border-bd bg-surf px-[11px] py-[9px]">
+          <div className="flex items-baseline gap-2">
+            <span className="flex-none rounded-full bg-track px-2 py-[2px] text-[10.5px] font-semibold text-tx2">
+              {s.book}
+            </span>
+            <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-tx3">{s.path}</span>
+            {s.ts ? <span className="flex-none text-[10.5px] text-tx3">{timeOf(s.ts)}</span> : null}
+          </div>
+          <div className="mt-1.5 text-[12px] break-words text-tx2">{s.fragment}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function HumanTurn({ entry }: { entry: ChatEntry }) {
   const time = timeOf(entry.ts)
   return (
@@ -232,6 +270,7 @@ function LeadTurn({
           <SpendLines spend={entry.spend} link={entry.link} onFollow={onFollowLink} />
         ) : null}
         {entry.taskRef ? <TaskLink taskRef={entry.taskRef} onOpen={onOpenTask} /> : null}
+        {entry.sources && entry.sources.length > 0 ? <Sources sources={entry.sources} /> : null}
         {entry.attachments && entry.attachments.length > 0 ? (
           <Attachments attachments={entry.attachments} onOpen={onOpenAttachment} />
         ) : null}
