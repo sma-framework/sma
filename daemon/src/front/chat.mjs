@@ -1007,6 +1007,13 @@ export const HISTORY_NO_QUERY_TEXT =
  * ЧИСТАЯ ФУНКЦИЯ над тем, что вернул поиск: тест зовёт её напрямую, а ход разговора отличается
  * от неё ровно одним — походом за данными.
  *
+ * КОРЕНЬ ПУТИ — ТОТ, ПО КОТОРОМУ ИСКАЛИ, а не тот, в котором запущен демон. Читатель книг
+ * возвращает дерево, чьи журналы, прогоны и уроки он открыл; совпадает оно с каталогом демона
+ * только тогда, когда подключённый проект И ЕСТЬ каталог демона. Обычный случай — другой
+ * каталог: каждая находка лежала вне каталога демона, и относительный путь, обещанный обоими
+ * README, схлопывался в голое имя файла. `repoDir` остаётся запасным — для читателя, который
+ * своего корня не называет.
+ *
  * @param {{query?:string, found?:object, repoDir?:string}} args
  * @returns {{kind:'fact', text:string, sources:object[]}}
  */
@@ -1014,6 +1021,8 @@ export function answerHistory({ query, found, repoDir } = {}) {
   const asked = String(query ?? '').trim()
   const all = found && Array.isArray(found.hits) ? found.hits : []
   const hits = all.slice(0, HISTORY_HITS_SHOWN)
+  const searched = found && typeof found.repoRoot === 'string' ? found.repoRoot.trim() : ''
+  const root = searched !== '' ? searched : repoDir
   if (hits.length === 0) {
     return {
       kind: 'fact',
@@ -1026,7 +1035,7 @@ export function answerHistory({ query, found, repoDir } = {}) {
 
   const sources = hits.map((h) => ({
     book: HISTORY_BOOK_TITLES[h && h.source] ?? String((h && h.source) ?? ''),
-    path: recordPath(h && h.file, repoDir),
+    path: recordPath(h && h.file, root),
     ts: (h && h.ts) ?? null,
     fragment: String((h && h.fragment) ?? ''),
   }))
@@ -1061,6 +1070,13 @@ export function historyCitation(source) {
  *
  * Отказ книг не роняет ход и не превращается в догадку: человек читает, что случилось, и
  * спрашивает снова.
+ *
+ * ОДИН ПОХОД В КНИГИ НА ХОД. Расширяющий заход — то же слово человека, только одно — нужен
+ * ровно тогда, когда по трём словам не нашлось ничего, и вторым вызовом он стоил ВТОРОГО
+ * чтения всех четырёх книг за один вопрос: журналы, прогоны, уроки и стенограммы открывались
+ * заново, чтобы перечитать те же строки другим матчером. Поэтому оба запроса называются
+ * СРАЗУ: читатель проходит книги один раз и отдаёт две выборки, а решение, какая из них
+ * отвечает человеку, остаётся здесь — это политика разговора, а не свойство книг.
  */
 async function answerHistoryTurn({ text, deps = {} } = {}) {
   const query = historyQuery(text)
@@ -1069,27 +1085,22 @@ async function answerHistoryTurn({ text, deps = {} } = {}) {
     return { kind: 'fact', text: HISTORY_NO_DOOR_TEXT, sources: [], error: 'no-history-door' }
   }
 
-  const ask = async (q) => {
-    try {
-      return await deps.searchHistory({ query: q, limit: HISTORY_ASK_LIMIT })
-    } catch {
-      return null // an unreadable book is a sentence to the human, never a broken turn
-    }
+  const wider = historyWidened(query)
+  let found
+  try {
+    found = await deps.searchHistory({ query: wider ? [query, wider] : query, limit: HISTORY_ASK_LIMIT })
+  } catch {
+    found = null // an unreadable book is a sentence to the human, never a broken turn
   }
-
-  let asked = query
-  let found = await ask(asked)
   if (!found) return { kind: 'fact', text: HISTORY_UNREADABLE_TEXT, sources: [], error: 'history-unreadable' }
 
-  const wider = historyWidened(query)
-  if ((Array.isArray(found.hits) ? found.hits.length : 0) === 0 && wider) {
-    const second = await ask(wider)
-    if (second && Array.isArray(second.hits) && second.hits.length > 0) {
-      found = second
-      asked = wider
-    }
+  const hits = Array.isArray(found.hits) ? found.hits : []
+  const second = Array.isArray(found.perQuery) ? found.perQuery[1] : null
+  const wide = second && Array.isArray(second.hits) ? second.hits : []
+  if (hits.length === 0 && wider && wide.length > 0) {
+    return answerHistory({ query: wider, found: { ...found, hits: wide }, repoDir: deps.repoDir })
   }
-  return answerHistory({ query: asked, found, repoDir: deps.repoDir })
+  return answerHistory({ query, found, repoDir: deps.repoDir })
 }
 
 // ── documents mentioned in a reply become ATTACHMENTS ──────────────────────────
