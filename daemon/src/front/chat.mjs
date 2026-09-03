@@ -1768,13 +1768,33 @@ export const STOP_BEFORE_START_TTL_MS = 120_000
  * и первая же регистрация под этим именем исполняет её сразу — ход, приговорённый до рождения,
  * не начинает работу. Приговор одноразовый и с давностью: он относится к той попытке, которую
  * человек остановил, а не к имени задачи навсегда.
+ *
+ * И ПРИГОВОР ВЫНОСИТ НЕ ВСЯКИЙ, КТО ЗОВЁТ `stop`. Он ПРОСИТСЯ отдельным словом (`{condemn:true}`),
+ * и просит его ровно одна дверь — та, которой человек СНИМАЕТ РАБОТУ. Дверей, зовущих `stop`,
+ * четыре, и остальные три означают совсем другое: поправка «перебить сейчас» обрывает ход, чтобы
+ * работа поехала дальше, — строку она не закрывает; сторож живости добивает повисший процесс;
+ * дверь разговора кончает беседу. Пока приговор выносился из любой из них, поправка к работе,
+ * которая ещё не запущена, убивала её следующий ЗАКОННЫЙ запуск, и убивала молча.
+ *
+ * И ИСПОЛНЕННЫЙ ПРИГОВОР НАЗЫВАЕТ СЕБЯ. Убийство при рождении не оставляло ни строки нигде: ход
+ * не начинался, карточка молчала, журнал молчал, и человек, чья работа не поехала, не имел ни
+ * одного способа узнать почему. Строка пишется в журнал демона тем же швом, каким о себе
+ * рассказывает тик.
  */
-export function createTurnRegistry({ clock = Date.now } = {}) {
-  const live = new Map() // turnId -> { kill, alive, stopped } — live handles ONLY, never truth
+export function createTurnRegistry({ clock = Date.now, journal = null } = {}) {
+  const live = new Map() // turnId -> { kill, alive, stopped, attemptId } — live handles ONLY, never truth
   const condemned = new Map() // turnId -> минута приговора; приговор ждёт ход, который ещё не начался
   const nowMs = () => {
     const t = Number(clock())
     return Number.isFinite(t) ? t : 0
+  }
+  const say = (entry) => {
+    if (typeof journal !== 'function') return
+    try {
+      journal(entry)
+    } catch {
+      /* рассказ о приговоре никогда не решает судьбу хода */
+    }
   }
   /** Приговор действует, пока не истёк срок; истёкший стирается тем же чтением. */
   const condemnedNow = (id) => {
@@ -1786,10 +1806,23 @@ export function createTurnRegistry({ clock = Date.now } = {}) {
     }
     return true
   }
+  /**
+   * ПРОСРОЧЕННЫЕ ПРИГОВОРЫ УБИРАЮТСЯ САМИ. Прежде запись стиралась только чтением по СВОЕМУ
+   * имени: приговор, вынесенный работе, которая так и не запустилась, не читался больше никогда
+   * и оставался в карте на всю жизнь демона. Уборка идёт на каждой регистрации — то есть ровно
+   * тогда, когда карта могла бы расти, и не заводит ни одного собственного таймера.
+   */
+  const sweepCondemned = () => {
+    const t = nowMs()
+    for (const [id, at] of condemned) {
+      if (t - at > STOP_BEFORE_START_TTL_MS) condemned.delete(id)
+    }
+  }
   return {
-    register(turnId, kill, alive) {
+    register(turnId, kill, alive, attemptId = null) {
       if (!turnId) return
       const id = String(turnId)
+      sweepCondemned()
       // ПРИГОВОР ИСПОЛНЯЕТСЯ ПРИ РОЖДЕНИИ. Записи не остаётся: останавливать нечего, а живая
       // ручка под именем, которое человек уже снял, — это ровно тот невидимый ход, из-за
       // которого приговор и заведён.
@@ -1800,9 +1833,31 @@ export function createTurnRegistry({ clock = Date.now } = {}) {
         } catch {
           /* a child that cannot be killed is still a turn the founder ended */
         }
+        say({
+          type: 'turn.killed_at_birth',
+          turnId: id,
+          detail: `ход убит при рождении по отмене, сказанной до его запуска: ${id}`,
+        })
         return
       }
-      live.set(id, { kill, alive: typeof alive === 'function' ? alive : null, stopped: false })
+      live.set(id, {
+        kill,
+        alive: typeof alive === 'function' ? alive : null,
+        stopped: false,
+        attemptId: typeof attemptId === 'string' && attemptId !== '' ? attemptId : null,
+      })
+    },
+    /**
+     * attemptOf(turnId) → имя ЗАХОДА, чью ручку держит этот демон под этим именем строки.
+     *
+     * Дверь отмены убивает по имени СТРОКИ, а место в доме идущих попыток принадлежит ЗАХОДУ.
+     * Спросить о заходе больше не у кого: строка не различает два своих захода, а угадать —
+     * значит однажды снять место живого процесса. `null` — «сказать нечего», и тогда место
+     * дождётся `finally` своего прохода.
+     */
+    attemptOf(turnId) {
+      const t = live.get(String(turnId))
+      return t && typeof t.attemptId === 'string' ? t.attemptId : null
     },
     /** has(turnId) → держит ли ЭТОТ демон живую ручку под этим именем прямо сейчас. */
     has(turnId) {
@@ -1826,17 +1881,21 @@ export function createTurnRegistry({ clock = Date.now } = {}) {
       }
     },
     /**
-     * stop(turnId) → true if a live turn was told to die; false is «nothing to stop».
+     * stop(turnId, {condemn}) → true if a live turn was told to die; false is «nothing to stop».
      *
-     * «Нечего останавливать» ЗАПОМИНАЕТСЯ: ход мог ещё не родиться, и тогда честный «нет» —
-     * это не конец разговора, а приговор, который исполнит регистрация (см. шапку). Ответ при
-     * этом не врёт: живого ребёнка в эту секунду действительно не убили.
+     * «Нечего останавливать» ЗАПОМИНАЕТСЯ — но только когда об этом попросили. Ход мог ещё не
+     * родиться, и тогда честный «нет» — это не конец разговора, а приговор, который исполнит
+     * регистрация (см. шапку). Ответ при этом не врёт: живого ребёнка в эту секунду не убили.
+     *
+     * ПРОСИТ ПРИГОВОР ТОЛЬКО ТА ДВЕРЬ, КОТОРАЯ СНИМАЕТ РАБОТУ. Умолчание — не просить: остальные
+     * зовущие обрывают ход, чтобы работа поехала дальше, и приговор от их имени убивал бы её же
+     * следующий законный запуск.
      */
-    stop(turnId) {
+    stop(turnId, { condemn = false } = {}) {
       const id = String(turnId)
       const t = live.get(id)
       if (!t) {
-        if (id) condemned.set(id, nowMs())
+        if (id && condemn) condemned.set(id, nowMs())
         return false
       }
       t.stopped = true
@@ -1856,6 +1915,10 @@ export function createTurnRegistry({ clock = Date.now } = {}) {
     },
     get size() {
       return live.size
+    },
+    /** Сколько приговоров ждёт своего хода — чтобы «карта не растёт» была проверяемым словом. */
+    get condemnedSize() {
+      return condemned.size
     },
   }
 }
