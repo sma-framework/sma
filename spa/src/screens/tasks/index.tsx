@@ -19,6 +19,7 @@ import {
   buildBoard,
   buildUnits,
   countColumns,
+  doneColumnTail,
   doneRowIndex,
   doneUnfoldRow,
   doneView,
@@ -99,22 +100,18 @@ const COLUMN_TONE: Record<BoardColumn, string> = {
   done: 'text-ok-tx',
 }
 
-/**
- * СКОЛЬКО ЗАКРЫТЫХ КАРТОЧЕК ВИДНО в свёрнутом столбике «Готово».
+/*
+ * СКОЛЬКО ЗАКРЫТЫХ КАРТОЧЕК ВИДНО в свёрнутом столбике «Готово» и что говорится под ними —
+ * считает проекция (`doneColumnTail`), а не эта разметка.
  *
- * Столбик закрытого растёт без конца и вытолкнул бы работающие столбики вверх экрана, поэтому
- * он свёрнут в счётчик. Но свёрнутый наглухо, он читался бы как «там ничего не происходит»,
- * поэтому последние карточки остаются: видно, ЧЕМ именно закрылось.
+ * ЧТО ИМЕННО «ПОСЛЕДНИЕ» — ВОПРОС КО ВРЕМЕНИ. Прежде эти две брались из общего порядка списка,
+ * а он идёт по состоянию: «не получилось» стоит в нём выше «готово», и в столбике висели два
+ * самых КРАСНЫХ, а не два самых свежих (замер 02.09: срывы 26.08 и 28.08 над сотней принятых
+ * работ). Порядок здесь считает `doneView` — по отметке закрытия.
  *
- * ЧТО ИМЕННО «ПОСЛЕДНИЕ» — ТЕПЕРЬ ВОПРОС КО ВРЕМЕНИ. Прежде эти две брались из общего порядка
- * списка, а он идёт по состоянию: «не получилось» стоит в нём выше «готово», и в столбике
- * висели два самых КРАСНЫХ, а не два самых свежих (замер 02.09: срывы 26.08 и 28.08 над сотней
- * принятых работ). Порядок здесь считает `doneView` — по отметке закрытия.
- *
- * И СВЁРНУТОЕ БОЛЬШЕ НЕ ЗАПЕРТО: остальное открывается кнопкой рядом, а не подписывается
- * надписью «свёрнуты», за которой нет двери.
+ * А СКОЛЬКО СКРЫТО — вопрос к тому, чего на экране нет, и он тоже уехал в проекцию: подпись,
+ * считавшая своё число рядом с лентой, считала его по ДРУГОМУ списку, чем лента рисовала.
  */
-const DONE_SHOWN = 2
 
 function Counter({ n, label, tone }: { n: number; label: string; tone: string }) {
   return (
@@ -231,6 +228,8 @@ export function Screen() {
    */
   const doneUnits = useMemo(() => board.find((c) => c.key === 'done')?.units ?? [], [board])
   const doneHead = useMemo(() => doneView({ units: doneUnits, tab: 'all', query: '', now: Date.now() }), [doneUnits])
+  /** Что столбик рисует и что честно называет скрытым — одним чтением той же проекции. */
+  const doneTail = useMemo(() => doneColumnTail(doneHead), [doneHead])
   const doneFull = useMemo(
     () => doneView({ units: doneUnits, tab: doneTab, query: doneQuery, now: Date.now() }),
     [doneUnits, doneTab, doneQuery],
@@ -547,16 +546,19 @@ export function Screen() {
                 {col.key === 'you' ? (
                   col.units.map((unit) => <WaitCard key={`${unit.kind}:${unit.id}`} unit={unit} onOpen={openUnit} />)
                 ) : col.key === 'done' ? (
-                  doneHead.rows
-                    .slice(0, DONE_SHOWN)
-                    .map((unit) => <UnitCard key={`${unit.kind}:${unit.id}`} unit={unit} onOpen={openDoneUnit} />)
+                  doneTail.rows.map((unit) => (
+                    <UnitCard key={`${unit.kind}:${unit.id}`} unit={unit} onOpen={openDoneUnit} />
+                  ))
                 ) : (
                   col.units.map((unit) => <UnitCard key={`${unit.kind}:${unit.id}`} unit={unit} onOpen={openUnit} />)
                 )}
 
-                {/* «ЕЩЁ N» — КНОПКА. Надписью здесь стояло ровно то же число, и за ним не было
-                    двери: сто девяносто шесть закрытых работ считались, но не открывались. */}
-                {col.key === 'done' && col.units.length > DONE_SHOWN ? (
+                {/* «ЕЩЁ N» — КНОПКА, И ЧИСЛО В НЕЙ — ТО, ЧЕГО НА ЭКРАНЕ НЕТ. Надписью здесь
+                    стояло ровно то же число, и за ним не было двери; а потом число стало
+                    считаться по всему столбику при ленте, рисующей только живое, — и при
+                    непустом архиве говорило меньше, чем скрыто. Считает его теперь проекция,
+                    и она же называет случай, когда живого не осталось вовсе. */}
+                {col.key === 'done' && doneTail.label ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -565,7 +567,7 @@ export function Screen() {
                     }}
                     className="px-0.5 text-left text-[10.5px] text-tx2 underline decoration-dotted underline-offset-2 hover:text-tx"
                   >
-                    ещё {col.units.length - DONE_SHOWN} — показать
+                    {doneTail.label} — показать
                   </button>
                 ) : null}
               </div>

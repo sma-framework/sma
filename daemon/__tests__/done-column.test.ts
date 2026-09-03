@@ -21,8 +21,12 @@ import { describe, it, expect } from 'vitest'
 
 import {
   ARCHIVE_AFTER_DAYS,
+  DONE_PAGE,
+  DONE_SHOWN,
   buildBoard,
   buildUnits,
+  doneColumnTail,
+  donePage,
   doneRowIndex,
   doneUnfoldRow,
   doneView,
@@ -232,6 +236,134 @@ describe('«Готово»: архив — то, о чём решение уже
     const v = view(rows)
     const seen = [...v.rows, ...v.archive].map((u) => u.id).sort()
     expect(seen).toEqual(doneColumn(rows).map((u) => u.id).sort())
+  })
+})
+
+describe('«Готово»: лента идёт страницами, а не одной стеной', () => {
+  /** Столько принятых работ, сколько их лежит на живой машине: страница здесь не одна. */
+  const many = (n: number): DoneRow[] =>
+    Array.from({ length: n }, (_, i) =>
+      accepted({ id: `d-${i}`, title: `Закрытая работа ${i}`, finishedAt: daysAgo((i + 1) / 24) }),
+    )
+
+  it('первая страница показывает страницу, а не весь список, и называет остаток', () => {
+    const rows = view(many(DONE_PAGE * 4 + 3)).rows
+    const first = donePage(rows, 1)
+    expect(first.rows).toHaveLength(DONE_PAGE)
+    expect(first.rest).toBe(rows.length - DONE_PAGE)
+  })
+
+  it('каждое нажатие добавляет ровно страницу, и последняя ничего не оставляет за собой', () => {
+    const rows = view(many(DONE_PAGE * 2 + 5)).rows
+    expect(donePage(rows, 2).rows).toHaveLength(DONE_PAGE * 2)
+    const last = donePage(rows, 3)
+    expect(last.rows).toHaveLength(rows.length)
+    // Ни одна строка не остаётся недостижимой: кнопка исчезает ровно тогда, когда показано всё.
+    expect(last.rest).toBe(0)
+  })
+
+  it('список короче страницы читается целиком и кнопки не получает', () => {
+    const rows = view(many(3)).rows
+    const only = donePage(rows, 1)
+    expect(only.rows).toHaveLength(3)
+    expect(only.rest).toBe(0)
+  })
+
+  it('архив листается той же страницей — свёрнутый архив не значит короткий', () => {
+    const stopped = Array.from({ length: DONE_PAGE + 7 }, (_, i) =>
+      doneRow({
+        id: `d-hand-${i}`,
+        title: `Снятый дубль ${i}`,
+        finishedAt: daysAgo(i / 24),
+        failed: { reason: 'manual', reasonLabel: 'Остановлено вручную', attemptsCount: 1 },
+      } as Partial<DoneRow>),
+    )
+    const v = view(stopped)
+    expect(v.archive).toHaveLength(DONE_PAGE + 7)
+    expect(donePage(v.archive, 1).rows).toHaveLength(DONE_PAGE)
+    expect(donePage(v.archive, 1).rest).toBe(7)
+  })
+
+  it('открытые страницы переживают обновление данных: окно — это ЧИСЛО страниц, а не запомненные строки', () => {
+    // Опрос состояния приносит новый список каждые несколько секунд. Память, устроенная как
+    // «последняя показанная строка», при таком обновлении либо теряет место, либо держит
+    // строки, которых в новом ответе уже нет.
+    const rows = many(DONE_PAGE * 3)
+    const before = donePage(view(rows).rows, 2)
+    expect(before.rows).toHaveLength(DONE_PAGE * 2)
+
+    // …и вот оно, обновление: закрылась ещё одна работа, проекция пересчиталась целиком.
+    const fresh = accepted({ id: 'd-fresh', title: 'Только что закрылась', finishedAt: daysAgo(0) })
+    const after = donePage(view([...rows, fresh]).rows, 2)
+
+    // Две страницы остались двумя — человек не вернулся к началу списка.
+    expect(after.rows).toHaveLength(DONE_PAGE * 2)
+    expect(after.rows[0].id).toBe('d-fresh')
+    // …и из прочитанного вытеснена ровно одна строка — та, что новая сдвинула за край окна.
+    const seen = new Set(after.rows.map((u) => u.id))
+    expect(before.rows.filter((u) => seen.has(u.id))).toHaveLength(DONE_PAGE * 2 - 1)
+  })
+})
+
+describe('«Готово»: подпись столбика называет то, чего на экране нет', () => {
+  const stoppedRow = (i: number): DoneRow =>
+    doneRow({
+      id: `d-hand-${i}`,
+      title: `Снятый дубль ${i}`,
+      finishedAt: daysAgo(i + 1),
+      failed: { reason: 'manual', reasonLabel: 'Остановлено вручную', attemptsCount: 1 },
+    } as Partial<DoneRow>)
+
+  it('при непустом архиве число считает и его: столбик рисует живое, а прячет и то, и другое', () => {
+    const rows = [accepted({ finishedAt: daysAgo(0.1) }), stoppedRow(1), stoppedRow(2), stoppedRow(3)]
+    const v = view(rows)
+    const tail = doneColumnTail(v)
+
+    // Видна ОДНА карточка: архивные в ленту столбика не идут вовсе.
+    expect(tail.rows.map((u) => u.id)).toEqual(['d-ok'])
+    // Скрыто ТРИ. Счёт «всё закрытое минус показанное» дал бы здесь два — при трёх спрятанных.
+    expect(tail.hidden).toBe(3)
+    expect(tail.label).toBe('ещё 3')
+    expect(doneColumn(rows)).toHaveLength(4)
+  })
+
+  it('когда живого не осталось вовсе, столбик говорит это словами, а не пустотой', () => {
+    const rows = [stoppedRow(1), stoppedRow(2), stoppedRow(3)]
+    const tail = doneColumnTail(view(rows))
+    expect(tail.rows).toHaveLength(0)
+    // Пустота под заголовком «ГОТОВО 3» читается как поломка экрана — и человек прав.
+    expect(tail.label).toBe('все 3 в архиве')
+    expect(tail.hidden).toBe(3)
+  })
+
+  it('живых больше, чем помещается, — считаются и они, и архив', () => {
+    const live = Array.from({ length: DONE_SHOWN + 4 }, (_, i) =>
+      accepted({ id: `d-ok-${i}`, title: `Принятая ${i}`, finishedAt: daysAgo(i / 24) }),
+    )
+    const tail = doneColumnTail(view([...live, stoppedRow(1), stoppedRow(2)]))
+    expect(tail.rows).toHaveLength(DONE_SHOWN)
+    expect(tail.hidden).toBe(4 + 2)
+    expect(tail.label).toBe('ещё 6')
+  })
+
+  it('показанное плюс скрытое равно столбику — при любом составе', () => {
+    const rows = [
+      accepted({ finishedAt: daysAgo(0.1) }),
+      failing({ finishedAt: daysAgo(1) }),
+      failing({ id: 'd-old', title: 'Старый срыв', finishedAt: daysAgo(ARCHIVE_AFTER_DAYS + 2) }),
+      stoppedRow(1),
+      stoppedRow(2),
+    ]
+    const tail = doneColumnTail(view(rows))
+    expect(tail.rows.length + tail.hidden).toBe(doneColumn(rows).length)
+  })
+
+  it('когда всё закрытое помещается в столбик, подписи нет вовсе', () => {
+    const tail = doneColumnTail(view([accepted({ finishedAt: daysAgo(0.1) })]))
+    expect(tail.rows).toHaveLength(1)
+    expect(tail.hidden).toBe(0)
+    // Кнопка «ещё 0 — показать» обещает дверь туда, где ничего нет.
+    expect(tail.label).toBeNull()
   })
 })
 
