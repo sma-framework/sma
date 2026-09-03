@@ -279,6 +279,10 @@ A mature suite has two tiers, and confusing them is what makes a twenty-minute t
 
 **Why this is a rule and not a preference:** the full suite spawns real processes by design, and several agents run on one machine at once. A worker who re-runs the full suite after every edit takes the machine away from every other worker, and all of them get slower — including that worker. One run is capped to a share of the machine's threads so several runs fit side by side, but three *full* runs where three *fast* runs would do are still three full runs.
 
+**The full suite runs in the FOREGROUND — never `run_in_background`, and never across the end of your turn.** Backgrounding it looks like a way not to wait; it is a way to lose the whole attempt. Your turn ends where you stop speaking, the background run ends with it, and the journal you meant to write *after* the run never gets a turn of its own. Measured overnight on 03.09.2026: 19 attempts closed with no journal, every one of them the same shape — suite backgrounded, an interim status message, turn over; one of them carried eleven commits that were thrown away and redone from zero. Waiting for the suite in the foreground is the last few minutes of the work, not lost time.
+
+**The journal block is the LAST action of the turn.** Commit, merge the trunk in, run the full suite — and only then, starting nothing else, write the approach note and the lesson. An interim status message in the middle of the work is not a substitute: what is read is the end of the session, not the intention.
+
 **What this does NOT change:** no test is deleted, skipped, or weakened. The fast tier is a strict subset run more often — it says "not broken yet", never "done". The full suite stays the only gate, and a claim of done without its receipt is not a claim.
 </test_tiers>
 
