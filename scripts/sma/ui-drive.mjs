@@ -117,8 +117,10 @@ registerSecretValues(
  * every place this file speaks in somebody's head; the first new error message re-opens the door.
  *
  * So the mask sits on the exit itself. Everything this process says out loud — its own lines, the
- * driver's lines, the text of any exception, caught or not — passes through it, and there is no
- * way to print past it. It costs one scan per chunk of output and removes the whole class.
+ * driver's lines, the text of any exception, caught or not — passes through it. What makes that
+ * more than a list of shapes somebody remembered is the pass above: the run knows the VALUES it
+ * must never print before it prints anything, so a key wearing a shape nobody listed — or no shape
+ * at all — is removed with the rest. It costs one scan per chunk of output.
  *
  * A CHUNK IS NOT A SENTENCE. Nothing obliges a writer to hand the mask a whole line: a key split
  * across two calls used to be printed whole, in order, with neither half matching anything. So the
