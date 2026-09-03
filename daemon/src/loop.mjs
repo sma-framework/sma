@@ -192,7 +192,9 @@ import {
   buildMcpConfigFile,
   isResumableSessionId,
   codexHomeFor,
+  codexGitObjectsRoot,
   discardCodexHome,
+  readCodexSandboxJournal,
   codexSandboxFor,
   codexWorkspaceWriteOutlook,
   codexSandboxRefusal,
@@ -404,7 +406,12 @@ function gateSpawnOptions(deps, config, task) {
  * второй вложен в первый; называется он всё равно, потому что «писаемый корень» — это договор
  * с чужим кодом, а не наше рассуждение о вложенности: песочница, раздающая права поштучно,
  * получила бы разрешение на родителя и ничего на ребёнка. У обычного клона оба ответа
- * совпадают, и список выходит ровно прежним — одна строка.
+ * совпадают, и второй вопрос ничего к списку не добавляет.
+ *
+ * И ТРЕТЬИМ — ХРАНИЛИЩЕ ОБЪЕКТОВ ОБЩЕГО КАТАЛОГА, по той же поштучной причине и по замеру
+ * 03.09.2026: с двумя корнями индекс писался, а `git commit` трижды падал на ЧТЕНИИ уже лежащих
+ * объектов («invalid object … for <файл>» на файлах, которых сессия не трогала). Про запрет
+ * чтения речи нет вовсе — снимок запретов в доме пуст (см. readCodexSandboxJournal).
  *
  * FAIL-OPEN, НО ВСЛУХ. Git молчит или его нет — спавн идёт прежним (полоса Claude этот список
  * не читает вовсе, и отказ убил бы её ни за что), а промах ложится в журнал: молчание здесь
@@ -415,6 +422,9 @@ function copyWriteSpawnOptions(deps, workDir) {
   if (typeof deps.execGit !== 'function') return {}
   if (typeof workDir !== 'string' || workDir.trim() === '') return {}
   const roots = []
+  const name = (root) => {
+    if (root && !roots.includes(root)) roots.push(root)
+  }
   for (const flag of ['--git-common-dir', '--git-dir']) {
     let answer = ''
     try {
@@ -428,7 +438,14 @@ function copyWriteSpawnOptions(deps, workDir) {
       writeLog(deps, { type: 'task.copy_git_dir_unknown', workDir, error: `git не назвал ${flag} копии` })
       continue
     }
-    if (!roots.includes(root)) roots.push(root)
+    name(root)
+    // И ХРАНИЛИЩЕ ОБЪЕКТОВ ОБЩЕГО КАТАЛОГА — ТРЕТЬЕЙ СТРОКОЙ, ПО ТОЙ ЖЕ ПРИЧИНЕ, ЧТО И ВТОРАЯ.
+    // Раздача прав идёт СПИСКОМ, а не деревом, и подкаталог, которого в списке нет, остаётся при
+    // правах, доставшихся ему до раздачи. Замерено 03.09.2026: с двумя корнями запись индекса
+    // пошла, а `git commit` трижды подряд ответил «invalid object … for <файл>» на объекты,
+    // которых сессия не трогала, — то есть упёрся в ЧТЕНИЕ общего хранилища (см.
+    // codexGitObjectsRoot).
+    if (flag === '--git-common-dir') name(codexGitObjectsRoot(root))
   }
   return roots.length > 0 ? { writableRoots: roots } : {}
 }
@@ -3765,6 +3782,34 @@ async function discardFreshCopy(deps, verbRunner, { taskId, wt, path, branch, pr
 }
 
 /**
+ * keepCodexSandboxJournal — снять с дома задачи строки песочницы О ПРАВАХ, ПОКА дом ещё есть.
+ *
+ * ЧТО БЫЛО СЛОМАНО. Помощник песочницы пишет единственную запись о том, какие права он раздал и
+ * какие запреты положил, — и пишет её В ДОМ ЗАДАЧИ, который закрытие попытки выметает целиком.
+ * То есть улику, по которой разбирают «почему у работника не получилось», уничтожал тот же
+ * `finally`, что и мусор: разбор живой пробы 03.09.2026 пришлось вести по дому СОСЕДНЕЙ задачи,
+ * случайно пережившей свою, — а дома самой пробы не осталось ни строки.
+ *
+ * ПОРЯДОК ЗДЕСЬ — ЭТО ВСЁ: сначала снять, потом убирать. Обратный порядок читал бы пустоту.
+ *
+ * Молчит, когда снимать нечего: дом без песочницы (не-Windows, непровизированная машина) не
+ * ведёт журнала вовсе, и строка «журнала нет» была бы шумом на каждой второй попытке.
+ */
+function keepCodexSandboxJournal(deps, { home, taskId } = {}) {
+  const seen = readCodexSandboxJournal({ home, fsImpl: deps.fsImpl })
+  if (seen.lines.length === 0 && seen.denyReadPaths === null) return
+  writeLog(deps, {
+    type: 'task.codex_sandbox_journal',
+    taskId,
+    denyReadPaths: seen.denyReadPaths,
+    detail: `права песочницы этой попытки, снятые до уборки дома (${home}); запретов чтения: ${
+      seen.denyReadPaths === null ? 'снимок не прочитан' : seen.denyReadPaths
+    }`,
+    lines: seen.lines,
+  })
+}
+
+/**
  * discardCodexTaskHome — убрать дом задачи полосы codex, когда попытка закрылась.
  *
  * ЗАЧЕМ ЗДЕСЬ, А НЕ У ТОГО, КТО ДОМ СОЗДАЁТ. Создаёт его сборщик аргументов, а знает, что попытка
@@ -3777,6 +3822,7 @@ async function discardFreshCopy(deps, verbRunner, { taskId, wt, path, branch, pr
  */
 function dropCodexTaskHome(deps, { home, taskId } = {}) {
   if (!home || !taskId) return
+  keepCodexSandboxJournal(deps, { home, taskId })
   const res = discardCodexHome({ home, taskId, fsImpl: deps.fsImpl })
   if (res.removed) {
     writeLog(deps, { type: 'task.codex_home_discarded', taskId, detail: `дом задачи убран вместе с её временным каталогом (${home})` })
