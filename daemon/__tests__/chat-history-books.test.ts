@@ -251,6 +251,20 @@ describe('путь записи показывается, а чужой ката
     expect(recordPath('/home/dev/.claude/projects/x/session-a.jsonl', '/home/dev/proj')).toBe('session-a.jsonl')
   })
 
+  it('корень берётся у читателя книг, и только без него — у каталога демона', () => {
+    const hit = { source: 'journal', file: '/home/dev/connected/.sma/journal/a.jsonl', ts: null, fragment: 'x' }
+    const named = answerHistory({
+      query: 'импорт',
+      found: { hits: [hit], repoRoot: '/home/dev/connected' },
+      repoDir: '/home/dev/daemon',
+    })
+    expect(named.sources[0].path).toBe('.sma/journal/a.jsonl')
+
+    // читатель своего корня не назвал — остаётся прежний запасной, буква в букву
+    const fallback = answerHistory({ query: 'импорт', found: { hits: [hit] }, repoDir: '/home/dev/connected' })
+    expect(fallback.sources[0].path).toBe('.sma/journal/a.jsonl')
+  })
+
   it('ответ цитирует не больше названного числа записей, и каждая названа книгой', () => {
     const hits = Array.from({ length: HISTORY_HITS_SHOWN + 3 }, (_, i) => ({
       source: 'journal',
@@ -309,18 +323,60 @@ describe('ход разговора идёт в книги — и не буди�
     expect(said).toContain('импорт агентов')
   })
 
-  it('пусто по трём словам — второй заход одним словом человека, и он назван в ответе', async () => {
+  it('пусто по трём словам — расширяющая выборка того же прохода, и она названа в ответе', async () => {
     const dir = tmp()
-    const books = booksSpy([
-      { hits: [] },
-      { hits: [{ source: 'lesson', file: '/p/.claude/memory/a.md', ts: null, fragment: 'урок про агентов' }] },
-    ])
+    const wide = { hits: [{ source: 'lesson', file: '/p/.claude/memory/a.md', ts: null, fragment: 'урок про агентов' }] }
+    const books = booksSpy([{ hits: [], perQuery: [{ hits: [] }, wide] }])
     const { deps } = chatDeps(dir, { searchHistory: books.fn, repoDir: '/p' })
     const out = await handleChatTurn({ text: 'Что было вчера с импортом агентов?', deps })
 
-    expect(books.asked.map((a: any) => a.query)).toEqual(['импортом агентов', 'импортом'])
+    // ОБА запроса названы СРАЗУ — и именно поэтому книги открываются один раз, а не дважды
+    expect(books.asked).toHaveLength(1)
+    expect(books.asked[0].query).toEqual(['импортом агентов', 'импортом'])
     expect(out.answer.sources[0]).toMatchObject({ book: HISTORY_BOOK_TITLES.lesson, path: '.claude/memory/a.md' })
     expect(out.answer.text).toContain('импортом') // ответ называет, по каким словам он найден
+  })
+
+  /**
+   * РАСШИРЯЮЩАЯ ВЫБОРКА НЕ СТОИТ ВТОРОГО ЧТЕНИЯ КНИГ.
+   *
+   * Замер, с которого началась эта правка: один вопрос человека открывал журнал, прогоны,
+   * уроки и стенограммы ДВАЖДЫ — второй раз затем, чтобы перечитать те же строки другим
+   * матчером. На стенограммах рабочей машины это сотни мегабайт за повтор, и заметить это
+   * по ответу нельзя: он одинаков в обоих случаях. Считается здесь именно число ПОХОДОВ в
+   * книги, а не форма ответа, — иначе тест остался бы зелёным на любом числе чтений.
+   */
+  it('расширяющая выборка не заводит второго похода в книги', async () => {
+    const dir = tmp()
+    const books = booksSpy([{ hits: [], perQuery: [{ hits: [] }, { hits: [] }] }])
+    const { deps } = chatDeps(dir, { searchHistory: books.fn, repoDir: '/p' })
+    await handleChatTurn({ text: 'Что было вчера с импортом агентов?', deps })
+    expect(books.asked, 'книги прочитаны второй раз за один вопрос').toHaveLength(1)
+  })
+
+  /**
+   * ПУТЬ МЕРЯЕТСЯ ОТ ТОГО ДЕРЕВА, ПО КОТОРОМУ ИСКАЛИ. Каталог демона и подключённый проект
+   * совпадают только на однорепной установке; в обычной находка лежит вне каталога демона, и
+   * путь, отмеренный от него, схлопывается в голое имя файла.
+   */
+  it('корень пути — дерево, названное читателем книг, а не каталог демона', async () => {
+    const dir = tmp()
+    const books = booksSpy([
+      {
+        repoRoot: '/home/dev/connected',
+        hits: [
+          {
+            source: 'journal',
+            file: '/home/dev/connected/.sma/journal/Окно-1.jsonl',
+            ts: null,
+            fragment: `задача ${TASK_ID}`,
+          },
+        ],
+      },
+    ])
+    const { deps } = chatDeps(dir, { searchHistory: books.fn, repoDir: '/home/dev/daemon' })
+    const out = await handleChatTurn({ text: `Что было вчера с задачей ${TASK_ID}?`, deps })
+    expect(out.answer.sources[0].path).toBe('.sma/journal/Окно-1.jsonl')
   })
 
   it('не нашлось — так и сказано, с перечнем прочитанных книг и без единой догадки', async () => {
@@ -373,7 +429,9 @@ describe('сквозь всю дорогу: дверь → движок → НА
         chatDir: dir,
         spawnWorker: spawner.fn,
         searchHistory: reader,
-        repoDir: root,
+        // КАТАЛОГ ДЕМОНА, А НЕ ПОДКЛЮЧЁННЫЙ ПРОЕКТ — обычный случай на живой установке, и
+        // ровно тот, на котором относительный путь схлопывался в голое имя файла.
+        repoDir: mkdtempSync(join(tmpdir(), 'sma-daemon-')),
       },
     })
 

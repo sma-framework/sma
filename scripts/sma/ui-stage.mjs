@@ -439,6 +439,12 @@ async function main() {
       deriveCoordination: (args) => deriveCoordination({ ...args, readLedger: readCoordinationLedger }),
       // The transcript, read the way the daemon reads it — and the list of threads beside it,
       // which is how the screen finds a past conversation at all.
+      //
+      // СПИСОК НИТЕЙ ЗДЕСЬ — СВЕРХ ТОГО, ЧЕМ ЕГО ЗАВОДИЛИ. Он приехал попутно, вместе с
+      // читателем стенограммы, и остался: сцена — живой прогон окна, а окно открывает прошлую
+      // беседу именно списком. Без него обход упирался бы в дверь, отвечающую «сотрудника не
+      // выдали», и «показать разговор» на сцене значило бы «показать один текущий». Способность
+      // читающая, как и соседняя: писать в беседу сцене по-прежнему нечем.
       readChatHistory: readHistory,
       listChatConversations: listConversations,
       // ═══ СЦЕНА ВЕДЁТ РАЗГОВОР, КОТОРЫЙ ЧИТАЕТ, И НЕ ВЕДЁТ ТОГО, КОТОРЫЙ ЗАПУСКАЕТ ═══
