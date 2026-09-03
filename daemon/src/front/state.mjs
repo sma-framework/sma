@@ -3242,8 +3242,15 @@ export async function deriveState(deps = {}) {
       const plan = taskTurnCap({ base: pipelineMaxTurns(config), task: r, burnedCaps: burned })
       // «Без обещания» — это ноль пунктов И ноль знаков: работа, о размере которой не сказано
       // ничего. Оценка, поставленная числом, обещанием тоже считается — там размер объявлен, и
-      // слово «без обещания» над крупной работой было бы неправдой.
-      const mute = plan.signals.criteria === 0 && plan.signals.promiseChars === 0 && plan.size === 'small'
+      // слово «без обещания» над крупной работой было бы неправдой. Крупной оценку ловил
+      // размер, а мелкую (1–2) не ловил никто: строка с честно поставленной единицей читалась
+      // «о размере не сказано ничего» и звала дописать то, что уже дописано. Поэтому спрашивается
+      // САМА оценка, а не её ярус.
+      const mute =
+        plan.signals.criteria === 0 &&
+        plan.signals.promiseChars === 0 &&
+        !(plan.signals.storyPoints > 0) &&
+        plan.size === 'small'
       if (mute && typeof plan.cap === 'number') out.noPromise = { cap: plan.cap }
     }
     return out
