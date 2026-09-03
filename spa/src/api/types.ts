@@ -2114,6 +2114,8 @@ export type ChatTurnKind =
   | 'task-debug'
   /** «да» человека: согласие с последним черновиком — единственный ход, который ставит задачу. */
   | 'consent'
+  /** Вопрос о ПРОШЛОМ: ответ собирается из четырёх книг, а не из нынешнего состояния доски. */
+  | 'history'
 
 /**
  * What an answer IS: a fact taken from the read models, prose from the free lane, a
@@ -2212,6 +2214,20 @@ export interface ChatAnswer {
   link?: ChatAnswerLink
   /** Documents this reply named — at most five, and only ever the reply's own. */
   attachments?: ChatAttachment[]
+  /** Записи книг, которыми отвечен вопрос о прошлом — каждая со своим путём. */
+  sources?: ChatSource[]
+}
+
+/**
+ * Одна запись книги, процитированная ответом: какая книга, где лежит запись, когда она
+ * сделана и сама строка. Путь уже приведён демоном к показываемому виду — внутри дерева
+ * проекта он относительный, снаружи это одно имя файла.
+ */
+export interface ChatSource {
+  book: string
+  path: string
+  ts: string | null
+  fragment: string
 }
 
 /** What POST /api/chat answers: the conversation it belongs to, and the answer itself. */
@@ -2242,6 +2258,8 @@ export interface ChatTurn {
   decision?: ChatDecision
   /** The documents that reply named. Kept, because a stored reply still points at them. */
   attachments?: ChatAttachment[]
+  /** Записи книг, которыми был дан ответ. Хранятся по той же причине, что и вложения. */
+  sources?: ChatSource[]
 }
 
 export interface ChatHistory {
