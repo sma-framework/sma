@@ -168,7 +168,7 @@ import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { checkEnvironmentFitness } from '../../scripts/sma/lib/deps-guard.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
-import { markWindowObserved, markWindowClosed, readingSaysExhausted, canonicalWindow } from './policy/windows.mjs'
+import { markWindowObserved, markWindowClosed, readingSaysExhausted, canonicalWindow, utilizationFraction } from './policy/windows.mjs'
 // РОЛИ ПУЛА — ЧИТАЮТСЯ ТЕМ ЖЕ ВЫРАЖЕНИЕМ, КАКИМ ИХ ЧИТАЕТ МАРШРУТИЗАТОР. Проба пригодности
 // полосы обязана спрашивать ровно то же, что спросят при захвате: разойдясь, они начнут
 // объявлять полосу пригодной для того, кого маршрут потом не выберет.
@@ -2147,6 +2147,28 @@ function recordWindowReading(deps, subscription, event) {
     // what every frame from before this field existed looks like.
     const readings = Array.isArray(event.windows) && event.windows.length > 0 ? event.windows : [event]
     for (const observation of readings) {
+      // A FRACTION WE HAD TO RE-INTERPRET IS SAID OUT LOUD. The window model reads the spent
+      // share as a fraction of one, and no frame carrying a real one has ever been captured off
+      // this machine — so if the vendor turns out to send PERCENTS, the guard in that model
+      // silently rescales every reading, and silence is exactly what would keep a person from
+      // ever learning the wire changed shape. The same line records a value it could place in
+      // neither scale, because a dropped measurement is a fact about the subscription too.
+      const { scale } = utilizationFraction(observation && observation.utilization)
+      if (scale === 'percent' || scale === 'out-of-range') {
+        writeLog(deps, {
+          type: 'window-utilization-scale',
+          account: accountName,
+          limitType: (observation && observation.limitType) ?? null,
+          raw: (observation && observation.utilization) ?? null,
+          scale,
+          reason:
+            scale === 'percent'
+              ? 'the vendor sent a spent share above one — read as PERCENT and divided by a hundred; ' +
+                'capture this frame, the window model is documented for a fraction of one'
+              : 'the vendor sent a spent share that is neither a fraction nor a percent — dropped, ' +
+                'the window reads «нет данных» rather than a number nobody can place',
+        })
+      }
       markWindowObserved({ dataDir, accountName, observation, clock, fsImpl: deps.fsImpl })
     }
     // A WINDOW THE VENDOR SAYS IS NO LONGER ALLOWING WORK IS A CLOSE, AND A CLOSE OUTLIVES
