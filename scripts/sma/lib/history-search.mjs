@@ -36,6 +36,14 @@
  * search that answers only from transcripts is the exact defect the caller cannot
  * see. So `limit` caps EACH source, and the printed report says so.
  *
+ * НЕСКОЛЬКО ЗАПРОСОВ — ОДИН ПРОХОД. Спрашивающий часто задаёт не один вопрос, а
+ * вопрос и его запасной вариант: не нашлось по трём словам — поискать по одному.
+ * Двумя вызовами это стоит двух чтений всех четырёх книг за один ход человека, и
+ * второе из них перечитывает ровно то же самое. Поэтому `query` принимает и СПИСОК
+ * запросов: книги открываются ОДИН раз, каждая строка проверяется каждым зондом, и
+ * выборки уезжают порознь (`perQuery`). Один запрос отвечается ровно как прежде,
+ * буква в букву, — списочная форма ничего не добавляет к его ответу.
+ *
  * Node built-ins only; every directory is dependency-injectable.
  */
 
@@ -122,6 +130,33 @@ export function maskSecrets(text) {
 }
 
 /**
+ * ЗОНД — один запрос, идущий по книгам вместе с остальными.
+ *
+ * Проход по книге принадлежит книге, а не запросу: строка прочитана один раз и
+ * предъявлена каждому зонду. Собственные находки у каждого свои — ими зонд и отличается
+ * от соседа, — и хранятся они ПО КНИГАМ, потому что лимит тоже по книгам: общий счётчик
+ * дал бы самой толстой книге вытеснить остальные, а её читают последней.
+ *
+ * @param {string[]} queries
+ * @returns {Array<{query:string, tokens:string[], matchers:RegExp[], bySource:object}>}
+ */
+function makeProbes(queries) {
+  return queries.map((q) => {
+    const { tokens, matchers } = historyMatchers(q)
+    return { query: q, tokens, matchers, bySource: { journal: [], exec: [], lesson: [], transcript: [] } }
+  })
+}
+
+/**
+ * Зонды, которым находки в ЭТОЙ книге ещё нужны: есть чем искать и лимит книги не добран.
+ * Пустой список — повод закрыть книгу: ранняя остановка теперь общая, и она наступает
+ * тогда, когда добрали ВСЕ, а не первый же.
+ */
+function hungry(probes, source, limit) {
+  return probes.filter((p) => p.matchers.length > 0 && p.bySource[source].length < limit)
+}
+
+/**
  * One hit, built in ONE place — which is what makes the secret screen impossible to
  * route around. Every source calls this and no source formats its own fragment.
  */
@@ -180,15 +215,16 @@ function mtimeIso(path) {
  * came from is the terminal's own file: the module writes one file per terminal by
  * construction, which is why no second attribution is invented here.
  */
-function scanJournal({ journalDir, matchers, limit, onOpen }) {
-  const hits = []
+function scanJournal({ journalDir, probes, limit, onOpen }) {
   let events
   try {
     events = readJournal({ journalDir }).events
   } catch {
-    return hits // fail-open: an unreadable journal is an empty book
+    return // fail-open: an unreadable journal is an empty book
   }
-  for (let i = events.length - 1; i >= 0 && hits.length < limit; i--) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const want = hungry(probes, 'journal', limit)
+    if (want.length === 0) break
     const evt = events[i]
     let line
     try {
@@ -196,19 +232,19 @@ function scanJournal({ journalDir, matchers, limit, onOpen }) {
     } catch {
       continue
     }
-    if (matchIndex(line, matchers) < 0) continue
     const file = evt && evt.terminal ? `${evt.terminal}.jsonl` : '(journal)'
-    if (onOpen) onOpen(join(journalDir, file), 'journal')
-    hits.push(makeHit('journal', join(journalDir, file), evt?.ts ?? null, line, matchers))
+    for (const p of want) {
+      if (matchIndex(line, p.matchers) < 0) continue
+      if (onOpen) onOpen(join(journalDir, file), 'journal')
+      p.bySource.journal.push(makeHit('journal', join(journalDir, file), evt?.ts ?? null, line, p.matchers))
+    }
   }
-  return hits
 }
 
 /** The plan-execution journal: one file per plan, read by the plan reader. */
-function scanExec({ execDir, matchers, limit, onOpen }) {
-  const hits = []
+function scanExec({ execDir, probes, limit, onOpen }) {
   for (const f of filesNewestFirst(execDir, '.jsonl')) {
-    if (hits.length >= limit) break
+    if (hungry(probes, 'exec', limit).length === 0) break
     const base = f.name.slice(0, -'.jsonl'.length)
     const cut = base.lastIndexOf('-')
     if (cut <= 0) continue
@@ -219,7 +255,9 @@ function scanExec({ execDir, matchers, limit, onOpen }) {
     } catch {
       continue
     }
-    for (let i = events.length - 1; i >= 0 && hits.length < limit; i--) {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const want = hungry(probes, 'exec', limit)
+      if (want.length === 0) break
       const evt = events[i]
       let line
       try {
@@ -227,11 +265,12 @@ function scanExec({ execDir, matchers, limit, onOpen }) {
       } catch {
         continue
       }
-      if (matchIndex(line, matchers) < 0) continue
-      hits.push(makeHit('exec', f.path, evt?.ts ?? null, line, matchers))
+      for (const p of want) {
+        if (matchIndex(line, p.matchers) < 0) continue
+        p.bySource.exec.push(makeHit('exec', f.path, evt?.ts ?? null, line, p.matchers))
+      }
     }
   }
-  return hits
 }
 
 /**
@@ -240,10 +279,9 @@ function scanExec({ execDir, matchers, limit, onOpen }) {
  * point, not an oversight. The moment is the note's own recorded date when it
  * carries one, and the file's mtime when it does not.
  */
-function scanLessons({ corpusDir, matchers, limit, onOpen }) {
-  const hits = []
+function scanLessons({ corpusDir, probes, limit, onOpen }) {
   for (const name of listNoteFiles(corpusDir)) {
-    if (hits.length >= limit) break
+    if (hungry(probes, 'lesson', limit).length === 0) break
     const path = join(corpusDir, name)
     if (onOpen) onOpen(path, 'lesson')
     let text
@@ -261,12 +299,14 @@ function scanLessons({ corpusDir, matchers, limit, onOpen }) {
     }
     if (ts == null) ts = mtimeIso(path)
     for (const line of text.split('\n')) {
-      if (hits.length >= limit) break
-      if (matchIndex(line, matchers) < 0) continue
-      hits.push(makeHit('lesson', path, ts, line, matchers))
+      const want = hungry(probes, 'lesson', limit)
+      if (want.length === 0) break
+      for (const p of want) {
+        if (matchIndex(line, p.matchers) < 0) continue
+        p.bySource.lesson.push(makeHit('lesson', path, ts, line, p.matchers))
+      }
     }
   }
-  return hits
 }
 
 /** A line's own moment, cheaply — without parsing a megabyte of JSON to get it. */
@@ -279,13 +319,12 @@ const TRANSCRIPT_TS_RE = /"timestamp"\s*:\s*"([^"]{4,40})"/
  * OPENING files once the limit is met, so a narrow question never pays for the
  * whole pile.
  */
-async function scanTranscripts({ logsDir, env, homedir, repoRoot, matchers, limit, onOpen }) {
-  const hits = []
+async function scanTranscripts({ logsDir, env, homedir, repoRoot, probes, limit, onOpen }) {
   const { dir, files } = discoverLogsDir({ env, logsDir, homedir, repoRoot })
   const ordered = files.length > 0 ? filesNewestFirst(dir, '.jsonl') : []
 
   for (const f of ordered) {
-    if (hits.length >= limit) break
+    if (hungry(probes, 'transcript', limit).length === 0) break
     if (onOpen) onOpen(f.path, 'transcript')
     const fallbackTs = mtimeIso(f.path)
     let stream
@@ -297,10 +336,13 @@ async function scanTranscripts({ logsDir, env, homedir, repoRoot, matchers, limi
     const rl = createInterface({ input: stream, crlfDelay: Infinity })
     try {
       for await (const line of rl) {
-        if (matchIndex(line, matchers) < 0) continue
-        const m = TRANSCRIPT_TS_RE.exec(line)
-        hits.push(makeHit('transcript', f.path, m ? m[1] : fallbackTs, line, matchers))
-        if (hits.length >= limit) break
+        const want = hungry(probes, 'transcript', limit)
+        if (want.length === 0) break
+        for (const p of want) {
+          if (matchIndex(line, p.matchers) < 0) continue
+          const m = TRANSCRIPT_TS_RE.exec(line)
+          p.bySource.transcript.push(makeHit('transcript', f.path, m ? m[1] : fallbackTs, line, p.matchers))
+        }
       }
     } catch {
       /* fail-open: an unreadable transcript is a shorter book, never an error */
@@ -309,7 +351,7 @@ async function scanTranscripts({ logsDir, env, homedir, repoRoot, matchers, limi
       stream.destroy()
     }
   }
-  return { hits, dir, filesTotal: ordered.length }
+  return { dir, filesTotal: ordered.length }
 }
 
 // ─────────────────────────── the search ──────────────────────────────────────
@@ -317,8 +359,18 @@ async function scanTranscripts({ logsDir, env, homedir, repoRoot, matchers, limi
 /**
  * searchHistory(opts) — the whole search, one call, four books.
  *
+ * `query` — слово (или список слов-запросов, если спрашивающему нужен и запасной
+ * вариант: тогда книги всё равно читаются один раз, а выборки едут в `perQuery`).
+ *
+ * `repoRoot` ВОЗВРАЩАЕТСЯ ВМЕСТЕ С НАХОДКАМИ. Пути в `hits` абсолютны, а показывать их
+ * человеку нужно относительно дерева, книги которого открыли, — и это дерево знает
+ * ЗДЕСЬ только вызывающий. Пока корень оставался входом и не выходил обратно, каждый
+ * показывающий отмерял путь от того каталога, который знал сам; каталог демона и
+ * подключённый проект — разные каталоги в обычном случае, и «относительный путь»
+ * схлопывался в голое имя файла. Одна переменная у сборщика, один корень в ответе.
+ *
  * @param {{
- *   query: string,
+ *   query: string|string[],
  *   limit?: number,
  *   sources?: string[],
  *   journalDir?: string,
@@ -332,58 +384,64 @@ async function scanTranscripts({ logsDir, env, homedir, repoRoot, matchers, limi
  * }} opts
  * @returns {Promise<{query:string, tokens:string[], limit:number, sources:string[],
  *   hits:Array<{source:string,file:string,ts:string|null,fragment:string}>,
- *   perSource:object, transcriptsDir:string, transcriptFiles:number}>}
+ *   perSource:object, transcriptsDir:string, transcriptFiles:number, repoRoot:string,
+ *   perQuery?:object[]}>}
  */
 export async function searchHistory(opts = {}) {
-  const query = String(opts.query ?? '')
+  const listed = Array.isArray(opts.query) ? opts.query : [opts.query]
+  const queries = (listed.length > 0 ? listed : ['']).map((q) => String(q ?? ''))
   const limit = Number.isFinite(opts.limit) && opts.limit > 0 ? Math.floor(opts.limit) : DEFAULT_HISTORY_LIMIT
   const asked = Array.isArray(opts.sources) && opts.sources.length > 0 ? opts.sources : HISTORY_SOURCES
   const sources = HISTORY_SOURCES.filter((s) => asked.includes(s))
-  const { tokens, matchers } = historyMatchers(query)
+  const probes = makeProbes(queries)
 
   const journalDir = opts.journalDir ?? JOURNAL_DIR
   const execDir = opts.execDir ?? EXEC_DIR
   const corpusDir = opts.corpusDir ?? join('.claude', 'memory')
+  const repoRoot = opts.repoRoot ?? process.cwd()
   const onOpen = typeof opts.onOpen === 'function' ? opts.onOpen : null
 
-  const bySource = { journal: [], exec: [], lesson: [], transcript: [] }
   let transcriptsDir = ''
   let transcriptFiles = 0
 
-  if (tokens.length > 0) {
-    if (sources.includes('journal')) bySource.journal = scanJournal({ journalDir, matchers, limit, onOpen })
-    if (sources.includes('exec')) bySource.exec = scanExec({ execDir, matchers, limit, onOpen })
-    if (sources.includes('lesson')) bySource.lesson = scanLessons({ corpusDir, matchers, limit, onOpen })
+  if (probes.some((p) => p.matchers.length > 0)) {
+    if (sources.includes('journal')) scanJournal({ journalDir, probes, limit, onOpen })
+    if (sources.includes('exec')) scanExec({ execDir, probes, limit, onOpen })
+    if (sources.includes('lesson')) scanLessons({ corpusDir, probes, limit, onOpen })
     if (sources.includes('transcript')) {
       const t = await scanTranscripts({
         logsDir: opts.logsDir,
         env: opts.env ?? process.env,
         homedir: opts.homedir,
-        repoRoot: opts.repoRoot ?? process.cwd(),
-        matchers,
+        repoRoot,
+        probes,
         limit,
         onOpen,
       })
-      bySource.transcript = t.hits
       transcriptsDir = t.dir
       transcriptFiles = t.filesTotal
     }
   }
 
-  const hits = HISTORY_SOURCES.flatMap((s) => bySource[s])
-  return {
-    query,
-    tokens,
+  const answers = probes.map((p) => ({
+    query: p.query,
+    tokens: p.tokens,
     limit,
     sources,
-    hits,
+    hits: HISTORY_SOURCES.flatMap((s) => p.bySource[s]),
     perSource: {
-      journal: bySource.journal.length,
-      exec: bySource.exec.length,
-      lesson: bySource.lesson.length,
-      transcript: bySource.transcript.length,
+      journal: p.bySource.journal.length,
+      exec: p.bySource.exec.length,
+      lesson: p.bySource.lesson.length,
+      transcript: p.bySource.transcript.length,
     },
     transcriptsDir,
     transcriptFiles,
-  }
+    repoRoot,
+  }))
+
+  // Один запрос отвечается прежней формой, БЕЗ лишнего поля: `--json` этого верба —
+  // печатаемая наружу поверхность, и удваивать её ради формы, которой не пользовались,
+  // значило бы платить за список там, где списка не спрашивали.
+  return answers.length > 1 ? { ...answers[0], perQuery: answers } : answers[0]
 }

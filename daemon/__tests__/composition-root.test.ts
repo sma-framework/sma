@@ -37,9 +37,13 @@ import { join } from 'node:path'
 
 import { createDaemon, describeBootFailure, runProjectVerb } from '../src/main.mjs'
 import { ROUTES, PENDING_ROUTES } from '../src/front/server.mjs'
+import { handleChatTurn } from '../src/front/chat.mjs'
 import { resolveExpireMs } from '../src/queue/adapter.mjs'
 
 const TOKEN = 'c'.repeat(64)
+
+/** Задача, о прошлом которой спрашивают у книг подключённого проекта. */
+const HISTORY_TASK = 'R-1700000123456'
 
 let tmpRoot: string
 let projectDir: string
@@ -675,6 +679,64 @@ describe('the production composition root is COMPLETE', () => {
     const back = await call('POST', '/api/project/select', 'select-p1')
     expect(back.statusCode).toBe(200)
     expect(liveness()).toBe('polling')
+  })
+
+  /**
+   * ПУТЬ ЗАПИСИ ОТМЕРЯЕТСЯ ОТ ПОДКЛЮЧЁННОГО ПРОЕКТА — вопрос к КОРНЮ, а не к движку.
+   *
+   * Обе половины были правы по отдельности. Читатель книг, собранный здесь, ходит в
+   * подключённый проект; движок разговора приводил путь находки к показываемому виду от
+   * каталога, который демон ОБСЛУЖИВАЕТ. Совпадают эти два каталога только на установке,
+   * где подключённый проект и есть каталог демона; в обычной каждая находка лежала вне
+   * него, и относительный путь, обещанный обоими README, схлопывался в голое имя файла —
+   * запись переставала открываться и пересказываться. Ни один тест движка этого увидеть
+   * не мог: он выдаёт оба каталога сам и выдаёт их одинаковыми. Спросить можно только тут,
+   * у собранного демона, с проектом, ОТЛИЧНЫМ от каталога демона.
+   */
+  it('цитата из книг подключённого проекта несёт путь ВНУТРИ него, а не одно имя файла', async () => {
+    const chosen = await call('POST', '/api/project/select', 'select-p2')
+    expect(chosen.statusCode).toBe(200)
+    try {
+      const journalDir = join(projectDir, '.sma', 'journal')
+      mkdirSync(journalDir, { recursive: true })
+      writeFileSync(
+        join(journalDir, 'Окно-1.jsonl'),
+        `${JSON.stringify({
+          ts: '2026-09-02T09:15:00.000Z',
+          terminal: 'Окно-1',
+          seq: 1,
+          type: 'claim',
+          scope: `задача ${HISTORY_TASK} — импорт агентов`,
+        })}\n`,
+        'utf8',
+      )
+
+      // предпосылка, без которой случай ничего не доказывает: дерево демона — НЕ проект
+      expect(park.front.deps.repoDir).not.toBe(projectDir)
+
+      const out: any = await handleChatTurn({
+        text: `Что было вчера с задачей ${HISTORY_TASK}?`,
+        deps: {
+          adapter: { list: async () => [] },
+          config: park.config,
+          historyDir: mkdtempSync(join(tmpdir(), 'sma-chat-root-')),
+          clock: () => 1_700_000_900_000,
+          spawnWorker: () => {
+            throw new Error('вопрос о прошлом отвечается записью, а не сессией модели')
+          },
+          // ОБА ИЗ БОЕВОЙ СБОРКИ: читатель книг и каталог, который демон обслуживает.
+          searchHistory: park.front.deps.searchHistory,
+          repoDir: park.front.deps.repoDir,
+        },
+      })
+
+      expect(out.kind).toBe('history')
+      const fromJournal = out.answer.sources.find((s: any) => String(s.path).endsWith('Окно-1.jsonl'))
+      expect(fromJournal, `находка не приехала: ${JSON.stringify(out.answer)}`).toBeTruthy()
+      expect(fromJournal.path, 'путь отмерен не от подключённого проекта').toBe('.sma/journal/Окно-1.jsonl')
+    } finally {
+      await call('POST', '/api/project/select', 'select-p1')
+    }
   })
 
   /**
