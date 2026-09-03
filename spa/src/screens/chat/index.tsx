@@ -101,6 +101,7 @@ function entryOf(turn: ChatTurn, index: number): ChatEntry {
     ...(turn.draft ? { draft: turn.draft } : {}),
     ...(turn.decision ? { decision: turn.decision } : {}),
     ...(turn.attachments ? { attachments: turn.attachments } : {}),
+    ...(turn.sources ? { sources: turn.sources } : {}),
   }
 }
 
@@ -270,6 +271,7 @@ export function Screen() {
             ...(answer.spend ? { spend: answer.spend } : {}),
             ...(answer.link ? { link: answer.link } : {}),
             ...(answer.attachments ? { attachments: answer.attachments } : {}),
+            ...(answer.sources ? { sources: answer.sources } : {}),
           })
         },
         onError: (err) => {
