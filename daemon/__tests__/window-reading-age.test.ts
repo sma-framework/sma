@@ -95,6 +95,43 @@ describe('the age of a window reading, from the store to the words on the screen
     expect(readingIsStale(week.observedAt, NOW)).toBe(false)
   })
 
+  /**
+   * ═════ И ТА ЖЕ ДАТА — НА КАРТОЧКЕ РАБОТНИКА, а не только на «Расходах» ════════════════
+   *
+   * Час рядом с числом доехал сперва до одного экрана, и «Команда» осталась единственной, где
+   * процент окна стоял голым. Это ровно та же болезнь в новом месте: карточка говорит
+   * «принимает работу · 67 %», человек читает это как «сейчас» и идёт перепроверять в
+   * терминал. Карточка читает НЕ спендовую строку, а `workers[].window` — свою ветку выдачи, —
+   * поэтому она проверяется отдельно: одна ветка может нести момент съёмки, а другая молчать.
+   */
+  it('carries the moment onto the WORKER CARD too — its own branch of the payload, said in the same words', async () => {
+    const dataDir = mkDataDir()
+    const takenAt = NOW - 19 * 60 * 60 * 1000
+
+    markWindowObserved({
+      dataDir,
+      accountName: 'local-1',
+      observation: { limitType: 'seven_day', status: 'allowed_warning', utilization: 0.67, resetsAt: WEEK_RESETS_AT },
+      clock: () => takenAt,
+    })
+
+    const payload: any = await deriveState({
+      adapter: { async list() { return [] } },
+      windows: (account: unknown) => windowState({ account, clock: () => NOW, dataDir }),
+      config: { workers: [{ id: 'local-1', lane: 'prod', account: { name: 'local-1' } }], machineId: 'self' },
+      clock: () => NOW,
+    })
+
+    const card = payload.workers[0].window
+    expect(card.week.pct).toBe(67)
+    expect(card.week.observedAt).toBe(new Date(takenAt).toISOString())
+    expect(readingAgeWords(card.week.observedAt, NOW)).toBe('19 часов назад')
+    expect(readingIsStale(card.week.observedAt, NOW)).toBe(true)
+    // А окно, о котором не слышали, возраста не получает — и выдуманного тоже
+    expect(card.fiveHour.observedAt).toBeNull()
+    expect(readingAgeWords(card.fiveHour.observedAt, NOW)).toBeNull()
+  })
+
   it('says the age in the counts Russian really uses, and marks exactly past the declared hour', () => {
     expect(readingAgeWords(new Date(NOW - 30_000).toISOString(), NOW)).toBe('только что')
     expect(readingAgeWords(new Date(NOW - 61 * 60 * 1000).toISOString(), NOW)).toBe('1 час назад')

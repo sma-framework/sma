@@ -1,5 +1,14 @@
 import type { Presence, WindowFact, WorkerRow } from '../../api/types'
-import { WINDOW_TERMINAL_HINT, WINDOW_UNKNOWN_HINT, accentFor, initialOf, windowWords } from '../../shell/format'
+import {
+  WINDOW_STALE_HINT,
+  WINDOW_TERMINAL_HINT,
+  WINDOW_UNKNOWN_HINT,
+  accentFor,
+  initialOf,
+  readingAgeWords,
+  readingIsStale,
+  windowWords,
+} from '../../shell/format'
 import { STATS_PERIOD, statsWords } from './history'
 
 /**
@@ -73,11 +82,26 @@ function pulseLabel(sec: number | undefined): string {
  * session signed into this account's own config directory. The reader is told which, in the
  * hint, rather than on the line — the fact is the same fact either way, and a permanent word
  * beside every window would be noise on a card that has four lines to spend.
+ *
+ * И КОГДА ЕГО ИЗМЕРИЛИ — ЗДЕСЬ ТОЖЕ. Час рядом с числом появился сперва только на «Расходах», и
+ * «Команда» осталась единственным экраном, где процент окна стоял голым: девятнадцатичасовое
+ * чтение выглядело на карточке ровно как минутное. Возраст — не украшение строки, а половина
+ * её смысла: «принимает работу · 67 %» без даты читается как «сейчас», и человек идёт
+ * перепроверять в терминал. Слова те же самые и считаются той же функцией, что на «Расходах», —
+ * два экрана, спорящие о возрасте одного чтения, были бы той же болезнью в новом месте.
  */
 function WindowLine({ label, fact }: { label: string; fact: WindowFact | undefined }) {
   const words = windowWords(fact)
   const unknown = fact?.status !== 'open' && fact?.status !== 'exhausted'
-  const hint = unknown ? WINDOW_UNKNOWN_HINT : fact?.source === 'terminal' ? WINDOW_TERMINAL_HINT : undefined
+  const age = unknown ? null : readingAgeWords(fact?.observedAt)
+  const stale = !unknown && readingIsStale(fact?.observedAt)
+  const hint = unknown
+    ? WINDOW_UNKNOWN_HINT
+    : stale
+      ? WINDOW_STALE_HINT
+      : fact?.source === 'terminal'
+        ? WINDOW_TERMINAL_HINT
+        : undefined
   return (
     <div className="min-w-0 flex-1" title={hint}>
       <div className="mb-1 text-[10.5px] whitespace-nowrap text-tx3">{label}</div>
@@ -92,6 +116,15 @@ function WindowLine({ label, fact }: { label: string; fact: WindowFact | undefin
             when the provider sent one, which is why it was never drawn here before. */}
         {typeof fact?.pct === 'number' ? (
           <span className="flex-none text-[10.5px] text-tx3 tabular-nums">{Math.round(fact.pct)}%</span>
+        ) : null}
+        {/* Когда это измерили. Переносится вместе со строкой — в этой колонке возраст скорее
+            уедет на вторую строку, чем поместится рядом, и это правильный размен: пометка
+            «устарело» дороже одной строки высоты. */}
+        {age ? (
+          <span className={`min-w-0 text-[10.5px] leading-[1.35] ${stale ? 'text-warn-tx' : 'text-tx3'}`}>
+            · {age}
+            {stale ? ' · устарело' : ''}
+          </span>
         ) : null}
       </div>
     </div>

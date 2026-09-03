@@ -207,6 +207,9 @@ describe('the production composition root is COMPLETE', () => {
       'addProject',
       'addPeer',
       'handleChatTurn',
+      // Четыре книги разговору: без этого провода вопрос о прошлом честно отвечает «книг не
+      // выдали» — то есть движок написан, покрыт тестами и никому не подключён.
+      'searchHistory',
       'launchDir',
     ]) {
       expect(deps[name], `deps.${name} is missing from the production wiring`).toBeTruthy()

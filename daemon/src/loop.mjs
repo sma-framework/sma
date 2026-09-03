@@ -168,7 +168,7 @@ import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { checkEnvironmentFitness } from '../../scripts/sma/lib/deps-guard.mjs'
 import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
 import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
-import { markWindowObserved, markWindowClosed, readingSaysExhausted, canonicalWindow } from './policy/windows.mjs'
+import { markWindowObserved, markWindowClosed, readingSaysExhausted, canonicalWindow, utilizationFraction } from './policy/windows.mjs'
 // РОЛИ ПУЛА — ЧИТАЮТСЯ ТЕМ ЖЕ ВЫРАЖЕНИЕМ, КАКИМ ИХ ЧИТАЕТ МАРШРУТИЗАТОР. Проба пригодности
 // полосы обязана спрашивать ровно то же, что спросят при захвате: разойдясь, они начнут
 // объявлять полосу пригодной для того, кого маршрут потом не выберет.
@@ -2328,6 +2328,28 @@ function recordWindowReading(deps, subscription, event) {
     // what every frame from before this field existed looks like.
     const readings = Array.isArray(event.windows) && event.windows.length > 0 ? event.windows : [event]
     for (const observation of readings) {
+      // A FRACTION WE HAD TO RE-INTERPRET IS SAID OUT LOUD. The window model reads the spent
+      // share as a fraction of one, and no frame carrying a real one has ever been captured off
+      // this machine — so if the vendor turns out to send PERCENTS, the guard in that model
+      // silently rescales every reading, and silence is exactly what would keep a person from
+      // ever learning the wire changed shape. The same line records a value it could place in
+      // neither scale, because a dropped measurement is a fact about the subscription too.
+      const { scale } = utilizationFraction(observation && observation.utilization)
+      if (scale === 'percent' || scale === 'out-of-range') {
+        writeLog(deps, {
+          type: 'window-utilization-scale',
+          account: accountName,
+          limitType: (observation && observation.limitType) ?? null,
+          raw: (observation && observation.utilization) ?? null,
+          scale,
+          reason:
+            scale === 'percent'
+              ? 'the vendor sent a spent share above one — read as PERCENT and divided by a hundred; ' +
+                'capture this frame, the window model is documented for a fraction of one'
+              : 'the vendor sent a spent share that is neither a fraction nor a percent — dropped, ' +
+                'the window reads «нет данных» rather than a number nobody can place',
+        })
+      }
       markWindowObserved({ dataDir, accountName, observation, clock, fsImpl: deps.fsImpl })
     }
     // A WINDOW THE VENDOR SAYS IS NO LONGER ALLOWING WORK IS A CLOSE, AND A CLOSE OUTLIVES
@@ -4206,7 +4228,7 @@ async function closeCoordinationSession(deps, { sessionId, cwd, taskId } = {}) {
  * спрашивает у ручки, а не гадает по тишине. Запускатель без `alive` (или подделка в сьюте)
  * регистрируется как прежде — тогда ответ будет «не знаю», а не «мёртв».
  */
-export function steeredSpawn(deps, taskId, spawnWorker) {
+export function steeredSpawn(deps, taskId, spawnWorker, attemptId = null) {
   return (o) => {
     const h = spawnWorker(o)
     if (deps.attemptTurns && h && typeof h.kill === 'function') {
@@ -4220,6 +4242,10 @@ export function steeredSpawn(deps, taskId, spawnWorker) {
           }
         },
         typeof h.alive === 'function' ? () => h.alive() === true : undefined,
+        // И ИМЯ ЗАХОДА — ВМЕСТЕ С РУЧКОЙ. Дверь отмены убивает по имени СТРОКИ, а место в доме
+        // идущих попыток принадлежит заходу: без этого имени дверь освобождала бы места скопом
+        // по строке и снимала бы место второго, живого захода той же работы.
+        attemptId,
       )
     }
     return h
@@ -4935,9 +4961,12 @@ export async function tick(deps = {}) {
       return result
     }
     result.claimed = task.id
-    // Место уже взято до захвата — теперь у него появляется имя задачи. Имя работника впишется
-    // ниже, когда маршрут его назовёт; отдаётся место в `finally` всего тика.
-    if (inFlight && typeof inFlight.name === 'function') inFlight.name(seat, task.id, null)
+    // Место уже взято до захвата — теперь у него появляются имена: строки и ЗАХОДА. Имя работника
+    // впишется ниже, когда маршрут его назовёт. Отдаётся место на подтверждённой смерти ребёнка
+    // (`confirmProcessGone` по имени захода), а `finally` всего тика отдаёт его вторым разом —
+    // вместе с занятостью работника, которая живёт до конца ворот.
+    const seatAttemptId = attemptIdFor(task.id, task.attempt)
+    if (inFlight && typeof inFlight.name === 'function') inFlight.name(seat, task.id, null, seatAttemptId)
 
     // (3a0) THE LANE'S CAPABILITY ENVELOPE. Resolved here because it is a
     // property of the LANE the task was claimed into — known before the route is, and
@@ -5140,8 +5169,12 @@ export async function tick(deps = {}) {
       // the board showed an empty queue and an idle worker THROUGHOUT a running attempt.
       // Fail-open and optional by design — an adapter without the seam (or a write that
       // fails) must never cost an attempt that is otherwise ready to run.
-      // Имя работника в занятое место — теперь маршрут его назвал.
-      if (inFlight && typeof inFlight.name === 'function' && route.workerId) inFlight.name(seat, task.id, route.workerId)
+      // Имя работника в занятое место — теперь маршрут его назвал. Этой же строкой работник
+      // становится ЗАНЯТ, и занятость его держится до конца ворот попытки: место отдаётся на
+      // смерти ребёнка, а коммиты, свод и сдача идут после неё, в его же копии и его же ветке.
+      if (inFlight && typeof inFlight.name === 'function' && route.workerId) {
+        inFlight.name(seat, task.id, route.workerId, seatAttemptId)
+      }
       if (route.workerId && typeof deps.adapter.assignWorker === 'function') {
         try {
           await deps.adapter.assignWorker(task.id, route.workerId)
@@ -5673,7 +5706,7 @@ export async function tick(deps = {}) {
       // redirect door can end the live child («Перебить сейчас») and the correction then
       // rides the continuation below. Hint plumbing: a restart loses only the ability to
       // kill children that died with it. The forge lane rides the SAME helper.
-      const spawnSteered = steeredSpawn(deps, task.id, spawnWorker)
+      const spawnSteered = steeredSpawn(deps, task.id, spawnWorker, seatAttemptId)
       // A worker process is about to exist: from this line the task is RUNNING, and every
       // transition minted afterwards says so — including the one the fail-open catch mints.
       fleetState = 'RUNNING'
@@ -5829,7 +5862,9 @@ export async function tick(deps = {}) {
       // очередь при свободном работнике — замерено: 282 отказа по потолку подряд при двух
       // живых попытках из четырёх мест. Тем же выражением, каким дверь отмены отвечает
       // человеку «попытка закрылась»; `finally` отдаст место вторым разом и это не ошибка.
-      confirmProcessGone(deps, task.id)
+      // По имени ЗАХОДА, а не строки: на одной строке живут два захода, и снятое скопом место
+      // второго, живого, вернуло бы ту же аварию с другой стороны.
+      confirmProcessGone(deps, task.id, seatAttemptId)
 
       // WHAT THE SESSION ITSELF REPORTED joins what the mirror wrote, on ONE key. The mirror
       // says what was PUT INTO the account; the init frame says what the session actually
@@ -6379,9 +6414,15 @@ export async function tick(deps = {}) {
     result.error = true
     return result
   } finally {
-    // МЕСТО ОТДАЁТСЯ ВСЕГДА — на успехе, на провале, на исключении и на КАЖДОМ раннем возврате
-    // выше. Стоит на самом внешнем уровне именно поэтому: выходов из тика много, и пропущенный
-    // хотя бы один означал бы дом, который никогда не пустеет, и конвейер, вставший молча.
+    // МЕСТО И ЗАНЯТОСТЬ РАБОТНИКА ОТДАЮТСЯ ВСЕГДА — на успехе, на провале, на исключении и на
+    // КАЖДОМ раннем возврате выше. Стоит на самом внешнем уровне именно поэтому: выходов из тика
+    // много, и пропущенный хотя бы один означал бы дом, который никогда не пустеет, и конвейер,
+    // вставший молча.
+    //
+    // И ЭТО ЕДИНСТВЕННАЯ ДОРОГА К СВОБОДНОМУ РАБОТНИКУ. Место здесь чаще всего отдаётся вторым
+    // разом (первый — на смерти ребёнка, по имени захода), а вот занятость работника до этой
+    // строки не снимал никто: ворота попытки идут ПОСЛЕ смерти ребёнка, и работник, отпущенный
+    // на той границе, получал от ближайшего тика вторую задачу поверх ещё не закрытой первой.
     if (seat && deps.inFlight && typeof deps.inFlight.release === 'function') deps.inFlight.release(seat)
     // И ОКНО КООРДИНАЦИИ ЗАКРЫВАЕТСЯ ВСЕГДА — по той же причине и в том же месте. Мёртвая
     // попытка не исполняет своего прощального хука (он внутри убитого процесса), и до этой
@@ -6710,7 +6751,11 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
   // The steering wheel, same as the code path: the founder's «Перебить сейчас» must be able
   // to end a forge turn too, and a spawn nobody registered is a door that answers and does
   // nothing.
-  const spawnSteered = steeredSpawn(deps, task.id, spawnWorker)
+  // ТО ЖЕ ИМЯ ЗАХОДА, ЧТО У МЕСТА. Одно выражение на обеих полосах: имя, посчитанное здесь
+  // вторым способом, однажды разошлось бы с тем, под которым место было названо, и дверь
+  // отмены освобождала бы место, которого нет.
+  const forgeAttemptId = attemptIdFor(task.id, task.attempt)
+  const spawnSteered = steeredSpawn(deps, task.id, spawnWorker, forgeAttemptId)
   fleetState = 'RUNNING'
   // WHEN THIS ATTEMPT STARTED — captured where the process really begins, so a subscription
   // attempt books a duration instead of counting from epoch zero.
@@ -6718,8 +6763,9 @@ async function runForgeTask(deps, task, route, result, now, envelope, attemptWin
   const exit = await runSpawn(spawnSteered, { bin: spec.bin, args: spec.args, cwd: worktreePath, env: spec.env, prompt: spec.prompt }, onLine, now)
   if (deps.attemptTurns) deps.attemptTurns.done(task.id)
   // Место отдаётся на смерти ребёнка и у этой полосы — правило «место держит живой процесс» не
-  // знает полос ровно так же, как его не знает закрытие координационного окна.
-  confirmProcessGone(deps, task.id)
+  // знает полос ровно так же, как его не знает закрытие координационного окна. И отдаётся оно
+  // по имени ЗАХОДА, а не строки: полос это правило тоже не знает.
+  confirmProcessGone(deps, task.id, forgeAttemptId)
   // СКОЛЬКО СОБИРАЛАСЬ СЕССИЯ — на строку попытки и здесь: у кузницы тот же спавн, то же
   // молчание до первого кадра и тот же человек у окна.
   worktreeRow.sessionStart = sessionStartRecord({ spawnedAt: attemptStartedAt, firstLineAt: exit.firstLineAt })

@@ -13,8 +13,11 @@
  *
  * ── LAW 1 · HYBRID. A factual question is not a job for a model. «Почему упала
  *    задача X» is a dictionary lookup over the SAME failure vocabulary the roster renders;
- *    «что съело лимит» is arithmetic over the spend book; «что с задачей» is a status read.
- *    Those three branches are pure functions over injected sources — instant, free, and
+ *    «что съело лимит» is arithmetic over the spend book; «что с задачей» is a status read;
+ *    «что было вчера с задачей X» is a READ OF THE FOUR BOOKS (журнал, прогоны, уроки,
+ *    стенограммы) through the search the product already owns — a question about the past is
+ *    answered by a record with its path, never by the board's idea of the present.
+ *    Those four branches are pure functions over injected sources — instant, free, and
  *    incapable of spawning anything. Only a genuinely open question reaches a model session.
  *    A misclassification is SAFE by design: the free branch answers honestly too, just dearer.
  *
@@ -131,6 +134,16 @@ const SPEND_RE = /съел|съед|потрат|расход|лимит|бюд�
 const FAIL_RE = /упал|не получилось|не вышло|провал|отказ|сорвал|ошибк/i
 /** «какой статус», «что с задачей», «как дела» — a status question. */
 const STATUS_RE = /статус|что с |как дела|где сейчас|на чём/i
+/**
+ * «что было вчера с задачей», «кто трогал», «какая квитанция» — a question about the PAST.
+ *
+ * Состояние доски отвечает на «что сейчас»; на «что было» оно отвечать не может и раньше
+ * отвечало догадкой свободной ветки. Слова здесь — те, которыми о прошлом и спрашивают: сам
+ * факт прошедшего времени («было», «трогал», «кончилось») или названная точка во времени
+ * («вчера», «в прошлый раз»).
+ */
+const PAST_RE =
+  /что было|что происходило|чем кончил|чем закончил|кто трогал|кто менял|кто правил|кто делал|что делали|квитанц|вчера|позавчера|на прошлой неделе|в прошлый раз|в тот раз|в истории|по записям/i
 /** Something in the sentence points at a task — otherwise a failure word is just a mood. */
 const TASK_REF_RE = /задач|карточк|про /i
 
@@ -319,8 +332,12 @@ export function isConsent(text) {
  * No model is consulted to decide whether a model is needed — that would defeat the point of
  * the split, and it is why every pattern here is a word a person wrote.
  *
+ * ВОПРОС О ПРОШЛОМ спрашивается ПОСЛЕ отказа и ДО статуса: «почему упала» — это вопрос о
+ * причине, которую реестр знает сам, а «что было вчера с задачей» реестр не знает вовсе, и
+ * доска на него отвечала бы нынешним состоянием, то есть не тем, о чём спросили.
+ *
  * @param {string} text
- * @returns {'consent'|'stage'|'task-debug'|'task-research'|'task-prod'|'fail-reason'|'spend'|'status'|'free'}
+ * @returns {'consent'|'stage'|'task-debug'|'task-research'|'task-prod'|'fail-reason'|'history'|'spend'|'status'|'free'}
  */
 export function classifyTurn(text) {
   const s = String(text ?? '')
@@ -332,6 +349,7 @@ export function classifyTurn(text) {
   if (PUT_RE.test(s) && LONG_RE.test(s)) return 'task-prod'
   if (SPEND_RE.test(s)) return 'spend'
   if (FAIL_RE.test(s) && TASK_REF_RE.test(s)) return 'fail-reason'
+  if (PAST_RE.test(s)) return 'history'
   if (STATUS_RE.test(s)) return 'status'
   return 'free'
 }
@@ -843,6 +861,237 @@ export function proposeBreakdown(phrase, backlogRows) {
   }
 }
 
+// ── fact model 7: «что было вчера с задачей» — ПО КНИГАМ, а не по догадке ──────
+//
+// ═══ ВОПРОС О ПРОШЛОМ ОТВЕЧАЕТСЯ ЗАПИСЬЮ, А НЕ СОСТОЯНИЕМ ДОСКИ ═══
+//
+// Вопрос основателя 02.09: «зачем нам поиск, у нас же есть система и разговор с ней?». Замер
+// ответил на него неприятно: поиск по четырём книгам — журналу, прогонам, урокам и
+// стенограммам — был только у экрана «Поиск», а у разговора провода к нему не было вовсе. На
+// «что было вчера с задачей» разговор отвечал ДОСКОЙ: нынешним статусом строки, то есть не тем,
+// о чём спросили, — а чего доска не знает, то договаривала свободная ветка из общих
+// соображений. Это ровно тот случай, ради которого в этом файле написано «чего в снимке нет —
+// того Вы не видите».
+//
+// ЧТО ЗДЕСЬ ЕСТЬ И ЧЕГО НЕТ:
+//   ЧИТАТЕЛЯ КНИГ ЭТОТ ФАЙЛ НЕ ЗАВОДИТ. Он зовёт ВЫДАННУЮ дверью способность
+//     (`deps.searchHistory`) — тот же поиск по книгам, которым отвечает глагол в терминале.
+//     Второго читателя книг в продукте не появляется, и потоковое чтение стенограмм остаётся
+//     там, где оно написано и измерено.
+//   ОТВЕТ НЕСЁТ ПУТЬ ЗАПИСИ. Найденное цитируется вместе с книгой и путём, по которому запись
+//     лежит, — иначе цитата неотличима от пересказа, а пересказ неотличим от догадки.
+//   ЧУЖОЙ КАТАЛОГ В ОТВЕТ НЕ ЕДЕТ. Путь внутри дерева проекта едет относительным, а путь
+//     снаружи (стенограммы движка лежат в домашнем каталоге человека) — одним именем файла:
+//     раскладка машины — её собственное дело, и список результатов ровно та поверхность, где
+//     она уехала бы дальше всего.
+//   НЕ НАШЛОСЬ — ЗНАЧИТ НЕ НАШЛОСЬ. Пустой ответ говорит, по каким словам искали и какие книги
+//     прочитаны; догадка вместо записи — это и есть тот дефект, ради которого провод заведён.
+
+/** Как книги называются человеку — ровно четыре, и ни одна не появляется здесь второй раз. */
+export const HISTORY_BOOK_TITLES = Object.freeze({
+  journal: 'журнал',
+  exec: 'прогоны',
+  lesson: 'уроки',
+  transcript: 'стенограммы',
+})
+
+/**
+ * Сколько слов вопроса уезжает в запрос. Поиск требует ВСЕ слова в одной строке, поэтому
+ * каждое лишнее слово сужает выдачу — три содержательных слова это уже точный вопрос.
+ */
+export const HISTORY_QUERY_WORDS = 3
+
+/** Короче этого слово ничего не опознаёт: предлог в запросе — это шум, а не признак. */
+const HISTORY_WORD_MIN = 4
+
+/** Сколько записей показывается в ответе. Цитата, а не выгрузка книги. */
+export const HISTORY_HITS_SHOWN = 5
+
+/** Сколько записей спрашивается у каждой книги — потолок принадлежит поиску, счёт здесь. */
+const HISTORY_ASK_LIMIT = 5
+
+/** Идентификатор задачи в вопросе — самый точный запрос, какой может быть: он не склоняется. */
+const HISTORY_ID_RE = /\b([A-Za-z]-\d{6,})\b/
+
+/**
+ * Слова, которыми задают ВОПРОС, а не ищут в книгах. Их присутствие в запросе означало бы
+ * «найди строку, где написано слово „вчера“», то есть не то, о чём человек спросил.
+ */
+const HISTORY_STOP = new Set([
+  'что', 'было', 'были', 'происходило', 'вчера', 'позавчера', 'сегодня', 'ночью', 'утром',
+  'кто', 'трогал', 'трогали', 'менял', 'меняли', 'правил', 'правили', 'делал', 'делали',
+  'какая', 'какой', 'какое', 'какие', 'когда', 'куда', 'откуда', 'почему', 'зачем',
+  'кончилось', 'закончилось', 'история', 'истории', 'записям', 'записи',
+  'задача', 'задачу', 'задаче', 'задачи', 'задачей', 'работа', 'работу', 'работе',
+  'квитанция', 'квитанцию', 'квитанции', 'этой', 'этот', 'эта', 'этим', 'нашей', 'нашу',
+  'прошлой', 'прошлый', 'неделе', 'неделю', 'потом', 'тогда', 'раньше',
+])
+
+/**
+ * historyQuery(text) → слова, которыми стоит спросить книги, или пустая строка.
+ *
+ * Идентификатор задачи, если он назван, бьёт всё остальное: он один и тот же во всех четырёх
+ * книгах и не склоняется. Иначе — содержательные слова вопроса, в порядке, как человек их
+ * написал, без вопросительной обвязки и не больше трёх.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function historyQuery(text) {
+  const said = String(text ?? '')
+  const named = said.match(HISTORY_ID_RE)
+  if (named) return named[1]
+
+  const words = []
+  for (const raw of said.toLowerCase().replace(/ё/g, 'е').split(/[^\p{L}\p{N}]+/u)) {
+    if (raw.length < HISTORY_WORD_MIN || HISTORY_STOP.has(raw)) continue
+    if (words.includes(raw)) continue
+    words.push(raw)
+    if (words.length >= HISTORY_QUERY_WORDS) break
+  }
+  return words.join(' ')
+}
+
+/**
+ * historyWidened(query) → тот же вопрос ОДНИМ словом, когда слов было несколько.
+ *
+ * Поиск требует все слова разом, а человек пишет как говорит: «что было с импортом агентов»
+ * промахивается мимо строки, где написано только «импорт». Второй заход — по самому длинному
+ * слову: это по-прежнему СЛОВО ЧЕЛОВЕКА, а не выдумка, и делается он только когда первый заход
+ * не нашёл ничего.
+ *
+ * @param {string} query
+ * @returns {string}
+ */
+export function historyWidened(query) {
+  const words = String(query ?? '').split(/\s+/).filter(Boolean)
+  if (words.length < 2) return ''
+  return words.reduce((a, b) => (b.length > a.length ? b : a), '')
+}
+
+/**
+ * recordPath(file, repoDir) → путь записи в том виде, в каком его можно показать.
+ *
+ * Внутри дерева проекта — относительный путь: он открывается, ищется и пересказывается. Снаружи
+ * (стенограммы движка живут в домашнем каталоге) — одно имя файла: запись остаётся опознаваемой,
+ * а раскладка машины из ответа не уезжает.
+ *
+ * @param {string} file
+ * @param {string} [repoDir]
+ * @returns {string}
+ */
+export function recordPath(file, repoDir) {
+  const path = String(file ?? '').replace(/\\/g, '/')
+  if (!path) return ''
+  const root = String(repoDir ?? '').replace(/\\/g, '/').replace(/\/+$/, '')
+  if (root && path.toLowerCase().startsWith(`${root.toLowerCase()}/`)) return path.slice(root.length + 1)
+  const absolute = /^(?:[A-Za-z]:)?\//.test(path)
+  return absolute ? path.split('/').pop() : path
+}
+
+/** Что человек читает, когда книг этому демону не выдали. Догадка вместо них не предлагается. */
+export const HISTORY_NO_DOOR_TEXT =
+  'Поиск по книгам этому демону не подключён — отвечать по записям нечем, а догадываться я не буду.'
+
+/** …и когда книги есть, но прочитать их не вышло. Тоже новость, а не молчание. */
+export const HISTORY_UNREADABLE_TEXT =
+  'Книги не прочитались — ответить по записям не вышло. Повторите вопрос, и я схожу в них ещё раз.'
+
+/** …и когда в вопросе нет ни одного слова, которым можно искать. */
+export const HISTORY_NO_QUERY_TEXT =
+  'В вопросе нет слова, по которому искать. Назовите слово из работы или идентификатор задачи — и я прочитаю книги.'
+
+/**
+ * answerHistory({query, found, repoDir}) → цитаты из книг, каждая со своим путём.
+ *
+ * ЧИСТАЯ ФУНКЦИЯ над тем, что вернул поиск: тест зовёт её напрямую, а ход разговора отличается
+ * от неё ровно одним — походом за данными.
+ *
+ * @param {{query?:string, found?:object, repoDir?:string}} args
+ * @returns {{kind:'fact', text:string, sources:object[]}}
+ */
+export function answerHistory({ query, found, repoDir } = {}) {
+  const asked = String(query ?? '').trim()
+  const all = found && Array.isArray(found.hits) ? found.hits : []
+  const hits = all.slice(0, HISTORY_HITS_SHOWN)
+  if (hits.length === 0) {
+    return {
+      kind: 'fact',
+      text:
+        `По словам «${asked}» в книгах ничего не нашлось — прочитаны ` +
+        `${Object.values(HISTORY_BOOK_TITLES).join(', ')}. Догадываться о прошлом я не буду.`,
+      sources: [],
+    }
+  }
+
+  const sources = hits.map((h) => ({
+    book: HISTORY_BOOK_TITLES[h && h.source] ?? String((h && h.source) ?? ''),
+    path: recordPath(h && h.file, repoDir),
+    ts: (h && h.ts) ?? null,
+    fragment: String((h && h.fragment) ?? ''),
+  }))
+
+  return {
+    kind: 'fact',
+    text: `По словам «${asked}» в книгах нашлось записей: ${sources.length}. Каждая — ниже, со своей книгой и путём.`,
+    sources,
+  }
+}
+
+/**
+ * historyCitation(source) → одна цитата СЛОВАМИ: книга, путь, время и сама строка.
+ *
+ * Живёт здесь, а не у той двери, которой понадобилась первой: окно рисует цитаты карточками, у
+ * телефона карточек нет и не будет, — а строка, собранная на каждом конце по-своему, это две
+ * разные цитаты одной записи. Пишущий её один.
+ *
+ * @param {{book?:string, path?:string, ts?:string|null, fragment?:string}} source
+ * @returns {string}
+ */
+export function historyCitation(source) {
+  const s = source && typeof source === 'object' ? source : {}
+  const head = [s.book, s.path, s.ts].map((v) => String(v ?? '').trim()).filter(Boolean).join(' · ')
+  const said = String(s.fragment ?? '').trim()
+  return said ? `${head}\n«${said}»` : head
+}
+
+/**
+ * answerHistoryTurn({text, deps}) → ход разговора о прошлом: собрать запрос, сходить в книги
+ * ВЫДАННОЙ способностью, процитировать найденное.
+ *
+ * Отказ книг не роняет ход и не превращается в догадку: человек читает, что случилось, и
+ * спрашивает снова.
+ */
+async function answerHistoryTurn({ text, deps = {} } = {}) {
+  const query = historyQuery(text)
+  if (!query) return { kind: 'fact', text: HISTORY_NO_QUERY_TEXT, sources: [] }
+  if (typeof deps.searchHistory !== 'function') {
+    return { kind: 'fact', text: HISTORY_NO_DOOR_TEXT, sources: [], error: 'no-history-door' }
+  }
+
+  const ask = async (q) => {
+    try {
+      return await deps.searchHistory({ query: q, limit: HISTORY_ASK_LIMIT })
+    } catch {
+      return null // an unreadable book is a sentence to the human, never a broken turn
+    }
+  }
+
+  let asked = query
+  let found = await ask(asked)
+  if (!found) return { kind: 'fact', text: HISTORY_UNREADABLE_TEXT, sources: [], error: 'history-unreadable' }
+
+  const wider = historyWidened(query)
+  if ((Array.isArray(found.hits) ? found.hits.length : 0) === 0 && wider) {
+    const second = await ask(wider)
+    if (second && Array.isArray(second.hits) && second.hits.length > 0) {
+      found = second
+      asked = wider
+    }
+  }
+  return answerHistory({ query: asked, found, repoDir: deps.repoDir })
+}
+
 // ── documents mentioned in a reply become ATTACHMENTS ──────────────────────────
 //
 // ══════════════ THE CHAT GUARANTEES NOTHING ABOUT THESE PATHS ═════════════
@@ -964,6 +1213,9 @@ export function appendTurn({ dir, turn = {}, fsImpl, clock = Date.now, cap = HIS
   if (turn.draft) record.draft = turn.draft
   if (turn.decision) record.decision = turn.decision
   if (Array.isArray(turn.attachments) && turn.attachments.length) record.attachments = turn.attachments
+  // ЦИТАТЫ ЖИВУТ В КНИГЕ РАЗГОВОРА, как и вложения: беседа, открытая завтра, обязана показать
+  // те же записи, которыми ответ был дан, — иначе назавтра от ответа остаётся одно число.
+  if (Array.isArray(turn.sources) && turn.sources.length) record.sources = turn.sources
   if (turn.error) record.error = String(turn.error)
 
   const file = historyFile(dir)
@@ -1321,6 +1573,10 @@ function newConversationId(clock) {
  * deps: { adapter (list only), readUsageRows|dataDir, config, historyDir, project, clock,
  *         fsImpl, dispatchFree, putTask, ...the free branch's own spawn dependencies }
  *
+ * `deps.searchHistory({query, limit})` — ВЫДАННАЯ дверью способность прочитать четыре книги.
+ * Её нет — вопрос о прошлом честно отвечает, что книг не выдали, и НИЧЕГО не додумывает: молча
+ * свалиться в свободную ветку значило бы вернуть ровно ту догадку, ради которой провод заведён.
+ *
  * `deps.putTask(draft)` — ВЫДАННАЯ дверью способность поставить задачу: та же сборка, которой
  * ставит её окно. Её нет — согласие честно отвечает, что двери нет, и ничего не заводится.
  *
@@ -1377,6 +1633,10 @@ export async function handleChatTurn({ text, conversationId, turnId, deps = {} }
     answer = await dispatch({ text, conversationId: convId, turnId, deps: { ...deps, memory } })
   } else if (kind === 'spend') {
     answer = answerSpend({ rows: await spendRows(deps), workers: (deps.config && deps.config.workers) || [] })
+  } else if (kind === 'history') {
+    // ВОПРОС О ПРОШЛОМ ИДЁТ В КНИГИ, а не в доску: доска знает «что сейчас», и на «что было»
+    // отвечала бы нынешним состоянием строки — то есть не тем, о чём спросили.
+    answer = await answerHistoryTurn({ text, deps })
   } else {
     const rows = await parkRows(deps)
     answer = kind === 'fail-reason' ? answerFailReason({ text, rows }) : answerStatus({ text, rows })
@@ -1410,6 +1670,7 @@ export async function handleChatTurn({ text, conversationId, turnId, deps = {} }
         draft: answer.draft,
         decision: answer.decision,
         attachments,
+        sources: answer.sources,
         error: answer.error,
       },
     })
@@ -1507,13 +1768,33 @@ export const STOP_BEFORE_START_TTL_MS = 120_000
  * и первая же регистрация под этим именем исполняет её сразу — ход, приговорённый до рождения,
  * не начинает работу. Приговор одноразовый и с давностью: он относится к той попытке, которую
  * человек остановил, а не к имени задачи навсегда.
+ *
+ * И ПРИГОВОР ВЫНОСИТ НЕ ВСЯКИЙ, КТО ЗОВЁТ `stop`. Он ПРОСИТСЯ отдельным словом (`{condemn:true}`),
+ * и просит его ровно одна дверь — та, которой человек СНИМАЕТ РАБОТУ. Дверей, зовущих `stop`,
+ * четыре, и остальные три означают совсем другое: поправка «перебить сейчас» обрывает ход, чтобы
+ * работа поехала дальше, — строку она не закрывает; сторож живости добивает повисший процесс;
+ * дверь разговора кончает беседу. Пока приговор выносился из любой из них, поправка к работе,
+ * которая ещё не запущена, убивала её следующий ЗАКОННЫЙ запуск, и убивала молча.
+ *
+ * И ИСПОЛНЕННЫЙ ПРИГОВОР НАЗЫВАЕТ СЕБЯ. Убийство при рождении не оставляло ни строки нигде: ход
+ * не начинался, карточка молчала, журнал молчал, и человек, чья работа не поехала, не имел ни
+ * одного способа узнать почему. Строка пишется в журнал демона тем же швом, каким о себе
+ * рассказывает тик.
  */
-export function createTurnRegistry({ clock = Date.now } = {}) {
-  const live = new Map() // turnId -> { kill, alive, stopped } — live handles ONLY, never truth
+export function createTurnRegistry({ clock = Date.now, journal = null } = {}) {
+  const live = new Map() // turnId -> { kill, alive, stopped, attemptId } — live handles ONLY, never truth
   const condemned = new Map() // turnId -> минута приговора; приговор ждёт ход, который ещё не начался
   const nowMs = () => {
     const t = Number(clock())
     return Number.isFinite(t) ? t : 0
+  }
+  const say = (entry) => {
+    if (typeof journal !== 'function') return
+    try {
+      journal(entry)
+    } catch {
+      /* рассказ о приговоре никогда не решает судьбу хода */
+    }
   }
   /** Приговор действует, пока не истёк срок; истёкший стирается тем же чтением. */
   const condemnedNow = (id) => {
@@ -1525,10 +1806,23 @@ export function createTurnRegistry({ clock = Date.now } = {}) {
     }
     return true
   }
+  /**
+   * ПРОСРОЧЕННЫЕ ПРИГОВОРЫ УБИРАЮТСЯ САМИ. Прежде запись стиралась только чтением по СВОЕМУ
+   * имени: приговор, вынесенный работе, которая так и не запустилась, не читался больше никогда
+   * и оставался в карте на всю жизнь демона. Уборка идёт на каждой регистрации — то есть ровно
+   * тогда, когда карта могла бы расти, и не заводит ни одного собственного таймера.
+   */
+  const sweepCondemned = () => {
+    const t = nowMs()
+    for (const [id, at] of condemned) {
+      if (t - at > STOP_BEFORE_START_TTL_MS) condemned.delete(id)
+    }
+  }
   return {
-    register(turnId, kill, alive) {
+    register(turnId, kill, alive, attemptId = null) {
       if (!turnId) return
       const id = String(turnId)
+      sweepCondemned()
       // ПРИГОВОР ИСПОЛНЯЕТСЯ ПРИ РОЖДЕНИИ. Записи не остаётся: останавливать нечего, а живая
       // ручка под именем, которое человек уже снял, — это ровно тот невидимый ход, из-за
       // которого приговор и заведён.
@@ -1539,9 +1833,31 @@ export function createTurnRegistry({ clock = Date.now } = {}) {
         } catch {
           /* a child that cannot be killed is still a turn the founder ended */
         }
+        say({
+          type: 'turn.killed_at_birth',
+          turnId: id,
+          detail: `ход убит при рождении по отмене, сказанной до его запуска: ${id}`,
+        })
         return
       }
-      live.set(id, { kill, alive: typeof alive === 'function' ? alive : null, stopped: false })
+      live.set(id, {
+        kill,
+        alive: typeof alive === 'function' ? alive : null,
+        stopped: false,
+        attemptId: typeof attemptId === 'string' && attemptId !== '' ? attemptId : null,
+      })
+    },
+    /**
+     * attemptOf(turnId) → имя ЗАХОДА, чью ручку держит этот демон под этим именем строки.
+     *
+     * Дверь отмены убивает по имени СТРОКИ, а место в доме идущих попыток принадлежит ЗАХОДУ.
+     * Спросить о заходе больше не у кого: строка не различает два своих захода, а угадать —
+     * значит однажды снять место живого процесса. `null` — «сказать нечего», и тогда место
+     * дождётся `finally` своего прохода.
+     */
+    attemptOf(turnId) {
+      const t = live.get(String(turnId))
+      return t && typeof t.attemptId === 'string' ? t.attemptId : null
     },
     /** has(turnId) → держит ли ЭТОТ демон живую ручку под этим именем прямо сейчас. */
     has(turnId) {
@@ -1565,17 +1881,21 @@ export function createTurnRegistry({ clock = Date.now } = {}) {
       }
     },
     /**
-     * stop(turnId) → true if a live turn was told to die; false is «nothing to stop».
+     * stop(turnId, {condemn}) → true if a live turn was told to die; false is «nothing to stop».
      *
-     * «Нечего останавливать» ЗАПОМИНАЕТСЯ: ход мог ещё не родиться, и тогда честный «нет» —
-     * это не конец разговора, а приговор, который исполнит регистрация (см. шапку). Ответ при
-     * этом не врёт: живого ребёнка в эту секунду действительно не убили.
+     * «Нечего останавливать» ЗАПОМИНАЕТСЯ — но только когда об этом попросили. Ход мог ещё не
+     * родиться, и тогда честный «нет» — это не конец разговора, а приговор, который исполнит
+     * регистрация (см. шапку). Ответ при этом не врёт: живого ребёнка в эту секунду не убили.
+     *
+     * ПРОСИТ ПРИГОВОР ТОЛЬКО ТА ДВЕРЬ, КОТОРАЯ СНИМАЕТ РАБОТУ. Умолчание — не просить: остальные
+     * зовущие обрывают ход, чтобы работа поехала дальше, и приговор от их имени убивал бы её же
+     * следующий законный запуск.
      */
-    stop(turnId) {
+    stop(turnId, { condemn = false } = {}) {
       const id = String(turnId)
       const t = live.get(id)
       if (!t) {
-        if (id) condemned.set(id, nowMs())
+        if (id && condemn) condemned.set(id, nowMs())
         return false
       }
       t.stopped = true
@@ -1595,6 +1915,10 @@ export function createTurnRegistry({ clock = Date.now } = {}) {
     },
     get size() {
       return live.size
+    },
+    /** Сколько приговоров ждёт своего хода — чтобы «карта не растёт» была проверяемым словом. */
+    get condemnedSize() {
+      return condemned.size
     },
   }
 }
