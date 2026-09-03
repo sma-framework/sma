@@ -1365,6 +1365,147 @@ export function contextExhaustedOf(lines) {
   return compactions > 0 ? { compactions, preTokens } : null
 }
 
+/**
+ * КАДРЫ, КОТОРЫМИ CLI ГОВОРИТ О ФОНОВЫХ ЗАДАЧАХ СЕССИИ. Снято с живого потока 03.09.2026: за
+ * кадром `result` шли `background_tasks_changed`, `task_updated`, `task_notification` — то есть
+ * ход кончился, а работа продолжалась. Список закрыт и назван здесь один раз: кадр, о котором он
+ * молчит, не читается вовсе — догадка о чужой схеме хуже, чем честное «не знаю».
+ */
+const BACKGROUND_FRAME_SUBTYPES = Object.freeze(['background_tasks_changed', 'task_updated', 'task_notification'])
+
+/** Слова, которыми поставщик объявляет фоновую задачу ЗАКОНЧЕННОЙ. Всё прочее считается живым. */
+const BACKGROUND_FINISHED = Object.freeze([
+  'completed', 'complete', 'done', 'finished', 'failed', 'error', 'killed', 'cancelled', 'canceled', 'stopped', 'exited', 'timed_out',
+])
+
+/** Список фоновых задач кадра — под любым из трёх имён, которыми его пишут; иначе null. */
+function backgroundListOf(frame) {
+  for (const key of ['background_tasks', 'backgroundTasks', 'tasks']) {
+    if (Array.isArray(frame[key])) return frame[key]
+  }
+  return null
+}
+
+/** Живой ли статус фоновой задачи: закончена только та, о которой это сказано словом. */
+function backgroundLive(status) {
+  return !BACKGROUND_FINISHED.includes(String(status ?? '').trim().toLowerCase())
+}
+
+/**
+ * backgroundTurnEndOf(lines) → `{live, tasks, commands, source}`, когда ход КОНЧИЛСЯ ПРИ ЖИВОЙ
+ * ФОНОВОЙ ЗАДАЧЕ, иначе null.
+ *
+ * ЧТО ЗДЕСЬ ЧИТАЕТСЯ И ПОЧЕМУ ЭТО ВООБЩЕ ЧИТАЮТ. `--print` разрешает закончить ход, не дожидаясь
+ * фоновой задачи (`Bash run_in_background`), и работник этим пользуется, чтобы «не ждать» полный
+ * набор: он пишет промежуточное слово («Tests are running in the background… Interim status»),
+ * поток отдаёт `result success`, следом идут кадры о фоновых задачах — и ход кончен, а блок
+ * журнала, который работник собирался написать ПОСЛЕ прогона, не написан никогда. Замерено в ночь
+ * на 03.09.2026: 19 попыток закрыты как `no_journal`, каждая — час-два работы и повтор с нуля,
+ * одна из них с одиннадцатью коммитами на ветке.
+ *
+ * ПОПЫТКУ ЗАКРЫВАЕТ ВЫХОД РЕБЁНКА, А НЕ ЭТОТ РАСПОЗНАВАТЕЛЬ, и порядок здесь важен. Тик ждёт
+ * `onExit` (см. runSpawn) — то есть `result` никогда не был для него концом сессии сам по себе, и
+ * поток продолжает собираться после него: кадры о фоне и ВТОРОЙ `result`, пришедшие следом, лежат
+ * в тех же `streamLines`. Поэтому судить нужно не первый кадр, а КОНЕЦ потока — что осталось
+ * живым, когда ребёнок ушёл. Ход, у которого фоновая задача успела закончиться и после неё пришёл
+ * второй `result`, — обычный законченный ход, и эта функция о нём молчит.
+ *
+ * ДВА ИСТОЧНИКА, И ПЕРВЫЙ ГЛАВНЕЕ. Если поставщик вообще говорил о фоновых задачах — верим его
+ * собственной бухгалтерии: `background_tasks_changed` приносит СНИМОК (список заменяется целиком),
+ * `task_updated` / `task_notification` — одну строку (обновляется она одна). Если о фоне не
+ * сказано ни кадра, читается НАШЕ собственное наблюдение запуска: вызов оболочки с
+ * `run_in_background: true`, о конце которого поток не сказал ничего. Второе слабее первого и
+ * названо в `source`, чтобы читатель отличал измерение от вывода.
+ *
+ * ЛОЖНАЯ ТРЕВОГА ЗДЕСЬ СТОИТ СЛОВА, А НЕ РАБОТЫ, и это граница намеренная: ответ спрашивают
+ * ТОЛЬКО у попытки, которая и без него не проходит гейт из-за пропавшей записки или урока (см.
+ * classifyFailure). Ни одна зелёная попытка не может быть отказана этой функцией — она лишь
+ * называет своим именем отказ, который уже случился.
+ *
+ * ТОЛЬКО ГЛАВНАЯ СЕССИЯ. Ход подагента кончается внутри хода попытки, и его `result` — не конец
+ * сессии; провенанс уже стоит на каждом событии, поэтому граница проводится чтением, а не догадкой.
+ *
+ * @param {string[]} lines — поток попытки, как он собран
+ * @returns {{live:number, tasks:string[], commands:string[], source:string}|null}
+ */
+export function backgroundTurnEndOf(lines) {
+  if (!Array.isArray(lines)) return null
+  // Открытые фоновые задачи, как их назвал поставщик: плоский список — этот файл не заводит
+  // ключевых коллекций (см. дисциплины наверху), а речь о горстке строк одной попытки.
+  const open = []
+  const commands = [] // что сессия отправила в фон СВОИМИ руками — словами её же вызова
+  let vendorSpoke = false
+  let sawResult = false
+  for (const line of lines) {
+    if (typeof line !== 'string') continue
+    const { event, frame } = parseClaudeFrame(line)
+    if (!frame || event.subagent === true) continue
+    if (event.type === 'result') {
+      sawResult = true
+      continue
+    }
+    if (frame.type === 'assistant') {
+      try {
+        for (const block of toolUsesOf(frame)) {
+          const input = block.input && typeof block.input === 'object' ? block.input : {}
+          if (!SHELL_TOOLS.includes(String(block.name)) || input.run_in_background !== true) continue
+          if (typeof input.command === 'string' && input.command.trim()) pushUnique(commands, input.command.trim().slice(0, 120))
+        }
+      } catch {
+        /* нечитаемый кадр не учит ничему и не ломает ничего (fail-open) */
+      }
+      continue
+    }
+    if (frame.type !== 'system' || !BACKGROUND_FRAME_SUBTYPES.includes(String(frame.subtype))) continue
+    vendorSpoke = true
+    const list = backgroundListOf(frame)
+    if (list) {
+      // СНИМОК ЗАМЕНЯЕТ СОСТОЯНИЕ ЦЕЛИКОМ: кадр «список изменился» описывает весь набор, и
+      // дописывание к прежнему оставило бы жить задачу, которую поставщик уже убрал.
+      open.length = 0
+      for (const item of list) {
+        const t = item && typeof item === 'object' ? item : {}
+        open.push({ id: String(t.id ?? t.task_id ?? t.taskId ?? open.length), status: t.status ?? null, name: String(t.description ?? t.command ?? t.name ?? t.id ?? 'фоновая задача').slice(0, 120) })
+      }
+      continue
+    }
+    const id = singleTaskIdOf(frame)
+    if (!id) continue
+    const known = open.find((t) => t.id === id)
+    if (known) known.status = frame.status ?? frame.state ?? known.status
+    else open.push({ id, status: frame.status ?? frame.state ?? null, name: String(frame.description ?? frame.command ?? id).slice(0, 120) })
+  }
+  if (!sawResult) return null // прогон, который не дошёл до своего конца, принадлежит другим распознавателям
+  if (vendorSpoke) {
+    const live = open.filter((t) => backgroundLive(t.status))
+    return live.length ? { live: live.length, tasks: live.map((t) => t.name), commands, source: 'frames' } : null
+  }
+  // Поставщик о фоне не сказал ни слова — остаётся наше собственное наблюдение запуска.
+  return commands.length ? { live: commands.length, tasks: [...commands], commands, source: 'tool_call' } : null
+}
+
+/** Имя фоновой задачи, о которой говорит одиночный кадр, — или null, если кадр её не назвал. */
+function singleTaskIdOf(frame) {
+  const id = frame.task_id ?? frame.taskId ?? frame.id ?? (frame.task && typeof frame.task === 'object' ? frame.task.id : null)
+  return id === undefined || id === null || String(id).trim() === '' ? null : String(id)
+}
+
+/**
+ * СЛОВА ЭТОГО КОНЦА, ОДНОЙ СТРОКОЙ И С ПОДСКАЗКОЙ. Причина без подсказки здесь бесполезна:
+ * человек, читающий «журнал не дописан», не знает, что чинить, — а чинится это порядком хода.
+ *
+ * @param {{live:number, tasks:string[], source:string}} bg
+ * @returns {string}
+ */
+export function backgroundTurnEndDetail(bg) {
+  const named = Array.isArray(bg && bg.tasks) && bg.tasks.length ? `: ${bg.tasks.slice(0, 2).join(' · ')}` : ''
+  return (
+    `ход закончен при живой фоновой задаче (${(bg && bg.live) || 0}${named}) — журнал не дописан. ` +
+    'Полный набор гоняйте в ПЕРЕДНЕМ плане (без run_in_background) и не заканчивайте ход, пока ' +
+    'фоновая задача жива; блок журнала — записка о подходе и урок — последнее действие хода'
+  )
+}
+
 /** Сколько букв последней ошибки едет на карточку: фраза, а не стена. */
 export const TRANSCRIPT_ERROR_MAX = 200
 
@@ -1533,6 +1674,7 @@ function turnRecordOf(args, lines) {
  *   no receipt + nonzero exit      → 'agent_error'      (the worker crashed)
  *   no receipt + exit 0            → 'no_receipt'        (claimed done, never certified)
  *   green receipt + broken tool    → 'close_tool_broken' (OUR closing instrument crashed)
+ *   green receipt + live background→ 'background_turn_end' (the turn ended before the journal did)
  *   green receipt + no note        → 'no_journal'       (certified, never explained)
  *   anything else                  → 'agent_error'
  * A marker (when present) BEATS the receipt — the worker gave the sharper reason. The
@@ -1566,7 +1708,7 @@ function turnRecordOf(args, lines) {
  * @param {{spawnError?:any, providerAbort?:object|null, turnCapHit?:object|null, contextExhausted?:object|null, exitCode?:number|null, receipt?:{verdict?:string,ref?:any}|null, workerMarker?:string|null, journalComplete?:boolean, closeToolError?:string|null}} [o]
  * @returns {string}
  */
-export function classifyFailure({ spawnError, providerAbort, turnCapHit, contextExhausted, exitCode, receipt, workerMarker, journalComplete, lessonComplete, envUnfit, closeToolError } = {}) {
+export function classifyFailure({ spawnError, providerAbort, turnCapHit, contextExhausted, exitCode, receipt, workerMarker, journalComplete, lessonComplete, envUnfit, closeToolError, backgroundTurnEnd } = {}) {
   if (spawnError) return 'runtime_offline'
   if (providerAbort) return 'provider_error'
   if (turnCapHit) return 'turns_exhausted'
@@ -1589,6 +1731,13 @@ export function classifyFailure({ spawnError, providerAbort, turnCapHit, context
   // пары no_journal / no_lesson ниже). Отдельно от provider_error и turns_exhausted выше:
   // те двое — про прогон, оборванный снаружи работы, а этот — про наш собственный код.
   if (receipt.verdict === 'green' && closeToolError) return 'close_tool_broken'
+  // И ТРЕТЬЯ ПОДМЕНА СЛОВА НАД ТОЙ ЖЕ ПАРОЙ ПРОПАЖ — не «не объяснил», а «не успел». Записки и
+  // урока нет потому, что ход кончился при живой фоновой задаче: работник отправил полный набор
+  // в фон, сказал промежуточное слово, и блок журнала, который он собирался написать после
+  // прогона, не получил своего хода. Спрашивается ТОЛЬКО поверх уже случившейся пропажи (см.
+  // backgroundTurnEndOf: ложная тревога стоит слова, а не работы) и ниже отказа инструмента —
+  // сломанный журнал сильнее, потому что там записку нечем было записать вовсе.
+  if (receipt.verdict === 'green' && backgroundTurnEnd && (journalComplete === false || lessonComplete === false)) return 'background_turn_end'
   if (receipt.verdict === 'green' && journalComplete === false) return 'no_journal'
   // THE OLDER OMISSION IS THE SHARPER ONE. An attempt that left neither note nor lesson reads
   // 'no_journal': the note explains the work a person is about to accept, and the lesson is
@@ -5962,6 +6111,10 @@ export async function tick(deps = {}) {
       // ходы, и до этого чтения оно было единственным из трёх, о котором демон не знал ничего:
       // переполнившаяся попытка приходила на выходной гейт неотличимой от плохой работы.
       const contextExhausted = contextExhaustedOf(streamLines)
+      // И ЧЕМ ЭТОТ ХОД КОНЧИЛСЯ — не «когда», а ПРИ ЧЁМ. Читается по всему потоку, уже после
+      // выхода ребёнка: попытку закрывает его exit, а не первый `result`, поэтому кадры о
+      // фоновых задачах и второй `result`, пришедшие следом, лежат здесь же и судятся вместе.
+      const backgroundTurnEnd = backgroundTurnEndOf(streamLines)
 
       // (7b) THE APPROACH NOTE — read off the same stream, appended as the journal's
       // approach layer, and then REQUIRED by the gate exactly as the receipt is required.
@@ -6102,6 +6255,17 @@ export async function tick(deps = {}) {
             (contextExhausted.preTokens !== null ? ` (перед самым большим — ${contextExhausted.preTokens} токенов)` : ''),
         })
       }
+      // И ХОД, КОНЧИВШИЙСЯ ПРИ ЖИВОЙ ФОНОВОЙ ЗАДАЧЕ, — тоже факт о ПОРЯДКЕ работы, а не о её
+      // качестве, и он говорится вслух даже там, где попытка всё равно прошла: следующей может
+      // не повезти. Приговором он не становится — что он решает, решает гейт ниже.
+      if (backgroundTurnEnd) {
+        writeLog(deps, {
+          type: 'task.background_turn_end',
+          taskId: task.id,
+          reason: 'background_turn_end',
+          detail: `${backgroundTurnEndDetail(backgroundTurnEnd)} (признак: ${backgroundTurnEnd.source === 'frames' ? 'кадры поставщика' : 'вызов run_in_background'})`,
+        })
+      }
 
       // (7a-pre) КОММИТ ЗА РАБОТНИКА, КОТОРОМУ ПЕСОЧНИЦА НЕ ДАЛА СДЕЛАТЬ ЕГО САМОМУ.
       //
@@ -6151,7 +6315,13 @@ export async function tick(deps = {}) {
         // вопрос «чей это провал» тогда, когда провал УЖЕ есть; работу, прошедшую гейт,
         // сломанный журнал не съедает — этим починка и отличается от поломки, ради которой
         // она сделана.
-        const omission = noteWritten ? lessonReason : 'no_journal'
+        const missing = noteWritten ? lessonReason : 'no_journal'
+        // ПРОПАЖА, У КОТОРОЙ ЕСТЬ ОБЪЯСНЕНИЕ, НАЗЫВАЕТСЯ ИМ — тот же порядок, что и в
+        // classifyFailure на полосе кода: отказ инструмента сильнее (записку нечем было
+        // записать), живая фоновая задача идёт следом (ход кончился раньше записки), и только
+        // потом остаётся голая пропажа. Ни одна из подмен не СОЗДАЁТ отказа — она переименовывает
+        // тот, что уже есть.
+        const omission = missing && backgroundTurnEnd && !closeToolError ? 'background_turn_end' : missing
         const reason =
           infraReason ??
           (gate.receiptRef ? (omission && closeToolError ? 'close_tool_broken' : omission) : gate.reason)
@@ -6161,7 +6331,13 @@ export async function tick(deps = {}) {
           // гейта называет последствие; слова из стенограммы называют причину, и без них
           // человек открывает поток вручную — или, как случалось, не открывает вовсе и платит
           // за три одинаковых попытки.
-          const detail = stageRefusalDetail(gate.detail, lastToolErrorOf(streamLines))
+          // СЛОВА ЭТОГО КОНЦА ЕДУТ ВПЕРЁД ЧУЖИХ. У отказа по живой фоновой задаче есть своя
+          // подсказка, и она отвечает на вопрос человека «что делать»; последняя ошибка
+          // инструмента в этом случае — про другое.
+          const detail =
+            reason === 'background_turn_end'
+              ? backgroundTurnEndDetail(backgroundTurnEnd)
+              : stageRefusalDetail(gate.detail, lastToolErrorOf(streamLines))
           if (detail) writeLog(deps, { type: 'task.refused', taskId: task.id, reason, detail })
           await failTask(deps, task, { reason, failureDetail: detail, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
           result.failed = { taskId: task.id, reason, ...(detail ? { detail } : {}) }
@@ -6439,13 +6615,20 @@ export async function tick(deps = {}) {
           // слово только там, где иначе прозвучало бы обвинение работника в пропаже, и не
           // трогает ни один конец, названный до записки (обрыв, потолок, маркер, красное).
           closeToolError,
+          // И ЧЕМ КОНЧИЛСЯ ХОД — тем же порядком: слово подставляется только там, где пропажа
+          // записки или урока УЖЕ решила исход, и не трогает ни один конец, названный раньше.
+          backgroundTurnEnd,
           envUnfit,
         })
         if (envUnfit) {
           writeLog(deps, { type: 'task.env_broken', taskId: task.id, detail: envUnfit })
         }
-        await failTask(deps, task, { reason, ...(envUnfit ? { failureDetail: envUnfit } : {}), receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
-        result.failed = { taskId: task.id, reason, ...(envUnfit ? { detail: envUnfit } : {}) }
+        // ЧТО НАПИСАНО НА КАРТОЧКЕ. Причина без подсказки здесь не работает: человек, читающий
+        // «журнал не дописан», должен увидеть рядом ту самую поправку — передний план и журнал
+        // последним действием, — иначе следующая попытка повторит ровно этот ход.
+        const failureDetail = envUnfit ?? (reason === 'background_turn_end' ? backgroundTurnEndDetail(backgroundTurnEnd) : null)
+        await failTask(deps, task, { reason, ...(failureDetail ? { failureDetail } : {}), receiptRef: receipt && receipt.ref, branch, route, now: now(), envelope, from: fleetState, sessionId: sessionOf(), startedAt: attemptStartedAt, worktree: worktreeRow, turns: turnSpend })
+        result.failed = { taskId: task.id, reason, ...(failureDetail ? { detail: failureDetail } : {}) }
       }
       return result
     } catch (err) {

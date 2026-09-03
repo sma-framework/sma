@@ -269,6 +269,12 @@ export const TASK_STATUSES = Object.freeze([
  *   no_journal      — the attempt left no approach note: the work may be
  *                     certified, but it never explained itself, and an unexplained attempt
  *                     is incomplete by the same law that makes an uncertified one incomplete
+ *   background_turn_end — the turn ENDED WHILE A BACKGROUND TASK WAS STILL RUNNING: the worker
+ *                     put the full suite into the background to avoid waiting, said an interim
+ *                     word and finished its turn, so the journal block it meant to write after
+ *                     the run was never written. Named apart from no_journal because the note is
+ *                     not missing — it never got its turn — and the only fix is the order of the
+ *                     turn itself: the full suite in the FOREGROUND, the journal block last
  *   agent_error     — the worker process errored
  *   provider_error  — the run the WORKER DID NOT END: the vendor refused mid-word (an
  *                     overload, a server error) and the CLI stopped. Kept apart from
@@ -364,6 +370,17 @@ export const FAIL_REASONS = Object.freeze([
   // Отдельно от agent_error: работник не падал. Отдельно от env_broken: среда цела. Слово
   // обязано послать читателя туда, где поломка, — в инструмент, и назвать его.
   'close_tool_broken',
+  // ХОД ЗАКОНЧЕН, ПОКА ФОНОВАЯ ЗАДАЧА ЕЩЁ ЖИВА, — И ЭТО НЕ МОЛЧАНИЕ РАБОТНИКА. Работник запускает
+  // полный набор фоном (`run_in_background`), чтобы «не ждать», пишет промежуточное слово и
+  // заканчивает ход; журнал подхода и урок он собирался дописать ПОСЛЕ прогона, которого в этом
+  // ходе уже не будет. Раньше такая попытка закрывалась как `no_journal` — «не объяснил», —
+  // и человек шёл искать нерадивого работника вместо того, чтобы прочитать единственную поправку,
+  // которая тут работает: полный набор гоняется в ПЕРЕДНЕМ плане, а блок журнала пишется
+  // последним действием хода. Замерено в ночь на 03.09.2026: 19 попыток с исходом `no_journal`,
+  // каждая — час-два работы и повтор с нуля.
+  // Отдельно от `no_journal`: записки нет не потому, что её не стали писать, а потому, что ход
+  // кончился раньше неё. Отдельно от `close_tool_broken`: наш инструмент цел, до него не дошло.
+  'background_turn_end',
   'no_artifact',
   'agent_error',
   'provider_error',
@@ -727,6 +744,11 @@ export const REASON_LABELS = Object.freeze({
   // INSTRUMENT_RETRY_LIMIT): первое падение может быть случайным, второе — это стена, и
   // третью оплаченную попытку об неё не тратят.
   close_tool_broken: 'сломался инструмент закрытия попытки — работник тут ни при чём: чинить инструмент',
+  // НАЗЫВАЕТ ПОРЯДОК ХОДА, А НЕ ПРОПАЖУ. «Нет записки» отправляло человека к работнику, который
+  // ничего не скрывал: он просто закончил ход, пока фоновая задача ещё шла. Подпись обязана
+  // назвать ту единственную поправку, которая это чинит, — и она её называет.
+  background_turn_end:
+    'ход закончен при живой фоновой задаче — журнал не дописан: полный набор гоняется в переднем плане (без run_in_background), блок журнала пишется последним действием хода',
   // НАЗЫВАЕТ РЕШЕНИЕ, А НЕ ТОЛЬКО ПОСЛЕДСТВИЕ. «Нет документа — стадия не оставила своего файла»
   // — правда о прошлом, и человеку, читающему её на доске, она не говорит ни-че-го о том, что
   // делать дальше. Выборов у него ровно два, и оба названы здесь: запустить ступень заново

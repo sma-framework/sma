@@ -455,7 +455,7 @@ describe("taskContext — the human's snapshot of what this task is about, livin
 })
 
 describe('constants — taxonomy', () => {
-  it('FAIL_REASONS is the 29-reason human taxonomy and is frozen', () => {
+  it('FAIL_REASONS is the 30-reason human taxonomy and is frozen', () => {
     expect(FAIL_REASONS).toEqual([
       'no_receipt',
       'no_journal',
@@ -467,6 +467,12 @@ describe('constants — taxonomy', () => {
       // INSTRUMENTS, and a crashed instrument turns both of the two words above into an
       // accusation against a worker who did everything asked of him
       'close_tool_broken',
+      // the turn that ENDED WHILE A BACKGROUND TASK WAS STILL RUNNING: the worker put the full
+      // suite into the background so as not to wait, said an interim word, and the journal block
+      // it meant to write after the run never got a turn. Named apart from no_journal because
+      // the note is not withheld — it never had its turn — and the only fix is the ORDER of the
+      // turn: the suite in the foreground, the journal block last
+      'background_turn_end',
       // the documentary counterpart of no_receipt: a stage whose product is prose said done
       // and left no document — the file is absent from the phase directory, or uncommitted
       'no_artifact',
