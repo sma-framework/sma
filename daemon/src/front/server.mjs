@@ -1520,7 +1520,8 @@ function mergeRollbackFields(raw) {
 }
 
 /**
- * mergeReceiptWords(raw) → `{branch, sha, testsPassed, testsNote, failedTests, report}`, или `null`.
+ * mergeReceiptWords(raw) → `{branch, sha, testsPassed, testsNote, failedTests, failedCount, report,
+ * reportNote}`, или `null`.
  *
  * ТА ЖЕ КВИТАНЦИЯ, ДРУГОЙ ВОПРОС. `mergeRollbackFields` выше — граница КОМАНДЫ: из неё
  * выходит только то, что человек скопирует и запустит, и потому оттуда не выходит ничего,
@@ -1580,13 +1581,20 @@ function mergeReceiptWords(raw) {
     .map((s) => s.trim().slice(0, 200))
     .slice(0, RED_RUN_TESTS_SHOWN)
   const oneFailed = typeof receipt.failedTest === 'string' && receipt.failedTest.trim() ? receipt.failedTest.trim() : null
+  // …И СКОЛЬКО ИХ ВСЕГО. Список выше срезан дважды — прогонятелем и этой строкой, — поэтому
+  // его длина отвечает на «сколько показали», а не на «сколько упало». Число несёт квитанция;
+  // карточка его только доносит и никогда не считает сама.
+  const failedCount = Number.isFinite(receipt.failedCount) && receipt.failedCount > 0 ? Math.trunc(receipt.failedCount) : 0
   const out = {
     branch: branchName || null,
     sha: sha && OBJECT_NAME_RE.test(sha) ? sha : null,
     testsPassed: typeof receipt.testsPassed === 'boolean' ? receipt.testsPassed : null,
     testsNote: note || null,
     failedTests: failedTests.length ? failedTests : oneFailed ? [oneFailed] : [],
+    failedCount,
     report: typeof receipt.savedReport === 'string' && receipt.savedReport.trim() ? receipt.savedReport.trim() : null,
+    // Отчёта нет — карточка называет ПОЧЕМУ теми же словами, что и отказ двери.
+    reportNote: typeof receipt.keepNote === 'string' && receipt.keepNote.trim() ? receipt.keepNote.trim() : null,
   }
   // Квитанция, не сказавшая НИЧЕГО из четырёх, — это не квитанция, а разобравшийся объект.
   return out.branch || out.sha || out.testsPassed !== null || out.testsNote ? out : null

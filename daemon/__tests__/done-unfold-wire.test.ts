@@ -188,10 +188,12 @@ describe('раскрытие готовой работы — дверь карт
       sha: MERGE_SHA,
       testsPassed: true,
       testsNote: null,
-      // Зелёный прогон никого не роняет и отчёта после себя не оставляет: пусто и `null`
-      // здесь — измерение, а не забытые поля.
+      // Зелёный прогон никого не роняет и отчёта после себя не оставляет: пусто, ноль и
+      // `null` здесь — измерение, а не забытые поля.
       failedTests: [],
+      failedCount: 0,
       report: null,
+      reportNote: null,
     })
 
     // (3) КТО ПРИНЯЛ И КОГДА. Дверь одобрения — человеческая по построению, и след уборки
@@ -255,6 +257,53 @@ describe('раскрытие готовой работы — дверь карт
       'daemon/__tests__/broken-import.test.ts',
     ])
     expect(body.accepted.merge.report, 'путь к отчёту не доехал до карточки').toBe(report)
+  })
+
+  /**
+   * ТА ЖЕ ДВЕРЬ, ДВА ДРУГИХ СЛОВА. Список имён режется дважды — прогонятелем и дверью, — и его
+   * длина отвечает на «сколько показали». Число упавших и причина, по которой отчёта нет, —
+   * отдельные поля квитанции, и оба обязаны доехать до карточки, иначе человек читает пять
+   * имён как весь масштаб беды и ищет файл, которого не могло быть.
+   */
+  it('красная квитанция несёт до карточки и общее число упавших, и причину отсутствия отчёта', async () => {
+    const id = 'R-177-c'
+    const { body } = await askTaskDoor(
+      {
+        adapter: {
+          list: async () => [
+            {
+              id,
+              status: 'awaiting_approval',
+              title: 'сорок красных',
+              mergeReceipt: JSON.stringify({
+                branch: `wt/${id}`,
+                resultSha: null,
+                repo: '/repo',
+                testsPassed: false,
+                refused: true,
+                failedTests: ['a > 1', 'b > 2', 'c > 3', 'd > 4', 'e > 5'],
+                failedCount: 40,
+                keepNote: 'дом данных демона не назван — отчёт красного прогона сохранять некуда',
+              }),
+            },
+          ],
+        },
+        ledger: ledgerOfAcceptedWork(id),
+        execGit: gitOfAcceptedWork([]),
+        repoDir: '/repo',
+      },
+      id,
+    )
+
+    expect(body.accepted.merge.failedCount, 'общее число упавших не доехало до карточки').toBe(40)
+    expect(body.accepted.merge.report).toBe(null)
+    expect(body.accepted.merge.reportNote, 'причина отсутствия отчёта не доехала до карточки').toContain(
+      'дом данных демона не назван',
+    )
+    // …и обе фразы панели читают ровно то, что доехало.
+    expect(failedTestWords(body.accepted.merge)).toBe('40, первые 5: a > 1 · b > 2 · c > 3 · d > 4 · e > 5')
+    expect(runReportWords(body.accepted.merge).known).toBe(false)
+    expect(runReportWords(body.accepted.merge).text).toContain('дом данных демона не назван')
   })
 
   it('принятая терминалом: приёмщик назван словом и своим именем, квитанция — из его журнала', async () => {
@@ -331,10 +380,28 @@ describe('панель раскрытия: пустое поле станови�
     expect(failedTestWords(null)).toBe('имён упавших тестов прогонятель не назвал')
   })
 
+  it('при сорока красных карточка называет сорок, а не длину показанного списка', () => {
+    const names = ['a > 1', 'b > 2', 'c > 3', 'd > 4', 'e > 5']
+    expect(failedTestWords({ failedTests: names, failedCount: 40 } as any)).toBe(`40, первые 5: ${names.join(' · ')}`)
+    // Число, не превышающее показанное, ничего не добавляет: «5, первые 5» — шум, а не правда.
+    expect(failedTestWords({ failedTests: names, failedCount: 5 } as any)).toBe(names.join(' · '))
+    // Числа не назвали — карточка не считает за прогонятеля.
+    expect(failedTestWords({ failedTests: names } as any)).toBe(names.join(' · '))
+  })
+
   it('путь к отчёту отдаётся как известный, а его отсутствие — как неизвестное', () => {
     const known = runReportWords({ report: '/data/landing/wt-R-1-2026.json' } as any)
     expect(known).toEqual({ text: '/data/landing/wt-R-1-2026.json', known: true })
     expect(runReportWords({ report: null } as any).known).toBe(false)
     expect(runReportWords(null)).toEqual({ text: 'отчёта прогона не сохранилось', known: false })
+  })
+
+  it('отчёта нет — карточка говорит ПОЧЕМУ, если прогонятель это сказал', () => {
+    const said = runReportWords({ report: null, reportNote: 'дом данных демона не назван' } as any)
+    expect(said).toEqual({ text: 'дом данных демона не назван', known: false })
+    // Путь есть — причина не нужна и не показывается: читают путь, а не рассказ о нём.
+    expect(runReportWords({ report: '/data/landing/x.json', reportNote: 'некуда' } as any).text).toBe(
+      '/data/landing/x.json',
+    )
   })
 })
