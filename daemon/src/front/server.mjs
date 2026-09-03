@@ -3560,6 +3560,10 @@ function chatDeps(config, deps, extra = {}) {
     spawnWorker: deps.spawnWorker,
     // the Stop button's other half — the live-turn registry the stop door also holds
     chatTurns: deps.chatTurns,
+    // ЧЕТЫРЕ КНИГИ. Способность прочитать журнал, прогоны, уроки и стенограммы выдаётся здесь —
+    // тем же движением, что и способность поставить задачу, и по той же причине: разговор её не
+    // импортирует, а получает. Её нет — вопрос о прошлом отвечает словами, а не догадкой.
+    searchHistory: deps.searchHistory,
     // ПОСТАНОВКА ПО СЛОВУ. Способность выдаётся ЗДЕСЬ — в одном месте на обе двери: и окно, и
     // мост телеграма зовут runChatTurn, который собирает сотрудников этой функцией. Поэтому
     // «да», сказанное с телефона, и «да», сказанное в окне, идут в одну и ту же дверь
@@ -3593,8 +3597,28 @@ function pickAnswer(answer) {
     ...(a.decision ? { decision: pickDecision(a.decision) } : {}),
     ...(Array.isArray(a.spend) ? { spend: a.spend } : {}),
     ...(a.link ? { link: a.link } : {}),
+    ...pickSources(a),
     ...pickAttachments(a),
   }
+}
+
+/**
+ * Цитаты из книг, поле за полем: какая книга, где лежит запись, когда она сделана и сама
+ * строка. Ровно та же выборка, что у вложений и решения, и по той же причине — наружу уезжает
+ * ФОРМА, а не то, что вернул читатель книг: путь уже приведён движком к показываемому виду, и
+ * ни одно лишнее поле поиска не выходит на провод просто потому, что оно там было.
+ */
+function pickSources(r) {
+  if (!Array.isArray(r.sources) || r.sources.length === 0) return {}
+  const list = r.sources
+    .filter((s) => s && typeof s.path === 'string' && s.path !== '')
+    .map((s) => ({
+      book: typeof s.book === 'string' ? s.book : '',
+      path: s.path,
+      ts: typeof s.ts === 'string' && s.ts !== '' ? s.ts : null,
+      fragment: typeof s.fragment === 'string' ? s.fragment : '',
+    }))
+  return list.length ? { sources: list } : {}
 }
 
 /**
@@ -3638,6 +3662,7 @@ function pickTurn(t) {
     ...(r.taskRef ? { taskRef: r.taskRef } : {}),
     ...(r.draft ? { draft: r.draft } : {}),
     ...(r.decision ? { decision: pickDecision(r.decision) } : {}),
+    ...pickSources(r),
     ...pickAttachments(r),
   }
 }
@@ -4027,6 +4052,10 @@ async function handleRedirect({ req, res, config, deps }) {
   journalRedirect(b, wrote.id, deps)
   let live = false
   if (b.mode === 'interrupt' && deps.attemptTurns && typeof deps.attemptTurns.stop === 'function') {
+    // «ПЕРЕБИТЬ СЕЙЧАС» НЕ ВЫНОСИТ ПРИГОВОРА, и это не мелочь умолчания. Эта дверь обрывает ход,
+    // чтобы работа поехала ДАЛЬШЕ с поправкой; строку она не закрывает. Пока приговор выносился
+    // из любого зова `stop`, поправка, сказанная задаче, которая ещё не запущена, ложилась на
+    // диск целой — и убивала её же следующий законный запуск, молча и в течение двух минут.
     live = deps.attemptTurns.stop(b.taskId)
   }
   emitSafe(deps, { event: 'task.running', taskId: b.taskId, status: 'claimed' })
@@ -4083,15 +4112,15 @@ const defaultNap = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * освобождение места — ОДНО выражение (`confirmProcessGone`), поэтому «закрылась» на экране и
  * «место свободно» в тике не могут разойтись.
  */
-async function waitForAttemptClose({ registry, taskId, deps }) {
+async function waitForAttemptClose({ registry, taskId, deps, attemptId = null }) {
   if (!registry || typeof registry.wasStopped !== 'function') return false
   const nap = typeof deps.sleep === 'function' ? deps.sleep : defaultNap
   const looks = Math.max(1, Math.ceil(CANCEL_ATTEMPT_CLOSE_WAIT_MS / CANCEL_ATTEMPT_POLL_MS))
   for (let i = 0; i < looks; i += 1) {
-    if (confirmProcessGone(deps, taskId)) return true
+    if (confirmProcessGone(deps, taskId, attemptId)) return true
     await nap(CANCEL_ATTEMPT_POLL_MS)
   }
-  return confirmProcessGone(deps, taskId)
+  return confirmProcessGone(deps, taskId, attemptId)
 }
 
 /**
@@ -4140,9 +4169,15 @@ async function handleTaskCancel({ req, res, deps }) {
   if (typeof b.taskId !== 'string' || !ID_RE.test(b.taskId)) return send400(res, 'invalid taskId')
 
   const registry = deps.attemptTurns
+  // ЧЬЁ МЕСТО ОСВОБОДИТСЯ — СПРАШИВАЕТСЯ ДО УБИЙСТВА. Ручка исчезает выходной дорогой самого
+  // ребёнка, то есть в любую секунду после `stop`; имя строки к этому моменту у двери есть, а
+  // имя ЗАХОДА — только у ручки, и место в доме идущих попыток принадлежит именно заходу.
+  const attemptId = registry && typeof registry.attemptOf === 'function' ? registry.attemptOf(b.taskId) : null
+  // И ПРИГОВОР ПРОСИТ ТОЛЬКО ЭТА ДВЕРЬ. Она одна закрывает строку насовсем, поэтому только у
+  // неё «убивать было нечего» законно означает «и следующему ходу этой работы не жить».
   const killed =
-    registry && typeof registry.stop === 'function' ? registry.stop(b.taskId) === true : false
-  const attemptClosed = killed ? await waitForAttemptClose({ registry, taskId: b.taskId, deps }) : null
+    registry && typeof registry.stop === 'function' ? registry.stop(b.taskId, { condemn: true }) === true : false
+  const attemptClosed = killed ? await waitForAttemptClose({ registry, taskId: b.taskId, deps, attemptId }) : null
   const cancelled = (await adapter.cancelTask(b.taskId)) === true
   return sendJson(res, 200, { cancelled, killed, attemptClosed })
 }

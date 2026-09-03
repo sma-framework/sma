@@ -80,6 +80,8 @@ import {
   telegramConfigured,
 } from './client.mjs'
 import { matchesPairingCode } from './pairing.mjs'
+// Цитата записи книги пишется ОДИН раз — у движка разговора, который её и собрал.
+import { historyCitation } from '../front/chat.mjs'
 
 /** The one message a chat gets when its code was right: the pair is made, and it is named. */
 export const PAIRED_REPLY = 'Готово — этот чат подключён к SMA. Дальше пишите сюда, окно покажет то же самое.'
@@ -235,6 +237,10 @@ export function answerToText(answer) {
   const parts = []
   const said = typeof a.text === 'string' ? a.text.trim() : ''
   if (said !== '') parts.push(said)
+  // ЦИТАТЫ ИЗ КНИГ — СЛОВАМИ. Окно рисует их карточками; здесь карточек нет, а ответ о прошлом
+  // БЕЗ записи, из которой он взят, — это ровно тот пересказ, ради ухода от которого разговор
+  // и ходит в книги. Собирает строку тот же, кто собирает её для окна (движок разговора).
+  if (Array.isArray(a.sources)) for (const s of a.sources) parts.push(historyCitation(s))
   if (a.draft) parts.push(named(DRAFT_NOTE, a.draft.title))
   if (a.decision) parts.push(named(DECISION_NOTE, a.decision.title ?? a.decision.taskId))
   return parts.length ? parts.join('\n\n') : EMPTY_ANSWER_REPLY
