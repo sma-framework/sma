@@ -83,6 +83,90 @@ function changedTests(entries, added) {
 }
 
 /**
+ * НОРМАЛИЗОВАННЫЙ ИСХОДНИК: то, что в файле СКАЗАНО, без того, КАК оно набрано. Один проход,
+ * без разбора грамматики: пробелы и переводы строк схлопнуты до одного разделителя, комментарии
+ * обеих форм выброшены, а строковые литералы взяты целиком и дословно — пробел ВНУТРИ строки
+ * продукту виден, и стирать его значило бы объявить косметикой настоящую правку.
+ *
+ * Токены склеиваются через пробел, а не встык: иначе `a b` и `ab` дали бы одну строку, и
+ * пропавшая граница между словами прошла бы за «ничего не изменилось».
+ */
+function normalizedSource(text) {
+  const out = []
+  let buf = ''
+  const flush = () => {
+    if (buf) out.push(buf)
+    buf = ''
+  }
+  for (let i = 0; i < text.length; ) {
+    const c = text[i]
+    const next = text[i + 1]
+    if (c === '/' && next === '/') {
+      flush()
+      while (i < text.length && text[i] !== '\n') i += 1
+      continue
+    }
+    if (c === '/' && next === '*') {
+      flush()
+      i += 2
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i += 1
+      i += 2
+      continue
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      flush()
+      let lit = c
+      i += 1
+      while (i < text.length) {
+        const ch = text[i]
+        if (ch === '\\') {
+          lit += ch + (text[i + 1] ?? '')
+          i += 2
+          continue
+        }
+        lit += ch
+        i += 1
+        if (ch === c) break
+      }
+      out.push(lit)
+      continue
+    }
+    if (/\s/.test(c)) {
+      flush()
+      i += 1
+      continue
+    }
+    buf += c
+    i += 1
+  }
+  flush()
+  return out.join(' ')
+}
+
+/**
+ * СОДЕРЖАТЕЛЬНА ЛИ ПРАВКА ЭТОГО ТЕСТА — вопрос, без которого голос правленого теста стоил
+ * одного пробела. Замерено на ревью 03.09.2026: любая работа, говорящая только о себе, проходила
+ * гейт, если в довесок сдвинуть отступ в ЧУЖОМ существующем тесте, — правка была помечена `M`,
+ * тест держался за продукт, и сторож умолкал. Правка, которой продукт не видит (пробелы,
+ * переводы строк, комментарий), теперь голосом не считается.
+ *
+ * FAIL-OPEN: читателя базы нет, файл в базе не прочёлся или пуст — правка считается
+ * содержательной. Обвинить работу в косметике на основании неспрошенного git было бы хуже той
+ * дыры, которую этот вопрос закрывает. Никогда не бросает.
+ */
+function saysSomethingNew(path, text, readBase) {
+  if (typeof readBase !== 'function') return true
+  let before
+  try {
+    before = readBase(path)
+  } catch {
+    before = null
+  }
+  if (typeof before !== 'string' || !before) return true
+  return normalizedSource(before) !== normalizedSource(text)
+}
+
+/**
  * Спецификаторы модулей, которые файл ПОДКЛЮЧАЕТ. Три формы, которыми их пишут:
  * `from '...'`, `require('...')` и голый `import '...'` (он же динамический `import('...')`).
  */
@@ -266,6 +350,12 @@ function selfReferences(text, added) {
  * добавленные и правленые (`changedTests`). Правленый тест продукта — тоже голос работы: правя
  * существующий тест, работа говорит о том, что было до неё.
  *
+ * НО ТОЛЬКО ЕСЛИ ПРАВКА СОДЕРЖАТЕЛЬНА, и это цена того, что вопрос задаётся работе целиком.
+ * Замерено на ревью 03.09.2026: сдвинутый отступ в ЧУЖОМ существующем тесте — правка, которой
+ * продукт не видит, — разоружал сторожа для самозамкнутой пары «заметка + тест о ней». Голосом
+ * считается правка, меняющая нормализованный исходник (`saysSomethingNew`): не пробел, не перевод
+ * строки и не комментарий. ДОБАВЛЕННОГО теста это не касается — новый файл целиком новый.
+ *
  * САМОЗАМКНУТЫМ называется ДОБАВЛЕННЫЙ тест, который не держится за продукт ни одним из трёх
  * способов и при этом называет хотя бы один путь — и каждый названный им путь добавлен этой же
  * работой. Тест, не назвавший ни одного файла и ничего не подключивший, не судится вовсе:
@@ -284,10 +374,10 @@ function selfReferences(text, added) {
  * в копии нет, — разоружало распознаватель на всю работу. Отсутствие читателя даёт пустой
  * ответ. Никогда не бросает.
  *
- * @param {{entries?:Array<{status:string,path:string}>, readFile?:(p:string)=>string|null, pathExists?:(p:string)=>boolean}} o
+ * @param {{entries?:Array<{status:string,path:string}>, readFile?:(p:string)=>string|null, readBase?:(p:string)=>string|null, pathExists?:(p:string)=>boolean}} o
  * @returns {{files:string[], detail:string}|null}
  */
-export function selfReferentialTests({ entries, readFile, pathExists } = {}) {
+export function selfReferentialTests({ entries, readFile, readBase, pathExists } = {}) {
   const added = addedPaths(entries)
   if (!added.length || typeof readFile !== 'function') return null
   const exists = typeof pathExists === 'function' ? pathExists : () => false
@@ -302,7 +392,11 @@ export function selfReferentialTests({ entries, readFile, pathExists } = {}) {
     }
     if (typeof text !== 'string' || !text) continue // нечитаемый файл — не улика и не оправдание
 
-    if (linksProduct(text, test.path, added, exists)) return null // работа держится за продукт
+    if (linksProduct(text, test.path, added, exists)) {
+      // Добавленный тест — голос сразу; правленый — только если его правку видит продукт.
+      if (test.added || saysSomethingNew(test.path, text, readBase)) return null
+      continue // один пробел в чужом тесте работу не оправдывает
+    }
     if (!test.added) continue // правленый тест ни за что не держится — но и не улика против
 
     const selfRefs = selfReferences(text, added)
