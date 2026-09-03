@@ -31,7 +31,16 @@
 
 import { execFileSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -47,7 +56,10 @@ import {
   receiptCoversTree,
   runFullSuiteAsync,
   runSpaBuild,
+  spaBuildTimeoutMs,
   SPA_BUILD_SCRIPT,
+  SPA_BUILD_TIMEOUT_ENV,
+  SPA_BUILD_TIMEOUT_MS,
   SPA_NO_SCRIPT_NOTE,
   SPA_UNTOUCHED_NOTE,
   STAMP_PATHS,
@@ -411,9 +423,22 @@ describe('посадка пересобирает окно: слияние → �
       `${JSON.stringify({ name: 'fixture', version: '1.0.0', scripts: { 'build:spa': 'node -e ""' } }, null, 2)}\n`,
     )
     put(repo.dir, 'spa/src/main.tsx', 'export const window = 1\n')
-    repo.git(['add', '--', 'package.json', 'spa/src/main.tsx'])
+    // Раздача окна гитом НЕ отслеживается — ровно как в живом дереве. Именно поэтому
+    // `merge --abort` её не касается, и именно поэтому её приходится возвращать руками.
+    put(repo.dir, '.gitignore', 'daemon/static/app/\ndaemon/static/.app-*/\n')
+    repo.git(['add', '--', 'package.json', 'spa/src/main.tsx', '.gitignore'])
     repo.git(['commit', '-q', '--no-verify', '-m', 'window'])
     return repo
+  }
+
+  /** Окно, которое демон отдаёт прямо сейчас. Каталог untracked — как на настоящей машине. */
+  function serveWindow(repo: Repo, text: string) {
+    put(repo.dir, 'daemon/static/app/index.html', text)
+    put(repo.dir, 'daemon/static/app/assets/app.js', `бандл: ${text}`)
+  }
+
+  function servedWindow(repo: Repo) {
+    return read(repo.dir, 'daemon/static/app/index.html')
   }
 
   it('ветка тронула окно: сборка зовётся один раз, ПОСЛЕ слияния и ДО прогона, время едет в квитанцию', async () => {
@@ -569,36 +594,298 @@ describe('посадка пересобирает окно: слияние → �
    * однажды соберёт его иначе, чем оно собирается руками, и разницу увидит только браузер.
    * Шов здесь один — запуск ребёнка; всё остальное настоящее.
    */
-  it('сборка зовётся именем команды из package.json, а упавший сборщик отдаёт код выхода и хвост', () => {
+  /** Поддельный ребёнок: два потока и управляемый выход — ровно то, что видит запускающий. */
+  function fakeChild(pid = 4242) {
+    const child: any = new EventEmitter()
+    child.pid = pid
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.killed = 0
+    child.kill = () => {
+      child.killed += 1
+      return true
+    }
+    return child
+  }
+
+  it('сборка зовётся именем команды из package.json, а упавший сборщик отдаёт код выхода и хвост', async () => {
     const calls: any[] = []
-    const green: any = runSpaBuild({
+    const child = fakeChild()
+    const green = runSpaBuild({
       cwd: '/дерево',
-      exec: (file: string, args: string[], opts: any) => {
+      platform: 'linux',
+      spawn: (file: string, args: string[], opts: any) => {
         calls.push({ file, args, cwd: opts.cwd })
-        return ''
+        return child
       },
     })
-    expect(green.built).toBe(true)
-    expect(Number.isFinite(green.ms), 'время сборки обязано быть измерено').toBe(true)
+    child.emit('exit', 0, null)
+    const built: any = await green
+    expect(built.built).toBe(true)
+    expect(Number.isFinite(built.ms), 'время сборки обязано быть измерено').toBe(true)
     expect(calls).toHaveLength(1)
     expect([calls[0].file, ...calls[0].args].join(' ')).toContain(`run ${SPA_BUILD_SCRIPT}`)
     expect([calls[0].file, ...calls[0].args].join(' ')).toMatch(/^npm/)
     expect(calls[0].cwd, 'собирать надо СВЕДЁННОЕ дерево, а не то, где стоит процесс').toBe('/дерево')
 
-    const red: any = runSpaBuild({
+    const redChild = fakeChild()
+    const red = runSpaBuild({ cwd: '/дерево', platform: 'linux', spawn: () => redChild })
+    redChild.stdout.emit('data', '> sma-spa@0.0.0 build\n> tsc --noEmit && vite build\n')
+    redChild.stderr.emit('data', 'src/App.tsx(4,1): error TS1005: ")" expected.\n')
+    redChild.emit('exit', 2, null)
+    const failed: any = await red
+    expect(failed.built).toBe(false)
+    expect(failed.exitCode).toBe(2)
+    expect(failed.tail, 'причина сборки живёт в последних строках и больше нигде').toContain('TS1005')
+  })
+
+  /**
+   * ПОТОЛОК ГАСИТ ДЕРЕВО, А НЕ ОДНОГО РЕБЁНКА. На Windows сборка идёт через оболочку, и
+   * сигнал по оболочке оставлял внука-сборщика жить с мёртвым родителем: посадка считала
+   * сборку снятой, машина продолжала молоть. Проверяется ПРИКАЗ ДЕРЕВУ и то, что он отдан
+   * с pid ребёнка, а одиночное гашение остаётся ЗАПАСНЫМ путём.
+   */
+  it('сборка, не уложившаяся в потолок: гасится ДЕРЕВО процессов, и это отдельный ответ', async () => {
+    const child = fakeChild(777)
+    const ordered: any[] = []
+    const answer = runSpaBuild({
       cwd: '/дерево',
-      exec: () => {
-        const err: any = new Error('Command failed: npm run build:spa')
-        err.status = 2
-        err.stdout = '> sma-spa@0.0.0 build\n> tsc --noEmit && vite build\n'
-        err.stderr = 'src/App.tsx(4,1): error TS1005: ")" expected.\n'
-        throw err
+      platform: 'win32',
+      timeoutMs: 5,
+      spawn: () => child,
+      killTree: ({ pid, platform }: any) => {
+        ordered.push({ pid, platform })
+        return true
       },
     })
-    expect(red.built).toBe(false)
-    expect(red.exitCode).toBe(2)
-    expect(red.tail, 'причина сборки живёт в последних строках и больше нигде').toContain('TS1005')
+    await new Promise((r) => setTimeout(r, 30))
+    expect(ordered, 'потолок обязан отдать приказ ДЕРЕВУ, а не одному процессу').toEqual([
+      { pid: 777, platform: 'win32' },
+    ])
+    expect(child.killed, 'дерево погашено — одиночный сигнал здесь лишний').toBe(0)
+    child.emit('exit', null, 'SIGTERM')
+    const said: any = await answer
+    expect(said.built).toBe(false)
+    expect(said.timedOut, 'потолок — это не «сборка упала», у него свой признак').toBe(true)
+
+    // …а система без дерева процессов честно отвечает «нет», и тогда гасится ребёнок.
+    const lone = fakeChild(778)
+    const loneAnswer = runSpaBuild({
+      cwd: '/дерево',
+      platform: 'linux',
+      timeoutMs: 5,
+      spawn: () => lone,
+      killTree: () => false,
+    })
+    await new Promise((r) => setTimeout(r, 30))
+    expect(lone.killed, 'приказа дереву не было — обязан пойти одиночный сигнал').toBe(1)
+    lone.emit('exit', null, 'SIGTERM')
+    await loneAnswer
   })
+
+  /**
+   * МНОГОСЛОВНАЯ СБОРКА — НЕ НЕСОБИРАЕМОЕ ОКНО. Синхронный запуск держал весь вывод в буфере
+   * и падал на его потолке (ENOBUFS): сборка, сказавшая больше четырёх мегабайт, объявлялась
+   * упавшей, а посадка отказывала ветке за многословие сборщика. Здесь вывод заведомо больше
+   * прежнего потолка, а приговор берётся у кода выхода.
+   */
+  it('вывод сборки не упирается в потолок буфера, а хвост — это ПОСЛЕДНИЕ строки', async () => {
+    const child = fakeChild()
+    const answer = runSpaBuild({ cwd: '/дерево', platform: 'linux', spawn: () => child })
+    const chunk = `${'x'.repeat(64 * 1024)}\n`
+    for (let i = 0; i < 96; i += 1) child.stdout.emit('data', chunk) // ~6 МБ, вдвое больше прежнего потолка
+    child.stderr.emit('data', 'src/App.tsx(4,1): error TS1005: ")" expected.\n')
+    child.emit('exit', 1, null)
+    const said: any = await answer
+    expect(said.built, 'приговор берётся у кода выхода, а не у длины вывода').toBe(false)
+    expect(said.exitCode).toBe(1)
+    expect(said.tail, 'в хвосте обязана быть ПОСЛЕДНЯЯ строка вывода').toContain('TS1005')
+  })
+
+  it('потолок сборки называется снаружи, а мусор в переменной читается как «не названо»', () => {
+    expect(spaBuildTimeoutMs({ [SPA_BUILD_TIMEOUT_ENV]: '1500' })).toBe(1500)
+    expect(spaBuildTimeoutMs({ [SPA_BUILD_TIMEOUT_ENV]: '0' })).toBe(SPA_BUILD_TIMEOUT_MS)
+    expect(spaBuildTimeoutMs({ [SPA_BUILD_TIMEOUT_ENV]: 'скоро' })).toBe(SPA_BUILD_TIMEOUT_MS)
+    expect(spaBuildTimeoutMs({})).toBe(SPA_BUILD_TIMEOUT_MS)
+  })
+
+  /**
+   * ═══ ОТКАЗ ОБЯЗАН БЫТЬ ПОЛНЫМ, И РАЗДАЧА — ЕГО ЧАСТЬ ══════════════════════════════════
+   *
+   * Сборка окна идёт ДО прогона. Прогон краснеет, `merge --abort` возвращает `spa/src` к
+   * вершине — а раздача гитом не отслеживается вовсе, и откат её не касается: на диске
+   * оставалось окно ОТКАЗАННОЙ ветки, демон показывал человеку то, чего на вершине нет, и ни
+   * один сторож этого не видел (исходник чист, раздача новее исходника — всюду «свежо»).
+   *
+   * Здесь настоящее ВСЁ, кроме сборщика и прогонятеля: git, слияние, откат, файлы раздачи.
+   * Подделанный сборщик делает ровно то, что делает настоящий, — переписывает раздачу.
+   */
+  it('красная посадка: раздача окна возвращается к вершине, и отказ называет это словами', async () => {
+    const repo = repoThatBuildsWindow('spa-restore')
+    try {
+      serveWindow(repo, 'ОКНО ВЕРШИНЫ')
+      repo.git(['checkout', '-q', '-b', 'wt/window-red'])
+      put(repo.dir, 'spa/src/main.tsx', 'export const window = 2\n')
+      repo.git(['add', '--', 'spa/src/main.tsx'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'правка окна'])
+      repo.git(['checkout', '-q', repo.trunk])
+      const tipBefore = repo.git(['rev-parse', 'HEAD']).trim()
+
+      // Метка свежести — обещание «этот бандл собран из этого дерева». Отказанная посадка
+      // такого обещания не даёт, и здесь проверяется, что она его и не выдаёт.
+      const marked: any[] = []
+      const landing = createLanding({
+        cwd: repo.dir,
+        markBundle: (call: any) => {
+          marked.push(call)
+          return { refreshed: 1 }
+        },
+        runBuild: () => {
+          // Сборщик собрал окно ВЕТКИ поверх раздачи — это и есть его работа.
+          serveWindow(repo, 'ОКНО ОТКАЗАННОЙ ВЕТКИ')
+          return { built: true, ms: 12 }
+        },
+        runSuite: async () => ({ passed: false, ran: true, failedTest: 'spa/__tests__/window.test.ts > окно' }),
+      })
+      const merged: any = await runMerge({
+        branch: 'wt/window-red',
+        by: 'landing-case',
+        cwd: repo.dir,
+        claimsDir: repo.claimsDir,
+        journalDir: repo.journalDir,
+        runTests: landing.runTests,
+        restoreWindow: landing.restoreWindow,
+      })
+
+      expect(merged.merged, 'красный прогон пустил ветку в вершину').toBe(false)
+      expect(merged.testsPassed).toBe(false)
+      expect(repo.git(['rev-parse', 'HEAD']).trim(), 'вершина двинулась на красном прогоне').toBe(tipBefore)
+      // ГЛАВНОЕ УТВЕРЖДЕНИЕ: на диске лежит окно ВЕРШИНЫ, а не отказанной ветки.
+      expect(servedWindow(repo), 'демон раздаёт окно ветки, которая НЕ вошла').toBe('ОКНО ВЕРШИНЫ')
+      expect(read(repo.dir, 'daemon/static/app/assets/app.js')).toBe('бандл: ОКНО ВЕРШИНЫ')
+      // …и квитанция отказа это НАЗЫВАЕТ: молчаливый возврат неотличим от невозврата.
+      expect(merged.receipt.spaRestored.restored).toBe(true)
+      expect(merged.receipt.reason).toContain('раздача окна возвращена')
+      // Рядом с раздачей не остаётся отложенного: страховка живёт ровно до вердикта.
+      expect(
+        readdirSync(join(repo.dir, 'daemon', 'static')).filter((n) => n.startsWith('.app-')),
+        'отложенная раздача пережила вердикт',
+      ).toEqual([])
+      // И МЕТКИ НЕТ. Вернули прежнее окно — оно собрано из ДРУГОГО дерева, и пометить его
+      // значило бы соврать сторожу свежести ровно тем, чем он живёт.
+      expect(marked, 'возвращённая раздача получила обещание, которого ей никто не давал').toEqual([])
+    } finally {
+      rmSync(repo.home, { recursive: true, force: true })
+    }
+  }, 120000)
+
+  it('зелёная посадка: раздачей остаётся окно ВОШЕДШЕЙ ветки, отложенное убрано', async () => {
+    const repo = repoThatBuildsWindow('spa-keep-green')
+    try {
+      serveWindow(repo, 'ОКНО ВЕРШИНЫ')
+      repo.git(['checkout', '-q', '-b', 'wt/window-green'])
+      put(repo.dir, 'spa/src/main.tsx', 'export const window = 3\n')
+      repo.git(['add', '--', 'spa/src/main.tsx'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'правка окна'])
+      repo.git(['checkout', '-q', repo.trunk])
+
+      // Метку ставят на ПОДМЕНЁННУЮ раздачу, и к этой секунде отложенной копии рядом уже нет:
+      // пометить копию — значит дать обещание за каталог, которого никто не отдаёт.
+      const marked: any[] = []
+      const landing = createLanding({
+        cwd: repo.dir,
+        markBundle: (call: any) => {
+          marked.push({
+            ...call,
+            served: servedWindow(repo),
+            neighbours: readdirSync(join(repo.dir, 'daemon', 'static')).filter((n) => n.startsWith('.app-')),
+          })
+          return { refreshed: 2 }
+        },
+        runBuild: () => {
+          serveWindow(repo, 'ОКНО ПРИНЯТОЙ ВЕТКИ')
+          return { built: true, ms: 9 }
+        },
+        runSuite: async ({ reportPath }: any) => {
+          writeFileSync(reportPath, vitestReport({ tests: 11, files: 3 }), 'utf8')
+          return { passed: true, ran: true, reportPath }
+        },
+      })
+      const merged: any = await runMerge({
+        branch: 'wt/window-green',
+        by: 'landing-case',
+        cwd: repo.dir,
+        claimsDir: repo.claimsDir,
+        journalDir: repo.journalDir,
+        runTests: landing.runTests,
+        restoreWindow: landing.restoreWindow,
+      })
+      expect(merged.merged, `слияние не прошло: ${JSON.stringify(merged)}`).toBe(true)
+      const stamp: any = landing.stamp({ cwd: repo.dir })
+      expect(servedWindow(repo), 'вошедшая ветка обязана остаться в раздаче').toBe('ОКНО ПРИНЯТОЙ ВЕТКИ')
+      expect(
+        readdirSync(join(repo.dir, 'daemon', 'static')).filter((n) => n.startsWith('.app-')),
+        'штамп обязан убрать отложенное — ветка вошла, страховка не нужна',
+      ).toEqual([])
+      // МЕТКА ПОСТАВЛЕНА, И ПОСТАВЛЕНА НА ТО, ЧТО ОТДАЁТСЯ. Дерево ей названо то же, в котором
+      // шла посадка, а отложенной копии к этому мигу рядом уже нет — пометить было нечего,
+      // кроме подменённой раздачи.
+      expect(marked, 'посадка, собравшая окно и вошедшая, обязана пометить раздачу').toHaveLength(1)
+      expect(marked[0].cwd).toBe(repo.dir)
+      expect(marked[0].served).toBe('ОКНО ПРИНЯТОЙ ВЕТКИ')
+      expect(marked[0].neighbours, 'метку ставили, пока рядом ещё лежала отложенная копия').toEqual([])
+      expect(stamp.spaBuild.mark.refreshed).toBe(2)
+    } finally {
+      rmSync(repo.home, { recursive: true, force: true })
+    }
+  }, 120000)
+
+  /**
+   * ВТОРАЯ ПОЛОВИНА ТОЙ ЖЕ БЕДЫ. Сборщик стирает выходной каталог ПЕРЕД тем, как начать
+   * писать: упавшая сборка оставляла человека вовсе без окна, гейт свежести в этом случае
+   * молчит («сравнивать не с чем»), а отказ говорил только про сборку.
+   */
+  it('упавшая сборка не оставляет человека без окна, и отказ говорит про раздачу', async () => {
+    const repo = repoThatBuildsWindow('spa-red-dist')
+    try {
+      serveWindow(repo, 'ОКНО ВЕРШИНЫ')
+      repo.git(['checkout', '-q', '-b', 'wt/window-broken'])
+      put(repo.dir, 'spa/src/main.tsx', 'export const window = ((\n')
+      repo.git(['add', '--', 'spa/src/main.tsx'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'сломанное окно'])
+      repo.git(['checkout', '-q', repo.trunk])
+
+      const landing = createLanding({
+        cwd: repo.dir,
+        runBuild: () => {
+          // Сборщик успел стереть раздачу и умер на середине — это его обычное поведение.
+          rmSync(join(repo.dir, 'daemon', 'static', 'app'), { recursive: true, force: true })
+          return { built: false, ms: 7, exitCode: 2, tail: 'error TS1005: ")" expected.' }
+        },
+        runSuite: async () => ({ passed: true, ran: true }),
+      })
+      const merged: any = await runMerge({
+        branch: 'wt/window-broken',
+        by: 'landing-case',
+        cwd: repo.dir,
+        claimsDir: repo.claimsDir,
+        journalDir: repo.journalDir,
+        runTests: landing.runTests,
+        restoreWindow: landing.restoreWindow,
+      })
+
+      expect(merged.merged).toBe(false)
+      expect(merged.reasonCode).toBe(SPA_BUILD_FAILED_CODE)
+      expect(servedWindow(repo), 'упавшая сборка стёрла окно и оставила человека ни с чем').toBe('ОКНО ВЕРШИНЫ')
+      expect(merged.receipt.reason, 'отказ обязан сказать, что стало с раздачей').toContain('раздача окна')
+      expect(
+        readdirSync(join(repo.dir, 'daemon', 'static')).filter((n) => n.startsWith('.app-')),
+        'отложенная раздача пережила отказ сборки',
+      ).toEqual([])
+    } finally {
+      rmSync(repo.home, { recursive: true, force: true })
+    }
+  }, 120000)
 
   it('дерево без команды сборки окна слиянию не отказывает — собирать там нечем и не за что', async () => {
     // Установленная копия и одноразовый репозиторий окна не собирают вовсе: `makeRepo` —
@@ -659,11 +946,11 @@ describe('посадка пересобирает окно: слияние → �
   it('посадка с окном метит раздачу — и следующая посадка без окна проходит гейт свежести', async () => {
     const repo = repoThatBuildsWindow('spa-mark')
     try {
-      // Раздача — то, что демон отдаёт браузеру. В git её нет вовсе, как и в продукте.
-      put(repo.dir, '.gitignore', `${SPA_BUNDLE_PATH}/\n`)
-      repo.git(['add', '--', '.gitignore'])
-      repo.git(['commit', '-q', '--no-verify', '-m', 'раздача живёт вне git'])
+      // Раздача — то, что демон отдаёт браузеру. В git её нет вовсе, как и в продукте: правило
+      // уже лежит в `.gitignore` фикстуры (там же и её соседи на время одной посадки —
+      // постановка сборки и отложенная копия), поэтому заводить его здесь второй раз нечем.
       put(repo.dir, `${SPA_BUNDLE_PATH}/assets/index-abc.js`, 'var window=1\n')
+      expect(repo.git(['status', '--porcelain']).trim(), 'раздача попала под присмотр git').toBe('')
 
       const sourceDir = join(repo.dir, 'spa', 'src')
       const bundleDir = join(repo.dir, ...SPA_BUNDLE_PATH.split('/'))
@@ -1044,7 +1331,7 @@ describe('сколько упало — число, а не длина пока�
     }
   }, 60000)
 
-  it('сорок красных доезжают до отказа двери числом, пятью именами и словом о ненайденном отчёте', async () => {
+  it('сорок красных доезжают до отказа числом, пятью именами и обоими словами — об отчёте и о раздаче', async () => {
     const repo = makeRepo('many-red')
     try {
       repo.git(['checkout', '-q', '-b', 'wt/R-many'])
@@ -1076,6 +1363,9 @@ describe('сколько упало — число, а не длина пока�
         claimsDir: repo.claimsDir,
         journalDir: repo.journalDir,
         runTests: landing.runTests,
+        // …И ВОЗВРАТ РАЗДАЧИ ЗДЕСЬ ЖЕ — ради четвёртого вопроса случая: у красного отказа
+        // теперь ЧЕТЫРЕ слова, и два из них некоторое время делили одно место в подписи.
+        restoreWindow: landing.restoreWindow,
       })
 
       expect(merged.merged).toBe(false)
@@ -1093,6 +1383,13 @@ describe('сколько упало — число, а не длина пока�
       expect(merged.receipt.keepNote).toBe(NO_KEEP_DIR_NOTE)
       expect(merged.receipt.reason).toContain(NO_KEEP_DIR_NOTE)
       expect(refusal.reason).toContain(`Отчёта прогона нет: ${NO_KEEP_DIR_NOTE}`)
+      // (г) …И СЛОВО О РАЗДАЧЕ СТОИТ РЯДОМ, А НЕ ВМЕСТО. Оба слова приходят к одному отказу
+      //     и одно время делили третью позицию подписи: подпись у неё теперь именная, и
+      //     проверяется здесь именно то, что ни одно из двух не вытеснило другого.
+      expect(merged.receipt.spaRestored, JSON.stringify(merged.receipt)).toBeTruthy()
+      expect(merged.receipt.spaRestored.note).toBeTruthy()
+      expect(merged.receipt.reason).toContain(merged.receipt.spaRestored.note)
+      expect(merged.receipt.reason.indexOf(NO_KEEP_DIR_NOTE)).toBeGreaterThan(-1)
     } finally {
       rmSync(repo.home, { recursive: true, force: true })
     }

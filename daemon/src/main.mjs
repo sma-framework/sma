@@ -1482,7 +1482,16 @@ export function createDaemon(o = {}) {
           // `<dataDir>/landing/` и переживает отказ: без него дверь отсылала человека к
           // выводу прогона, которого после отката слияния не было уже нигде.
           const landing = createLanding({ cwd: at, execGit, fallbackRunner: mergeTestRunner, dataDir })
-          const merged = await runMerge({ ...m, execGit, runTests: landing.runTests })
+          // ОТКАТ ОБЯЗАН БЫТЬ ПОЛНЫМ. Посадка пересобирает окно ДО прогона, а раздача гитом не
+          // отслеживается — `merge --abort` возвращает исходник и оставляет на диске окно
+          // ОТКАЗАННОЙ ветки. Ритуал зовёт возврат на каждом своём отказе; без этой строки он
+          // звать было бы некого, и демон продолжал бы раздавать то, чего на вершине нет.
+          const merged = await runMerge({
+            ...m,
+            execGit,
+            runTests: landing.runTests,
+            restoreWindow: landing.restoreWindow,
+          })
           // Штампуют только СОСТОЯВШЕЕСЯ слияние: отказ не двигал вершины, а «сводить было
           // нечего» не приносило в дерево ни одной строки, которую стоило бы перемерять.
           if (!merged || merged.merged !== true || merged.alreadyUpToDate === true) return merged
