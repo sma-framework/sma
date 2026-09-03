@@ -166,7 +166,7 @@ import { WORKTREE_COPIES_DIR } from '../../scripts/sma/lib/constants.mjs'
 import { syncWithTrunk, TRUNK_DEFAULT } from '../../scripts/sma/lib/branch-sync.mjs'
 import { closeWaitingTickets } from '../../scripts/sma/lib/tool-gate.mjs'
 import { checkEnvironmentFitness } from '../../scripts/sma/lib/deps-guard.mjs'
-import { parseClaudeEvent, parseClaudeFrame, parseCodexEvent } from './runner/stream.mjs'
+import { parseClaudeEvent, parseClaudeFrame } from './runner/stream.mjs'
 import { summarizeFrame, wholeFrameKind } from './runner/frame-summary.mjs'
 import { markWindowObserved, markWindowClosed, readingSaysExhausted, canonicalWindow, utilizationFraction } from './policy/windows.mjs'
 // РОЛИ ПУЛА — ЧИТАЮТСЯ ТЕМ ЖЕ ВЫРАЖЕНИЕМ, КАКИМ ИХ ЧИТАЕТ МАРШРУТИЗАТОР. Проба пригодности
@@ -177,7 +177,12 @@ import { EXECUTOR_ROLE, holdsRole, roleOf, roleWanted } from './policy/worker-ro
 // попытка»: О ЧЁМ то, что легло на ветку. Живёт отдельным модулем, потому что это ЧИСТОЕ
 // суждение о списке изменений, и его цена — прочитать его тестами без тика вокруг.
 import { selfReferentialTests, newTopLevelDirs } from './policy/work-shape.mjs'
-import { claudeUsageFromResult, codexUsageFromFinal, estimateUsage, claudeTokensFromResult, codexTokensFromFinal } from './runner/usage.mjs'
+import { estimateUsage } from './runner/usage.mjs'
+// КАКАЯ ЭТО ПОЛОСА — ОДНОЙ СТРОКОЙ ТАБЛИЦЫ. Тик спрашивает у неё четыре вещи, и ни одну из них
+// больше не решает сравнением имени: чем кончается поток и как с него снимаются числа, есть ли
+// у полосы дорога вернуться в идущую сессию, исполняется ли её граница подготовленной машиной,
+// и сможет ли её сессия закоммитить себя сама.
+import { laneAdapter } from './runner/provider-adapter.mjs'
 import {
   readPendingRedirects,
   markConsumed,
@@ -187,17 +192,14 @@ import {
   REDIRECT_HOP_CAP,
 } from './runner/redirects.mjs'
 import { readWaveHolds, readWaveParked, markWaveParked } from './queue/wave-holds.mjs'
-import { CLAUDE_BIN } from './runner/build-args.mjs'
 import {
   buildMcpConfigFile,
   isResumableSessionId,
   codexHomeFor,
   discardCodexHome,
-  codexSandboxFor,
   codexWorkspaceWriteOutlook,
   codexSandboxRefusal,
   codexGitWritableRoot,
-  codexSandboxDeniesGitDir,
 } from './runner/args.mjs'
 import { memoryDirOf } from './front/project-sync.mjs'
 import { createQuestions, findPhaseDir, STAGE_ARTIFACTS } from './front/questions.mjs'
@@ -889,7 +891,7 @@ function hostCommitAfterSession(deps, { task, route, workDir, include } = {}) {
   // работника, — иначе полоса, назвавшая исполнителя без слова о провайдере, прошла бы мимо.
   const worker = ((config.workers || []).find((w) => w && w.id === ((route && route.workerId) || null))) || null
   const provider = String((route && route.provider) || (worker && worker.provider) || 'claude')
-  if (!codexSandboxDeniesGitDir({ platform: deps.platform, provider })) return null
+  if (!laneAdapter(provider).deniesGitDir({ platform: deps.platform })) return null
 
   // `--untracked-files=all` — И ЭТО НЕ ПРИДИРКА К ФЛАГУ. По умолчанию `git status` СХЛОПЫВАЕТ
   // неотслеживаемый каталог в одну строку (`?? .claude/`), и рука, которая по этой строке
@@ -2100,11 +2102,15 @@ function codexSandboxBlocker(deps, task, route, envelope) {
   // ПРОВАЙДЕР ЧИТАЕТСЯ ТЕМ ЖЕ ПРАВИЛОМ, ЧТО У СБОРЩИКА АРГУМЕНТОВ: маршрут, потом профиль
   // работника. Иначе полоса, назвавшая исполнителя без слова о провайдере, прошла бы мимо.
   const provider = String((route && route.provider) || (worker && worker.provider) || 'claude')
-  if (provider !== 'codex') return null
+  // СПРАШИВАЕТСЯ СВОЙСТВО ПОЛОСЫ, А НЕ ЕЁ ИМЯ: этот страж существует ровно для полос, чья
+  // граница исполняется ЗАРАНЕЕ ПОДГОТОВЛЕННОЙ машиной, — у полосы, которая раздаёт гранты
+  // флагами, отказывать не в чем.
+  const lane = laneAdapter(provider)
+  if (!lane.needsProvisionedSandbox) return null
   if (!worker || !worker.account || typeof worker.account !== 'object') return null
   // ЧТО КОНВЕРТ ДАЛ — ТЕМ ЖЕ ВЫРАЖЕНИЕМ, КАКИМ ЭТО ПРОЧТЁТ СПАВН. Второе прочтение грантов
   // здесь означало бы отказывать по одному конверту, а запускать по другому.
-  const sandbox = codexSandboxFor(envelopeSpawnOptions(envelope).allowedTools)
+  const sandbox = lane.sandboxOf(envelopeSpawnOptions(envelope).allowedTools)
   if (sandbox !== 'workspace-write') return null
 
   let home
@@ -4333,19 +4339,17 @@ function bookAttemptUsage(deps, task, route, streamLines, now, startedAt) {
       model: (route && route.model) || undefined,
       channel: paid ? 'api' : 'subscription',
     }
-    const isCodex = String((route && route.provider) || '') === 'codex'
+    // ЧЕЙ ЭТО ПОТОК — СПРАШИВАЕТСЯ У ТАБЛИЦЫ ПОЛОС. Читателей финального кадра ровно столько,
+    // сколько поставщиков, и раньше выбор между ними стоял развилкой прямо здесь: третий
+    // поставщик добавлялся бы в неё третьей веткой, а забытая ветка не падает — она молча
+    // читает чужой кадр чужим читателем и книгует ноль. Полоса, о которой таблица молчит,
+    // читается полосой по умолчанию — ровно так же, как читалась веткой `else` до неё.
+    const lane = laneAdapter((route && route.provider) || undefined)
     for (let i = streamLines.length - 1; i >= 0; i -= 1) {
-      const line = streamLines[i]
-      if (isCodex) {
-        const event = parseCodexEvent(line)
-        if (!event || event.type !== 'turn.completed') continue
-        book(codexUsageFromFinal(event, { ...ctx, startedAt, endedAt: now }))
-        return codexTokensFromFinal(event)
-      }
-      const event = parseClaudeEvent(line)
-      if (!event || event.type !== 'result') continue
-      book(claudeUsageFromResult(event, ctx))
-      return claudeTokensFromResult(event)
+      const event = lane.finalEventOf(streamLines[i])
+      if (!event) continue
+      book(lane.usageFromFinal(event, { ...ctx, startedAt, endedAt: now }))
+      return lane.tokensFromFinal(event)
     }
     // NO FINAL FRAME IN THE STREAM — see the header. The attempt still ran and still spent; the
     // book gets a line that says so and says, honestly, that it is an estimate.
@@ -5774,8 +5778,17 @@ export async function tick(deps = {}) {
       //
       // The Claude lane is deliberately NOT fed this way: it already has a resume channel that
       // a live ledger proves works, and two channels on one lane deliver one word twice.
+      //
+      // И СПРАШИВАЕТСЯ ЭТО У ПОЛОСЫ, А НЕ У ИМЕНИ ДВОИЧНОГО ФАЙЛА. Развилка стояла на сравнении
+      // `spec.bin` с именем `claude` — а имя это в спавне НЕ ГАРАНТИРОВАНО: на машине, где CLI
+      // поставлен через npm, запуск идёт интерпретатором (`node <скрипт>`, см. resolve-bin), и
+      // наша собственная полоса переставала узнавать себя. Слово тогда уезжало дорогой чужой
+      // полосы — в задание, — а живая сессия не возобновлялась вовсе, при том что дорога у неё
+      // есть. «Умеет ли эта полоса вернуться в идущую сессию» — свойство полосы, и спрашивается
+      // оно у таблицы.
+      const lane = laneAdapter(spec.provider)
       let promptCarried = []
-      if (config.dataDir && spec.bin !== CLAUDE_BIN) {
+      if (config.dataDir && !lane.resumesSession) {
         promptCarried = readPendingRedirects({ dataDir: config.dataDir, taskId: task.id, fsImpl: deps.fsImpl })
         if (promptCarried.length) spec.prompt = `${spec.prompt ?? ''}\n\n${correctionsPreamble(promptCarried)}`
       }
@@ -5844,9 +5857,9 @@ export async function tick(deps = {}) {
           const pending = readPendingRedirects({ dataDir: config.dataDir, taskId: task.id, fsImpl: deps.fsImpl })
           if (!pending.length) break
           const sessionId = sessionOf()
-          const resumable = spec.bin === CLAUDE_BIN && typeof sessionId === 'string' && /^[0-9a-f-]{32,40}$/i.test(sessionId)
+          const resumable = lane.resumesSession && typeof sessionId === 'string' && /^[0-9a-f-]{32,40}$/i.test(sessionId)
           if (!resumable || hops >= REDIRECT_HOP_CAP) {
-            const reason = hops >= REDIRECT_HOP_CAP ? 'hop_cap' : spec.bin !== CLAUDE_BIN ? 'provider' : 'no_session'
+            const reason = hops >= REDIRECT_HOP_CAP ? 'hop_cap' : !lane.resumesSession ? 'provider' : 'no_session'
             // УБИЛА ЛИ ЭТОТ ХОД ИМЕННО ДВЕРЬ — спрашивается у той же ручки, которой дверь его и
             // убивала, и ДО `done` ниже, пока ручка ещё зарегистрирована. Демон, собранный без
             // реестра ручек, отвечает «нет» и ведёт себя ровно как прежде.
