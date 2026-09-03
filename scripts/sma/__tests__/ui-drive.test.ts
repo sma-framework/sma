@@ -44,6 +44,7 @@ import {
   parseSteps,
   readiness,
   receiptsRoot,
+  redactText,
   redactUrl,
   renderCoverage,
   renderReceipt,
@@ -852,5 +853,45 @@ describe('redactUrl — a receipt names where the run went, never the key that o
     })
     expect(md, 'the receipt published the token').not.toContain('28be9f01c7d24e6ab1')
     expect(md).toContain('127.0.0.1:7777')
+  })
+})
+
+/**
+ * redactText — the same names, hunted inside PROSE.
+ *
+ * A driver failure is not an address: it is a sentence with an address inside it, because the
+ * browser quotes the target it was working against. redactUrl is never handed such a sentence,
+ * so the credential rode out through the error text while the receipt's own URL line was clean.
+ * Whether the mask then actually stands on the process's output is a fact about a PROCESS and
+ * is proved by spawning one — see ui-drive-output.test.ts. This pins the rule it applies.
+ */
+describe('redactText — the credential inside a sentence, not inside a parsed address', () => {
+  it('destroys the key an error message quoted and keeps the rest of the sentence', () => {
+    const out = redactText('page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:7777/?token=28be9f01c7&view=queue')
+    expect(out, 'the secret survived the error text').not.toContain('28be9f01c7')
+    expect(out).toContain('net::ERR_CONNECTION_REFUSED')
+    expect(out).toContain('token=REDACTED')
+    // the ordinary parameter after the credential is not swallowed with it
+    expect(out).toContain('view=queue')
+  })
+
+  it('stops at what cannot be inside a value, and not at what can', () => {
+    // a driver's call log quotes the address — the quote ends the value, the address stays
+    expect(redactText('navigating to "http://h/?token=SECRET", waiting until "load"')).toBe(
+      'navigating to "http://h/?token=REDACTED", waiting until "load"'
+    )
+    // a JWT is three dot-joined parts: stopping at the first dot would publish two thirds of it
+    expect(redactText('http://h/?access_token=aa.bb.cc')).toBe('http://h/?access_token=REDACTED')
+    // a credential carried in the fragment is still a credential
+    expect(redactText('http://h/#id_token=SECRET')).toBe('http://h/#id_token=REDACTED')
+  })
+
+  it('does not eat a name that merely starts like one, and never throws', () => {
+    // over-redaction costs the reader the detail the receipt exists to give
+    expect(redactText('http://h/?tokenizer=fast&keyword=x')).toBe('http://h/?tokenizer=fast&keyword=x')
+    expect(redactText('a sentence with no address at all')).toBe('a sentence with no address at all')
+    for (const junk of ['', null, undefined, 42]) {
+      expect(() => redactText(junk as any), `threw on ${String(junk)}`).not.toThrow()
+    }
   })
 })

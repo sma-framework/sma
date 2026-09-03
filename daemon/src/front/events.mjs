@@ -331,6 +331,33 @@ export function wrapAdapterWithEvents(adapter, hub, { clock = Date.now } = {}) {
       }
       return ok
     },
+    /**
+     * СТРОКА ВЕРНУЛАСЬ В ОЧЕРЕДЬ, НЕ ПРОЖИВ ПОПЫТКИ — и экран обязан услышать об этом так же
+     * громко, как о захвате. Названо здесь, а не оставлено развороту `...adapter` выше, по той
+     * же причине, что и парковка ниже: метод, прошедший насквозь, ДВИГАЕТ долговременную строку
+     * и не объявляет ничего — доска продолжала бы рисовать работу за занятым работником до
+     * следующего опроса, то есть ровно ту картину, ради устранения которой возврат и заведён.
+     *
+     * Кадр — обычная постановка: строка снова ждёт работника, и никакого шестого состояния у
+     * неё нет. Присутствие работника пересчитывается тем же кадром — он больше её не держит.
+     *
+     * СРОК ОТСРОЧКИ ЗДЕСЬ НЕ НАЗЫВАЕТСЯ, и это разобрано, а не забыто: возврат в очередь бывает
+     * ровно один — проход демона, у которого маршрут ответил «работник занят», — и короткая
+     * отсрочка заведена именно для него. Работа, которую возвращает ЧЕЛОВЕК, приходит сюда не
+     * этой дверью: его слово ставит задачу заново со своим номером подхода. Появится второй
+     * вызывающий, которому ждать не за чем, — он передаст свой `deferMs` (ноль законен), а
+     * умолчание останется тем, ради чего написано.
+     */
+    async releaseClaim(taskId, opts) {
+      if (typeof adapter.releaseClaim !== 'function') return false
+      const ok = await adapter.releaseClaim(taskId, opts)
+      if (ok) {
+        emit({ event: 'task.queued', taskId, status: 'queued' })
+        emit({ event: 'worker.presence', taskId })
+        lastRunning.delete(taskId)
+      }
+      return ok
+    },
     // THE FENCING TOKEN TRAVELS THROUGH THIS DECORATOR, and that is why the options object is
     // named here instead of being dropped. This wrapper is what the daemon actually holds: the
     // composition root hands the tick THIS object, not the backend. A wrapper that forwarded

@@ -33,6 +33,17 @@
  *      свежести есть исключение для производных мест — запись замера всегда делает ещё один
  *      коммит.
  *
+ *   0. `buildWindow` — ПЕРЕСБОРКА ОКНА, и она идёт РАНЬШЕ прогона. Демон раздаёт окно не из
+ *      `spa/src`, а из собранного бандла, который гитом не отслеживается вовсе: слияние
+ *      приносит в дерево НОВЫЙ исходник и НЕ трогает раздачу. Дальше происходило одно и то
+ *      же — сторож свежести сборки честно краснел на сведённом дереве, посадка называла это
+ *      «тесты красные» и откатывала слияние. Ни одна правка окна не могла войти дверью
+ *      приёмки: 02.09.2026 в очереди стояло шесть таких строк подряд. Поэтому посадка сперва
+ *      спрашивает git, тронуто ли `spa/` этим слиянием, и если тронуто — зовёт ту же команду
+ *      сборки, которую человек набирает руками. Время сборки едет в квитанцию; отказ сборки —
+ *      СВОЙ отказ со своими словами, а не оттенок красного прогона (чинят его в другом месте:
+ *      сломанный бандлер — это не упавший тест).
+ *
  * ПОЧЕМУ ПРОГОН ЖИВЁТ ВНУТРИ РИТУАЛА, А НЕ ПОСЛЕ НЕГО. Ритуал слияния устроен так, что тесты
  * идут по сведённому дереву ДО фиксации: красный прогон означает «ветка не вошла», а не
  * «вошла, и теперь вершина красная». Полный набор, запущенный после фиксации, отдал бы ровно
@@ -52,7 +63,7 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -67,7 +78,7 @@ import {
   RECEIPT_FILE,
 } from './badge.mjs'
 import { audit, receiptDriftFiles, writeNumbers } from './doc-audit.mjs'
-import { CAPTURE_CAP_BYTES, resolveSuiteEntry, summarizeRedRun } from './merge-smoke.mjs'
+import { CAPTURE_CAP_BYTES, outputTail, resolveSuiteEntry, saidBy, summarizeRedRun } from './merge-smoke.mjs'
 
 /** Карта замера — производное место, которое штамп пересобирает вместе со значком. */
 export const GRAPH_FILE = 'docs/master-graph.html'
@@ -97,6 +108,246 @@ export const RECEIPT_COVERS_NOTE =
 export const NO_SUITE_NOTE = 'в этом дереве нет полного набора — прогонять было нечего'
 export const NO_SUITE_RUNNER_NOTE = 'сьютер не нашёлся рядом с этой установкой — полного прогона не было'
 export const TIMED_OUT_NOTE = `полный прогон не уложился в ${Math.round(FULL_SUITE_TIMEOUT_MS / 60000)} мин — прогона не было`
+
+
+/**
+ * ГДЕ ЛЕЖИТ ОТЧЁТ ОТКАЗАННОЙ ПОСАДКИ — каталог внутри дома данных демона.
+ *
+ * Отчёт зелёного прогона живёт ровно до штампа: числа из него переписаны в квитанцию, и
+ * временный файл убирается той же рукой. У КРАСНОГО прогона такого читателя нет вовсе —
+ * слияние откатывается, штамп не зовётся, — а вопрос «что именно упало» задаётся ровно
+ * тогда. Замерено 02.09.2026 первой ночной приёмкой: дверь вернула «тесты красные», отчёт
+ * лежал во временном каталоге под именем с номером процесса, и смотреть после отказа было
+ * НЕГДЕ. Поэтому красный прогон оставляет свой отчёт и хвост вывода в доме данных демона —
+ * там же, где живут журналы и реестры, то есть переживает и процесс, и уборку копии.
+ */
+export const LANDING_REPORTS_DIRNAME = 'landing'
+
+/** Сколько имён упавших тестов едет в отказ: отказ читают глазами, а не грепом. */
+export const FAILED_TESTS_SHOWN = 5
+
+/** Пределы одной строки отказа — те же по смыслу, что у дымового прогонятеля. */
+const NAME_CAP = 200
+const LINE_CAP = 200
+const DETAIL_LINES = 3
+
+/** Отчёта сохранить не удалось — и это сказано, а не выдано за «отчёта не было». */
+export const NO_KEEP_DIR_NOTE = 'дом данных демона не назван — отчёт красного прогона сохранять некуда'
+
+/** Первая непустая строка чужого сообщения, обрезанная до читаемой длины. */
+function firstLine(text) {
+  const said = String(text ?? '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .find((s) => s !== '')
+  return said ? said.slice(0, LINE_CAP) : null
+}
+
+/**
+ * summarizeVitestReport(text) → `{failedTest, failedTests, failureDetail}` — ЧТО ИМЕННО УПАЛО,
+ * прочитанное из ОТЧЁТА сьютера, а не из его печати на экране.
+ *
+ * ПОЧЕМУ НЕ ХВАТАЕТ РАЗБОРА ВЫВОДА. Полный прогон идёт с отчётом в файл, и печатать при этом
+ * ему почти нечего: разбор экранного вывода (`summarizeRedRun`) находит там пусто и честно
+ * отвечает «имени не назвали». Имена в этом прогоне живут ТОЛЬКО в отчёте — по файлу, по
+ * набору и по тесту, — и берутся они отсюда.
+ *
+ * ЗАКОН ТОТ ЖЕ: НИЧЕГО НЕ ВЫДУМЫВАТЬ. Отчёт, который не разобрался, отдаёт пустой список.
+ * Файл, упавший на сборке и не доехавший ни до одного утверждения, назван САМИМ ФАЙЛОМ —
+ * это правда о нём, а имя теста там не существует.
+ *
+ * @param {string} text — содержимое отчёта сьютера
+ * @returns {{failedTest: (string|null), failedTests: string[], failureDetail: (string|null)}}
+ */
+export function summarizeVitestReport(text) {
+  const empty = { failedTest: null, failedTests: [], failureDetail: null }
+  let report = null
+  try {
+    report = JSON.parse(String(text ?? ''))
+  } catch {
+    return empty
+  }
+  const perFile = Array.isArray(report && report.testResults) ? report.testResults : []
+  const names = []
+  const details = []
+  for (const file of perFile) {
+    if (!file || typeof file !== 'object' || file.status === 'passed') continue
+    const where = typeof file.name === 'string' && file.name.trim() ? file.name.trim() : '(файл не назван)'
+    const cases = (Array.isArray(file.assertionResults) ? file.assertionResults : []).filter(
+      (a) => a && a.status === 'failed',
+    )
+    if (cases.length === 0) {
+      // Файл, не доехавший до утверждений: падение есть, теста нет — и назван файл.
+      names.push(where.slice(0, NAME_CAP))
+      const said = firstLine(file.message)
+      if (said) details.push(`${where}: ${said}`.slice(0, LINE_CAP))
+      continue
+    }
+    for (const one of cases) {
+      const title =
+        (typeof one.fullName === 'string' && one.fullName.trim()) ||
+        (typeof one.title === 'string' && one.title.trim()) ||
+        ''
+      names.push((title ? `${where} > ${title}` : where).slice(0, NAME_CAP))
+      const said = firstLine(Array.isArray(one.failureMessages) ? one.failureMessages[0] : one.failureMessages)
+      if (said) details.push(said)
+    }
+  }
+  if (names.length === 0) return empty
+  return {
+    failedTest: names[0],
+    failedTests: names.slice(0, FAILED_TESTS_SHOWN),
+    failureDetail: details.length ? details.slice(0, DETAIL_LINES).join('\n') : null,
+  }
+}
+
+/** Имя файла отчёта не имеет права быть путём: чужая строка становится одним отрезком имени. */
+function safeLabel(label) {
+  const said = String(label ?? '').trim()
+  const cleaned = said.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+  return cleaned ? cleaned.slice(0, 80) : 'landing'
+}
+
+/**
+ * keepRedRun({keepDir, label, reportText, output, clock}) → `{savedReport, savedLog}` либо
+ * `{keepNote}` — ОТЧЁТ КРАСНОГО ПРОГОНА, ПОЛОЖЕННЫЙ ТУДА, ГДЕ ЕГО МОЖНО ОТКРЫТЬ ПОТОМ.
+ *
+ * Два файла, а не один: отчёт сьютера (`.json`) отвечает на «какие тесты упали и с чем», хвост
+ * обоих потоков (`.log`) — на «а что вообще происходило», и он единственный говорит хоть
+ * что-то, когда сьютер умер, не написав отчёта. Имя строится из названного ярлыка и минуты:
+ * два отказа одной строки — два разных файла, и ни один не затирает другого.
+ *
+ * FAIL-OPEN: не записалось — сказано словами. Посадка, упавшая на попытке сохранить объяснение
+ * отказа, превратила бы честный красный в поломку.
+ */
+export function keepRedRun({ keepDir, label, reportText, output, clock } = {}) {
+  if (!keepDir) return { keepNote: NO_KEEP_DIR_NOTE }
+  const at = new Date(typeof clock === 'function' ? clock() : Date.now()).toISOString().replace(/[:.]/g, '-')
+  const base = join(keepDir, `${safeLabel(label)}-${at}`)
+  try {
+    mkdirSync(keepDir, { recursive: true })
+    const kept = {}
+    if (typeof reportText === 'string' && reportText.trim()) {
+      const path = `${base}.json`
+      writeFileSync(path, reportText, 'utf8')
+      kept.savedReport = path
+    }
+    const logPath = `${base}.log`
+    writeFileSync(logPath, String(output ?? ''), 'utf8')
+    kept.savedLog = logPath
+    return kept
+  } catch (err) {
+    return { keepNote: `отчёт красного прогона не сохранён (${String((err && err.message) || err)})` }
+  }
+}
+
+// ── ПЕРЕСБОРКА ОКНА: слияние принесло исходник, раздача осталась вчерашней ───────────────
+
+/** Исходник окна. Тронут этим слиянием — значит раздаваемый бандл устарел в тот же миг. */
+export const SPA_SOURCE_PREFIX = 'spa/'
+
+/** Команда сборки окна — ТА ЖЕ, которую человек набирает руками, и названа она один раз. */
+export const SPA_BUILD_SCRIPT = 'build:spa'
+
+/**
+ * Потолок сборки. Измерено на этой машине: окно собирается за ~2 с. Десять минут — порядок
+ * величины запаса, за которым «сборка идёт» уже неотличимо от «сборка зависла».
+ */
+export const SPA_BUILD_TIMEOUT_MS = 10 * 60 * 1000
+
+/** Сборки не было — и вот почему. Каждая причина своими словами, ни одна не выдана за отказ. */
+export const SPA_UNTOUCHED_NOTE = 'окно этим слиянием не тронуто — пересобирать было нечего'
+export const SPA_NO_SCRIPT_NOTE = `в этом дереве нет команды ${SPA_BUILD_SCRIPT} — окно собирать нечем`
+/** …и одна оговорка: git смолчал, а молчание читается как «может быть», то есть собираем. */
+export const SPA_DIFF_UNKNOWN_NOTE = 'git не сказал, тронуто ли окно — собрали на всякий случай'
+
+/**
+ * spaTouched({cwd, execGit, mergedTree}) → `{asked, touched, files}` — ПРИНЕСЛО ЛИ СЛИЯНИЕ
+ * ПРАВКУ ОКНА. Спрашивается тот же diff, которым посадка сверяет квитанцию: `HEAD` — это
+ * вершина ДО слияния (коммита слияния ещё не существует), `mergedTree` — дерево, которое
+ * станет деревом этого коммита. Разница между ними и есть «что принесла ветка».
+ *
+ * FAIL-CLOSED, как и у сверки квитанции: git смолчал — считаем, что тронуло. Лишняя сборка
+ * стоит секунды; пропущенная раздаёт человеку окно прошлой недели и краснеет гейтом свежести.
+ */
+export function spaTouched({ cwd, execGit, mergedTree } = {}) {
+  const git = typeof execGit === 'function' ? execGit : defaultExecGit
+  const args = mergedTree ? ['diff', '--name-only', 'HEAD', String(mergedTree)] : ['diff', '--name-only', 'HEAD']
+  try {
+    const files = String(git(args, { cwd }) || '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((path) => path.startsWith(SPA_SOURCE_PREFIX))
+    return { asked: true, touched: files.length > 0, files }
+  } catch {
+    return { asked: false, touched: true, files: [] }
+  }
+}
+
+/**
+ * hasSpaBuildScript({cwd, readFile}) — умеет ли ЭТО дерево собирать окно. Установленная копия
+ * и одноразовый репозиторий окна не собирают вовсе, и требовать с них сборку значило бы
+ * отказывать в слиянии за то, чего в дереве никогда не было.
+ */
+export function hasSpaBuildScript({ cwd, readFile } = {}) {
+  const read = typeof readFile === 'function' ? readFile : (p) => readFileSync(p, 'utf8')
+  try {
+    const pkg = JSON.parse(read(join(cwd, 'package.json')))
+    return typeof (pkg && pkg.scripts && pkg.scripts[SPA_BUILD_SCRIPT]) === 'string'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * runSpaBuild({cwd, exec, timeoutMs}) → `{built:true, ms}` | `{built:false, ms, exitCode, tail}`.
+ *
+ * ПОЧЕМУ ЗДЕСЬ ИМЯ КОМАНДЫ, А НЕ ПУТЬ К ДВОИЧНОМУ ФАЙЛУ. Прогонятель тестов запускается через
+ * `process.execPath` именно потому, что имя пакетного менеджера на Windows — это `.cmd`,
+ * которого не видит запуск без оболочки. Сборка окна — не тест: она обязана пройти РОВНО ТУ
+ * ЖЕ командой, которую человек набирает руками и которая записана в `package.json` дерева, —
+ * иначе дверь собирала бы окно не тем, чем его собирают. Поэтому имя платформенное и оболочка
+ * на Windows включена, как это уже сделано у проверяющего значка (badge.mjs). Подстановки в
+ * команде нет: оба слова — литералы этого файла, а дерево едет отдельным полем `cwd`.
+ *
+ * ПОЧЕМУ НА WINDOWS КОМАНДА ЕДЕТ ОДНОЙ СТРОКОЙ, А НЕ МАССИВОМ. Оболочка там обязательна, а
+ * массив аргументов РЯДОМ С ОБОЛОЧКОЙ Node объявил устаревшим: он их не экранирует, а только
+ * склеивает, и каждый вызов печатал бы предупреждение в журнал демона — шум, который однажды
+ * станет поломкой. Склеиваем сами, и склеивать нечего: оба слова — литералы этого файла,
+ * дерево едет отдельным полем `cwd`, и ни одна чужая строка в команду не попадает.
+ *
+ * Вывод ЛОВИТСЯ и обрезается до хвоста: у сборки причина стоит в последних строках, и отказ
+ * без них — это «сломалось» без единого слова о том, где.
+ */
+export function runSpaBuild(o = {}) {
+  const cwd = o.cwd || process.cwd()
+  const exec = typeof o.exec === 'function' ? o.exec : execFileSync
+  const timeoutMs = Number.isFinite(o.timeoutMs) ? o.timeoutMs : SPA_BUILD_TIMEOUT_MS
+  const startedAt = Date.now()
+  const shell = process.platform === 'win32'
+  const npm = shell ? 'npm.cmd' : 'npm'
+  try {
+    exec(shell ? `${npm} run ${SPA_BUILD_SCRIPT}` : npm, shell ? [] : ['run', SPA_BUILD_SCRIPT], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      maxBuffer: CAPTURE_CAP_BYTES,
+      timeout: timeoutMs,
+      windowsHide: true,
+      shell,
+    })
+    return { built: true, ms: Date.now() - startedAt }
+  } catch (err) {
+    const said = `${saidBy(err)}\n${(err && err.message) || ''}`
+    return {
+      built: false,
+      ms: Date.now() - startedAt,
+      exitCode: Number.isFinite(err && err.status) ? err.status : null,
+      tail: outputTail(said),
+    }
+  }
+}
 
 /** Настоящий git: execFileSync с МАССИВОМ аргументов (никакой подстановки через оболочку). */
 export function defaultExecGit(args, opts = {}) {
@@ -215,6 +466,12 @@ export function hasFullSuite({ cwd, exists } = {}) {
  * ОТЧЁТ ПИШЕТСЯ ВО ВРЕМЕННЫЙ КАТАЛОГ, А НЕ В ДЕРЕВО. Прогон идёт в чужой копии; лишний файл,
  * оставленный в ней, — это грязь в чужом рабочем дереве и, в худшем случае, лишняя строка в
  * чужом коммите.
+ *
+ * …И ИМЕННО ПОЭТОМУ У КРАСНОГО ПРОГОНА ОТЧЁТ ЛОЖИТСЯ ВТОРОЙ РАЗ. Временный файл переживает
+ * ровно зелёный случай: числа из него уезжают в квитанцию, и штамп его убирает. Красный
+ * прогон откатывает слияние и штампа не зовёт — а вопрос «что упало» задаётся именно здесь.
+ * `keepDir` (дом данных демона) получает отчёт и хвост обоих потоков, и путь к ним едет в
+ * ответе, чтобы дойти до квитанции отказа.
  */
 export function runFullSuiteAsync(o = {}) {
   const tree = o.cwd || process.cwd()
@@ -223,6 +480,8 @@ export function runFullSuiteAsync(o = {}) {
   const spawnImpl = o.spawn || spawn
   const timeoutMs = Number.isFinite(o.timeoutMs) ? o.timeoutMs : FULL_SUITE_TIMEOUT_MS
   const reportPath = o.reportPath || join(tmpdir(), `sma-landing-${process.pid}-${Date.now()}.json`)
+  const keepDir = typeof o.keepDir === 'string' && o.keepDir.trim() ? o.keepDir.trim() : null
+  const readReport = typeof o.readFile === 'function' ? o.readFile : (p) => readFileSync(p, 'utf8')
 
   if (!hasFullSuite({ cwd: tree, exists })) {
     // `noSuite` — признак ДЛЯ ЧИТАТЕЛЯ, а не для глаз: посадка по нему зовёт запасного
@@ -272,7 +531,23 @@ export function runFullSuiteAsync(o = {}) {
         return resolve({ passed: null, ran: false, note: TIMED_OUT_NOTE })
       }
       if (code === 0) return resolve({ passed: true, ran: true, reportPath })
-      const { failedTest, failureDetail } = summarizeRedRun(said)
+
+      // КРАСНЫЙ ПРОГОН ОТВЕЧАЕТ ИМЕНАМИ, А НЕ ОТСЫЛКОЙ К ВЫВОДУ, КОТОРОГО НЕТ. Отчёт —
+      // ПЕРВЫЙ источник и единственный полный: полный прогон печатает на экран почти
+      // ничего (весь его отчёт уходит в файл), и разбор печати честно отвечал «имени не
+      // назвали» на КАЖДОМ красном отказе посадки. Печать остаётся запасным источником —
+      // сьютер, умерший до отчёта, говорит только ею.
+      let reportText = null
+      try {
+        reportText = readReport(reportPath)
+      } catch {
+        reportText = null
+      }
+      const fromReport = summarizeVitestReport(reportText)
+      const fromSaid = summarizeRedRun(said)
+      const failedTest = fromReport.failedTest || fromSaid.failedTest
+      const failureDetail = fromReport.failureDetail || fromSaid.failureDetail
+      const kept = keepRedRun({ keepDir, label: o.label, reportText, output: said, clock: o.clock })
       resolve({
         passed: false,
         ran: true,
@@ -280,6 +555,8 @@ export function runFullSuiteAsync(o = {}) {
         reportPath,
         ...(failedTest ? { failedTest } : {}),
         ...(failureDetail ? { failureDetail } : {}),
+        ...(fromReport.failedTests.length ? { failedTests: fromReport.failedTests } : {}),
+        ...kept,
       })
     })
   })
@@ -511,18 +788,75 @@ export function verifyLanding({ cwd, io } = {}) {
  * `fallbackRunner` — прогонятель для дерева, у которого полного набора нет вовсе (чужая копия,
  * временный репозиторий). Дверь отдаёт сюда свой дымовой прогонятель: посадка не имеет права
  * превратить «здесь нечего гонять» в «здесь красное».
+ *
+ * `dataDir` — дом данных демона, и он здесь ровно ради красного прогона: отчёт отказанной
+ * посадки ложится в `<dataDir>/landing/`. Без него посадка работает по-прежнему и говорит
+ * словами, что сохранять отчёт было некуда, — молчания на этом месте быть не должно.
  */
 export function createLanding(o = {}) {
   const execGit = typeof o.execGit === 'function' ? o.execGit : defaultExecGit
   const io = o.io || defaultIo()
   const runSuite = typeof o.runSuite === 'function' ? o.runSuite : runFullSuiteAsync
+  const runBuild = typeof o.runBuild === 'function' ? o.runBuild : runSpaBuild
   const fallbackRunner = typeof o.fallbackRunner === 'function' ? o.fallbackRunner : null
-  const state = { decided: null, reason: null, ran: false, reportPath: null, tree: null }
+  const dataDir = typeof o.dataDir === 'string' && o.dataDir.trim() ? o.dataDir.trim() : null
+  const keepDir =
+    (typeof o.keepDir === 'string' && o.keepDir.trim() ? o.keepDir.trim() : null) ||
+    (dataDir ? join(dataDir, LANDING_REPORTS_DIRNAME) : null)
+  const state = { decided: null, reason: null, ran: false, reportPath: null, tree: null, spaBuild: null }
+
+  /**
+   * ОКНО ПЕРЕСОБИРАЕТСЯ ЗДЕСЬ — между слиянием и прогоном, и ни на шаг позже. Прогон судит
+   * дерево целиком, а в дереве после слияния лежит новый исходник окна и вчерашняя раздача:
+   * гейт свежести краснеет, и посадка объявляет красным чужое — тесты. Сборка идёт и тогда,
+   * когда прогон решат не гонять: вершине с устаревшей раздачей всё равно, гоняли по ней
+   * набор или доверились квитанции, — человек в браузере увидит старое окно.
+   *
+   * @returns {{built:(boolean|null), touched:boolean, ms?:number, note?:string, files?:string[]}}
+   */
+  function buildWindow({ cwd, mergedTree }) {
+    const seen = spaTouched({ cwd, execGit, mergedTree })
+    if (seen.asked && !seen.touched) return { built: null, touched: false, note: SPA_UNTOUCHED_NOTE }
+    if (!hasSpaBuildScript({ cwd, readFile: io.readFile })) {
+      return { built: null, touched: true, note: SPA_NO_SCRIPT_NOTE }
+    }
+    const said = { touched: true, files: seen.files, ...(seen.asked ? {} : { note: SPA_DIFF_UNKNOWN_NOTE }) }
+    let answer
+    try {
+      answer = runBuild({ cwd, script: SPA_BUILD_SCRIPT }) || {}
+    } catch (err) {
+      // Сборщик, который БРОСИЛ, — это не собранное окно. Молчаливое «ну и ладно» здесь
+      // вернуло бы ровно ту беду, ради которой всё это написано.
+      return { ...said, built: false, ms: 0, tail: String((err && err.message) || err).slice(0, 400) }
+    }
+    return {
+      ...said,
+      built: answer.built === true,
+      ...(Number.isFinite(answer.ms) ? { ms: answer.ms } : {}),
+      ...(Number.isFinite(answer.exitCode) ? { exitCode: answer.exitCode } : {}),
+      ...(answer.tail ? { tail: String(answer.tail) } : {}),
+    }
+  }
 
   async function runTests(call = {}) {
     const cwd = call.cwd || o.cwd
     const mergedTree = call.mergedTree ?? mergedTreeSha({ cwd, execGit })
     state.tree = mergedTree
+
+    // (0) ОКНО — ПЕРВЫМ ДЕЛОМ. Отказ сборки уходит СВОИМ признаком: ритуал по нему откажет
+    //     своими словами, а не выдаст поломку бандлера за упавший тест.
+    const spa = buildWindow({ cwd, mergedTree })
+    state.spaBuild = spa
+    if (spa.built === false) {
+      return {
+        passed: false,
+        ran: false,
+        spaBuildFailed: true,
+        spaBuild: spa,
+        ...(spa.tail ? { failureDetail: spa.tail } : {}),
+      }
+    }
+
     const verdict = receiptCoversTree({ cwd, execGit, mergedTree, readFile: io.readFile })
     state.reason = verdict.reason
 
@@ -530,13 +864,17 @@ export function createLanding(o = {}) {
     //     читает `passed:null` как «прогона не было» и фиксирует слияние.
     if (verdict.covers) {
       state.decided = 'reused'
-      return { passed: null, ran: false, note: RECEIPT_COVERS_NOTE, reusedReceipt: true }
+      return { passed: null, ran: false, note: RECEIPT_COVERS_NOTE, reusedReceipt: true, spaBuild: spa }
     }
 
     // (2) ВЕРШИНА ДВИГАЛАСЬ — набор идёт ОДИН раз, здесь.
     state.decided = 'ran'
     const reportPath = o.reportPath || join(tmpdir(), `sma-landing-${process.pid}-${Date.now()}.json`)
-    const answer = (await runSuite({ cwd, reportPath })) || {}
+    // ЧЬЯ ЭТО ПОСАДКА — сказано именем ветки, потому что другого имени у ритуала нет. Оно же
+    // становится именем сохранённого отчёта: человек, читающий отказ, ищет файл по строке,
+    // которую нажимал, а не по номеру процесса демона.
+    const label = typeof call.branch === 'string' ? call.branch.replace(/^wt\//, '') : null
+    const answer = (await runSuite({ cwd, reportPath, keepDir, label })) || {}
 
     // (3) …ЕСЛИ ЕМУ БЫЛО ГДЕ ПОЙТИ. Вопрос «есть ли в этом дереве набор» задаёт сам
     //     прогонятель — он единственный, кто знает, чем гонит, — и на «здесь нечего гонять»
@@ -544,13 +882,13 @@ export function createLanding(o = {}) {
     //     копию без набора в «здесь красное».
     if (answer.noSuite === true) {
       state.decided = 'no-suite'
-      if (fallbackRunner) return await fallbackRunner({ ...call, cwd })
-      return answer
+      if (fallbackRunner) return { ...((await fallbackRunner({ ...call, cwd })) || {}), spaBuild: spa }
+      return { ...answer, spaBuild: spa }
     }
 
     state.ran = answer.ran === true
     state.reportPath = answer.reportPath || reportPath
-    return answer
+    return { ...answer, spaBuild: spa }
   }
 
   /**
@@ -603,6 +941,9 @@ export function createLanding(o = {}) {
       ...res,
       ran: state.decided === 'ran',
       reusedReceipt: state.decided === 'reused',
+      // ПЕРЕСОБИРАЛОСЬ ЛИ ОКНО И СКОЛЬКО ЭТО СТОИЛО — на карточке, а не только в журнале:
+      // раздача, собранная дверью, — такая же часть посадки, как и штампованные числа.
+      ...(state.spaBuild ? { spaBuild: state.spaBuild } : {}),
       ...(state.reason ? { whyRan: state.reason } : {}),
     }
   }

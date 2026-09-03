@@ -243,10 +243,44 @@ export const ENV_UNFIT_NOTE = 'среда прогона непригодна �
  * смолчавшим. Правдоподобное имя хуже отсутствующего — по нему чинят не тот тест, а настоящая
  * причина остаётся на месте.
  */
+/**
+ * ЧЕТВЁРТАЯ ПРИЧИНА ОТКАЗА, И ОНА НЕ ПРО ТЕСТЫ ВОВСЕ: ОКНО НЕ СОБРАЛОСЬ.
+ *
+ * Прогонятель посадки пересобирает окно на сведённом дереве прежде, чем судить его тестами
+ * (иначе гейт свежести раздачи краснеет на КАЖДОЙ ветке, которая тронула исходник окна). Если
+ * сборка не прошла — прогона не было вовсе, и назвать это «тесты красные» значило бы послать
+ * человека искать упавший тест, пока чинить надо сборку. Своё имя, свой код и хвост вывода
+ * сборки: причина живёт в последних строках, и отказ без них — «сломалось» без единого слова
+ * о том, где.
+ */
+export const SPA_BUILD_FAILED_CODE = 'spa_build_failed'
+export const SPA_BUILD_FAILED_NOTE = 'сборка окна не прошла — прогона не было'
+export function spaBuildReason(tail) {
+  const said = typeof tail === 'string' && tail.trim() ? tail.trim() : null
+  return (
+    'окно не собралось на сведённом дереве — слияние не зафиксировано; ' +
+    (said ? `хвост сборки: ${said}` : 'сборщик не сказал ни строки — смотрите вывод сборки')
+  )
+}
+
 export const RED_RUN_NAME_MISSING = 'имя упавшего теста прогонятель не назвал — смотрите вывод прогона'
-export function redRunReason(failedTest) {
+
+/**
+ * …А ВЫВОД ПРОГОНА НАДО ГДЕ-ТО СМОТРЕТЬ, И ЭТО ТОЖЕ НАЗЫВАЕТСЯ ЗДЕСЬ.
+ *
+ * 02.09.2026, первая ночная приёмка: отказ отослал к выводу прогона, а самого вывода не было
+ * нигде — отчёт полного набора писался во временный каталог и умирал вместе с отказом.
+ * Приёмщик не мог отличить настоящий красный от ложного, который полный прогон даёт под
+ * нагрузкой. Прогонятель теперь кладёт отчёт в дом данных демона и называет путь; ритуал его
+ * ДОНОСИТ — как и имя теста, ничего не выясняя сам.
+ */
+export function redRunReason(failedTest, savedReport) {
   const named = typeof failedTest === 'string' && failedTest.trim() ? failedTest.trim() : null
-  return `тесты на сведённом рабочем дереве красные — слияние не зафиксировано; упал: ${named ?? RED_RUN_NAME_MISSING}`
+  const kept = typeof savedReport === 'string' && savedReport.trim() ? savedReport.trim() : null
+  return (
+    `тесты на сведённом рабочем дереве красные — слияние не зафиксировано; упал: ${named ?? RED_RUN_NAME_MISSING}` +
+    (kept ? `; отчёт прогона: ${kept}` : '')
+  )
 }
 
 /** The tree is left mid-merge only when the undo itself failed — and then it is NAMED. */
@@ -280,6 +314,7 @@ function unfinishedMergeHint(cwd) {
  *   - concurrent hold: {merged:false, softDenied:true, override, holder}
  *   - nothing to merge: {merged:true, alreadyUpToDate:true, testsPassed:null, testsNote, branch, resultSha:null, receipt}
  *   - env broken:      {merged:false, refused:true, envBroken:true, testsPassed:null, testsNote, reason, branch, receipt}
+ *   - window unbuilt:  {merged:false, refused:true, spaBuildFailed:true, reasonCode, testsPassed:null, testsNote, reason, branch, receipt[, failureDetail, spaBuild]}
  *   - refused (red):   {merged:false, testsPassed:false, refused:true, branch, receipt[, failedTest, failureDetail][, unfinishedMerge, howToClear]}
  *   - merged:          {merged:true, testsPassed:boolean|null, testsNote?, branch, resultSha, receipt}
  *   - error:           {ok:false, message[, unfinishedMerge, howToClear]}
@@ -351,7 +386,10 @@ export async function runMerge(o = {}) {
       // что-то — падаем наружу, но уже с именами файлов и их числом.
       const found = conflictedFiles({ cwd, execGit })
       if (!found.answered || found.count === 0) throw err
-      const fixed = resolveMechanical({ cwd, execGit, files: found.files, rules: o.mechanicalRules ?? MECHANICAL_DEFAULTS, io: o.io, run: o.run })
+      // ЗДЕСЬ ВЕРШИНА — ЭТО `ours`: ветка въезжает В main, и «своя» сторона и есть вершина.
+      // Названо явно, а не оставлено умолчанию: у другой двери (сведение ветки) направление
+      // обратное, и молчаливое совпадение с умолчанием — это не договор, а совпадение.
+      const fixed = resolveMechanical({ cwd, execGit, files: found.files, rules: o.mechanicalRules ?? MECHANICAL_DEFAULTS, io: o.io, run: o.run, trunkSide: 'ours' })
       if (fixed.remaining.length > 0) {
         conflictDetail = {
           conflict: true,
@@ -424,6 +462,11 @@ export async function runMerge(o = {}) {
     // отказ ниже скажет об этом словами вместо правдоподобной выдумки.
     let failedTest = null
     let failureDetail = null
+    // ИМЕНА ВСЕХ УПАВШИХ И ГДЕ ЛЕЖИТ ОТЧЁТ — та же роль доносчика: ритуал не открывает
+    // отчёта и не считает падений, он передаёт то, что сказал прогонятель.
+    let failedTests = []
+    let savedReport = null
+    let savedLog = null
 
     // (4a) ПЕРЕД ПРОГОНОМ — ГОДИТСЯ ЛИ СРЕДА. Спрашивается ТОЛЬКО когда прогонятель есть:
     // сборке без прогонятеля нечего защищать, и отказ там остановил бы работу ни за что.
@@ -495,8 +538,64 @@ export async function runMerge(o = {}) {
       mergedTree = null
     }
 
+    // ПЕРЕСОБРАННОЕ ОКНО — ФАКТ О СЛИЯНИИ, А НЕ О ПРОГОНЕ, и потому едет в квитанцию
+    // отдельным полем: «дверь пересобрала раздачу и это заняло столько-то» нельзя вывести ни
+    // из зелёного прогона, ни из его отсутствия.
+    let spaBuild = null
+
     if (runTests) {
       const tr = await runTests({ branch, resultSha: null, cwd, mergedTree })
+      if (tr && typeof tr.spaBuild === 'object' && tr.spaBuild) spaBuild = tr.spaBuild
+
+      // (4b) ОКНО НЕ СОБРАЛОСЬ — ОТКАЗ СО СВОИМ ИМЕНЕМ. Стоит ВЫШЕ разбора приговора: у этого
+      //      ответа приговора нет вовсе (прогон не начинался), а `passed:false` при
+      //      `ran:false` прочли бы ниже как «запускать было нечего» и СЛИЛИ бы ветку.
+      if (tr && tr.spaBuildFailed === true) {
+        const tail = typeof tr.failureDetail === 'string' && tr.failureDetail.trim() ? tr.failureDetail.trim() : null
+        let unfinished = false
+        try {
+          execGit(['merge', '--abort'], { cwd })
+          mergeInTree = false
+        } catch {
+          unfinished = true
+        }
+        const receipt = {
+          branch,
+          resultSha: null,
+          repo: cwd,
+          testsPassed: null,
+          testsNote: SPA_BUILD_FAILED_NOTE,
+          refused: true,
+          spaBuildFailed: true,
+          reasonCode: SPA_BUILD_FAILED_CODE,
+          reason: spaBuildReason(tail),
+          ...(tail ? { failureDetail: tail } : {}),
+          ...(spaBuild ? { spaBuild } : {}),
+          ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
+        }
+        try {
+          appendEvent({ type: 'merge', scope: MERGE_SLOT_NAME, detail: receipt }, { terminalId, ...journalOpt(o) })
+        } catch {
+          /* fail-open — a journal failure never blocks the ritual */
+        }
+        releaseMergeClaim({ by: o.by, journalDir, ...claimOpts })
+        claimed = false
+        return {
+          merged: false,
+          refused: true,
+          spaBuildFailed: true,
+          reasonCode: SPA_BUILD_FAILED_CODE,
+          testsPassed: null,
+          testsNote: SPA_BUILD_FAILED_NOTE,
+          reason: receipt.reason,
+          ...(tail ? { failureDetail: tail } : {}),
+          ...(spaBuild ? { spaBuild } : {}),
+          branch,
+          receipt,
+          ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
+        }
+      }
+
       // A runner may say «I ran nothing» in its own voice: passed:null, or an explicit flag.
       // Anything else is an OUTCOME and is read as one — a runner that answers nonsense is
       // still a red answer, never a quiet null that would let the merge through.
@@ -509,6 +608,11 @@ export async function runMerge(o = {}) {
         testsNote = null
         failedTest = typeof tr.failedTest === 'string' && tr.failedTest.trim() ? tr.failedTest.trim() : null
         failureDetail = typeof tr.failureDetail === 'string' && tr.failureDetail.trim() ? tr.failureDetail.trim() : null
+        failedTests = (Array.isArray(tr.failedTests) ? tr.failedTests : [])
+          .filter((s) => typeof s === 'string' && s.trim())
+          .map((s) => s.trim())
+        savedReport = typeof tr.savedReport === 'string' && tr.savedReport.trim() ? tr.savedReport.trim() : null
+        savedLog = typeof tr.savedLog === 'string' && tr.savedLog.trim() ? tr.savedLog.trim() : null
       }
     }
 
@@ -530,9 +634,13 @@ export async function runMerge(o = {}) {
         repo: cwd,
         testsPassed: false,
         refused: true,
-        reason: redRunReason(failedTest),
+        reason: redRunReason(failedTest, savedReport),
         ...(failedTest ? { failedTest } : {}),
+        ...(failedTests.length ? { failedTests } : {}),
         ...(failureDetail ? { failureDetail } : {}),
+        ...(savedReport ? { savedReport } : {}),
+        ...(savedLog ? { savedLog } : {}),
+        ...(spaBuild ? { spaBuild } : {}),
         ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
       }
       try {
@@ -549,7 +657,10 @@ export async function runMerge(o = {}) {
         branch,
         receipt,
         ...(failedTest ? { failedTest } : {}),
+        ...(failedTests.length ? { failedTests } : {}),
         ...(failureDetail ? { failureDetail } : {}),
+        ...(savedReport ? { savedReport } : {}),
+        ...(savedLog ? { savedLog } : {}),
         ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
       }
     }
@@ -589,6 +700,8 @@ export async function runMerge(o = {}) {
       repo: cwd,
       testsPassed,
       ...(testsPassed === null ? { testsNote } : {}),
+      // ПЕРЕСОБИРАЛОСЬ ЛИ ОКНО И СКОЛЬКО ЭТО ЗАНЯЛО — время сборки живёт только здесь.
+      ...(spaBuild ? { spaBuild } : {}),
       // ЧТО РАЗВЕЛОСЬ БЕЗ ЧЕЛОВЕКА — в квитанции, потому что автоматический развод, о котором
       // никто не узнал, неотличим от слияния, где спора не было вовсе. Оговорка развода едет
       // рядом: «прошло вопреки отказу команды» — это не то же самое, что «прошло гладко».
@@ -612,6 +725,7 @@ export async function runMerge(o = {}) {
       merged: true,
       testsPassed,
       ...(testsPassed === null ? { testsNote } : {}),
+      ...(spaBuild ? { spaBuild } : {}),
       ...(mechanicallyResolved.length ? { mechanicallyResolved } : {}),
       ...(mechanicalNotes.length ? { mechanicalNotes } : {}),
       branch,

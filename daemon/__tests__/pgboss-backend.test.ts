@@ -35,7 +35,14 @@ import {
   DEAD_LETTER_QUEUE,
   BATCH_PARENT_QUEUE,
 } from '../src/queue/pgboss-backend.mjs'
-import { queueAdapterContractSuite, NoReceiptError } from '../src/queue/adapter.mjs'
+import {
+  queueAdapterContractSuite,
+  NoReceiptError,
+  RELEASE_DEFER_MS,
+  awaitsAutoRetry,
+  stoppedByAPerson,
+} from '../src/queue/adapter.mjs'
+import { closeWithWords } from '../src/queue/approval-store.mjs'
 import { countTerminalOutcomes, recordAttempt, readAttempts } from '../src/queue/attempt-ledger.mjs'
 import { STATE_MACHINE_VERSION, idempotencyKey } from '../src/queue/state-machine.mjs'
 import { defaultEnvelope, envelopeHash } from '../src/queue/capability-envelope.mjs'
@@ -281,6 +288,22 @@ function makeFakeBackend({
   const execSql = async (sql: string, params: any[]) => {
     maintain()
     if (sql.includes('CREATE TABLE')) return { rows: [] }
+    // ADD COLUMN IF NOT EXISTS: the closing word's column, added to a table that already
+    // exists on every machine this daemon has ever run on. Modelled as the no-op it is here —
+    // this fixture's approval rows are plain objects and grow a field when one is written.
+    if (sql.startsWith('ALTER TABLE')) return { rows: [] }
+    if (sql.includes('INSERT INTO sma_task_attempts') && sql.includes('closed_reason')) {
+      // closeWithWords(): ПОСЛЕДНЕЕ СЛОВО ЧЕЛОВЕКА, upsert-ом со СВОИМ сторожем. Смоделирован
+      // ровно как написан: строка, о которой слово уже сказано, и строка, по которой идёт
+      // приёмка, НЕ переписываются — и оператор возвращает тогда ноль строк, из чего дверь и
+      // узнаёт, что закрывать было нечего. Фикстура, переписывающая всё подряд, заверила бы
+      // сторожа, которого нет.
+      const [id, status, reason, note, approving] = params
+      const prev = attempts.get(String(id)) || null
+      if (prev && (prev.status === approving || prev.status === status)) return { rows: [] }
+      attempts.set(String(id), { ...(prev || {}), status, closed_reason: reason, returned_note: note })
+      return { rows: [{ id: String(id) }] }
+    }
     if (sql.includes('INSERT INTO sma_task_attempts')) {
       // markAwaitingApproval's upsert: ($1 id, $2 status), the note cleared on re-entry
       const [id, status] = params
@@ -293,6 +316,37 @@ function makeFakeBackend({
       const live = new Set([...jobs.values()].map((j) => j.data && j.data.id))
       const n = [...attempts.entries()].filter(([id, a]) => a.status === status && live.has(id)).length
       return { rows: [{ n }] }
+    }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes("SET state = 'created'")) {
+      // releaseClaim(): ВЗЯТАЯ СТРОКА ВОЗВРАЩАЕТСЯ В ОЧЕРЕДЬ, И ПОДХОД НЕ СЧИТАЕТСЯ. Смоделирован
+      // ровно как написан: по JOB id, только из активного состояния, и — это здесь главное —
+      // БЕЗ `retry_count`, потому что именно на нём стоит номер подхода. Подделка, трогающая
+      // счётчик, удостоверяла бы возврат, который на живой очереди сжигал бы подход.
+      //
+      // СТОИТ ВЫШЕ ДВУХ ВЕТОК, ЧЬИ ПРИЗНАКИ ЭТОТ ОПЕРАТОР РАЗДЕЛЯЕТ: имени работника (он его
+      // СНИМАЕТ, а не пишет) и отметки аренды. Поставленная ниже, она бы до него не доехала —
+      // и возврат молча превратился бы в назначение работника.
+      //
+      // ОТСРОЧКА МОДЕЛИРУЕТСЯ ЧЕСТНО, потому что ради неё оператор и трогает `start_after`:
+      // выборка выше уже отказывает строке, чей срок не вышел (`AND start_after < now()` — это
+      // собственный план библиотеки), так что подделка, игнорирующая секунды, удостоверяла бы
+      // отсрочку, которой на живой очереди нет. Счёт возвратов — второе, что пишет оператор.
+      const jobId = params[0]
+      const deferSec = Number(params[1]) || 0
+      const j = jobs.get(String(jobId))
+      if (j && j.state === 'active') {
+        j.state = 'created'
+        j.started_on = null
+        j.start_after = now() + deferSec * 1000
+        const kept: any = {}
+        for (const [k, v] of Object.entries(j.data || {})) {
+          if (k === 'workerId' || k === 'attemptToken' || k === 'claimedAt' || k === 'claimedAtRetry') continue
+          kept[k] = v
+        }
+        kept.releaseCount = (Number(kept.releaseCount) || 0) + 1
+        j.data = kept
+      }
+      return { rows: [] }
     }
     if (sql.startsWith('UPDATE pgboss.job') && sql.includes('workerId')) {
       // assignWorker(): the executing worker written into the job payload, keyed by JOB id.
@@ -374,11 +428,18 @@ function makeFakeBackend({
       // releaseBatchTurns(): the piece whose turn has come stops being deferred. Modelled with
       // the statement's own guards — keyed by TASK id, only a waiting row, and only one that is
       // actually held (so a second pass over an already-released piece changes nothing).
-      const [taskId] = params
+      //
+      // …И ПОЛ, КОГДА ОПЕРАТОР ЕГО НАЗВАЛ. Два правила снимают удержание этим же заявлением, но
+      // снимают РАЗНОЕ: черёд партии отпускает всё отложенное, а волна и занятые файлы — только
+      // свою далёкую дату (`start_after >= $2`). Подделка, отпускавшая всё подряд, была щедрее
+      // собственного оператора и отменяла ЧУЖУЮ выдержку — короткую отсрочку возвращённой
+      // строки, — то есть удостоверяла карусель, которой на живой очереди нет.
+      const [taskId, floor] = params
+      const floorMs = floor == null ? null : Date.parse(String(floor))
       for (const j of jobs.values()) {
-        if (j.data && j.data.id === taskId && j.state === 'created' && (j.start_after ?? 0) > now()) {
-          j.start_after = now()
-        }
+        if (!j.data || j.data.id !== taskId || j.state !== 'created') continue
+        const at = j.start_after ?? 0
+        if (floorMs == null ? at > now() : at >= floorMs) j.start_after = now()
       }
       return { rows: [] }
     }
@@ -495,6 +556,7 @@ function makeFakeBackend({
                   approval_status: a ? a.status : null,
                   returned_note: a ? a.returned_note : null,
                   merge_receipt: a ? a.merge_receipt : null,
+                  closed_reason: a ? (a.closed_reason ?? null) : null,
                 }
               : {}),
           }
@@ -1171,6 +1233,79 @@ describe('the approval row reaches the read path', () => {
     expect((await adapter.list({}))[0].status).toBe('claimed') // still running — nobody is waiting yet
   })
 
+  /**
+   * ═══ ПОСЛЕДНЕЕ СЛОВО ЧЕЛОВЕКА ДОЕЗЖАЕТ ДО ЧИТАЮЩЕГО ПУТИ — ОБА СЛУЧАЯ, ОДНОЙ ДОРОГОЙ ═══
+   *
+   * Провод здесь длинный и весь настоящий: слово пишется тем же `execSql`, каким `list()`
+   * читает, — то есть проверяется не «функция вернула объект», а то, что запись доезжает до
+   * строки, которую видит окно. Случая два, и второй дороже первого: работа, вставшая у
+   * потолка ходов, приёмочной строки не имела НИКОГДА (её пишет только `complete`), и
+   * закрытие обязано завести её с нуля — именно на этом отказывала дверь возврата.
+   */
+  it('сделанная работа, закрытая словами, уходит из ожидания и несёт своё слово', async () => {
+    const c = mkClock()
+    const { adapter, execSql } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-196', { receiptRef: 'reverify:green' })
+    expect((await adapter.list({}))[0].status).toBe('awaiting_approval')
+
+    const said = await closeWithWords(execSql, 'BL-196', { reason: 'obsolete', note: 'предмет изменился' })
+    expect(said.written).toBe(true)
+
+    const [row] = await adapter.list({})
+    expect(row.status).toBe('completed') // из «ЖДУТ ВАС» — в «Готово»
+    expect(row.closedByPerson).toEqual({ reason: 'obsolete', note: 'предмет изменился' })
+    expect((await adapter.stats()).awaiting_approval).toBe(0)
+  })
+
+  it('строка, вставшая у потолка ходов, закрывается словами — и очередь её больше не повторяет', async () => {
+    const c = mkClock()
+    const { adapter, execSql, attempts } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.parkForPerson('BL-196', 'turns_exhausted')
+    // ПРИЁМОЧНОЙ СТРОКИ У НЕЁ НЕТ ВОВСЕ — ровно то состояние, в котором возврат отвечал 409.
+    expect(attempts.get('BL-196')).toBeUndefined()
+
+    const said = await closeWithWords(execSql, 'BL-196', { reason: 'no_subject', note: '' })
+    expect(said.written).toBe(true)
+
+    const [row] = await adapter.list({})
+    expect(row.status).toBe('failed')
+    expect(row.closedByPerson.reason).toBe('no_subject')
+    // ТОРМОЗ, А НЕ УКРАШЕНИЕ: то же одно предложение, которым весь продукт отвечает на
+    // «решил ли здесь человек» — иначе автоповтор поставил бы закрытую работу заново.
+    expect(stoppedByAPerson(row.failure_reason)).toBe(true)
+    expect(awaitsAutoRetry(row)).toBe(false)
+    expect(await adapter.reissue('BL-196')).toBe(false)
+  })
+
+  it('второе слово о той же строке не пишется: сказанное человеком не переписывается молча', async () => {
+    const c = mkClock()
+    const { adapter, execSql } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-196', { receiptRef: 'reverify:green' })
+
+    expect((await closeWithWords(execSql, 'BL-196', { reason: 'obsolete' })).written).toBe(true)
+    const again = await closeWithWords(execSql, 'BL-196', { reason: 'done_otherwise', note: 'abc1234' })
+    expect(again).toEqual({ written: false, refused: true })
+    expect((await adapter.list({}))[0].closedByPerson.reason).toBe('obsolete')
+  })
+
+  it('идущую приёмку слово не перебивает: ритуал слияния допишет свой исход сам', async () => {
+    const c = mkClock()
+    const { adapter, execSql, attempts } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-196', { receiptRef: 'reverify:green' })
+    attempts.set('BL-196', { status: 'approving' })
+
+    expect(await closeWithWords(execSql, 'BL-196', { reason: 'obsolete' })).toEqual({ written: false, refused: true })
+    expect(attempts.get('BL-196').status).toBe('approving')
+  })
+
   it('FAIL-OPEN: a database that refuses the approval join still answers about the WORK', async () => {
     const c = mkClock()
     const logged: string[] = []
@@ -1413,6 +1548,70 @@ describe('pg-boss backend — a batch request is not sent where a fetch can reac
     expect(claimed.id).toBe('B-77-1')
     expect(await adapter.claimNext('w2', {})).toBeNull()
     expect(fetched).not.toContain('sma.batch')
+  })
+
+  /**
+   * ═══════ ОСВОБОЖДЕНИЕ ЧЕРЁДА СБОРКИ НЕ СНИМАЕТ ЧУЖУЮ ВЫДЕРЖКУ ═══════
+   *
+   * ЧЕМ ЭТО ОПАСНО ИМЕННО ЗДЕСЬ. Кусок сборки — самая частая работа, закреплённая за ОДНИМ
+   * работником, то есть ровно та, ради которой отсрочка возврата и заведена. Но он же —
+   * единственный, кого перед каждой выборкой трогает освобождение черёда: он `queued`, он не
+   * родитель, черёд его пришёл, никто его не держит. Пока это освобождение двигало ЛЮБУЮ
+   * будущую дату, оно стирало свежую отсрочку возврата первым же проходом — и карусель, от
+   * которой отсрочка спасает, продолжалась именно на закреплённом элементе, то есть в
+   * единственном месте, где она и случается.
+   *
+   * ПОЧЕМУ ЭТОГО НЕ ВИДНО В ОБЩЕМ СЬЮТЕ КОНТРАКТА: у эталонной очереди нет ни черёда сборки,
+   * ни колонки `start_after` — механизм принадлежит этому бэкенду, и спрашивать о нём можно
+   * только здесь.
+   */
+  it('возвращённый кусок сборки остаётся отсроченным — черёд его освобождает, но выдержку возврата не трогает', async () => {
+    const c = mkClock()
+    const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 600000 })
+    await adapter.enqueue(parent('B-79'))
+    await adapter.enqueue({ id: 'B-79-1', source: 'roster', title: 'первый', lane: 'prod', batchId: 'B-79' })
+
+    // Черёд куска пришёл — он и выдаётся: до этой строки его держала далёкая дата.
+    const claimed = await adapter.claimNext('w1', {})
+    expect(claimed.id).toBe('B-79-1')
+
+    // Маршрут ответил «работник занят» — строка вернулась в очередь с короткой отсрочкой.
+    expect(await adapter.releaseClaim('B-79-1', { attemptToken: claimed.attemptToken })).toBe(true)
+
+    // СЛЕДУЮЩИЙ ПРОХОД НЕ ОБЯЗАН НИЧЕГО ВЫДАВАТЬ: черёд куска по-прежнему его, но выдержка
+    // возврата ещё идёт. Здесь и стояла дыра — освобождение черёда стирало её, и тот же кусок
+    // выдавался немедленно, чтобы тут же вернуться снова.
+    expect(await adapter.claimNext('w2', {}), 'выдержка возврата переживает освобождение черёда').toBeNull()
+
+    // …а когда срок вышел, кусок едет — освобождение черёда своё дело делает по-прежнему.
+    c.advance(RELEASE_DEFER_MS)
+    const again = await adapter.claimNext('w3', {})
+    expect(again && again.id, 'срок вышел — кусок снова выдаётся').toBe('B-79-1')
+  })
+
+  /**
+   * ТОТ ЖЕ ВОПРОС ТРЕТЬЕМУ БЛИЗНЕЦУ. Удержание снимают три правила — черёд сборки, остановленная
+   * волна и занятые файлы, — и все три пишут ОДНО заявление. Ограничить одно и забыть другое
+   * стоит ровно того же дефекта в другом месте: строка с адресом волны, никем не остановленная,
+   * проходит через снятие удержания при каждой выборке. Поэтому вопрос задан обоим, а не тому,
+   * на котором дыру заметили.
+   */
+  it('возвращённая строка с адресом волны тоже остаётся отсроченной — снятие остановки её не трогает', async () => {
+    const c = mkClock()
+    const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 600000 })
+    await adapter.enqueue(backlog({ id: 'BL-W1', data: { phase: '7', wave: '2' } }))
+
+    const claimed = await adapter.claimNext('w1', {})
+    expect(claimed.id).toBe('BL-W1')
+    expect(await adapter.releaseClaim('BL-W1', { attemptToken: claimed.attemptToken })).toBe(true)
+
+    // Волну никто не останавливал — значит на каждой выборке строка проходит через снятие
+    // остановки. Снять оно обязано только свою далёкую дату, а не выдержку возврата.
+    expect(await adapter.claimNext('w2', { holds: [] }), 'выдержка возврата переживает снятие остановки волны').toBeNull()
+
+    c.advance(RELEASE_DEFER_MS)
+    const again = await adapter.claimNext('w3', { holds: [] })
+    expect(again && again.id, 'срок вышел — строка снова выдаётся').toBe('BL-W1')
   })
 
   it('the request is READ back with the work — a list that hides it leaves a screen with loose items', async () => {

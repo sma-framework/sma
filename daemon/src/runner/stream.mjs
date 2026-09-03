@@ -31,11 +31,15 @@
  *     "rate_limit_info": {"status":"allowed","resetsAt":1786539600,
  *                         "rateLimitType":"five_hour","isUsingOverage":false}
  *
- * There is NO fraction of the window spent, and there never has been on this stream. The
- * window model once filled that hole with an estimate from this daemon's own token accounting;
- * it read near zero on a subscription mostly spent by a person's own terminal sessions, and it
- * is gone. `utilization` is still read here, and is null on every real frame today, so that the
- * day the vendor starts sending a fraction the screen shows its number and nobody's arithmetic.
+ * The top level of that object carries NO fraction of the window spent — `utilization` is null
+ * there on every real frame — and the window model once filled the hole with an estimate from
+ * this daemon's own token accounting, which read near zero on a subscription mostly spent by a
+ * person's own terminal sessions. That estimate is gone.
+ *
+ * THE FRACTION DOES ARRIVE, one field down, for BOTH windows at once: `unifiedWindows`. It is
+ * read here (see windowReadings), and reading it is what keeps the weekly window from being a
+ * day out of date — the vendor NAMES that window about once a day, and until this was read the
+ * screen only ever learned about the week on those rare frames.
  *
  * THE COMPACTION FRAME — the only place on this stream where the CONTEXT WINDOW speaks. The CLI
  * announces every compaction with a `system` frame of its own:
@@ -87,6 +91,60 @@ function epochMs(v) {
   const n = Number(v)
   if (!Number.isFinite(n) || n <= 0) return null
   return n < 1e11 ? Math.round(n * 1000) : Math.round(n)
+}
+
+/**
+ * EVERY WINDOW ONE RATE-LIMIT FRAME SPEAKS ABOUT — not only the one it happened to name.
+ *
+ * `rateLimitType` names the window CLOSEST TO BITING, and nothing else. Beside it the same frame
+ * carries `unifiedWindows` — the vendor's own reading of BOTH windows at that instant, each with
+ * the fraction spent and its reset:
+ *
+ *     "rate_limit_info": {"status":"allowed","rateLimitType":"five_hour","resetsAt":1788015000,
+ *       "unifiedWindows":{"five_hour":{"utilization":0.18,"resetsAt":1788015000},
+ *                         "seven_day":{"utilization":0.03,"resetsAt":1788602400}}}
+ *
+ * That block went unread, and the cost of not reading it was a screen a day out of date. The
+ * weekly window was only ever refreshed on the rare frame that NAMED it — a warning the vendor
+ * sends once a day and often less — so on 02.09.2026 the board said the week was 67 % spent from
+ * a reading taken nineteen hours earlier, while the very frames arriving that minute carried 7 %
+ * in a field nobody opened. One frame is one reading of the whole subscription, and it is read
+ * as one here.
+ *
+ * THE HEALTH WORD RIDES ONLY WHERE THE VENDOR SAID IT. The unified block carries fractions and
+ * resets, never a status; only the NAMED window has the vendor's word about whether work is
+ * still going through. So the named window's status is folded onto its own entry and onto no
+ * other — a second window silently labelled «allowed» would be this daemon's word wearing the
+ * vendor's coat, and a refusal is the one thing that must always be his.
+ *
+ * A reading with no reset time is dropped: the store cannot age what it cannot date.
+ */
+function windowReadings(obj, info, named) {
+  const unified =
+    info.unifiedWindows ?? info.unified_windows ?? obj.unifiedWindows ?? obj.unified_windows
+  const readings = []
+  if (unified && typeof unified === 'object') {
+    for (const [limitType, one] of Object.entries(unified)) {
+      if (!one || typeof one !== 'object') continue
+      const resetsAt = epochMs(one.resetsAt ?? one.resets_at)
+      if (resetsAt == null) continue
+      const isNamed = named.limitType != null && limitType === named.limitType
+      readings.push({
+        limitType,
+        utilization: numOrNull(one.utilization),
+        resetsAt,
+        status: isNamed ? named.status : strOrNull(one.status),
+        usingOverage: isNamed ? named.usingOverage : one.isUsingOverage === true,
+      })
+    }
+  }
+  // The named window still stands on its own where the unified block did not mention it — a
+  // frame that carries no unified block at all (every frame before this field existed) must go
+  // on being read exactly as it always was.
+  if (named.limitType && named.resetsAt != null && !readings.some((r) => r.limitType === named.limitType)) {
+    readings.push({ ...named })
+  }
+  return readings
 }
 
 /** JSON.parse that yields an unparsed marker instead of throwing. */
@@ -230,15 +288,14 @@ function eventFromFrame(obj) {
   // answer and the reason nothing downstream may require it.
   if (type === 'rate_limit_event') {
     const info = obj.rate_limit_info && typeof obj.rate_limit_info === 'object' ? obj.rate_limit_info : {}
-    return {
-      type: 'rate_limit',
-      ...who,
+    const named = {
       limitType: strOrNull(info.rateLimitType ?? info.rate_limit_type),
       utilization: numOrNull(info.utilization),
       resetsAt: epochMs(info.resetsAt ?? info.resets_at),
       status: strOrNull(info.status),
       usingOverage: info.isUsingOverage === true,
     }
+    return { type: 'rate_limit', ...who, ...named, windows: windowReadings(obj, info, named) }
   }
 
   return { type, ...who }

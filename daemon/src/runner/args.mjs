@@ -78,7 +78,7 @@
  * at the top take an injectable `fsImpl`, so tests touch no real home. Zero deps.
  */
 
-import { copyFileSync as fsCopyFileSync, cpSync as fsCpSync, existsSync as fsExistsSync } from 'node:fs'
+import { copyFileSync as fsCopyFileSync, cpSync as fsCpSync, existsSync as fsExistsSync, mkdirSync as fsMkdirSync, rmSync as fsRmSync } from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
 
 import { atomicWriteJson, atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
@@ -642,6 +642,14 @@ export function codexSandboxFor(allowedTools) {
 export const CODEX_WINDOWS_SANDBOX_MARKER = join('.sandbox', 'setup_marker.json')
 
 /**
+ * Каталог, внутри которого живут дома задач, — ОДНО написание на три читателя: тот, кто дом
+ * собирает, тот, кто его убирает, и гард уборки, который отказывается трогать что-либо снаружи.
+ * Второе написание того же имени означало бы, что дом чеканится там, куда уборке смотреть не
+ * позволено, и узналось бы это молчаливым «не наш каталог» через месяц накопленного мусора.
+ */
+const CODEX_TASKS_DIR = 'codex-tasks'
+
+/**
  * codexHomeFor({account, taskId, homedir}) → СВЕЖИЙ дом ЭТОЙ задачи, одним выражением.
  *
  * ОДНО ВЫРАЖЕНИЕ, ТРИ ЧИТАТЕЛЯ, И ЭТО ВЕСЬ СМЫСЛ. Дом называет окружение спавна, создаёт его
@@ -656,7 +664,48 @@ export const CODEX_WINDOWS_SANDBOX_MARKER = join('.sandbox', 'setup_marker.json'
 export function codexHomeFor({ account, taskId, homedir } = {}) {
   if (!account || typeof account !== 'object') throw new Error('codexHomeFor: an account is required')
   if (!taskId) throw new Error('codexHomeFor: a taskId is required — the home is per task')
-  return join(expandHome(account.configDir, homedir), 'codex-tasks', String(taskId))
+  return join(expandHome(account.configDir, homedir), CODEX_TASKS_DIR, String(taskId))
+}
+
+/**
+ * discardCodexHome({home, taskId, fsImpl}) → `{removed, reason}`: убрать дом ЭТОЙ задачи, когда
+ * попытка закрылась.
+ *
+ * ЧТО БЫЛО ОБЕЩАНО И ЧЕГО НЕ ДЕЛАЛОСЬ. Дом чеканится заново на каждую задачу, и внутрь него
+ * переехал временный каталог песочницы — ровно затем, чтобы обход прав шёл по пустому дереву, а
+ * не по общему каталогу машины. У переезда есть вторая половина, которой не было: ОБЩИЙ каталог
+ * чистит сама система, а этот не чистит никто. То есть лечение старта сессии оставляло после
+ * каждой попытки каталог с логином, конфигом, следом установки песочницы и всем, что сессия
+ * успела записать во временный, — навсегда и на задачу. Оба README всё это время говорили, что
+ * дом «уходит вместе с задачей»; теперь это правда, а не намерение.
+ *
+ * ГАРД — НЕ ФОРМАЛЬНОСТЬ: сюда приходит путь ИЗ ОКРУЖЕНИЯ УЖЕ ЗАПУЩЕННОГО ПРОЦЕССА, а уходит он
+ * в рекурсивное удаление. Удаляется только каталог, СОБРАННЫЙ ТЕМ ЖЕ ВЫРАЖЕНИЕМ, что и дом
+ * задачи: последний сегмент — имя этой задачи, предпоследний — каталог домов. Дом счёта, каталог
+ * настроек и что угодно ещё этой рукой не трогается вовсе. Пути с обоими разделителями — на
+ * Windows приходят оба.
+ *
+ * НИКОГДА НЕ БРОСАЕТ. Зовёт это закрытие попытки, и попытка от неудачной уборки не меняет своего
+ * исхода: неубранный каталог — это строка в журнале, а не второй провал поверх первого.
+ *
+ * @param {{home?:string, taskId?:string, fsImpl?:object}} [args]
+ * @returns {{removed:boolean, reason:string}}
+ */
+export function discardCodexHome({ home, taskId, fsImpl } = {}) {
+  const dir = typeof home === 'string' && home.trim() !== '' ? home : null
+  if (!dir) return { removed: false, reason: 'no-home' }
+  if (!taskId) return { removed: false, reason: 'no-task' }
+  const segments = dir.split(/[\\/]+/).filter(Boolean)
+  const last = segments[segments.length - 1]
+  const parent = segments[segments.length - 2]
+  if (last !== String(taskId) || parent !== CODEX_TASKS_DIR) return { removed: false, reason: 'not-a-task-home' }
+  const rmFn = (fsImpl && fsImpl.rmSync) || fsRmSync
+  try {
+    rmFn(dir, { recursive: true, force: true })
+    return { removed: true, reason: 'removed' }
+  } catch (err) {
+    return { removed: false, reason: String((err && err.message) || err) }
+  }
 }
 
 /** Песочница, которую эта машина обещала, но не исполнит — названа, чтобы отказ был словами. */
@@ -933,6 +982,41 @@ export const CODEX_SANDBOX_ARTIFACTS = Object.freeze(['.sandbox', '.sandbox-bin'
  */
 export const CODEX_APPROVAL_POLICY = 'never'
 
+/** Каталог внутри дома задачи, который сессия получает как свой Temp. */
+export const CODEX_TASK_TEMP_DIR = 'tmp'
+
+/**
+ * codexTempFor(home) → СВОЙ МАЛЕНЬКИЙ TEMP ЭТОЙ ЗАДАЧИ, одним выражением.
+ *
+ * ЧТО ЭТО ЛЕЧИТ, ЗАМЕРЕНО 02.09.2026. Песочница Windows перед стартом сессии РАЗДАЁТ ПРАВО
+ * ЗАПИСИ ограниченному пользователю — по одному разрешению на каждый писаемый корень, обходя
+ * дерево целиком. Рабочий каталог и git-каталог копии — деревья маленькие, и журнал песочницы
+ * прошёл их за секунду с небольшим. А третьим писаемым корнем песочница считает ОБЩИЙ Temp
+ * пользователя, названный в окружении, — тот, куда всё на машине годами сбрасывает временные
+ * файлы. Обход этого дерева занял четыре минуты в одном замере и семнадцать минут в другом:
+ * сессия ещё не сказала ни слова, окно подписки уже идёт, а на карточке это неотличимо от
+ * повисшего работника.
+ *
+ * ЛЕЧИТСЯ НЕ ФЛАГОМ, А АДРЕСОМ. Право на Temp песочнице нужно по делу — процессу нужен
+ * временный каталог, — и отнимать его значило бы менять чужую границу. Меняется ровно то, ЧЕЙ
+ * Temp: у задачи есть свой дом, свежий и пустой, и Temp внутри него — дерево из нуля файлов.
+ * Разрешение раздаётся по нему, а не по общему, и обход становится мгновенным.
+ *
+ * ОДНО ВЫРАЖЕНИЕ, ДВА ЧИТАТЕЛЯ — по той же причине, что у `codexHomeFor`: каталог НАЗЫВАЕТ
+ * окружение спавна, а СОЗДАЁТ его посев. Собранный руками в двух местах, он разъедется в
+ * первый же день правки, и тогда окружение назовёт каталог, которого никто не сделал, — а это
+ * ровно та ошибка, которой стоил ненайденный дом: имя в окружении и пустота на диске.
+ *
+ * @param {string} home
+ * @returns {string}
+ */
+export function codexTempFor(home) {
+  if (typeof home !== 'string' || home.trim() === '') {
+    throw new Error('codexTempFor: a home path is required — the temp dir lives inside the task home')
+  }
+  return join(home.trim(), CODEX_TASK_TEMP_DIR)
+}
+
 /**
  * codexGitWritableRoot({workDir, gitCommonDir}) → КАТАЛОГ GIT ЭТОЙ КОПИИ, приведённый к
  * абсолютному пути, либо `null`, когда его назвать нечем.
@@ -1083,7 +1167,13 @@ export class CodexHomeError extends Error {
  * ЧЕМ он заполнен, знает тик, потому что только он знает, где стоит копия.
  *
  * @param {{home:string, authSources?:string[], sandboxSource?:string, writableRoots?:string[], fsImpl?:object}} args
- * @returns {{home:string, configPath:string, authPath:(string|null), authSource:(string|null), sandboxSeeded:string[], sandboxSource:(string|null), writableRoots:string[]}}
+ * И ПЯТОЕ — СВОЙ TEMP ЗАДАЧИ. Песочница раздаёт право записи по каждому писаемому корню, и
+ * Temp, названный в окружении, — один из них; унаследованный он указывает на ОБЩИЙ каталог
+ * машины, и обход этого дерева стоит минут ДО первого слова сессии (замерено 02.09.2026).
+ * Окружение спавна перенаправляет имя в дом задачи; каталог создаётся здесь, потому что
+ * «названо в окружении и не сделано на диске» — ошибка, которую этот дом уже пережил однажды.
+ *
+ * @returns {{home:string, configPath:string, authPath:(string|null), authSource:(string|null), sandboxSeeded:string[], sandboxSource:(string|null), writableRoots:string[], tempDir:string}}
  */
 export function seedCodexHome({ home, authSources, sandboxSource, writableRoots, fsImpl } = {}) {
   if (!home || String(home).trim() === '') throw new CodexHomeError('seedCodexHome: a home path is required')
@@ -1105,6 +1195,18 @@ export function seedCodexHome({ home, authSources, sandboxSource, writableRoots,
   // ПРАВИЛО СПРАШИВАЕТСЯ ОДНИМ ВЫРАЖЕНИЕМ (codexSandboxTrailWhole) — ТЕМ ЖЕ, каким тик заранее
   // считает, ляжет ли посев. Своя копия этого цикла здесь означала бы страж, обещающий одно, и
   // посев, делающий другое, — то есть ровно тот шов, который уже расходился однажды.
+  // ── СВОЙ TEMP ЗАДАЧИ — СДЕЛАН, А НЕ ТОЛЬКО НАЗВАН ─────────────────────────────
+  //
+  // Окружение спавна называет его (buildAccountEnv), и на этом всё бы и кончилось: каталог,
+  // названный в окружении и не сделанный на диске, — та же ошибка, что однажды уже стоила
+  // этому дому логина. Делается ПЕРВЫМ и без условий: пустой каталог ничего не обещает и
+  // ничего не ломает, а вот его отсутствие означает, что процесс пойдёт временными файлами
+  // туда, куда его перенаправит система, — то есть обратно в общий Temp, ради ухода из
+  // которого всё это и написано.
+  const tempDir = codexTempFor(dir)
+  const mkdirFn = (fsImpl && fsImpl.mkdirSync) || fsMkdirSync
+  mkdirFn(tempDir, { recursive: true })
+
   const sandboxSeeded = []
   const sandboxFrom = typeof sandboxSource === 'string' && sandboxSource.trim() !== '' ? sandboxSource : null
   if (sandboxFrom && codexSandboxTrailWhole({ home: sandboxFrom, fsImpl }).whole) {
@@ -1157,6 +1259,8 @@ export function seedCodexHome({ home, authSources, sandboxSource, writableRoots,
     sandboxSeeded,
     sandboxSource: sandboxWhole ? sandboxFrom : null,
     writableRoots: roots,
+    // Куда ушёл Temp этой задачи — тем же именем, каким его назвало окружение спавна.
+    tempDir,
   }
 }
 
@@ -1168,7 +1272,9 @@ export function seedCodexHome({ home, authSources, sandboxSource, writableRoots,
  *     `env` BY THE NAME account.oauthTokenEnv (unset name → no token key) + SMA_SPEND_LOGS_DIR.
  *   Codex account: a FRESH per-task CODEX_HOME under the account dir (two tasks → two
  *     dirs) — never account-shared, and `~` resolved because the composer then CREATES it
- *     and seeds it (seedCodexHome).
+ *     and seeds it (seedCodexHome). TEMP/TMP point INSIDE that home: the sandbox grants
+ *     write over every writable root it is given, and the machine's shared temp tree is
+ *     minutes of ACL walking before the session says a word.
  *   useApiFallback: the API key (read from `env` by apiKeyEnv name) is added
  *     as ANTHROPIC_API_KEY — it takes precedence over subscription auth, the whole switch.
  *   EVERY account, both lanes: HEADLESS_ENV=1 — there is nobody at the keyboard of a session
@@ -1208,6 +1314,21 @@ export function buildAccountEnv({
     // folder literally named «~» next to whatever the daemon's cwd happened to be, and put
     // the account's login inside it.
     out.CODEX_HOME = codexHomeFor({ account, taskId, homedir })
+    // ── И СВОЙ TEMP, ПО ТОЙ ЖЕ ПРИЧИНЕ И ТЕМ ЖЕ АДРЕСОМ ─────────────────────────
+    //
+    // Песочница раздаёт право записи по КАЖДОМУ писаемому корню, а Temp, названный в
+    // окружении, — один из них. Унаследованный из окружения демона, он указывает на ОБЩИЙ
+    // Temp пользователя, и раздача обходит это дерево целиком: замерено 02.09.2026 — четыре
+    // минуты в одном запуске и семнадцать в другом, до первого слова сессии. Здесь имя
+    // перенаправляется в дом ЭТОЙ задачи, где дерево пустое; создаёт каталог посев
+    // (seedCodexHome), потому что «названо в окружении и не сделано на диске» — уже
+    // случавшаяся здесь ошибка.
+    //
+    // ДВА ИМЕНИ, А НЕ ОДНО: Windows читает и `TEMP`, и `TMP`, и оставленный без внимания
+    // второй вернул бы общий каталог тем, кто спрашивает именно его.
+    const taskTemp = codexTempFor(out.CODEX_HOME)
+    out.TEMP = taskTemp
+    out.TMP = taskTemp
   } else {
     out.CLAUDE_CONFIG_DIR = account.configDir
     if (account.oauthTokenEnv) {

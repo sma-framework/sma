@@ -732,6 +732,20 @@ it. The scene hands the run engine a receipts root of its own (`SMA_UI_RECEIPTS`
 does **not** take it away at teardown; `ui-drive` prints the receipt's absolute path on its last
 line. Run standalone, the engine still writes to `.planning/ui-reviews/` exactly as before.
 
+**And the key never rides out with the failure.** The window the engine is pointed at stands behind
+a token, so the address it is handed carries one — and the receipt has masked that address since the
+day receipts were found publishing it. That was half a door. A driver failure is not an address: it
+is a *sentence* with an address inside it, because a browser quotes the full target it was
+navigating to when it reports a timeout or a refused connection. That sentence goes where no
+receipt redaction reaches — onto the process's own output, and from there into the log of whoever
+launched the run. Measured on a live run: the receipt was masked exactly as designed while the same
+token stood bare one line below it, inside the failure that produced the receipt. So the mask now
+stands on the **exit** rather than at each writer: everything `ui-drive` says out loud — its own
+lines, the driver's lines, the text of any exception, caught or not — and everything it writes to
+disk passes through it, and there is no way to print past it. Only the credential's *value* is
+replaced; the address, the ordinary parameters and the error's own words survive, because a receipt
+nobody can follow trades one defect for another.
+
 That sideways measurement follows the CONTENT, not the document. A window that carries its minimum
 width on a container inside the page measures perfectly clean at phone width while most of the
 screen lies past the edge — so the finding names the box that holds the content and how many pixels
@@ -1192,12 +1206,42 @@ happening silently. What a confirmed finding earns is a receipt of its own,
 word, never dressed up as «Ответ без правки кода», because the two send you to different places.
 
 **A test must speak about the product, not about itself.** A test file **added by this same
-attempt** is refused as `self_referential_test` when all three hold: it imports no module of the
-tree (only packages and builtins), it names at least one path, and **every** path it names was
-added by this same work. The first condition is what protects ordinary work — a new module with
-its own test imports what it tests, and testing behaviour is a conversation about the product
-whatever the diff calls the file. The word is kept apart from `tests_red` on purpose: those tests
-are green, and what needs fixing is what they are **about**.
+attempt** is refused as `self_referential_test` when all three hold: it holds onto no part of the
+tree, it names at least one path, and **every** path it names was added by this same work. The
+first condition is what protects ordinary work — a new module with its own test imports what it
+tests, and testing behaviour is a conversation about the product whatever the diff calls the file.
+The word is kept apart from `tests_red` on purpose: those tests are green, and what needs fixing
+is what they are **about**.
+
+**Holding on has three shapes, and any one is enough.** Importing a module of the tree; **running
+a file of the tree as a process** (`spawn`/`spawnSync`/`execFile`/`fork`/…) and reading what it
+printed; or naming a path that exists in the copy and was not added by this work. The second was
+missing until 02.09.2026 and it cost an honest attempt: a new test started the real product script
+as a child process with a stand-in failing driver and read its stdout — a wire test of the highest
+grade, and the recogniser, which looked only at `import`s, refused a finished green branch.
+
+**The launch is what decides where the target is looked for.** The path to a spawned script is
+almost never written in one literal (`join(ROOT, 'scripts', 'sma', 'ui-drive.mjs')`), so a bare
+file name is tried against the directory of the test that named it and its ancestors — and, **for a
+launch only**, reassembled from the literal pieces standing next to it. That reassembly is a guess,
+so exactly two things confirm it: the reassembled path **exists in the copy**, and it sits inside
+the directories where the product's runnable code lives (`bin`, `daemon`, `scripts`, `sma-core`,
+`supervisor`, `tools`). Take away the launch, the runnable extension or the anchor, and the same
+file is a conversation about itself again — each of the three changes a verdict, and each has its
+own test.
+
+**The question is put to the attempt's tests together, not to each new file alone.** Every test
+file in the diff **that is still in the copy** is asked, edited ones included: an attempt that edits
+an existing test of the product is speaking about what was there before it, so it is not speaking
+only about itself. One test holding onto the product clears the whole attempt — but a test the work
+**deleted or moved** is no voice at all (a deletion says the file is gone, a rename says it
+travelled, and neither says the work re-examined any behaviour), and an unreadable file exonerates
+nobody: the accusation always rests on a test that WAS read. That last rule is not decoration —
+while silence cleared an attempt, a self-referential note plus any test deletion walked through the
+gate. **And the refusal is said in words**: it names the file, the paths it is about, why that makes
+it self-referential, and the way out — import what you are checking, or run a file of the product as
+a process and check its output; and if the task has no subject, close it in words with evidence
+rather than with a test.
 
 **A new top-level directory is a question, not a side effect.** What the product is made of
 travels into the README, the packaging and the habits of every worker after this one, and no task

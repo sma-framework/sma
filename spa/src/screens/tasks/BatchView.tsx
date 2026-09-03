@@ -103,6 +103,13 @@ export function BatchView({
   const [problem, setProblem] = useState('')
   /** Отмена — действие разрушительное, поэтому она спрашивает второй раз, а не «сразу». */
   const [armed, setArmed] = useState(false)
+  /**
+   * СЛОВО, С КОТОРЫМ КУСОК ИДЁТ НА ПОВТОР. Пока его не было, «повторить» уходило вслепую: тот
+   * же текст и тот же полный потолок ходов, — а приёмщику, который видит, чего именно не
+   * хватило («досдай по ритуалу»), сказать это было НЕКУДА: возврат кусок сборки не берёт,
+   * дверь слов по законченной работе отказывает.
+   */
+  const [retryNote, setRetryNote] = useState('')
 
   const batch = (state.data?.batches ?? []).find((b) => b.id === id) ?? null
   const items = batch?.items ?? []
@@ -129,12 +136,23 @@ export function BatchView({
   const answer = (option: 'skip' | 'retry' | 'cancel') => {
     if (!batch || !batch.question) return
     setProblem('')
+    const said = retryNote.trim()
     decide.mutate(
       option === 'cancel'
         ? { batchId: batch.id, decision: option }
-        : { batchId: batch.id, decision: option, itemId: batch.question.itemId },
+        : {
+            batchId: batch.id,
+            decision: option,
+            itemId: batch.question.itemId,
+            // ТОЛЬКО У ПОВТОРА, И ТАК ЖЕ СУДИТ ДВЕРЬ: пропуску и отмене слово передать некому,
+            // и дверь отвечает на него отказом, а не молча его роняет.
+            ...(option === 'retry' && said !== '' ? { note: said } : {}),
+          },
       {
-        onSuccess: () => setArmed(false),
+        onSuccess: () => {
+          setArmed(false)
+          setRetryNote('')
+        },
         onError: (err) => setProblem(doorWords(err)),
       },
     )
@@ -292,6 +310,18 @@ export function BatchView({
                       человека сборка начала не тогда, когда её попросили. */}
                   {stalledWords ? ` Стоит ${stalledWords} — столько флот по ней и простаивает.` : ''}
                 </p>
+                {/* ЧТО СКАЗАТЬ ПОВТОРУ. Поле стоит НАД кнопками, потому что говорят до того,
+                    как нажимают; слово едет только с «повторить» — остальным его некому
+                    передать, и дверь такой ответ отклоняет. */}
+                {batch.question.options.some((o) => o.id === 'retry') ? (
+                  <textarea
+                    value={retryNote}
+                    onChange={(e) => setRetryNote(e.target.value)}
+                    placeholder="Слово повтору (необязательно): чего не хватило, что досдать"
+                    rows={2}
+                    className="mt-3 w-full resize-y rounded-[9px] border border-bd bg-input px-[11px] py-2 text-[12px] text-tx outline-none focus:border-blue"
+                  />
+                ) : null}
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   {batch.question.options.map((o) =>
                     o.id === 'cancel' ? (

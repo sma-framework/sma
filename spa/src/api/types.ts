@@ -34,6 +34,13 @@ export interface WindowFact {
   /** The provider's own percentage, ONLY when it sent one. Null means it did not. */
   pct: number | null
   /**
+   * When this reading was taken. A percentage with no hour on it is read as «now» — which is
+   * how a week measured nineteen hours earlier passed for the current one on the board. The
+   * moment travels rather than an age, because an age computed on the daemon is already wrong
+   * by the time the screen draws it.
+   */
+  observedAt: string | null
+  /**
    * Where this fact came from, when it was not the account's own reading. `terminal` means a
    * status line signed into this account's config directory reported it — the same
    * subscription, said by another mouth — and the screen names that instead of passing it off
@@ -88,7 +95,19 @@ export interface QueueRow {
    *  идущей работой. Отсутствует, когда задача секунды от запуска (разведка 11.08 — «Queued
    *  без причины» больше не бывает). Общая причина сильнее частной: пока выключен конвейер,
    *  строка стоит из-за тумблера, а не из-за файла. */
-  idleReason?: 'pipeline_off' | 'windows_closed' | 'budget_stop' | 'files_busy'
+  idleReason?: 'pipeline_off' | 'windows_closed' | 'budget_stop' | 'files_busy' | 'worker_busy'
+  /**
+   * СКОЛЬКО РАЗ ЭТУ СТРОКУ БРАЛИ И ОТДАВАЛИ НАЗАД, НЕ НАЧАВ ПОПЫТКИ.
+   *
+   * Работа бывает закреплена за одним работником (кусок сборки, полоса, названная роль), и пока
+   * он ведёт другую попытку, очередь берёт её и возвращает: отдать соседу — значит посадить
+   * второго живого писателя в ту же копию. Подход при этом не считается и отметок не остаётся,
+   * поэтому строка после трёх возвратов выглядит как только что поставленная — и человек,
+   * видящий свободных работников, идёт искать поломку там, где её нет.
+   *
+   * Присутствует ТОЛЬКО когда возвраты были; отсутствие — «эту строку не возвращали».
+   */
+  releaseCount?: number
   /**
    * ЧЕМ ИМЕННО ЗАНЯТА ЭТА СТРОКА: пути, которые она объявила и которые уже держит идущая
    * работа, и сама эта работа по имени.
@@ -115,6 +134,20 @@ export interface QueueRow {
    */
   claimedAt: number | null
   leaseRenewedAt: number | null
+  /**
+   * СТРОКА, О РАЗМЕРЕ КОТОРОЙ НЕ СКАЗАНО НИЧЕГО, — и потолок ходов, который она за это
+   * получит.
+   *
+   * Потолок считается по объявленной работе: ни признаков успеха, ни оценки — работа объявлена
+   * мелкой и уходит в процесс с базовым числом ходов. Направление ошибки правильное (никто не
+   * выдаёт запас, которого не просили), но до сих пор оно было невидимым: человек узнавал
+   * число уже красной карточкой, когда работа в него упёрлась. Здесь оно приходит вовремя —
+   * пока строка ждёт работника и обещание ещё можно дописать.
+   *
+   * Присутствует ТОЛЬКО у ждущей работника строки без обещания; отсутствие означает, что
+   * размер работы чем-то объявлен, а не что потолка нет.
+   */
+  noPromise?: { cap: number }
 }
 
 /**
@@ -320,6 +353,20 @@ export interface WorkerRow {
    * `taskId` или не приходит вовсе.
    */
   taskClaimedAt?: number | null
+  /**
+   * ОСТАЛЬНЫЕ ПОПЫТКИ, КОТОРЫЕ ЭТОТ РАБОТНИК ДЕРЖИТ ОДНОВРЕМЕННО С `taskId`.
+   *
+   * Правило продукта — одна живая сессия на работника, и держит его захват. Поле существует
+   * ровно на случай, когда правило всё-таки нарушено: пока его нет, всё в порядке. Раньше на
+   * этом месте не было ничего, и карточка называла ПЕРВУЮ из двух попыток — то есть доска
+   * оказывалась единственным местом, где двойной захват не виден.
+   */
+  alsoRunning?: Array<{
+    taskId: string
+    taskTitle?: string | null
+    project?: string | null
+    taskClaimedAt?: number | null
+  }>
   /**
    * «Сделано / не получилось» за последние 30 дней, посчитанные демоном из леджера попыток.
    * ОТСУТСТВУЕТ, когда леджер прочитать не удалось (или демон старый): ноль на карточке
@@ -543,6 +590,25 @@ export interface DoneRow {
   acceptance?: string | string[]
   /** Present only on a task that did not make it. */
   failed?: FailureSummary
+  /**
+   * ПОСЛЕДНЕЕ СЛОВО ЧЕЛОВЕКА о работе, которую делать не будут: устарело, предмета нет,
+   * сделано иначе. Есть ТОЛЬКО там, где слово сказано, и живёт рядом с `failed`, а не внутри:
+   * закрыть словами можно и удачную строку («сделано иначе» — законный конец зелёной работы).
+   */
+  closed?: ClosedByPerson
+}
+
+/** Закрытый словарь исходов, которыми человек закрывает работу СЛОВАМИ, а не заходом. */
+export type ClosingReason = 'obsolete' | 'no_subject' | 'done_otherwise'
+
+/** Что именно человек сказал, закрывая строку. */
+export interface ClosedByPerson {
+  /** Исход из закрытого словаря; `null` — слово, которого этот словарь не знает. */
+  reason: ClosingReason | string | null
+  /** Подпись исхода словами двери; `null`, когда подписи для слова нет. */
+  reasonLabel: string | null
+  /** Текст человека — sha, ссылка, причина. `null`, когда сказано одним исходом. */
+  note: string | null
 }
 
 /** One subscription on the spend strip: its name and the whole of its window bar. */
@@ -743,6 +809,13 @@ export interface Kpis {
   seatsBusy: number | null
   /** Сколько мест всего — потолок одновременных попыток, тем же чтением настройки, что и у тика. */
   seatsTotal: number
+  /**
+   * Сколько занятых мест НЕ ВИДНО В СПИСКЕ РАБОТНИКОВ — попытки, чьей задачи нет ни в одних
+   * руках на этой доске. Ноль — обычное состояние; всё, что больше, человек раньше читал как
+   * ошибку экрана («занято 4, а работают двое»), хотя за разницей шли живые невидимые сессии.
+   * `null` — дома идущих попыток нет, сказать нечем.
+   */
+  seatsUnlisted: number | null
 }
 
 // ── the routing policy, as the reading carries it ───────────────────────────────────
@@ -1506,6 +1579,13 @@ export interface TaskAttempt {
    */
   sync?: AttemptSync | null
   /**
+   * Сколько сессия собиралась, прежде чем сказать первое слово: `ms` — измерение, `words` — то,
+   * что читается без пересчёта в голове. До первого кадра у идущей работы есть один признак
+   * жизни — её вывод, поэтому подготовка песочницы и повисший процесс выглядели снаружи
+   * одинаково. `null` — «попытка об этом молчит», и это НЕ «стартовала мгновенно».
+   */
+  sessionStart?: { ms: number | null; words: string } | null
+  /**
    * ═══════ ЧТО ЭТА ПОПЫТКА ИЗМЕНИЛА И ЧТО ПОСЛЕ НЕЁ ИСЧЕЗЛО ═══════
    *
    * Список берётся из ответа git на диапазон «база..ветка», а не из наблюдения за
@@ -1622,6 +1702,17 @@ export interface MergeReceiptWords {
   sha: string | null
   testsPassed: boolean | null
   testsNote: string | null
+  /**
+   * Имена упавших тестов, как их назвал прогонятель. Пусто — имён он не назвал, и экран
+   * говорит именно это: выдуманное имя отправляет человека чинить не тот тест.
+   */
+  failedTests?: string[]
+  /**
+   * Где лежит отчёт красного прогона. Полный набор при живых соседних сессиях умеет
+   * краснеть ложно, и отличить такой красный от настоящего можно только по отчёту —
+   * поэтому путь стоит на карточке словами. `null` — отчёта не сохранилось.
+   */
+  report?: string | null
 }
 
 /**
@@ -1862,6 +1953,18 @@ export interface StockTeamCard {
   origin: StockOrigin
   forked: boolean
   stockUpdate: StockUpdate
+  /**
+   * The role this definition holds, normalized the way the ROUTER normalizes it — `sma-planner`
+   * and `planner` are one role, and the window never spells it a second way.
+   */
+  role: string
+  /**
+   * Does the conveyor call this role by itself, without anyone naming it in the task? True for
+   * the executors and the planner. It arrives DECIDED: the same answer decides what the
+   * «включить тех, кто нужен сейчас» switch acts on, and a second opinion computed here is how
+   * a button and its own caption come to mean different sets.
+   */
+  pipeline: boolean
   /** A definition that could not be read, or a twin that was shadowed — named, not hidden. */
   problem: string | null
 }
@@ -2401,8 +2504,11 @@ export interface ToggleResult {
   agent?: { id: string; enabled: boolean }
   skill?: { id: string; assignedTo: string[] }
   mcp?: { id: string; enabled: boolean }
-  /** The reserved «whole shipped team» branch: how many roster entries the switch touched. */
-  stockTeam?: { enabled: boolean; agents: number }
+  /**
+   * The reserved-target branch: how many roster entries the switch touched, and WHICH set it
+   * was aimed at — the whole shipped team, or only the roles the conveyor calls by itself.
+   */
+  stockTeam?: { enabled: boolean; scope?: 'all' | 'pipeline'; agents: number }
 }
 
 export interface OkResult {
@@ -3088,4 +3194,16 @@ export interface CancelTaskResult {
   cancelled: boolean
   killed: boolean
   attemptClosed: boolean | null
+}
+
+/**
+ * Ответ двери «закрыть словами». Дверь либо записала последнее слово, либо отказала СЛОВАМИ
+ * (409 у живой работы, 409 у строки, о которой слово уже сказано) — успех здесь ровно один и
+ * не притворяется двумя.
+ */
+export interface CloseTaskResult {
+  ok: boolean
+  taskId: string
+  reason: ClosingReason | string
+  note: string | null
 }

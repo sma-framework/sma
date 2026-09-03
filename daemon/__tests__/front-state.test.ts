@@ -121,6 +121,7 @@ const wire = (status: string, resetsAt: number | null = null) => ({
   status,
   resetsAt: resetsAt === null ? null : new Date(resetsAt).toISOString(),
   pct: null,
+  observedAt: null,
 })
 
 /** A window-state function keyed by account name (the injected seam). */
@@ -1286,6 +1287,46 @@ describe('deriveState — projects, machines and federation', () => {
     const idle = payload.workers.find((w: any) => w.id === 'max-2')
     expect('taskTitle' in idle).toBe(false)
     expect('project' in idle).toBe(false)
+    // Правило держится — и карточка об этом МОЛЧИТ: список второй попытки существует ровно на
+    // случай нарушения, и его присутствие само по себе есть жалоба.
+    expect('alsoRunning' in holder, 'одна сессия — говорить не о чем').toBe(false)
+  })
+
+  /**
+   * ДВОЙНОЙ ЗАХВАТ ВИДЕН НА ДОСКЕ, А НЕ ТОЛЬКО В ЖУРНАЛЕ.
+   *
+   * Правило продукта — одна живая сессия на работника, и держит его захват (см. провод на тике).
+   * Экран инвариант не чинит, но обязан его НАЗЫВАТЬ: здесь стоял `find`, который брал первую
+   * попавшуюся строку работника, и 02.09.2026, когда один работник получил вторую живую сессию,
+   * доска показала ОДНУ — то есть оказалась единственным местом, где нарушение не видно.
+   */
+  it('работник держит две строки — карточка называет ОБЕ, а не первую попавшуюся', async () => {
+    const claimed = (id: string, title: string, at: number) => ({
+      id,
+      status: 'claimed',
+      lane: 'prod',
+      title,
+      project: 'other-shop',
+      workerId: 'max-1',
+      claimedAt: at,
+      lastTouch: at,
+    })
+    const payload = await deriveState({
+      adapter: mkAdapter([claimed('R-первая', 'первая работа', NOW - 9000), claimed('R-вторая', 'вторая работа', NOW - 2000)]),
+      windows: makeWindows({}),
+      config: multiConfig,
+      clock: () => NOW,
+    })
+
+    const holder = payload.workers.find((w: any) => w.id === 'max-1')
+    expect(holder.taskId, 'первая строка остаётся на своём месте').toBe('R-первая')
+    expect(holder.alsoRunning, 'вторая строка обязана быть названа, а не пропасть').toHaveLength(1)
+    expect(holder.alsoRunning[0]).toMatchObject({
+      taskId: 'R-вторая',
+      taskTitle: 'вторая работа',
+      project: 'other-shop',
+      taskClaimedAt: NOW - 2000,
+    })
   })
 
   /**
@@ -3057,6 +3098,53 @@ describe('deriveState — idleReason on queued rows', () => {
     })
     expect(payload.queue[0].idleReason).toBeUndefined()
   })
+
+  /**
+   * ═══════ СТРОКА, КОТОРУЮ УЖЕ БРАЛИ И ОТДАВАЛИ НАЗАД, ГОВОРИТ ОБ ЭТОМ ВСЛУХ ═══════
+   *
+   * Работа бывает закреплена за ОДНИМ работником (кусок сборки, полоса, названная роль), и пока
+   * он ведёт другую попытку, очередь берёт её и тут же возвращает: отдать соседу значило бы
+   * посадить второго живого писателя в ту же копию. Возврат подхода не считает и отметок захвата
+   * не оставляет — поэтому строка после трёх возвратов выглядит как только что поставленная, а
+   * человек, видящий свободных работников и стоящую задачу, идёт искать поломку там, где её нет.
+   *
+   * СЧЁТ ЕДЕТ С САМОЙ СТРОКИ, слово складывает окно. Здесь проверяется ПРОВОД: число, которое
+   * пишет очередь, доезжает до полезной нагрузки и объясняет простой именно этой строки.
+   */
+  it('возвращённая после гонки строка называет свою причину и число возвратов', async () => {
+    const returned = { ...queuedRow, id: 'r-returned', releaseCount: 3 }
+    const payload = await deriveState({
+      adapter: mkAdapter([returned]),
+      windows: makeWindows({}),
+      config: { ...config, pipeline: { enabled: true } },
+      clock: () => NOW,
+    })
+    expect(payload.queue[0].idleReason, 'причина простоя названа своим словом').toBe('worker_busy')
+    expect(payload.queue[0].releaseCount, 'счёт возвратов доезжает до экрана числом, а не пропадает').toBe(3)
+  })
+
+  it('строку, которую не возвращали, счёт возвратов не выдумывает', async () => {
+    const payload = await deriveState({
+      adapter: mkAdapter([queuedRow]),
+      windows: makeWindows({}),
+      config: { ...config, pipeline: { enabled: true } },
+      clock: () => NOW,
+    })
+    expect(Object.hasOwn(payload.queue[0], 'releaseCount'), 'ноль возвратов — это отсутствие поля, а не ноль').toBe(false)
+    expect(payload.queue[0].idleReason).toBeUndefined()
+  })
+
+  it('общая причина сильнее: при выключенном конвейере строка стоит из-за тумблера', async () => {
+    const returned = { ...queuedRow, id: 'r-returned', releaseCount: 2 }
+    const payload = await deriveState({
+      adapter: mkAdapter([returned]),
+      windows: makeWindows({}),
+      config, // тумблер по умолчанию выключен
+      clock: () => NOW,
+    })
+    expect(payload.queue[0].idleReason, 'пока конвейер выключен, работник ни при чём').toBe('pipeline_off')
+    expect(payload.queue[0].releaseCount, 'но сам факт возвратов остаётся фактом о строке').toBe(2)
+  })
 })
 
 // ═══════════ heldBy — ПОЧЕМУ СТОИТ ИМЕННО ЭТА СТРОКА, когда весь конвейер идёт ═══════════
@@ -3120,6 +3208,23 @@ describe('deriveState — придержанная по файлам строк�
     })
     const row = rowOf(payload, 'r-wait')
     expect(row.idleReason).toBe('pipeline_off')
+    expect(row.heldBy.files).toEqual(['daemon/src/loop.mjs'])
+  })
+
+  // ШТАМПЫ НЕ ПОПАДАЮТ В ПРИЧИНУ. Оба README называет КАЖДАЯ карточка — таков закон дома, — и
+  // если бы они держали, доска показывала бы «ждёт README.md» на всей очереди сразу, а спор о
+  // них всё равно разводится механически. В составе удержания остаётся только то, из-за чего
+  // строка действительно стоит.
+  it('в составе удержания нет ни README, ни квитанции прогона — только настоящий файл', async () => {
+    const withStamps = { ...busy, title: 'движок daemon/src/loop.mjs, README.md, README.ru.md, test-receipt.json' }
+    const alsoStamps = { ...waiting, title: 'тоже daemon/src/loop.mjs, README.md и README.ru.md' }
+    const payload = await deriveState({
+      adapter: mkAdapter([withStamps, alsoStamps]),
+      windows: makeWindows({}),
+      config: running,
+      clock: () => NOW,
+    })
+    const row = rowOf(payload, 'r-wait')
     expect(row.heldBy.files).toEqual(['daemon/src/loop.mjs'])
   })
 

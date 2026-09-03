@@ -119,6 +119,8 @@ import {
   mintAttemptToken,
   attemptTokenIsStale,
   refuseStaleAttempt,
+  // «На сколько откладывается возвращённая строка» — одно число и одно правило на оба хранилища
+  deferMsOf,
 } from './adapter.mjs'
 import {
   QueueEncodingError,
@@ -128,7 +130,7 @@ import {
   UTF8,
 } from './encoding.mjs'
 import { countTerminalOutcomes, recordAttempt } from './attempt-ledger.mjs'
-import { APPROVAL_TABLE, AWAITING_APPROVAL, ensureApprovalTable, markAwaitingApproval } from './approval-store.mjs'
+import { APPROVAL_TABLE, AWAITING_APPROVAL, CLOSED_BY_PERSON, ensureApprovalTable, markAwaitingApproval } from './approval-store.mjs'
 import { applyTransition } from './state-machine.mjs'
 import { defaultEnvelope } from './capability-envelope.mjs'
 import { attemptIdFor } from '../front/journal.mjs'
@@ -741,6 +743,15 @@ export function createPgBossQueue({
    * being reconciled. The statement itself is idempotent: a piece already on the clock is not
    * matched by it.
    *
+   * ОТПУСКАЕТСЯ ТОЛЬКО СВОЁ УДЕРЖАНИЕ — та самая далёкая дата, которой держат кусок, ждущий
+   * черёда, и ничего кроме неё. Здесь стояло «всё, что отложено на будущее», и это стирало
+   * ЧУЖУЮ выдержку: кусок сборки — самая частая работа, закреплённая за одним работником, то
+   * есть ровно та, ради которой заведена короткая отсрочка возврата; а перед каждой выборкой он
+   * подходит сюда под все условия разом (`queued`, не родитель, черёд пришёл, никем не держим).
+   * Свежая отсрочка снималась первым же проходом, и карусель, от которой она спасает,
+   * продолжалась именно на закреплённом элементе. Тем же условием ограждена и пауза библиотеки
+   * перед повтором: правило, ничего не знающее о чужой выдержке, не вправе её отменять.
+   *
    * FAIL-OPEN. A release that cannot run costs this pass its batch progress — the next claim
    * tries again — and never the claim of ordinary work, which is why it can never throw here.
    */
@@ -756,8 +767,8 @@ export function createPgBossQueue({
       try {
         await runSql(
           `UPDATE pgboss.job SET start_after = now()
-             WHERE data->>'id' = $1 AND state = 'created' AND start_after > now()`,
-          [item.id],
+             WHERE data->>'id' = $1 AND state = 'created' AND start_after >= $2`,
+          [item.id, HELD_UNTIL],
         )
       } catch (err) {
         log(`batch piece ${item.id} not released: ${maskError(err)}`)
@@ -798,10 +809,16 @@ export function createPgBossQueue({
           // ОСВОБОЖДАЕТ ТОЛЬКО ТО, ЧЕГО НЕ ДЕРЖИТ НИКТО. Раньше здесь стояло «кроме партии», и
           // третье правило удержания (занятые файлы) молча отменялось бы этой же строкой:
           // одна дверь откладывает, другая тут же возвращает, и работа уезжает всё равно.
+          //
+          // …И ТОЛЬКО СВОЁ УДЕРЖАНИЕ — по той самой далёкой дате, тем же условием, что у правила
+          // занятых файлов ниже. «Отложено вообще» — это не «отложено остановленной волной»:
+          // короткую отсрочку возврата (`releaseClaim`) ставит очередь, и снятая здесь она
+          // вернула бы карусель — строку, вернувшуюся после гонки, следующий же проход брал бы
+          // снова. Правило, ничего не знающее о чужой выдержке, не вправе её отменять.
           await runSql(
             `UPDATE pgboss.job SET start_after = now()
-               WHERE data->>'id' = $1 AND state = 'created' AND start_after > now()`,
-            [r.id],
+               WHERE data->>'id' = $1 AND state = 'created' AND start_after >= $2`,
+            [r.id, HELD_UNTIL],
           )
         }
       } catch (err) {
@@ -962,6 +979,61 @@ export function createPgBossQueue({
       job.id,
       workerId ?? null,
     ])
+    return true
+  }
+
+  /**
+   * releaseClaim(taskId, {attemptToken}) — СТРОКА ВОЗВРАЩАЕТСЯ В ОЧЕРЕДЬ, И ПОДХОД НЕ СЧИТАЕТСЯ.
+   *
+   * ЗАЧЕМ ОТДЕЛЬНАЯ ДВЕРЬ, КОГДА РЯДОМ ЕСТЬ СРЫВ И ПЕРЕВЫДАЧА. Обе они СТОЯТ ПОДХОДА: `fail`
+   * отдаёт строку библиотеке, та поднимает `retry_count`, и следующий захват честно называется
+   * второй попыткой. Но случай, ради которого дверь заведена, попытки не прожил вовсе: тик взял
+   * строку, а маршрут ответил, что названный ей работник уже ведёт другую. Работа не виновата и
+   * платить за занятость соседа не должна.
+   *
+   * ПРАВКОЙ СОСТОЯНИЯ, А НЕ ПОСТАНОВКОЙ ЗАНОВО — и это ровно ОБРАТНОЕ решение тому, что принял
+   * `reissue` ниже, поэтому оно названо здесь. Постановка заново прошла бы через `enqueue`,
+   * который минтит номер подхода сам и поднял бы его на единицу: дверь, обязанная НЕ считать
+   * подход, посчитала бы его первым же вызовом. Оператор пишет ровно то состояние, из которого
+   * строку и взяли, и не трогает ни `retry_count`, ни `start_after`, ни отметку постановки —
+   * то есть возвращает её тем же, чем она была секунду назад.
+   *
+   * ОТМЕТКИ ЗАХВАТА СНИМАЮТСЯ ВСЕ ТРИ (жетон, время захвата, счёт выдач на захвате) вместе с
+   * именем работника: строка, оставшаяся с ними, читалась бы экраном как «кто-то её ведёт», а
+   * `attemptNumberOf` считал бы её подход по чужой отметке.
+   *
+   * ЖЕТОН СПРАШИВАЕТСЯ, как и у всех дверей, закрывающих чужую попытку: вернуть в очередь
+   * строку, которую сейчас ведёт другой работник, — значит отнять у него работу.
+   *
+   * И ОДНО ИСКЛЮЧЕНИЕ ИЗ «НЕ ТРОГАЕТ НИЧЕГО»: `start_after` СДВИГАЕТСЯ НА КОРОТКИЙ СРОК. Возврат
+   * кладёт строку туда, откуда её взяли, — а берут голову очереди; пока причина возврата жива
+   * (закреплённый за строкой работник ведёт другую работу), следующий проход брал бы ТУ ЖЕ строку
+   * и возвращал её снова, а стоящие за ней не поехали бы вовсе. Здесь для этого не нужно ни поля,
+   * ни фильтра: `start_after` — собственная колонка pg-boss, и её `AND start_after < now()` стоит
+   * в каждом плане выборки. Сколько ждать — говорит очередь одним числом на оба хранилища
+   * (`RELEASE_DEFER_MS`, и там же почему тридцать секунд).
+   *
+   * СЧЁТ ВОЗВРАТОВ ЖИВЁТ В НАГРУЗКЕ, рядом с самой работой, а не в памяти демона: демон
+   * перезапускается, а вопрос «почему эта строка стоит третий раз подряд» задают именно тогда.
+   *
+   * @param {string} taskId
+   * @param {{attemptToken?:string, deferMs?:number}} [opts]
+   * @returns {Promise<boolean>} true, когда взятая строка найдена и возвращена
+   */
+  async function releaseClaim(taskId, { attemptToken, deferMs } = {}) {
+    if (typeof taskId !== 'string' || taskId === '') return false
+    const job = await resolveActiveJob(taskId)
+    if (!job) return false
+    if (attemptTokenIsStale(tokenOfJob(job), attemptToken)) return false
+    await runSql(
+      `UPDATE pgboss.job
+          SET state = 'created', started_on = NULL,
+              start_after = now() + make_interval(secs => $2::float8),
+              data = (data - 'workerId' - 'attemptToken' - 'claimedAt' - 'claimedAtRetry')
+                     || jsonb_build_object('releaseCount', COALESCE((data->>'releaseCount')::int, 0) + 1)
+        WHERE id = $1 AND state = 'active'`,
+      [job.id, deferMsOf(deferMs) / 1000],
+    )
     return true
   }
 
@@ -1517,6 +1589,12 @@ export function createPgBossQueue({
     const data = r.data || {}
     const retries = r.retry_count ?? 0
     const output = r.output || {}
+    // ПОСЛЕДНЕЕ СЛОВО ЧЕЛОВЕКА О ЭТОЙ СТРОКЕ, если оно сказано (`closeWithWords`). Живёт в
+    // СВОЁМ поле, а не подменяет собой конец работы: чем кончилась работа — факт задания, а
+    // «эту работу делать не будут, потому что устарело» — решение человека, и на карточке
+    // это два разных предложения.
+    const closed = r.approval_status === CLOSED_BY_PERSON ? { reason: r.closed_reason ?? null, note: r.returned_note ?? null } : null
+    const status = statusOf(r)
     return {
       id: data.id,
       source: data.source,
@@ -1530,7 +1608,9 @@ export function createPgBossQueue({
       ...(typeof data.project === 'string' && data.project ? { project: data.project } : {}),
       title: data.title,
       priority: data.priority ?? r.priority ?? 0,
-      status: statusOf(r),
+      status,
+      // ЗАКРЫТО СЛОВАМИ — своим полем, и только когда слово сказано.
+      ...(closed ? { closedByPerson: closed } : {}),
       // the stage envelope, carried exactly as the reference backend carries it — see the
       // note there: a phase stage is recognised by this object and never by its title
       ...(data.data ? { data: data.data } : {}),
@@ -1552,6 +1632,11 @@ export function createPgBossQueue({
       // one already in a hand, or finished in one, reports the try the claim mark names.
       attempt: attemptNumberOf(data, retries, { unclaimed: WAITING_STATES.includes(r.state) }),
       coalesceCount: coalesce.get(data.id) ?? 1,
+      // СКОЛЬКО РАЗ СТРОКУ ВОЗВРАЩАЛИ, НЕ НАЧАВ ПОПЫТКИ — зеркально эталонному бэкенду и из того
+      // же места, куда его пишет возврат: из нагрузки самой строки. Ноль там, где не возвращали
+      // ни разу, и у всякой строки, поставленной до появления счёта, — отсутствие возвратов есть
+      // число, а не молчание.
+      releaseCount: Number(data.releaseCount) || 0,
       // Who holds this task, as written into the payload by claimNext — pg-boss itself
       // records nothing about the fetching worker. `null` here now means «nobody has
       // claimed it», which is what every reader already assumed it meant.
@@ -1573,7 +1658,16 @@ export function createPgBossQueue({
       claimedAt: r.started_on == null ? null : (data.claimedAt ?? r.started_on),
       leaseRenewedAt: r.started_on ?? null,
       completedAt: r.completed_on ?? null,
-      failure_reason: output.reason ?? exhaustedReasonOf(r, output),
+      // ЗАКРЫТАЯ РУКОЙ КРАСНАЯ СТРОКА ГОВОРИТ ОБ ЭТОМ ТЕМ ЖЕ СЛОВОМ, ЧТО И ОСТАНОВЛЕННАЯ.
+      // Это не украшение карточки, а тормоз: `stoppedByAPerson` — единственное предложение,
+      // которым весь продукт отвечает на «решил ли здесь человек», и его спрашивают автоповтор
+      // и перевыдача. Оставить прежнюю причину значило бы, что очередь через минуту сама
+      // поставит заново работу, которую человек только что закрыл словами, — то же самое, на
+      // чём 01.09 сгорели три параллельных процесса по одной строке. ЧТО ИМЕННО он сказал,
+      // едет рядом в `closedByPerson`: слово об исходе не заменяет собой причину срыва, а
+      // объясняет, чьей рукой строка закрыта.
+      failure_reason:
+        closed && status === 'failed' ? 'manual' : (output.reason ?? exhaustedReasonOf(r, output)),
     }
   }
 
@@ -1594,7 +1688,7 @@ export function createPgBossQueue({
   const JOB_COLUMNS = `j.id, j.name, j.priority, j.data, j.state, j.retry_count,
          j.created_on, j.started_on, j.completed_on, j.output`
   const LIST_WITH_APPROVAL = `SELECT ${JOB_COLUMNS},
-              a.status AS approval_status, a.returned_note, a.merge_receipt
+              a.status AS approval_status, a.returned_note, a.merge_receipt, a.closed_reason
          FROM pgboss.job j
          LEFT JOIN ${APPROVAL_TABLE} a ON a.id = (j.data->>'id')
         WHERE j.name = ANY($1)`
@@ -1739,6 +1833,7 @@ export function createPgBossQueue({
     claimNext,
     touch,
     assignWorker,
+    releaseClaim,
     resolveBatch,
     setWords,
     complete,

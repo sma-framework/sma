@@ -266,8 +266,15 @@ describe('server.mjs — the closed SIXTY-FOUR-route table', () => {
   // person NAME one by hand. Until they existed the window opened a NEW conversation almost
   // every time it was opened — fifty replies had scattered across fifteen threads — showed
   // every thread of a project as one unbroken feed, and offered no way back into an earlier one.
-  it('the frozen table has EXACTLY sixty-eight routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(68)
+  // RE-FREEZE REVISION (02.09.2026): + POST /api/task/close — the LAST WORD about work that
+  // will not be done: obsolete, no subject, done another way. A row standing on a person had
+  // exactly one button — «вернуть в очередь» — which buys another paid attempt at the same
+  // wall; the stop door takes only LIVE work and answered «nothing to stop»; the words door
+  // refuses a task whose work is over; and the return door itself answered «race lost» on a
+  // row parked at the turn ceiling, which never had an approval row to CAS at all. Four rows
+  // stood in the waiting column for three days with no way to clear them from the window.
+  it('the frozen table has EXACTLY sixty-nine routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(69)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 
@@ -918,6 +925,39 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
       expect(out.reason).toContain('AssertionError')
     })
 
+    /**
+     * …И ГДЕ ЭТО ЧИТАТЬ. Отказ отсылал к выводу прогона, а вывода не было НИГДЕ: отчёт
+     * полного набора писался во временный каталог и умирал вместе с отказом (02.09.2026,
+     * первая ночная приёмка). Полный прогон при живых соседних сессиях умеет краснеть ложно,
+     * и отличить такой красный от настоящего можно только по отчёту — значит, путь к нему
+     * обязан стоять в самом отказе, рядом с именами.
+     */
+    it('красный отказ называет ВСЕ упавшие тесты и путь к сохранённому отчёту', async () => {
+      const out = await refuse('R-90f', () => ({
+        merged: false,
+        refused: true,
+        testsPassed: false,
+        failedTest: 'scripts/sma/__tests__/landing.test.ts > посадка > Test 5',
+        failedTests: [
+          'scripts/sma/__tests__/landing.test.ts > посадка > Test 5',
+          'daemon/__tests__/broken-import.test.ts',
+        ],
+        savedReport: '/var/sma/data/landing/R-90f-2026-09-02T18-58-00-000Z.json',
+      }))
+      expect(out.reasonCode).toBe('tests_red')
+      expect(out.reason).toContain('landing.test.ts')
+      expect(out.reason, 'второй упавший тест потерялся по дороге к глазам').toContain('broken-import.test.ts')
+      expect(out.reason, 'путь к отчёту не доехал — читать отказ по-прежнему негде').toContain(
+        '/var/sma/data/landing/R-90f-2026-09-02T18-58-00-000Z.json',
+      )
+    })
+
+    it('красный отказ без сохранённого отчёта говорит, что отчёта нет, а не молчит', async () => {
+      const out = await refuse('R-90g', () => ({ merged: false, refused: true, testsPassed: false }))
+      expect(out.reasonCode).toBe('tests_red')
+      expect(out.reason).toMatch(/отчёта прогона не сохранилось/i)
+    })
+
     it('красный отказ без имени теста честно говорит, что имени не назвали', async () => {
       const out = await refuse('R-90e', () => ({ merged: false, refused: true, testsPassed: false }))
       expect(out.reasonCode).toBe('tests_red')
@@ -944,6 +984,28 @@ describe('server.mjs — POST /api/approve (CAS + merge verb)', () => {
       expect(out.reasonCode).toBe('env_broken')
       expect(out.reason).toMatch(/среда сломана/i)
       expect(out.reason).not.toMatch(/тесты красные/i)
+    })
+
+    /**
+     * ОКНО, А НЕ ТЕСТЫ. Посадка пересобирает раздачу окна на сведённом дереве ДО прогона —
+     * иначе гейт свежести раздачи краснеет на каждой ветке, тронувшей исходник окна. Сборка,
+     * которая не прошла, останавливает слияние ДО первого теста; 02.09.2026 такой отказ
+     * приезжал как «тесты красные, имя теста не названо», и человек шёл искать упавший тест,
+     * которого не существовало.
+     */
+    it('несобравшееся окно названо сборкой, а не красными тестами', async () => {
+      const out = await refuse('R-90f', () => ({
+        merged: false,
+        refused: true,
+        spaBuildFailed: true,
+        testsPassed: null,
+        failureDetail: 'src/main.tsx(12,3): error TS1005: ")" expected.\nvite build failed',
+      }))
+      expect(out.ok).toBe(false)
+      expect(out.reasonCode).toBe('spa_build_failed')
+      expect(out.reason).toMatch(/окно не собралось/i)
+      expect(out.reason, 'хвост сборки — единственное место, где живёт причина').toContain('TS1005')
+      expect(out.reason).not.toMatch(/тесты.*красн/i)
     })
 
     it('конфликт слияния назван конфликтом', async () => {
