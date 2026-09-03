@@ -1858,6 +1858,23 @@ function baseTopLevel(deps, base, cwd) {
 }
 
 /**
+ * baseFileReader(deps, base, cwd) → чтение файла таким, каким он был В БАЗЕ ветки
+ * (`git show <база>:<путь>`), или undefined, когда спрашивать не у кого.
+ *
+ * ЗАЧЕМ ОТДЕЛЬНОЕ ЧТЕНИЕ ВМЕСТО ТЕЛА DIFF'А. Список изменений берётся именами и БЕЗ патча —
+ * строка реестра долговечна, а тело diff'а носит секреты. Вопрос «правка этого теста
+ * содержательна или это один пробел» задаётся ровно одному файлу и ровно тогда, когда он уже
+ * стал уликой, — поэтому база читается точечно, по имени, и только для него.
+ *
+ * FAIL-OPEN: нет базы, нет копии, нет шва к git — читателя нет вовсе, и распознаватель считает
+ * правку содержательной, как и без этой пары рук.
+ */
+function baseFileReader(deps, base, cwd) {
+  if (!base || !cwd || typeof deps.execGit !== 'function') return undefined
+  return (rel) => String(deps.execGit(['show', `${base}:${String(rel).replace(/\\/g, '/')}`], { cwd }) || '')
+}
+
+/**
  * workShapeRefusal(deps, task, changed, base, workDir) → {reason, detail} | null — ТРЕТИЙ
  * вопрос выходного гейта: не «есть ли доказательство», а О ЧЁМ работа.
  *
@@ -1885,6 +1902,7 @@ function workShapeRefusal(deps, task, changed, base, workDir) {
   const selfRef = selfReferentialTests({
     entries: changed.files,
     readFile: (rel) => String(io.readFileSync(inCopy(rel), 'utf8')),
+    readBase: baseFileReader(deps, base, workDir),
     pathExists: (rel) => io.existsSync(inCopy(rel)) === true,
   })
   if (selfRef) {

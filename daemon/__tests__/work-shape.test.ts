@@ -143,6 +143,21 @@ describe('mask', () => {
 })
 `
 
+/**
+ * ТА ЖЕ ПРАВКА, КОТОРОЙ ПРОДУКТ НЕ ВИДИТ: сдвинутый отступ, лишний перевод строки и комментарий.
+ * Ровно этой строкой — одним пробелом в ЧУЖОМ тесте — разоружался сторож самозамкнутых работ.
+ */
+const COSMETIC_EDIT_SRC = EXISTING_PRODUCT_TEST_SRC.replace(
+  "describe('mask', () => {",
+  "// подправил набор\n\ndescribe(  'mask',   () => {",
+)
+
+/** Та же правка, но содержательная: у теста появилось НОВОЕ утверждение о продукте. */
+const SUBSTANTIVE_EDIT_SRC = EXISTING_PRODUCT_TEST_SRC.replace(
+  "  it('прячет пароль', () => { expect(mask('s3cret')).toBe('***') })",
+  "  it('прячет пароль', () => { expect(mask('s3cret')).toBe('***') })\n  it('не трогает пустое', () => { expect(mask('')).toBe('') })",
+)
+
 /** Тест о ФАЙЛЕ, но о чужом: такой файл был до работы, и сломать его может кто угодно. */
 const PRODUCT_FILE_TEST_SRC = `
 import { readFileSync } from 'node:fs'
@@ -318,6 +333,63 @@ describe('подключение продукта — не только import: 
     ).toBeNull()
   })
 
+  // ─── ГОЛОС ПРАВЛЕНОГО ТЕСТА СТОИТ СОДЕРЖАТЕЛЬНОЙ ПРАВКИ, А НЕ ОДНОГО ПРОБЕЛА ───
+
+  /** Самозамкнутая пара «заметка + тест о ней» плюс правка чужого теста — вся разница в правке. */
+  const withEditedForeignTest = (working: string, base?: string) =>
+    selfReferentialTests({
+      entries: [
+        { status: 'A', path: 'notes/proba-potolka.md' },
+        { status: 'A', path: 'scripts/sma/__tests__/notes-proba-potolka.test.ts' },
+        { status: 'M', path: 'scripts/sma/__tests__/ui-drive.test.ts' },
+      ],
+      readFile: (p: string) => {
+        if (p.endsWith('ui-drive.test.ts')) return working
+        return p.endsWith('.test.ts') ? SELF_TEST_SRC : '# проба'
+      },
+      readBase: base === undefined ? undefined : () => base,
+      pathExists: (p: string) => TREE(p),
+    })
+
+  it('ПРОБЕЛ в чужом тесте голосом не считается: работа остаётся разговором о себе', () => {
+    const hit = withEditedForeignTest(COSMETIC_EDIT_SRC, EXISTING_PRODUCT_TEST_SRC)
+    expect(hit!.files).toEqual(['scripts/sma/__tests__/notes-proba-potolka.test.ts'])
+  })
+
+  it('СОДЕРЖАТЕЛЬНАЯ правка — новое утверждение — голос: вопрос со всей работы снят', () => {
+    expect(withEditedForeignTest(SUBSTANTIVE_EDIT_SRC, EXISTING_PRODUCT_TEST_SRC)).toBeNull()
+  })
+
+  it('база не прочлась — правка считается содержательной: неспрошенный git не обвиняет', () => {
+    expect(withEditedForeignTest(COSMETIC_EDIT_SRC, undefined)).toBeNull()
+    expect(withEditedForeignTest(COSMETIC_EDIT_SRC, '')).toBeNull()
+  })
+
+  it('пробел ВНУТРИ строки — правка содержательная: его продукт видит', () => {
+    expect(
+      withEditedForeignTest(
+        EXISTING_PRODUCT_TEST_SRC.replace("'s3cret'", "'s3 cret'"),
+        EXISTING_PRODUCT_TEST_SRC,
+      ),
+    ).toBeNull()
+  })
+
+  it('ДОБАВЛЕННОГО теста правило не касается: новый файл целиком новый', () => {
+    // Читатель базы отвечает тем же текстом — для файла, которого в базе не было, это ложь,
+    // и правило, применённое к добавленному тесту, отклонило бы честную обычную работу.
+    expect(
+      selfReferentialTests({
+        entries: [
+          { status: 'A', path: 'daemon/src/policy/widen.mjs' },
+          { status: 'A', path: 'daemon/__tests__/widen.test.ts' },
+        ],
+        readFile: (p: string) => (p.endsWith('.test.ts') ? HONEST_TEST_SRC : 'export const widen = (n) => n + 1'),
+        readBase: (p: string) => (p.endsWith('.test.ts') ? HONEST_TEST_SRC : ''),
+        pathExists: () => false,
+      }),
+    ).toBeNull()
+  })
+
   it('правленый тест, которого НЕ ПРОЧЕСТЬ, сторож не разоружает: нечитаемое не оправдывает', () => {
     const hit = selfReferentialTests({
       entries: [
@@ -453,7 +525,7 @@ function makeSpawnWorker(lines: string[]) {
  * Копия, о которой git говорит ровно то, что задал тест. `files` — карта «путь в копии →
  * содержимое»; всё, чего в ней нет, для демона не существует, как и на настоящем диске.
  */
-function makeDeps({ adapter, clock, diff, files, commits = '2', lines, reverify }: any) {
+function makeDeps({ adapter, clock, diff, files, baseFiles, commits = '2', lines, reverify }: any) {
   const journal: any[] = []
   const store = new Map<string, string>(Object.entries(files ?? {}))
   const key = (p: string) => String(p).replace(/\\/g, '/')
@@ -481,6 +553,9 @@ function makeDeps({ adapter, clock, diff, files, commits = '2', lines, reverify 
       execGit: (argv: string[]) => {
         if (argv[0] === 'rev-list') return commits
         if (argv[0] === 'status') return ''
+        // `git show <база>:<путь>` — файл ТАКИМ, КАКИМ ОН БЫЛ ДО РАБОТЫ. Чего в базе не было,
+        // того git и не покажет: пустой ответ, как и на настоящем дереве.
+        if (argv[0] === 'show') return (baseFiles ?? {})[String(argv[1]).slice(String(argv[1]).indexOf(':') + 1)] ?? ''
         if (argv.includes('diff')) return diff ?? ''
         if (argv[0] === 'ls-tree') return ['daemon', 'docs', 'scripts', 'README.md', 'package.json'].join('\n')
         if (argv[0] === 'cat-file') return 'commit'
@@ -611,6 +686,46 @@ describe('выходной гейт: форма работы доезжает д
 
     expect(res.failed?.reason).toBeUndefined()
     expect(res.completed).toBe('BL-SPAWN')
+  })
+
+  // ─── ГОЛОСОМ СЧИТАЕТСЯ ТОЛЬКО СОДЕРЖАТЕЛЬНАЯ ПРАВКА: одна и та же работа, две правки ───
+
+  const SELF_NOTE_TEST = SELF_TEST_SRC.replace(/notes\/proba-potolka\.md/g, 'scripts/sma/notes/proba.md')
+  const selfWorkPlusEdit = (edit: string) => ({
+    diff: nameStatus([
+      ['A', 'scripts/sma/__tests__/notes-proba.test.ts'],
+      ['A', 'scripts/sma/notes/proba.md'],
+      ['M', 'scripts/sma/__tests__/ui-drive.test.ts'],
+    ]),
+    files: {
+      '/wt/shape/scripts/sma/__tests__/notes-proba.test.ts': SELF_NOTE_TEST,
+      '/wt/shape/scripts/sma/notes/proba.md': '# проба',
+      '/wt/shape/scripts/sma/__tests__/ui-drive.test.ts': edit,
+    },
+    baseFiles: { 'scripts/sma/__tests__/ui-drive.test.ts': EXISTING_PRODUCT_TEST_SRC },
+  })
+
+  it('самозамкнутая работа + ПРОБЕЛ в чужом тесте — по-прежнему отказ', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue({ id: 'BL-COSMETIC', ...TASK })
+    const { deps } = makeDeps({ adapter, clock: c.clock, ...selfWorkPlusEdit(COSMETIC_EDIT_SRC) })
+    const res = await tick(deps)
+
+    expect(res.failed?.reason).toBe('self_referential_test')
+    const [row] = await adapter.list({})
+    expect(row.failure_reason).toBe('self_referential_test')
+  })
+
+  it('та же работа + СОДЕРЖАТЕЛЬНАЯ правка чужого теста — принято', async () => {
+    const c = mkClock()
+    const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    await adapter.enqueue({ id: 'BL-SUBSTANTIVE', ...TASK })
+    const { deps } = makeDeps({ adapter, clock: c.clock, ...selfWorkPlusEdit(SUBSTANTIVE_EDIT_SRC) })
+    const res = await tick(deps)
+
+    expect(res.failed?.reason).toBeUndefined()
+    expect(res.completed).toBe('BL-SUBSTANTIVE')
   })
 
   it('обычная работа внутри существующих каталогов проходит гейт как прежде', async () => {

@@ -1255,7 +1255,14 @@ own test.
 **The question is put to the attempt's tests together, not to each new file alone.** Every test
 file in the diff **that is still in the copy** is asked, edited ones included: an attempt that edits
 an existing test of the product is speaking about what was there before it, so it is not speaking
-only about itself. One test holding onto the product clears the whole attempt — but a test the work
+only about itself. **An edit counts only when it is substantive** — one that the product can see. A
+moved indent, a blank line or a comment is no voice at all: otherwise a single space typed into
+somebody else's test would disarm the guard for a self-contained note and the test that watches it.
+The two states of the file are compared as normalized source — the base is read by name
+(`git show <base>:<path>`), whitespace outside string literals collapses, comments drop — and when
+the base cannot be read the edit is taken as substantive, because an unasked git accuses nobody.
+An **added** test is untouched by this rule: a new file is new all through.
+One test holding onto the product clears the whole attempt — but a test the work
 **deleted or moved** is no voice at all (a deletion says the file is gone, a rename says it
 travelled, and neither says the work re-examined any behaviour), and an unreadable file exonerates
 nobody: the accusation always rests on a test that WAS read. That last rule is not decoration —
