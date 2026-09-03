@@ -273,8 +273,15 @@ describe('server.mjs — the closed SIXTY-FOUR-route table', () => {
   // refuses a task whose work is over; and the return door itself answered «race lost» on a
   // row parked at the turn ceiling, which never had an approval row to CAS at all. Four rows
   // stood in the waiting column for three days with no way to clear them from the window.
-  it('the frozen table has EXACTLY sixty-nine routes', () => {
-    expect(Object.keys(ROUTES)).toHaveLength(69)
+  // RE-FREEZE REVISION (03.09.2026): + POST /api/task/priority — МЕСТО СТРОКИ В ОЧЕРЕДИ,
+  // сказанное во второй раз. Число называлось ровно один раз, дверью постановки, и переставить
+  // его человек мог единственным способом: отменить строку и создать заново — новый номер,
+  // потерянная история подходов, потерянные ссылки отовсюду, где старый номер уже записан.
+  // Дверь слов эту правку взять не может: она правит то, что задача говорит О СЕБЕ, а место в
+  // очереди — это порядок МЕЖДУ работами, и у долговечной очереди оно лежит в собственной
+  // колонке выборки, а не в полезной нагрузке строки.
+  it('the frozen table has EXACTLY seventy routes', () => {
+    expect(Object.keys(ROUTES)).toHaveLength(70)
     expect(Object.isFrozen(ROUTES)).toBe(true)
   })
 

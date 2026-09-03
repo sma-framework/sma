@@ -7277,7 +7277,7 @@ describe('база сравнения у переиспользованной к
  * место бралось ПОСЛЕ захвата, а захват — это await. Два тика внахлёст оба видели пустой дом
  * и оба брали по задаче. Дело гоняет ровно этот случай на НАСТОЯЩЕМ доме.
  */
-import { createInFlight } from '../src/queue/in-flight.mjs'
+import { createInFlight, laneReservations } from '../src/queue/in-flight.mjs'
 
 describe('потолок одновременных попыток — тик не берёт задачу сверх него', () => {
   const fullHouse = { reserve: () => null, size: () => 1, workers: () => new Set<string>(), name() {}, release() {} }
@@ -7376,6 +7376,93 @@ describe('потолок одновременных попыток — тик н
     const idle = [a, b].filter((r: any) => r && r.idle === true)
     expect(idle.length, 'один из двух проходов обязан стать простоем по потолку').toBe(1)
     expect(house.size(), 'после обоих проходов дом обязан опустеть — иначе конвейер встанет молча').toBe(0)
+  })
+})
+
+/**
+ * СВОЁ МЕСТО ПОЛОСЫ — И ЭТО ЕДИНСТВЕННЫЙ ОГРАНИЧИТЕЛЬ, КОТОРЫЙ ОТКРЫВАЕТ, А НЕ ЗАКРЫВАЕТ.
+ *
+ * ПОВОД, ЗАМЕРЕННЫЙ НА ЖИВОМ ЗАПУСКЕ. Мест на машине одно число, общее для всех полос. Четыре
+ * места держала полоса продукта, работник канцелярской полосы стоял свободным — и ступень фазы,
+ * работа именно этого работника, не могла начаться ни при каком приоритете: мест не осталось.
+ * Полосы были разведены по РАБОТНИКАМ и не разведены по МЕСТАМ, то есть разведение не давало
+ * ничего, кроме имени.
+ *
+ * ЧТО ДОКАЗЫВАЕТСЯ — ПРОВОД ЦЕЛИКОМ, а не «функция считает». Дом мест настоящий, очередь
+ * настоящая, потолок настоящий: общий пул занят полосой продукта, и тик всё равно берёт работу
+ * канцелярской полосы — ЕЁ закреплённым местом и захватом, суженным до неё одной. Второе дело
+ * снимает закрепление одной настройкой и показывает прежний простой: значит взяло не «что-то
+ * ещё», а именно закреплённое место.
+ */
+describe('своё место полосы — свободный работник начинает при занятом общем пуле', () => {
+  const twoLanes = {
+    workers: [
+      { id: 'prod-1', lane: 'prod', provider: 'claude', account: { configDir: '/x' }, enabled: true },
+      // Полоса канцелярии по умолчанию едет своим поставщиком — работник назван так, как
+      // его называет маршрут, иначе полоса непригодна и дело доказывало бы не то.
+      { id: 'paper-1', lane: 'paperwork', provider: 'codex', account: { configDir: '/y' }, enabled: true },
+    ],
+    maxConcurrentAttempts: 2,
+    pipeline: { enabled: true },
+  }
+
+  /** Очередь с двумя работами: громкая работа продукта и ступень фазы канцелярской полосы. */
+  const twoLaneQueue = (c: any) => {
+    const q = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
+    return q
+  }
+
+  const fill = async (q: any) => {
+    // Работа продукта нарочно ГРОМЧЕ ступени: захват без сужения по полосе взял бы её, и дело
+    // тогда доказывало бы порядок чисел, а не закреплённое место.
+    await q.enqueue(backlogTask({ id: 'BL-loud', priority: 999 }))
+    await q.enqueue({
+      id: 'S-9',
+      source: 'roster',
+      title: 'ступень фазы',
+      lane: 'paperwork',
+      data: { kind: 'document', stage: 'plan', phase: '21' },
+    })
+  }
+
+  it('общий пул занят полосой продукта — ступень канцелярской полосы всё равно начинается', async () => {
+    const c = mkClock()
+    const q = twoLaneQueue(c)
+    await fill(q)
+
+    const house = createInFlight()
+    // Единственное общее место занято полосой продукта: закреплённое место канцелярии свободно.
+    const busy = house.reserve(2, { reserved: laneReservations(twoLanes) })
+    house.name(busy!, 'BL-earlier', 'prod-1', 'BL-earlier#1', 'prod')
+
+    const { deps, journalled } = makeDeps({ adapter: q, clockObj: c, config: twoLanes, deps: { inFlight: house } })
+    const r: any = await tick(deps)
+
+    expect(r.claimed, 'свободный работник полосы обязан начать своим местом, а не ждать чужого').toBe('S-9')
+    expect(
+      journalled.some((e: any) => e.type === 'tick.lane_seat'),
+      'взятое закреплённое место обязано быть названо в журнале, а не молча случиться',
+    ).toBe(true)
+    const loud = (await q.list({})).find((x: any) => x.id === 'BL-loud')
+    expect(loud.status, 'громкая работа чужой полосы закреплённым местом не берётся').toBe('queued')
+  })
+
+  it('снять закрепление одной настройкой — и это снова простой: взяло именно оно', async () => {
+    const c = mkClock()
+    const q = twoLaneQueue(c)
+    await fill(q)
+
+    const house = createInFlight()
+    const config = { ...twoLanes, laneSeats: {} }
+    const busy = house.reserve(2, { reserved: laneReservations(config) })
+    house.name(busy!, 'BL-earlier', 'prod-1', 'BL-earlier#1', 'prod')
+    house.reserve(2, { reserved: laneReservations(config) }) // второе место тоже общее — и занято
+
+    const { deps } = makeDeps({ adapter: q, clockObj: c, config, deps: { inFlight: house } })
+    const r: any = await tick(deps)
+
+    expect(r.idle, 'без закрепления полный дом — простой, ровно как и был').toBe(true)
+    expect(r.claimed).toBeUndefined()
   })
 })
 

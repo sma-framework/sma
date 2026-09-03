@@ -64,6 +64,10 @@
  */
 
 import { isOrchestrator } from '../policy/orchestrator.mjs'
+// СЛОВАРЬ ПОЛОС БЕРЁТСЯ ТАМ, ГДЕ ОН ОБЪЯВЛЕН, а не переписывается сюда: место, закреплённое за
+// полосой, которой не бывает, — это место, которое не займёт никто и никогда, то есть тихо
+// потерянная единица потолка. Опечатка в настройке обязана быть безвредной, а не дорогой.
+import { TASK_LANES } from './adapter.mjs'
 
 /**
  * СКОЛЬКО ПОПЫТОК ЭТОТ ДЕМОН ВЕДЁТ ОДНОВРЕМЕННО. Умолчание — ОДНА, и это осознанно: до сих пор
@@ -144,6 +148,60 @@ export function seatCeiling(config) {
 }
 
 /**
+ * ЗА КАКОЙ ПОЛОСОЙ ЗАКРЕПЛЕНО СВОЁ МЕСТО — и почему без этого разведение по полосам было именем.
+ *
+ * ЗАМЕРЕНО НА ЖИВОМ ЗАПУСКЕ. Мест `maxConcurrentAttempts` — ОДНО ЧИСЛО НА МАШИНУ, общее для всех
+ * полос. Четыре места держала полоса продукта, работник канцелярской полосы стоял свободным, а
+ * ступень фазы — работа, которой этот работник и занимается, — не могла начаться ни при каком
+ * приоритете: мест не осталось. Полосы были разведены по РАБОТНИКАМ и не разведены по МЕСТАМ,
+ * то есть свободный работник другой полосы не значил ровно ничего.
+ *
+ * УМОЛЧАНИЕ — ОДНО МЕСТО КАНЦЕЛЯРСКОЙ ПОЛОСЕ, и это осознанная плата: пока её место свободно,
+ * общий пул на единицу меньше потолка. Полоса эта — дорога ступеней фазы, самой крупной
+ * структурной работы дома; час простоя одного места дешевле дня, на который отъезжает фаза.
+ * Настройка `laneSeats` перебивает умолчание целиком, и `laneSeats: {}` — это «ничего не
+ * закреплять», прежнее поведение слово в слово.
+ *
+ * ТРИ ПРЕДОХРАНИТЕЛЯ. При потолке меньше двух не закрепляется ничего — делить нечего, а машина
+ * с одним местом, отданным полосе, перестала бы брать работу вовсе. Общий пул никогда не
+ * пустеет: полосам достаётся не больше `потолок − 1`, сколько бы им ни назначили. И — главное —
+ * ЗАКРЕПЛЕНИЕ ЖИВЁТ, ПОКА ПОЛОСЕ ЕСТЬ КЕМ РАБОТАТЬ: место, придержанное для полосы, на которой
+ * ни один работник не может взять работу, — это просто потерянная единица потолка. Какие полосы
+ * сейчас рабочие, знает ТИК (он выводит это маршрутом, единственным владельцем правила «кто
+ * может взять»), и он передаёт список сюда; своё второе мнение о работоспособности полосы здесь
+ * было бы копией маршрутизатора. Список не передан — не фильтруем: чтение настройки как таковой
+ * (о нём спрашивают дела и экраны) не обязано знать, кто включён в эту секунду.
+ *
+ * @param {object} config
+ * @param {string[]|null} [workingLanes] полосы, на которых прямо сейчас есть кому работать
+ * @returns {Map<string, number>} полоса → сколько мест закреплено; пустая карта — не закреплено ничего
+ */
+export function laneReservations(config, workingLanes = null) {
+  const ceiling = seatCeiling(config)
+  const out = new Map()
+  if (ceiling < 2) return out
+  const named = config && config.laneSeats
+  const table = named && typeof named === 'object' && !Array.isArray(named) ? named : LANE_SEATS_DEFAULT
+  const working = Array.isArray(workingLanes) ? workingLanes : null
+  let taken = 0
+  for (const lane of TASK_LANES) {
+    if (!Object.prototype.hasOwnProperty.call(table, lane)) continue
+    if (working && !working.includes(lane)) continue
+    const want = Math.floor(Number(table[lane]))
+    if (!Number.isFinite(want) || want < 1) continue
+    const room = ceiling - 1 - taken
+    if (room <= 0) break
+    const take = Math.min(want, room)
+    out.set(lane, take)
+    taken += take
+  }
+  return out
+}
+
+/** Умолчание закрепления: одно место полосе, которой едут ступени фазы. */
+const LANE_SEATS_DEFAULT = Object.freeze({ paperwork: 1 })
+
+/**
  * createInFlight() → the house of running attempts.
  *
  * The seat is taken by `reserve(cap)` BEFORE the claim, named with the task (and then the
@@ -155,8 +213,8 @@ export function seatCeiling(config) {
  *   size:()=>number,
  *   workers:()=>Set<string>,
  *   held:()=>Array<{taskId:string|null, workerId:string|null}>,
- *   reserve:(cap:number)=>string|null,
- *   name:(token:string, taskId:string|null, workerId?:string|null, attemptId?:string|null)=>void,
+ *   reserve:(cap:number, opts?:{reserved?:Map<string,number>, lane?:string|null})=>string|null,
+ *   name:(token:string, taskId:string|null, workerId?:string|null, attemptId?:string|null, lane?:string|null)=>void,
  *   release:(token:string)=>void,
  *   releaseAttempt:(attemptId:string)=>boolean,
  * }}
@@ -189,13 +247,48 @@ export function createInFlight() {
      * разнице двух чисел.
      */
     held: () => [...seats.values()].map((s) => ({ taskId: s.taskId ?? null, workerId: s.workerId ?? null })),
-    /** Check and take in ONE synchronous step — null means the house is full. */
-    reserve(cap) {
+    /**
+     * Check and take in ONE synchronous step — null means the house is full.
+     *
+     * ── И ЧЬЁ ЭТО МЕСТО, КОГДА У ПОЛОСЫ ЕСТЬ СВОЁ ──────────────────────────────────────────
+     *
+     * `reserve(cap)` — прежний вызов и прежний смысл: место из ОБЩЕГО пула. Когда за полосами
+     * закреплены места (`laneReservations`), общий пул кончается раньше потолка: за каждой
+     * полосой держится её место, пока она сама его не заняла. Тик, получивший отказ, спрашивает
+     * ВТОРЫМ вызовом — `reserve(cap, {reserved, lane})` — и берёт место ИМЕНЕМ ПОЛОСЫ, после
+     * чего обязан ограничить захват этой же полосой: место, закреплённое за канцелярией и
+     * отданное продукту, — это отсутствие закрепления, написанное длиннее.
+     *
+     * Жёсткий потолок стоит выше всего: сколько бы мест ни было закреплено, `seats.size` не
+     * переходит `cap` ни на одном пути. Закрепление ПЕРЕРАСПРЕДЕЛЯЕТ места, а не добавляет их —
+     * иначе это был бы обход потолка, ради которого он и заведён.
+     *
+     * @param {number} cap потолок мест
+     * @param {{reserved?:Map<string,number>, lane?:string|null}} [opts]
+     * @returns {string|null}
+     */
+    reserve(cap, opts = {}) {
       const ceiling = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 1
       if (seats.size >= ceiling) return null
+      const reserved = opts && opts.reserved instanceof Map ? opts.reserved : null
+      const lane = opts && typeof opts.lane === 'string' && opts.lane !== '' ? opts.lane : null
+      const heldBy = (l) => [...seats.values()].filter((s) => s && s.lane === l).length
+      if (lane === null) {
+        // ОБЩИЙ ПУЛ: за каждой полосой держится столько мест, сколько ей закреплено и сколько
+        // она ещё не заняла сама. Место, взятое до захвата, полосы пока не называет — такое
+        // место считается общим, и общий пул от этого только осторожнее, а не смелее.
+        let heldBack = 0
+        if (reserved) for (const [l, n] of reserved) heldBack += Math.max(0, n - heldBy(l))
+        if (seats.size >= ceiling - heldBack) return null
+      } else {
+        // МЕСТО ПОЛОСЫ: только её собственное и только пока оно свободно. Полосе, за которой
+        // ничего не закреплено, отдельной дороги нет вовсе — она ходит общим пулом, как все.
+        const own = reserved ? reserved.get(lane) ?? 0 : 0
+        if (own <= 0 || heldBy(lane) >= own) return null
+      }
       counter += 1
       const token = `seat-${counter}`
-      seats.set(token, { taskId: null, attemptId: null, workerId: null })
+      seats.set(token, { taskId: null, attemptId: null, workerId: null, lane })
       return token
     },
     /**
@@ -208,10 +301,15 @@ export function createInFlight() {
      * И ЗДЕСЬ ЖЕ БЕРЁТСЯ ЗАНЯТОСТЬ РАБОТНИКА — в ту секунду, когда маршрут его назвал. Отдаётся
      * она отдельно (`release`), потому что живёт дольше: до конца ворот, а не до смерти ребёнка.
      */
-    name(token, taskId, workerId = null, attemptId = null) {
+    name(token, taskId, workerId = null, attemptId = null, lane = null) {
       const seat = seats.get(token)
       if (!seat) return
       if (typeof taskId === 'string' && taskId !== '') seat.taskId = taskId
+      // …И ПОЛОСА ЗАХВАЧЕННОЙ РАБОТЫ. Место из общего пула берётся ДО захвата, когда полосы ещё
+      // нет; названная здесь, она делает закрепление честным в обе стороны: полоса, уже ведущая
+      // попытку с общего места, своё закреплённое не держит — гарантия «хотя бы одно» ей уже
+      // выдана, а держать сверх неё значило бы отнимать места у остальных.
+      if (typeof lane === 'string' && lane !== '' && !seat.lane) seat.lane = lane
       if (typeof attemptId === 'string' && attemptId !== '') seat.attemptId = attemptId
       if (typeof workerId === 'string' && workerId !== '') {
         seat.workerId = workerId

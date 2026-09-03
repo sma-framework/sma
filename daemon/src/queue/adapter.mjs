@@ -152,6 +152,11 @@
  *                                   whose work is not over yet; false on an unknown or
  *                                   finished task. `project` is the RE-STAMP: a task put in
  *                                   under the wrong tree is MOVED, not cancelled and retyped
+ *   setPriority(taskId, priority) → ГДЕ СТРОКА СТОИТ В ОЧЕРЕДИ, переставленное человеком: то же
+ *                                   окно, что у слов, и целое число в пределах PRIORITY_LIMIT.
+ *                                   false на незнакомой и на закрытой строке. До этой двери
+ *                                   переставить место можно было только отменой и постановкой
+ *                                   заново — то есть ценой номера и всей истории подходов
  *   complete(taskId, result)      → result MUST carry `receiptRef` else NoReceiptError
  *   fail(taskId, reason)          → reason ∈ FAIL_REASONS else InvalidFailReasonError. This is
  *                                   the RETRYABLE ending: the row may be handed out again,
@@ -980,6 +985,28 @@ export const TASK_KINDS = Object.freeze(['code', 'document'])
 export const TASK_STAGES = Object.freeze(['discuss', 'plan', 'design', 'execute', 'verify'])
 
 /**
+ * ГДЕ В ОЧЕРЕДИ СТОИТ СТУПЕНЬ ФАЗЫ, ЕСЛИ ЧЕЛОВЕК НЕ НАЗВАЛ ЧИСЛА САМ.
+ *
+ * ПОВОД, ЗАМЕРЕННЫЙ НА ЖИВОМ ЗАПУСКЕ. Дверь ступени числа не принимала вовсе, поэтому строка
+ * ступени рождалась с нулём — то есть ПОЗАДИ всякой задачи, которой кто-то не поленился
+ * назначить срочность. Поставленная ступень плана получила место 38 из 38 при четырёх занятых,
+ * а её работник в ту же минуту стоял свободным; и с каждой новой постановкой с ненулевым числом
+ * она уезжала ещё дальше. Чем активнее шла работа, тем позже начиналась фаза — при том что
+ * ступень фазы и есть самая крупная структурная работа дома.
+ *
+ * ПОЧЕМУ ИМЕННО ЭТО ЧИСЛО. Словарь срочности реестра раскладывается по полосам с шагом десять:
+ * обычная работа 0-2, `high` 10-12, `urgent` 20-22, `critical` 30-32 (см. intake/backlog-scan).
+ * Ступень встаёт ОДНОЙ ПОЛОСОЙ ВЫШЕ самого громкого слова, которое реестр умеет сказать, — это
+ * и означает «выше обычной задачи по умолчанию» без исключений и без гадания. Число названо
+ * здесь, а не у двери: дверей, ставящих ступень, три (диспатч, обратное ребро в планирование,
+ * пробуждение ответом на вопрос), и три написания одного умолчания разошлись бы молча.
+ *
+ * УМОЛЧАНИЕ, А НЕ ПОТОЛОК: явное число на постановке сильнее — человек вправе поставить ступень
+ * и ниже, и выше, и `setPriority` переставляет её потом.
+ */
+export const STAGE_PRIORITY = 40
+
+/**
  * The role a row plays in its batch — a CLOSED vocabulary of exactly one value, and the one
  * value names the exception rather than the rule.
  *
@@ -1088,6 +1115,39 @@ export const CAP_ACCEPTANCE_ITEMS = 12
  * promised that. Both backends refuse it and the contract suite says so.
  */
 export const WORDS_EDITABLE_STATUSES = Object.freeze(['queued', 'claimed'])
+
+/**
+ * САМОЕ ГРОМКОЕ И САМОЕ ТИХОЕ ЧИСЛО, КОТОРОЕ ЧЕЛОВЕК МОЖЕТ ПОСТАВИТЬ СТРОКЕ.
+ *
+ * Место в очереди — это целое число: долговечная очередь хранит его целочисленной колонкой и
+ * выбирает по нему убыванием. Потолок стоит не потому, что кто-то ждёт тысячу, а потому что
+ * число, которого не с чем сравнить, перестаёт быть местом в очереди: вся живая шкала — это
+ * полосы реестра (0-2 … 30-32) и место ступени фазы (см. STAGE_PRIORITY), и тысяча оставляет
+ * запас на десятки таких шкал вперёд.
+ */
+export const PRIORITY_LIMIT = 1000
+
+/**
+ * validatePriority(value) → то же число, если строке можно на него встать.
+ *
+ * ЦЕЛОЕ И В ПРЕДЕЛАХ, и оба правила названы вслух: дробное место в очереди долговечная очередь
+ * молча округлит своей колонкой, и строка встанет не туда, куда человек её поставил, — а число
+ * без границ однажды приезжает из окна как `1e309` и ложится на колонку `Infinity`. Бросает
+ * InvalidTaskError; вызывающий превращает его в свой отказ.
+ *
+ * @param {number} value
+ * @returns {number}
+ */
+export function validatePriority(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new InvalidTaskError('priority must be a number')
+  }
+  if (!Number.isInteger(value)) throw new InvalidTaskError('priority must be a whole number')
+  if (Math.abs(value) > PRIORITY_LIMIT) {
+    throw new InvalidTaskError(`priority must be between -${PRIORITY_LIMIT} and ${PRIORITY_LIMIT}`)
+  }
+  return value
+}
 
 /**
  * validateWords(patch) → the same patch, gated by exactly the caps an enqueue applies.
@@ -1235,6 +1295,22 @@ export function acceptanceItems(acceptance) {
 export function isBatchParent(taskOrRow) {
   const env = taskOrRow && typeof taskOrRow === 'object' ? taskOrRow.data : null
   return !!env && typeof env === 'object' && env.batch === BATCH_PARENT
+}
+
+/**
+ * isStageTask(taskOrRow) → это СТУПЕНЬ ФАЗЫ, а не обычная работа?
+ *
+ * Спрашивается по КОНВЕРТУ и по закрытому словарю ступеней — никогда по названию, которое
+ * человек может перепечатать, и никогда по полосе, которую делят с обычной канцелярией. Один
+ * предикат на задачу по дороге внутрь и на строку по дороге наружу, ровно по той же причине,
+ * что и у `isBatchParent`: три ответа в трёх файлах — три шанса ответить по-разному. ЧИСТЫЙ.
+ *
+ * @param {object|null} taskOrRow
+ * @returns {boolean}
+ */
+export function isStageTask(taskOrRow) {
+  const env = taskOrRow && typeof taskOrRow === 'object' ? taskOrRow.data : null
+  return !!env && typeof env === 'object' && TASK_STAGES.includes(env.stage)
 }
 
 /**
@@ -2238,7 +2314,11 @@ export function validateTask(task) {
   // в промпт — пустой забор, и оба сказали бы «человек ничего не написал» так, будто он писал.
   // Текст, в котором есть хоть что-то, сохраняется КАК ЕСТЬ — его отступы и переносы тоже его.
   if (typeof out.taskContext === 'string' && out.taskContext.trim() === '') delete out.taskContext
-  out.priority = typeof task.priority === 'number' ? task.priority : 0
+  // МОЛЧАНИЕ О ЧИСЛЕ ЧИТАЕТСЯ ПО ТОМУ, ЧТО ЗА РАБОТА. Обычная работа встаёт в ноль, как и
+  // всегда; строка, несущая КОНВЕРТ СТУПЕНИ ФАЗЫ, — в место ступени (см. STAGE_PRIORITY).
+  // Решение живёт здесь потому, что здесь оно одно на все двери: ступень ставится тремя, и
+  // каждая из них молчала о числе по-своему.
+  out.priority = typeof task.priority === 'number' ? task.priority : isStageTask(task) ? STAGE_PRIORITY : 0
   out.attempt = typeof task.attempt === 'number' && task.attempt >= 1 ? task.attempt : 1
   return out
 }
@@ -2622,6 +2702,29 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return true
   }
 
+  /**
+   * setPriority(taskId, priority) — ПЕРЕСТАВИТЬ СТРОКУ В ОЧЕРЕДИ, не трогая ничего другого.
+   * Возвращает false, когда такой задачи нет или её работа уже кончилась.
+   *
+   * ЗАЧЕМ ЭТО ВООБЩЕ ЕСТЬ. Число, названное при постановке, было последним словом о месте
+   * строки: переставить её человек мог единственным способом — отменить и поставить заново,
+   * потеряв номер, историю подходов и всё, что на этот номер уже записано. Про строку, которую
+   * ждут, это дорогая цена за одну цифру.
+   *
+   * ОКНО — ТО ЖЕ, ЧТО У СЛОВ (`WORDS_EDITABLE_STATUSES`), и второго словаря здесь не заводится:
+   * «работа не кончилась» — один факт, а не два. Строке, которая ждёт выдачи, новое место
+   * достаётся сразу; строке, которая уже идёт, — на следующей выдаче, если её вернут в очередь.
+   * После измерения переставлять нечего: место в очереди у закрытой строки ничего не значит.
+   */
+  async function setPriority(taskId, priority) {
+    const rec = records.get(taskId)
+    if (!rec) return false
+    if (!WORDS_EDITABLE_STATUSES.includes(rec.status)) return false
+    const value = validatePriority(priority)
+    rec.task = { ...rec.task, priority: value }
+    return true
+  }
+
   async function complete(taskId, result) {
     const rec = records.get(taskId)
     if (!rec) throw new UnknownTaskError(`complete: unknown task "${taskId}"`)
@@ -2918,7 +3021,7 @@ export function createMemoryQueue({ clock = Date.now, expireMs = 15 * 60 * 1000,
     return s
   }
 
-  return { enqueue, claimNext, touch, assignWorker, releaseClaim, resolveBatch, setWords, complete, fail, parkForPerson, reissue, payloadOf, cancelTask, list, stats }
+  return { enqueue, claimNext, touch, assignWorker, releaseClaim, resolveBatch, setWords, setPriority, complete, fail, parkForPerson, reissue, payloadOf, cancelTask, list, stats }
 }
 
 // ── the reusable contract suite (executable spec any backend must pass) ──

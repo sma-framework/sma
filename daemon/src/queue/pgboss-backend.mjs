@@ -96,6 +96,7 @@
 import {
   validateTask,
   validateWords,
+  validatePriority,
   isBatchParent,
   batchHeldOf,
   waveAddressOf,
@@ -1148,6 +1149,36 @@ export function createPgBossQueue({
   }
 
   /**
+   * setPriority(taskId, priority) — МЕСТО СТРОКИ В ОЧЕРЕДИ, переставленное человеком. Возвращает
+   * false, когда живой строки с таким именем нет.
+   *
+   * ДВА ПИСЬМА ОДНИМ ОПЕРАТОРОМ, И ЭТО НЕ ИЗБЫТОК. Выборка этой очереди идёт по СВОЕЙ КОЛОНКЕ
+   * `priority` (её и заполняет `send`), а всякое чтение строки наружу берёт число из полезной
+   * нагрузки и лишь потом из колонки (`data.priority ?? j.priority`). Написанное в одну колонку
+   * переставило бы очередь, оставив на экране прежнее число; написанное в один payload
+   * поменяло бы число на экране, не сдвинув строку ни на место. Оба поля — один факт, поэтому
+   * они пишутся одним UPDATE, а не двумя, между которыми бывает сбой.
+   *
+   * ОТКАЗ — ЭТО САМО РАЗРЕШЕНИЕ ИМЕНИ, ровно как у слов: найти можно только ждущую строку и
+   * идущую, значит закрытая, сорвавшаяся и ждущая человека просто не находятся. «Что закрыто,
+   * то закрыто» здесь выражено запросом, а не отдельной проверкой рядом с ним.
+   */
+  async function setPriority(taskId, priority) {
+    if (typeof taskId !== 'string' || taskId === '') return false
+    const value = validatePriority(priority)
+    const job = (await resolveActiveJob(taskId)) || (await resolveWaitingJob(taskId))
+    if (!job) return false
+    await runSql(
+      `UPDATE pgboss.job
+          SET priority = $2::int,
+              data = data || jsonb_build_object('priority', $2::int)
+        WHERE id = $1`,
+      [job.id, value],
+    )
+    return true
+  }
+
+  /**
    * THE RESOLUTION THAT SAW ONLY THE FIRST WAITING STATE IS GONE, and its absence is the point:
    * both doors that used it — the words of a task and the owner's word about an abandoned
    * assembly — have now each taken their own decision to reach a row waiting after a lost
@@ -1836,6 +1867,7 @@ export function createPgBossQueue({
     releaseClaim,
     resolveBatch,
     setWords,
+    setPriority,
     complete,
     fail,
     parkForPerson,

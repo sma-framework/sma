@@ -407,6 +407,17 @@ export function useTaskWords(taskId: string | null) {
   )
 }
 
+/**
+ * Переставить место строки в очереди. Меняется ПОРЯДОК между работами, поэтому перечитывается и
+ * карточка, и общая картина: место видно на доске номером в списке, а не только на карточке.
+ */
+export function useTaskPriority(taskId: string | null) {
+  return useAction<Parameters<typeof api.setTaskPriority>[0], Awaited<ReturnType<typeof api.setTaskPriority>>>(
+    (input) => api.setTaskPriority(input),
+    taskId ? [taskKey(taskId)] : [],
+  )
+}
+
 /** Ask for a new helper or skill to be drafted. */
 export function useForge() {
   return useAction<{ kind: DraftKind; description: string; slugHint?: string }, Awaited<ReturnType<typeof api.forge>>>(

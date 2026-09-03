@@ -15,9 +15,14 @@ import {
   useRedirectTask,
   useReturnTask,
   useStateQuery,
+  useTaskPriority,
   useTaskQuery,
   useTaskWords,
 } from '../../api/queries'
+// СЛОВАРЬ МЕСТ В ОЧЕРЕДИ — ОДИН НА ОКНО: те же два слова и те же два числа, которыми место
+// называют при постановке. Переписанный здесь, он однажды разошёлся бы с формой постановки, и
+// «вперёд очереди» на карточке значило бы не то же самое, что «вперёд очереди» в форме.
+import { ORDERS as QUEUE_PLACES } from '../tasks/NewTaskForm'
 import type {
   ApprovalWall,
   AttemptDigest,
@@ -845,6 +850,7 @@ export function Screen() {
   const approve = useApprove()
   const returnTask = useReturnTask()
   const setWords = useTaskWords(taskId)
+  const setPriority = useTaskPriority(taskId)
   const closeTask = useCloseTaskWithWords(taskId)
 
   const [returning, setReturning] = useState(false)
@@ -988,6 +994,14 @@ export function Screen() {
   // отказом — и кнопки здесь тоже нет, чтобы человек не бился в заведомо закрытую дверь.
   const wordsEditable = status === 'queued' || status === 'claimed'
 
+  /**
+   * ГДЕ ЭТА СТРОКА СТОИТ В ОЧЕРЕДИ — число со СТРОКИ, а не догадка окна. `null` значит «строка
+   * о своём месте не говорит» (или демон постарше о нём молчит), и тогда ни одна кнопка не
+   * подсвечена: рисовать «по очереди» по молчанию значило бы называть место, которого никто не
+   * измерял.
+   */
+  const taskPlace = typeof task?.priority === 'number' ? task.priority : null
+
   const openWordsEditor = () => {
     setProblem(null)
     setDraftDescription(task?.description ?? '')
@@ -1036,6 +1050,20 @@ export function Screen() {
     if (!taskId || project === '' || project === taskProject) return
     setProblem(null)
     setWords.mutate({ taskId, project }, { onError: (err) => setProblem(refusalWords(err)) })
+  }
+
+  /**
+   * ПЕРЕСТАВИТЬ МЕСТО СТРОКИ В ОЧЕРЕДИ — тем же жестом, каким её ставят вперёд при создании.
+   *
+   * Число называлось один раз, дверью постановки, и больше не менялось никогда: работу, вставшую
+   * не туда, человек мог переставить единственным способом — отменить и создать заново, потеряв
+   * номер строки и всю записанную на него историю подходов. Отправляется ТОЛЬКО число: правка,
+   * которая заодно переписала бы слова, стёрла бы то, чего человек не трогал.
+   */
+  const movePlace = (place: number) => {
+    if (!taskId || place === taskPlace) return
+    setProblem(null)
+    setPriority.mutate({ taskId, priority: place }, { onError: (err) => setProblem(refusalWords(err)) })
   }
 
   const doApprove = () => {
@@ -1322,6 +1350,37 @@ export function Screen() {
                       от работника того, чего он сделать не может. */}
                   {status === 'claimed'
                     ? ' Работа уже идёт в прежнем дереве — перестановка подействует со следующего подхода.'
+                    : ''}
+                </span>
+              </div>
+            ) : null}
+
+            {/* МЕСТО В ОЧЕРЕДИ — переставляется здесь же, где правят слова, и по той же
+                причине: до этой кнопки переставить строку можно было единственным способом —
+                отменить её и создать заново, потеряв номер и всю историю подходов. Число
+                показано ТО, ЧТО СТОИТ НА СТРОКЕ: человек читает, откуда переставляет. */}
+            {wordsEditable ? (
+              <div className="flex flex-wrap items-center gap-2 px-1">
+                <span className="text-[10px] font-semibold tracking-[0.08em] text-tx3 uppercase">Очередь</span>
+                {QUEUE_PLACES.map((o) => (
+                  <button
+                    key={o.value}
+                    type="button"
+                    onClick={() => movePlace(o.value)}
+                    disabled={setPriority.isPending}
+                    className={`rounded-[7px] border px-2 py-1 text-[11.5px] disabled:opacity-60 ${
+                      taskPlace === o.value ? 'border-blue bg-blue-s text-tx' : 'border-bd2 bg-input text-tx2 hover:text-tx'
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+                <span className="text-[10.5px] text-tx3">
+                  {taskPlace === null
+                    ? 'Строка не называет своего места в очереди.'
+                    : `Сейчас ${taskPlace} — больше значит раньше.`}
+                  {status === 'claimed'
+                    ? ' Работа уже идёт — новое место подействует, если строка вернётся в очередь.'
                     : ''}
                 </span>
               </div>

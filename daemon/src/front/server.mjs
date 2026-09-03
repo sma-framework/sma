@@ -6,7 +6,7 @@
  * invariant asserts scripts/sma/lib has no node:http server). This daemon front is the
  * FIRST sanctioned inbound surface — so it lives OUTSIDE scripts/sma/lib (this
  * daemon/ package) and carries a posture as total as notify.mjs's outbound one:
- *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SIXTY-NINE routes
+ *   - CLOSED ROUTE TABLE. `ROUTES` is a frozen object of EXACTLY SEVENTY routes
  *     (re-frozen 2026-08-28 — the growth past the V5.4 fifty-three is EXPLICIT, ELEVEN doors,
  *     each declared by the release that opened it: the chat stop button in v5.4.3, the
  *     running-task steering wheel in v5.5.0, SIX doors in v5.6.0 — the batch request,
@@ -44,10 +44,13 @@
  *     button, «вернуть в очередь», which buys another attempt at the same wall; the stop door
  *     takes only LIVE work and answered «nothing to stop», and the words door refuses a task
  *     whose work is over. Four rows stood in the waiting column for three days with no way to
- *     clear them from the window. A path outside the table is 404 BEFORE
- *     any auth-error detail (no route reflection). No command-exec endpoint exists or ever
- *     may — adding a route requires touching THIS table AND the guard
- *     invariant that polices it. Object.keys(ROUTES).length === 69 is a test.
+ *     clear them from the window. The SEVENTIETH MOVES A ROW INSIDE THE QUEUE: the number a
+ *     task stands at was said once, at the door that put it in, and could never be said again
+ *     — re-prioritising meant cancelling the row and typing it back in under a new identifier,
+ *     losing its number and every attempt recorded against it. A path outside the table is 404
+ *     BEFORE any auth-error detail (no route reflection). No command-exec endpoint exists or
+ *     ever may — adding a route requires touching THIS table AND the guard
+ *     invariant that polices it. Object.keys(ROUTES).length === 70 is a test.
  *   - ONE DOOR PER ACTION, EVEN ACROSS MACHINES. Sending an action to another machine
  *     adds NO route: /api/enqueue, /api/approve and /api/return take an OPTIONAL
  *     `machine` field in their explicit-pick allowlist — an IDENTIFIER, never a url, so
@@ -116,7 +119,7 @@ import { fileURLToPath } from 'node:url'
 import { atomicWriteRaw } from '../../../scripts/sma/lib/fs-atomics.mjs'
 
 import { authed, tokenEquals, sessionCookie, createFailureLimiter } from './auth.mjs'
-import { BATCH_PARENT, CAP_TITLE, CLOSING_REASONS, closingReasonKnown, isBatchParent, latestRowPerId, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask } from '../queue/adapter.mjs'
+import { BATCH_PARENT, CAP_TITLE, CLOSING_REASONS, closingReasonKnown, isBatchParent, latestRowPerId, REASON_LABELS, TASK_LANES, TASK_STAGES, validateTask, validatePriority } from '../queue/adapter.mjs'
 import { closeWithWords } from '../queue/approval-store.mjs'
 import { CHAT_STAGES, proposeBreakdown, proposeWords, SNAPSHOT_EVENT_CAP, STATUS_LABELS } from './chat.mjs'
 import { createQuestions, findPhaseDir, ALL_CHECKPOINT_SUFFIXES } from './questions.mjs'
@@ -307,18 +310,19 @@ const BUILD_INSTRUCTION_HTML =
  * a task (a person stops the work, and the row is closed only after the live child under it
  * is dead), the door that READS THE FOLDER OF ONE PHASE — its directory as a tree, and
  * one file of it as text, both bounded, neither able to leave that directory — and the door
- * that WRITES A SKILL into this machine's skill store).
- * Exactly SIXTY-NINE entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
+ * that WRITES A SKILL into this machine's skill store, and the door that MOVES A ROW INSIDE
+ * THE QUEUE — its priority, said again by the person who said it first).
+ * Exactly SEVENTY entries mapping `${METHOD} ${path-pattern}` → handler name. `:id`
  * marks the five dynamic id segments (/api/task/:id, /api/diff/:id, /api/phase/:id,
  * /api/phase/:id/files, /api/attempt/:id), all bound to ID_RE; `:file` marks the one dynamic
  * asset segment (/assets/:file), bound to ASSET_RE. This object IS the contract the guard invariant
- * polices — its size is a test (Object.keys(ROUTES).length === 69) and no route may be
+ * polices — its size is a test (Object.keys(ROUTES).length === 70) and no route may be
  * added without also touching that guard invariant.
  *
  * The first fourteen are the original surface; the sixteen after them were the declared-once
  * V5.1 growth; the twenty-three below THOSE were the declared-once V5.4 growth, filled one at
- * a time; the last thirteen joined one release at a time, additively — nothing was
- * removed or renamed. ALL SIXTY-NINE ARE LIVE — the table carries no stub, and the shape
+ * a time; the last fourteen joined one release at a time, additively — nothing was
+ * removed or renamed. ALL SEVENTY ARE LIVE — the table carries no stub, and the shape
  * test says so without consulting any list of exceptions. The table itself does not move.
  *
  * THREE OF THE TEN PROPOSE AND DO NOT WRITE, and they are worth reading as one family: the
@@ -416,6 +420,10 @@ export const ROUTES = Object.freeze({
   //    что можно выдать работнику. Раздача уже была дверью; написать навык было нечем, и
   //    поэтому «создать навык» существовало только как заказ кузнице и ожидание одобрения ──
   'POST /api/skill/create': 'handleSkillCreate',
+  // ── ПЕРЕСТАВИТЬ МЕСТО СТРОКИ В ОЧЕРЕДИ: число, названное при постановке, было последним
+  //    словом о нём. Переставить работу человек мог единственным способом — отменить и
+  //    поставить заново, потеряв номер строки и всю историю её подходов ──
+  'POST /api/task/priority': 'handleTaskPriority',
 })
 
 /**
@@ -1409,6 +1417,11 @@ async function handleTask({ res, params, config, deps }) {
       // the prompt builder does, so the person and the worker read the same sentences.
       description: row.description ?? null,
       acceptance: row.acceptance ?? null, // the DoR contract, «обещано»
+      // ГДЕ ЭТА СТРОКА СТОИТ В ОЧЕРЕДИ — то самое число, которым её и переставляют. Оно ехало
+      // на строке всегда, но до карточки не доезжало, поэтому «переставить» было действием
+      // вслепую: человек не видел, откуда переставляет. Число строки, а не выдуманное окном:
+      // `null` значит «строка о нём не говорит», и тогда карточка молчит вместо нуля.
+      priority: typeof row.priority === 'number' ? row.priority : null,
       // ═══ СКОЛЬКО ХОДОВ ЭТОЙ РАБОТЕ ДАДУТ — СКАЗАНО ДО ЗАПУСКА, А НЕ ПОСЛЕ ══════
       //
       // Число считалось и раньше, но человеку его не показывали НИГДЕ: оно ехало на командную
@@ -5395,7 +5408,7 @@ async function handlePhaseStage({ req, res, config, deps }) {
   const body = await readJsonBody(req)
   if (!body.ok) return send400(res, body.error)
   const b = body.value || {}
-  if (rejectUnknownKeys(res, b, new Set(['phase', 'stage']))) return undefined
+  if (rejectUnknownKeys(res, b, new Set(['phase', 'stage', 'priority']))) return undefined
 
   const stage = b.stage
   if (typeof stage !== 'string' || !TASK_STAGES.includes(stage)) {
@@ -5403,6 +5416,17 @@ async function handlePhaseStage({ req, res, config, deps }) {
   }
   const phase = b.phase === undefined || b.phase === null ? '' : String(b.phase)
   if (!PHASE_RE.test(phase)) return send400(res, 'invalid phase')
+  // ЧИСЛО, ЕСЛИ ЧЕЛОВЕК ЕГО НАЗВАЛ. Дверь не принимала приоритета вовсе, и это стоило ступеням
+  // последнего места в очереди: молчание двери означало ноль, то есть позади всякой задачи с
+  // назначенной срочностью. Теперь молчание означает МЕСТО СТУПЕНИ (STAGE_PRIORITY, умолчание
+  // очереди), а названное число сильнее умолчания — вниз так же, как и вверх.
+  if (b.priority !== undefined) {
+    try {
+      validatePriority(b.priority)
+    } catch (err) {
+      return send400(res, String((err && err.message) || 'invalid priority'))
+    }
+  }
 
   // ALREADY RUNNING? The envelope is what identifies a stage row, so this asks the queue the
   // same question the tick answers from — never a name or a title, which a person can retype.
@@ -5435,6 +5459,7 @@ async function handlePhaseStage({ req, res, config, deps }) {
     title: stageCommand(stage, phase),
     lane: STAGE_LANE,
     data: { kind: stageKind(stage), stage, phase },
+    ...(b.priority !== undefined ? { priority: b.priority } : {}),
   }
   let norm
   try {
@@ -5445,7 +5470,10 @@ async function handlePhaseStage({ req, res, config, deps }) {
   const enq = await enqueueOrExplain(res, adapter, norm)
   if (enq.answered) return undefined
   emitSafe(deps, { event: 'phase.stage', taskId: norm.id, phase, stage })
-  return sendJson(res, 200, { ok: true, taskId: norm.id, phase, stage })
+  // МЕСТО В ОЧЕРЕДИ НАЗЫВАЕТСЯ В ОТВЕТЕ, а не остаётся делом очереди: человек, нажавший
+  // «начать ступень», обязан видеть, куда она встала, — иначе умолчание нельзя ни проверить,
+  // ни уличить, а именно это и стоило фазе места 38 из 38.
+  return sendJson(res, 200, { ok: true, taskId: norm.id, phase, stage, priority: norm.priority })
 }
 
 /**
@@ -7090,6 +7118,71 @@ async function handleTaskWords({ req, res, config, deps }) {
   return sendJson(res, 200, { ok: true, taskId, ...(patch.project !== undefined ? { project: patch.project } : {}) })
 }
 
+/**
+ * POST /api/task/priority — body `{taskId, priority}`. МЕСТО СТРОКИ В ОЧЕРЕДИ, переставленное
+ * тем же человеком, который его назвал.
+ *
+ * ЗАЧЕМ ОТДЕЛЬНАЯ ДВЕРЬ, КОГДА РЯДОМ СТОИТ ДВЕРЬ СЛОВ. Дверь слов правит то, что задача говорит
+ * О СЕБЕ: обещание, описание, снимок контекста, дерево, в котором она живёт. Место в очереди —
+ * не слово о работе, а ПОРЯДОК между работами, и хранится оно иначе: у долговечной очереди это
+ * собственная колонка выборки, а не поле полезной нагрузки, и переставляет его свой оператор
+ * (`setPriority`), пишущий колонку и нагрузку одним движением. Одна дверь на два таких разных
+ * действия означала бы, что правка описания и перестановка очереди отказывают и отвечают
+ * одинаково, — а человеку они отказывают по разным причинам.
+ *
+ * ОКНО — ТО ЖЕ, И ЭТО НЕ СЛУЧАЙНОСТЬ: «работа не кончилась» — один факт, названный очередью
+ * один раз (WORDS_EDITABLE_STATUSES), а не два похожих правила в двух дверях. Закрытой строке
+ * место в очереди уже ничего не значит, и 409 говорит об этом словами.
+ *
+ * ЧТО БЫЛО ДО НЕЁ. Число называлось при постановке и больше никогда: переставить работу можно
+ * было единственным способом — отменить строку и создать заново. Это новый номер, потерянная
+ * история подходов и потерянные ссылки на неё отовсюду, где номер уже записан, — цена, которую
+ * платили за одну цифру.
+ */
+async function handleTaskPriority({ req, res, deps }) {
+  const adapter = deps.adapter
+  if (!adapter || typeof adapter.setPriority !== 'function') return send501(res)
+  const body = await readJsonBody(req)
+  if (!body.ok) return body.error === 'body too large' ? send413(res) : send400(res, body.error)
+  const b = body.value || {}
+  if (rejectUnknownKeys(res, b, new Set(['taskId', 'priority']))) return undefined
+
+  const taskId = b.taskId
+  if (typeof taskId !== 'string' || !ID_RE.test(taskId)) return send400(res, 'invalid taskId')
+  // ГРАНИЦЫ ЧИСЛА — ОЧЕРЕДИ, А НЕ ЭТОЙ ДВЕРИ: второй набор границ здесь означал бы, что через
+  // одну дорогу в очередь проходит то, чего не пропускает другая.
+  let priority
+  try {
+    priority = validatePriority(b.priority)
+  } catch (err) {
+    return send400(res, String((err && err.message) || 'invalid priority'))
+  }
+
+  let moved
+  try {
+    moved = await adapter.setPriority(taskId, priority)
+  } catch (err) {
+    return send400(res, String((err && err.message) || 'invalid priority'))
+  }
+  // Строка либо кончилась, либо её не было вовсе. Различаются спросив — ровно как у двери слов,
+  // чтобы экран сказал «уже поздно», а не «такой задачи нет» о задаче, которая на нём видна.
+  if (!moved) {
+    let exists = false
+    try {
+      const rows = await adapter.list({})
+      exists = rows.some((r) => r && r.id === taskId)
+    } catch {
+      /* fail-open: непрочитанная очередь отвечает «нет такой», но никогда 500 */
+    }
+    return exists
+      ? send409(res, 'работа этой строки кончилась — место в очереди ей больше ничего не даёт')
+      : send404(res)
+  }
+
+  emitSafe(deps, { event: 'task.queued', taskId })
+  return sendJson(res, 200, { ok: true, taskId, priority })
+}
+
 // ── the three switches a person holds: the conveyor, the money, the model ──
 //
 // They share one shape and one law. The shape: explicit-pick the body, hand it to an
@@ -7597,6 +7690,8 @@ export const HANDLERS = Object.freeze({
   handleBatchSuggest,
   handleTaskSuggest,
   handleTaskWords,
+  // …и место строки в очереди, переставленное человеком, а не пересозданное вместе со строкой
+  handleTaskPriority,
   // «останови волну 2» — одна волна одной фазы встаёт, и она же снова идёт
   handleWaveHold,
   // остановка задачи человеком: сначала умирает живой ребёнок, потом закрывается строка
