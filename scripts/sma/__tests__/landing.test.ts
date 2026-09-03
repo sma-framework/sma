@@ -31,7 +31,16 @@
 
 import { execFileSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -53,6 +62,7 @@ import {
   versionMarkerIsCosmetic,
 } from '../lib/landing.mjs'
 import { runMerge, SPA_BUILD_FAILED_CODE } from '../lib/merge-gate.mjs'
+import { freshnessVerdict, sourceHistory, SPA_BUNDLE_PATH } from '../lib/spa-freshness.mjs'
 import { checkBadge, readChangedSince, readHead } from '../lib/badge.mjs'
 import { audit } from '../lib/doc-audit.mjs'
 
@@ -715,8 +725,15 @@ describe('посадка пересобирает окно: слияние → �
       repo.git(['checkout', '-q', repo.trunk])
       const tipBefore = repo.git(['rev-parse', 'HEAD']).trim()
 
+      // Метка свежести — обещание «этот бандл собран из этого дерева». Отказанная посадка
+      // такого обещания не даёт, и здесь проверяется, что она его и не выдаёт.
+      const marked: any[] = []
       const landing = createLanding({
         cwd: repo.dir,
+        markBundle: (call: any) => {
+          marked.push(call)
+          return { refreshed: 1 }
+        },
         runBuild: () => {
           // Сборщик собрал окно ВЕТКИ поверх раздачи — это и есть его работа.
           serveWindow(repo, 'ОКНО ОТКАЗАННОЙ ВЕТКИ')
@@ -748,6 +765,9 @@ describe('посадка пересобирает окно: слияние → �
         readdirSync(join(repo.dir, 'daemon', 'static')).filter((n) => n.startsWith('.app-')),
         'отложенная раздача пережила вердикт',
       ).toEqual([])
+      // И МЕТКИ НЕТ. Вернули прежнее окно — оно собрано из ДРУГОГО дерева, и пометить его
+      // значило бы соврать сторожу свежести ровно тем, чем он живёт.
+      expect(marked, 'возвращённая раздача получила обещание, которого ей никто не давал').toEqual([])
     } finally {
       rmSync(repo.home, { recursive: true, force: true })
     }
@@ -763,8 +783,19 @@ describe('посадка пересобирает окно: слияние → �
       repo.git(['commit', '-q', '--no-verify', '-m', 'правка окна'])
       repo.git(['checkout', '-q', repo.trunk])
 
+      // Метку ставят на ПОДМЕНЁННУЮ раздачу, и к этой секунде отложенной копии рядом уже нет:
+      // пометить копию — значит дать обещание за каталог, которого никто не отдаёт.
+      const marked: any[] = []
       const landing = createLanding({
         cwd: repo.dir,
+        markBundle: (call: any) => {
+          marked.push({
+            ...call,
+            served: servedWindow(repo),
+            neighbours: readdirSync(join(repo.dir, 'daemon', 'static')).filter((n) => n.startsWith('.app-')),
+          })
+          return { refreshed: 2 }
+        },
         runBuild: () => {
           serveWindow(repo, 'ОКНО ПРИНЯТОЙ ВЕТКИ')
           return { built: true, ms: 9 }
@@ -784,12 +815,20 @@ describe('посадка пересобирает окно: слияние → �
         restoreWindow: landing.restoreWindow,
       })
       expect(merged.merged, `слияние не прошло: ${JSON.stringify(merged)}`).toBe(true)
-      landing.stamp({ cwd: repo.dir })
+      const stamp: any = landing.stamp({ cwd: repo.dir })
       expect(servedWindow(repo), 'вошедшая ветка обязана остаться в раздаче').toBe('ОКНО ПРИНЯТОЙ ВЕТКИ')
       expect(
         readdirSync(join(repo.dir, 'daemon', 'static')).filter((n) => n.startsWith('.app-')),
         'штамп обязан убрать отложенное — ветка вошла, страховка не нужна',
       ).toEqual([])
+      // МЕТКА ПОСТАВЛЕНА, И ПОСТАВЛЕНА НА ТО, ЧТО ОТДАЁТСЯ. Дерево ей названо то же, в котором
+      // шла посадка, а отложенной копии к этому мигу рядом уже нет — пометить было нечего,
+      // кроме подменённой раздачи.
+      expect(marked, 'посадка, собравшая окно и вошедшая, обязана пометить раздачу').toHaveLength(1)
+      expect(marked[0].cwd).toBe(repo.dir)
+      expect(marked[0].served).toBe('ОКНО ПРИНЯТОЙ ВЕТКИ')
+      expect(marked[0].neighbours, 'метку ставили, пока рядом ещё лежала отложенная копия').toEqual([])
+      expect(stamp.spaBuild.mark.refreshed).toBe(2)
     } finally {
       rmSync(repo.home, { recursive: true, force: true })
     }
@@ -877,6 +916,129 @@ describe('посадка пересобирает окно: слияние → �
       expect(merged.merged, `слияние не прошло: ${JSON.stringify(merged)}`).toBe(true)
       expect(builds).toBe(0)
       expect(landing.state.spaBuild.note).toBe(SPA_NO_SCRIPT_NOTE)
+    } finally {
+      rmSync(repo.home, { recursive: true, force: true })
+    }
+  }, 120000)
+
+  /**
+   * ПОСАДКА С ОКНОМ НЕ ИМЕЕТ ПРАВА ОКРАСИТЬ СЛЕДУЮЩУЮ ПОСАДКУ.
+   *
+   * Пересборка окна беду не закрыла, а сдвинула на один шаг. Окно собирается ДО прогона, а
+   * коммит слияния, несущий `spa/src`, рождается ПОСЛЕ зелёного прогона — минутами позже. На
+   * чистом дереве сторож свежести меряет возраст исходника временем последнего коммита, и
+   * раздача, собранная из ЭТОГО САМОГО дерева, выходит «старше» своего исходника на эти
+   * минуты. Своя посадка этого не видела (её прогон шёл до коммита) — краснела СЛЕДУЮЩАЯ,
+   * которая окна не трогала и пересобирать его не собиралась. Три таких отказа за ночь; между
+   * ними раздачу пересобирали руками из терминала.
+   *
+   * Здесь проверяется ПРОВОД целиком: две посадки подряд на одном дереве, настоящий git,
+   * настоящий ритуал слияния, настоящая линейка сторожа — и подделаны ровно два шва, сборщик и
+   * прогонятель. Гейт спрашивается ОТТУДА, где его задаёт живой набор: изнутри прогона второй
+   * посадки, на сведённом дереве.
+   */
+  it('посадка с окном метит раздачу — и следующая посадка без окна проходит гейт свежести', async () => {
+    const repo = repoThatBuildsWindow('spa-mark')
+    try {
+      // Раздача — то, что демон отдаёт браузеру. В git её нет вовсе, как и в продукте: правило
+      // уже лежит в `.gitignore` фикстуры (там же и её соседи на время одной посадки —
+      // постановка сборки и отложенная копия), поэтому заводить его здесь второй раз нечем.
+      put(repo.dir, `${SPA_BUNDLE_PATH}/assets/index-abc.js`, 'var window=1\n')
+      expect(repo.git(['status', '--porcelain']).trim(), 'раздача попала под присмотр git').toBe('')
+
+      const sourceDir = join(repo.dir, 'spa', 'src')
+      const bundleDir = join(repo.dir, ...SPA_BUNDLE_PATH.split('/'))
+      const asset = join(bundleDir, 'assets', 'index-abc.js')
+      const gate = () => freshnessVerdict(sourceDir, bundleDir, sourceHistory({ cwd: repo.dir })) as any
+
+      // Ветка правит окно…
+      repo.git(['checkout', '-q', '-b', 'wt/window'])
+      put(repo.dir, 'spa/src/main.tsx', 'export const window = 2\n')
+      repo.git(['add', '--', 'spa/src/main.tsx'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'правка окна'])
+      repo.git(['checkout', '-q', repo.trunk])
+      // …а вершина за это время тоже тронула окно — и тогда `spa/src` несёт САМ коммит
+      // слияния, то есть именно его время и называет сторож свежести.
+      put(repo.dir, 'spa/src/other.tsx', 'export const other = 1\n')
+      repo.git(['add', '--', 'spa/src/other.tsx'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'вершина тоже тронула окно'])
+
+      // ── ПОСАДКА ПЕРВАЯ: с окном. Сборщик подделан ровно тем, что делает настоящий, — кладёт
+      // раздачу; время ей ставится на пять секунд назад, потому что между сборкой и коммитом
+      // слияния стоит полный прогон.
+      const builtAt = (Date.now() - 5000) / 1000
+      const first = createLanding({
+        cwd: repo.dir,
+        runBuild: () => {
+          put(repo.dir, `${SPA_BUNDLE_PATH}/assets/index-abc.js`, 'var window=2\n')
+          utimesSync(asset, builtAt, builtAt)
+          return { built: true, ms: 5 }
+        },
+        runSuite: async ({ reportPath }: any) => {
+          writeFileSync(reportPath, vitestReport({ tests: 11, files: 3 }), 'utf8')
+          return { passed: true, ran: true, reportPath }
+        },
+      })
+      const withWindow: any = await runMerge({
+        branch: 'wt/window',
+        by: 'landing-case',
+        cwd: repo.dir,
+        claimsDir: repo.claimsDir,
+        journalDir: repo.journalDir,
+        runTests: first.runTests,
+      })
+      expect(withWindow.merged, `слияние не прошло: ${JSON.stringify(withWindow)}`).toBe(true)
+
+      // Вот оно, ложное красное: раздача собрана из этого самого дерева, а коммит, принёсший
+      // её исходник, создан позже неё.
+      const beforeMark = gate()
+      expect(beforeMark.basis, 'дерево чистое — значит меряют коммитом').toBe('commit')
+      expect(beforeMark.stale, 'без метки сторож обязан краснеть — ровно это и чинится').toBe(true)
+
+      const stamp: any = first.stamp({ cwd: repo.dir })
+      expect(stamp.spaBuild.mark.refreshed, 'раздача, собранная посадкой, обязана получить метку').toBeGreaterThan(0)
+      expect(readFileSync(asset, 'utf8'), 'метка двигает время, а не содержимое раздачи').toBe('var window=2\n')
+      expect(gate().stale, 'после метки то же дерево обязано быть зелёным').toBe(false)
+
+      // ── ПОСАДКА ВТОРАЯ: окна не касается вовсе. Ей пересобирать нечего — и краснеть не за что.
+      repo.git(['checkout', '-q', '-b', 'wt/code'])
+      put(repo.dir, 'src/worker.mjs', 'export const worker = 2\n')
+      repo.git(['add', '--', 'src/worker.mjs'])
+      repo.git(['commit', '-q', '--no-verify', '-m', 'правка кода'])
+      repo.git(['checkout', '-q', repo.trunk])
+
+      let builds = 0
+      let seenByTheSuite: any = null
+      const second = createLanding({
+        cwd: repo.dir,
+        runBuild: () => {
+          builds += 1
+          return { built: true, ms: 1 }
+        },
+        runSuite: async ({ reportPath }: any) => {
+          // ЗДЕСЬ живой набор и задаёт свой вопрос — на сведённом, ещё не зафиксированном дереве.
+          seenByTheSuite = gate()
+          writeFileSync(reportPath, vitestReport({ tests: 12, files: 3 }), 'utf8')
+          return { passed: true, ran: true, reportPath }
+        },
+      })
+      const withoutWindow: any = await runMerge({
+        branch: 'wt/code',
+        by: 'landing-case',
+        cwd: repo.dir,
+        claimsDir: repo.claimsDir,
+        journalDir: repo.journalDir,
+        runTests: second.runTests,
+      })
+
+      expect(withoutWindow.merged, `вторая посадка не прошла: ${JSON.stringify(withoutWindow)}`).toBe(true)
+      expect(builds, 'окно не тронуто — пересобирать нечего').toBe(0)
+      expect(seenByTheSuite, 'прогон второй посадки не состоялся — спрашивать было некому').not.toBe(null)
+      expect(seenByTheSuite.applicable).toBe(true)
+      expect(
+        seenByTheSuite.stale,
+        'следующая посадка получила красное за раздачу, собранную предыдущей — то самое, ради чего метка',
+      ).toBe(false)
     } finally {
       rmSync(repo.home, { recursive: true, force: true })
     }

@@ -7728,7 +7728,7 @@ provider: claude
  * файла, потому что файла на диске здесь нет.
  */
 describe('обход беклога не ставит заново работу, о которой уже есть слово', () => {
-  const line = (over: any = {}) => backlogTask({ id: 'SB-176', title: 'починить дверь приёмки', ...over })
+  const line = (over: any = {}) => backlogTask({ id: 'R-176', title: 'починить дверь приёмки', ...over })
   const intakeOf = (items: any[]) => ({ lastScanAt: 0, scan: async () => ({ items, notReady: [] }) })
 
   it('карточку, принятую человеком, не ставит — даже когда очередь о ней уже забыла', async () => {
@@ -7742,7 +7742,7 @@ describe('обход беклога не ставит заново работу,
     // ЧТО ОСТАЛОСЬ ПОСЛЕ ПРИЁМКИ: строки очереди нет вовсе (её унёс архив), а реестр несёт
     // строку закрытия — ровно ту, которую пишет дверь «Одобрить».
     deps.ledger.recordAttempt({
-      taskId: 'SB-176',
+      taskId: 'R-176',
       attempt: 1,
       closed: { at: '2026-08-31T11:12:00.000Z', by: 'approve', merged: true },
     })
@@ -7750,7 +7750,7 @@ describe('обход беклога не ставит заново работу,
     const res = await tick(deps)
 
     expect(res.intake.enqueued, 'принятая и слитая работа поставлена в очередь заново').toBe(0)
-    expect(res.intake.known).toEqual(['SB-176'])
+    expect(res.intake.known).toEqual(['R-176'])
     expect(await adapter.list({})).toEqual([]) // очередь осталась пустой
     expect(journalled.some((e: any) => e.type === 'intake-known')).toBe(true)
   })
@@ -7760,7 +7760,7 @@ describe('обход беклога не ставит заново работу,
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
     await adapter.enqueue(line())
     const claimed: any = await adapter.claimNext('w-1', { lanes: ['prod'] })
-    await adapter.complete('SB-176', { receiptRef: 'reverify:abc', attemptToken: claimed.attemptToken })
+    await adapter.complete('R-176', { receiptRef: 'reverify:abc', attemptToken: claimed.attemptToken })
     const [before] = await adapter.list({})
     expect(before.status).toBe('awaiting_approval') // исходное состояние случая, а не допущение
 
@@ -7780,14 +7780,14 @@ describe('обход беклога не ставит заново работу,
     const { deps } = makeDeps({
       adapter,
       clockObj: c,
-      deps: { intake: intakeOf([line({ id: 'SB-901' })]) },
+      deps: { intake: intakeOf([line({ id: 'R-901' })]) },
     })
 
     const res = await tick(deps)
 
     expect(res.intake.enqueued).toBe(1)
     expect(res.intake.known).toEqual([])
-    expect((await adapter.list({})).map((r: any) => r.id)).toEqual(['SB-901'])
+    expect((await adapter.list({})).map((r: any) => r.id)).toEqual(['R-901'])
   })
 
   it('очередь, которая не ответила о своих строках, останавливает постановку целиком', async () => {
@@ -7807,7 +7807,7 @@ describe('обход беклога не ставит заново работу,
     const { deps, journalled } = makeDeps({
       adapter: blind,
       clockObj: c,
-      deps: { intake: intakeOf([line({ id: 'SB-902' })]) },
+      deps: { intake: intakeOf([line({ id: 'R-902' })]) },
     })
 
     const res = await tick(deps)
@@ -7835,7 +7835,7 @@ describe('обход беклога не ставит заново работу,
  * ДЕЛА ГОНЯЮТ НАСТОЯЩИЙ ТИК над настоящей эталонной очередью и настоящим швом реестра.
  */
 describe('захват не выдаёт работу, о которой уже сказано последнее слово', () => {
-  const line = (over: any = {}) => backlogTask({ id: 'SB-176', title: 'починить дверь приёмки', ...over })
+  const line = (over: any = {}) => backlogTask({ id: 'R-176', title: 'починить дверь приёмки', ...over })
   const runResponses = (id: string) => ({
     preflight: { code: 0, stdout: JSON.stringify({ verdict: 'not-built' }) },
     worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: `/wt/${id}`, branch: `wt/${id}` }) },
@@ -7846,17 +7846,17 @@ describe('захват не выдаёт работу, о которой уже 
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
     await adapter.enqueue(line()) // призрак, отчеканенный обходом ДО приёмки
-    const { deps, order, attempts, journalled } = makeDeps({ adapter, clockObj: c, responses: runResponses('SB-176') })
+    const { deps, order, attempts, journalled } = makeDeps({ adapter, clockObj: c, responses: runResponses('R-176') })
     // то, что осталось после приёмки: строка закрытия, как её пишет дверь «Одобрить»
     deps.ledger.recordAttempt({
-      taskId: 'SB-176',
+      taskId: 'R-176',
       attempt: 1,
       closed: { at: '2026-08-31T11:12:00.000Z', by: 'approve', merged: true, mergeSha: '504b61a9' },
     })
 
     const res = await tick(deps)
 
-    expect(res.refusedClaim).toEqual({ taskId: 'SB-176', code: 'card_closed' })
+    expect(res.refusedClaim).toEqual({ taskId: 'R-176', code: 'card_closed' })
     // НИ КОПИИ, НИ ПРОЦЕССА: дороже всего стоит не выданная строка, а запущенный по ней работник
     expect(order).toEqual([])
     const [row] = await adapter.list({})
@@ -7871,12 +7871,12 @@ describe('захват не выдаёт работу, о которой уже 
   it('вторую строку не выдают, пока первая ждёт решения человека — второй писатель в ту же копию', async () => {
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
-    await adapter.enqueue(line({ id: 'SB-195' }))
+    await adapter.enqueue(line({ id: 'R-195' }))
     // Долговечная очередь держит ЗАКОНЧЕННУЮ строку рядом с новой; памятная так не умеет — одна
     // задача, одна запись. Поэтому список о двух строках подставлен поверх настоящей очереди, и
     // это единственная подделка в деле: захват, отказ и закрытие строки — настоящие.
     const waiting = {
-      id: 'SB-195',
+      id: 'R-195',
       status: 'awaiting_approval',
       attempt: 1,
       title: 'починить дверь приёмки',
@@ -7887,13 +7887,13 @@ describe('захват не выдаёт работу, о которой уже 
       completedAt: c.clock() - 600_000,
     }
     const twoRows = { ...adapter, list: async (f: any) => [...(await adapter.list(f)), waiting] }
-    const { deps, order } = makeDeps({ adapter: twoRows, clockObj: c, responses: runResponses('SB-195') })
+    const { deps, order } = makeDeps({ adapter: twoRows, clockObj: c, responses: runResponses('R-195') })
 
     const res = await tick(deps)
 
-    expect(res.refusedClaim).toEqual({ taskId: 'SB-195', code: 'awaiting_person' })
+    expect(res.refusedClaim).toEqual({ taskId: 'R-195', code: 'awaiting_person' })
     expect(order).toEqual([]) // работник в живую копию посадки не поехал
-    const ghost: any = (await adapter.list({})).find((r: any) => r.id === 'SB-195')
+    const ghost: any = (await adapter.list({})).find((r: any) => r.id === 'R-195')
     expect(ghost.status).toBe('failed')
     expect(ghost.failure_reason).toBe('already_decided')
   })
@@ -7901,10 +7901,10 @@ describe('захват не выдаёт работу, о которой уже 
   it('чужое закрытие ничего не запрещает: работа со своим именем идёт как обычно — это сторож, а не замок', async () => {
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
-    await adapter.enqueue(line({ id: 'SB-901' }))
-    const { deps } = makeDeps({ adapter, clockObj: c, responses: runResponses('SB-901') })
+    await adapter.enqueue(line({ id: 'R-901' }))
+    const { deps } = makeDeps({ adapter, clockObj: c, responses: runResponses('R-901') })
     deps.ledger.recordAttempt({
-      taskId: 'SB-176', // закрыта ДРУГАЯ карточка
+      taskId: 'R-176', // закрыта ДРУГАЯ карточка
       attempt: 1,
       closed: { at: '2026-08-31T11:12:00.000Z', by: 'approve', merged: true },
     })
@@ -7912,7 +7912,7 @@ describe('захват не выдаёт работу, о которой уже 
     const res = await tick(deps)
 
     expect(res.refusedClaim).toBeUndefined()
-    expect(res.completed).toBe('SB-901')
+    expect(res.completed).toBe('R-901')
   })
 
   /**
@@ -7926,14 +7926,14 @@ describe('захват не выдаёт работу, о которой уже 
   it('вторая физическая попытка не пишется номером 1 — реестр поднимает счёт очереди', async () => {
     const c = mkClock()
     const adapter = createMemoryQueue({ clock: c.clock, expireMs: 300000 })
-    await adapter.enqueue(line({ id: 'SB-180' })) // очередь начала счёт заново: подход 1
-    const { deps, attempts, journalled } = makeDeps({ adapter, clockObj: c, responses: runResponses('SB-180') })
-    deps.ledger.recordAttempt({ taskId: 'SB-180', attempt: 1, outcome: 'failed', failureReason: 'provider_error' })
+    await adapter.enqueue(line({ id: 'R-180' })) // очередь начала счёт заново: подход 1
+    const { deps, attempts, journalled } = makeDeps({ adapter, clockObj: c, responses: runResponses('R-180') })
+    deps.ledger.recordAttempt({ taskId: 'R-180', attempt: 1, outcome: 'failed', failureReason: 'provider_error' })
 
     const res = await tick(deps)
 
-    expect(res.completed).toBe('SB-180')
-    const ended: any = attempts.filter((a: any) => a.taskId === 'SB-180' && a.outcome === 'completed').at(-1)
+    expect(res.completed).toBe('R-180')
+    const ended: any = attempts.filter((a: any) => a.taskId === 'R-180' && a.outcome === 'completed').at(-1)
     expect(ended.attempt, 'вторая попытка легла в реестр под номером первой').toBe(2)
     expect(journalled.some((e: any) => e.type === 'attempt.number_lifted')).toBe(true)
   })

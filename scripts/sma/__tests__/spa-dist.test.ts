@@ -31,12 +31,14 @@ import { dirname, join } from 'node:path'
 import { describe, it, expect } from 'vitest'
 
 import {
+  defaultFs,
   DIST_NOTHING_KEPT_NOTE,
   DIST_RESTORED_NOTE,
   DIST_UNTOUCHED_NOTE,
   dropKept,
   EMPTY_BUILD_NOTE,
   keepDist,
+  KEPT_PREFIX,
   restoreDist,
   spaOutDir,
   SPA_DEFAULT_OUT_DIR,
@@ -150,6 +152,54 @@ describe('сборка окна: раздача подменяется толь�
     }
   })
 
+  /**
+   * ПОДМЕНА — ДВА ПЕРЕИМЕНОВАНИЯ, И МЕЖДУ НИМИ ЕСТЬ ЩЕЛЬ. Прежняя раздача уже сдвинута в
+   * сторону, новая ещё не встала на место — и вот на этом шаге Windows отказывает чаще
+   * всего: кто-то (демон, антивирус, открытый в браузере файл) держит каталог, и второе
+   * переименование падает с EPERM. Без отката человек остаётся БЕЗ ОКНА ВООБЩЕ: прежнее
+   * уехало под чужим именем, нового нет. Здесь проверяется именно откат.
+   */
+  it('второе переименование отказало: прежняя раздача возвращается на место, а не пропадает', () => {
+    const { root, dist } = treeWithWindow('swap-eperm', { 'index.html': 'ОКНО ВЕРШИНЫ', 'assets/app.js': 'бандл вершины' })
+    try {
+      const real = defaultFs()
+      let renames = 0
+      const io = {
+        ...real,
+        rename: (from: string, to: string) => {
+          renames += 1
+          // Первое (сдвиг прежней в сторону) проходит, второе (постановка новой) — нет,
+          // третье (возврат прежней) обязано пройти: иначе откат был бы на словах.
+          if (renames === 2) {
+            const err: any = new Error('EPERM: operation not permitted, rename')
+            err.code = 'EPERM'
+            throw err
+          }
+          return real.rename(from, to)
+        },
+      }
+      const res: any = stageSpaBuild({
+        root,
+        fs: io,
+        run: ({ env }: any) => {
+          writeFileSync(join(env[SPA_OUT_DIR_ENV], 'index.html'), 'ОКНО ВЕТКИ', 'utf8')
+          return { ok: true, exitCode: 0 }
+        },
+      })
+      expect(res.built, 'подмена не состоялась — сборка не имеет права называться удавшейся').toBe(false)
+      expect(res.distTouched).toBe(false)
+      expect(res.note).toContain(DIST_UNTOUCHED_NOTE)
+      expect(res.note, 'отказ обязан назвать, ЧТО именно не прошло').toContain('EPERM')
+      // ГЛАВНОЕ: раздача на месте и целая — не сдвинута под чужое имя и не наполовину.
+      expect(readDist(dist, 'index.html')).toBe('ОКНО ВЕРШИНЫ')
+      expect(readDist(dist, 'assets/app.js')).toBe('бандл вершины')
+      expect(renames, 'откат — это третье переименование, и оно обязано состояться').toBe(3)
+      expect(neighbours(root), 'ни сдвинутого, ни временного рядом остаться не должно').toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('временный каталог, оставшийся от процесса, которого больше нет, убирается следующей сборкой', () => {
     const { root, dist } = treeWithWindow('orphan')
     try {
@@ -201,6 +251,60 @@ describe('прежняя раздача, отложенная до вердик�
       expect(dropKept({ kept: held.kept })).toBe(true)
       expect(readDist(dist, 'index.html')).toBe('ОКНО ПРИНЯТОЙ ВЕТКИ')
       expect(neighbours(root)).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * ОТЛОЖЕННЫЕ КОПИИ ТОЖЕ КОПЯТСЯ, И ПОДМЕТАТЬ ИХ МОЖНО РОВНО В ОДНОМ МЕСТЕ. Посадка,
+   * снятая между сборкой и вердиктом, оставляет свою копию на диске: вернуть её больше
+   * некому, а весит она столько же, сколько окно. Подметает её ТОТ, КТО КЛАДЁТ СЛЕДУЮЩУЮ, —
+   * посадки сериализованы слотом слияния, поэтому чужая копия в этот момент заведомо мертва.
+   */
+  it('чужая отложенная копия подметается тем, кто откладывает следующую', () => {
+    const { root, dist } = treeWithWindow('kept-orphan')
+    try {
+      const dead = join(root, 'daemon', 'static', `${KEPT_PREFIX}снятая-посадка`)
+      mkdirSync(dead, { recursive: true })
+      writeFileSync(join(dead, 'index.html'), 'окно посадки, которую сняли', 'utf8')
+
+      const held: any = keepDist({ root })
+      expect(held.swept, 'мёртвая копия обязана быть подметена, а не накапливаться').toBe(1)
+      expect(existsSync(dead)).toBe(false)
+      // …и СВОЯ копия при этом жива: подмёл — не значит «снёс всё по имени».
+      expect(existsSync(held.kept)).toBe(true)
+      writeFileSync(join(dist, 'index.html'), 'ОКНО ОТКАЗАННОЙ ВЕТКИ', 'utf8')
+      expect((restoreDist({ root, kept: held.kept }) as any).restored).toBe(true)
+      expect(readDist(dist, 'index.html')).toBe('ОКНО ВЕРШИНЫ')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * …А СБОРКА ЭТУ КОПИЮ НЕ ТРОГАЕТ, И ЭТО НЕ ПРОПУСК, А ЗАКОН. Постановка бежит ВНУТРИ той
+   * посадки, которая копию только что положила (сборка — её ребёнок). Подмети сборка чужие
+   * имена «заодно» — страховка исчезала бы ровно в тот момент, ради которого её и клали, и
+   * красный прогон возвращать было бы нечего.
+   */
+  it('сборка НЕ подметает отложенную копию — она бежит внутри посадки, которая её положила', () => {
+    const { root, dist } = treeWithWindow('kept-survives-build')
+    try {
+      const held: any = keepDist({ root })
+      const res: any = stageSpaBuild({
+        root,
+        run: ({ env }: any) => {
+          writeFileSync(join(env[SPA_OUT_DIR_ENV], 'index.html'), 'ОКНО ВЕТКИ', 'utf8')
+          return { ok: true, exitCode: 0 }
+        },
+      })
+      expect(res.built).toBe(true)
+      expect(readDist(dist, 'index.html')).toBe('ОКНО ВЕТКИ')
+      expect(existsSync(held.kept), 'сборка снесла страховку посадки, внутри которой бежала').toBe(true)
+      // Возврат после этой сборки обязан работать — ради него страховка и лежала.
+      expect((restoreDist({ root, kept: held.kept }) as any).restored).toBe(true)
+      expect(readDist(dist, 'index.html')).toBe('ОКНО ВЕРШИНЫ')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

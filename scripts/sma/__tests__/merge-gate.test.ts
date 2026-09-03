@@ -696,7 +696,7 @@ describe('гейт слияния: непригодная среда назыв�
     const execGit = makeExecGit()
     let ranTests = false
     const res: any = await runMerge({
-      branch: 'wt/SB-195',
+      branch: 'wt/R-195',
       by: 'T-env',
       execGit,
       runTests: () => {
@@ -826,7 +826,7 @@ describe('красный отказ несёт имя упавшего тест�
   it('имя и причина от прогонятеля доезжают и в ответ, и в квитанцию журнала', async () => {
     const execGit = makeExecGit()
     const res: any = await runMerge({
-      branch: 'wt/SB-181',
+      branch: 'wt/R-181',
       by: 'T-red',
       execGit,
       runTests: () => ({

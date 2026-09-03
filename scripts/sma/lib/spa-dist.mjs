@@ -93,8 +93,14 @@ export const DIST_NOTHING_KEPT_NOTE = 'прежней раздачи рядом 
 export const EMPTY_BUILD_NOTE =
   'сборщик закончил успехом, но не произвёл ни одного файла — раздача не тронута'
 
-/** Файловый ввод-вывод одним объектом — шов для прогона, значение по умолчанию для жизни. */
-function defaultFs() {
+/**
+ * Файловый ввод-вывод одним объектом — шов для прогона, значение по умолчанию для жизни.
+ *
+ * ЭКСПОРТИРОВАН РАДИ ПРОГОНА, И ЭТО НЕ ПОБЛАЖКА. Случаи, где ломается ОДНО переименование из
+ * трёх, проверяются на настоящих файлах с одним подменённым движением: собранный в прогоне
+ * поддельный набор проверял бы подделку, а не откат.
+ */
+export function defaultFs() {
   return {
     exists: existsSync,
     mkdir: (p) => mkdirSync(p, { recursive: true }),
@@ -218,6 +224,11 @@ export function stageSpaBuild(o = {}) {
   const dist = join(root, ...SPA_DIST_REL.split('/'))
   const staticDir = dirname(dist)
 
+  // ЗДЕСЬ ПОДМЕТАЮТСЯ ДВА ИМЕНИ ИЗ ТРЁХ, И ТРЕТЬЕ ПРОПУЩЕНО НАМЕРЕННО. `KEPT_PREFIX` — это
+  // отложенная посадкой прежняя раздача, и постановка бежит ВНУТРИ той самой посадки, которая
+  // её только что положила (сборка — её ребёнок). Подмети мы её здесь — страховка исчезала бы
+  // ровно в тот момент, ради которого её и клали, и красный прогон возвращать было бы нечего.
+  // Отложенные сироты подметает `keepDist`: там любая такая копия заведомо мертва.
   const swept = sweepOrphans(fs, staticDir, [STAGE_PREFIX, DISPLACED_PREFIX])
   const stage = join(staticDir, `${STAGE_PREFIX}${suffix(o.clock)}`)
   try {
@@ -275,17 +286,28 @@ export function stageSpaBuild(o = {}) {
  *
  * Копия, а не переименование: пока идёт сборка, демон продолжает отдавать окно, и вынимать
  * его из-под живого читателя ради страховки — плохой обмен.
+ *
+ * …И ИМЕННО ЗДЕСЬ ПОДМЕТАЮТСЯ ЧУЖИЕ ОТЛОЖЕННЫЕ КОПИИ. Посадка сериализована слотом слияния:
+ * в ту секунду, когда одна из них собирается отложить свою копию, живой второй быть не может,
+ * а лежащая на диске осталась от посадки, которую сняли между сборкой и вердиктом. Вернуть её
+ * больше некому — это полмегабайта, которые иначе копились бы по копии на каждую снятую
+ * посадку. Подметать их СБОРКОЙ (`stageSpaBuild`) нельзя: она бежит внутри посадки, чью копию
+ * и снесла бы, — см. её собственную оговорку.
  */
 export function keepDist({ root, fs, clock } = {}) {
   const io = fs || defaultFs()
   const dist = join(root || process.cwd(), ...SPA_DIST_REL.split('/'))
-  if (!io.exists(dist)) return { keepNote: DIST_NOTHING_KEPT_NOTE }
+  const swept = sweepOrphans(io, dirname(dist), [KEPT_PREFIX])
+  if (!io.exists(dist)) return { keepNote: DIST_NOTHING_KEPT_NOTE, ...(swept ? { swept } : {}) }
   const kept = join(dirname(dist), `${KEPT_PREFIX}${suffix(clock)}`)
   try {
     io.copy(dist, kept)
-    return { kept }
+    return { kept, ...(swept ? { swept } : {}) }
   } catch (err) {
-    return { keepNote: `прежнюю раздачу отложить не удалось (${String((err && err.message) || err)})` }
+    return {
+      keepNote: `прежнюю раздачу отложить не удалось (${String((err && err.message) || err)})`,
+      ...(swept ? { swept } : {}),
+    }
   }
 }
 
