@@ -878,7 +878,7 @@ export function redactUrl(u) {
 }
 
 /**
- * The same credential names, hunted inside PROSE rather than inside a parsed address.
+ * The credential names, hunted inside PROSE rather than inside a parsed address.
  *
  * A separator (`?`, `&`, `;` or `#`) immediately before the name is what makes this a whole-name
  * match without a lookbehind: `?tokenizer=fast` never matches, because the name has to be followed
@@ -886,10 +886,191 @@ export function redactUrl(u) {
  * separator, a quote, a bracket. A DOT IS DELIBERATELY NOT A TERMINATOR: a JWT is three dot-joined
  * parts, and stopping at the first dot would publish two thirds of it.
  */
-const SECRET_IN_TEXT_RE = new RegExp(`([?&;#])(${SECRET_PARAM_SOURCE})=([^\\s&#"'\`<>\\\\)\\]}]*)`, 'gi')
+const VALUE_STOP = '\\s&#"\'`<>\\\\)\\]}'
+/** Everything that can be inside a credential's value, up to the first character that cannot. */
+const SECRET_VALUE_SOURCE = `[^${VALUE_STOP}]`
+/**
+ * The same, once somebody percent-encoded the address it lived in: the value ends where the
+ * ENCODED separator begins (`%26` for `&`, `%23` for `#`, `%3B` for `;`), not at the `%`.
+ */
+const PCT_VALUE_SOURCE = `(?:(?!%26|%23|%3[Bb])[^${VALUE_STOP}])`
+/**
+ * Where a name is allowed to START. Not a plain word boundary: a percent-encoded address puts a
+ * hex digit immediately before the name (`…%3Ftoken%3D…`), and a boundary that only knows letters
+ * would read that `F` as «this is the middle of a word» and let the whole form through.
+ */
+const NAME_START = '(?<=^|[^A-Za-z0-9_-]|%[0-9A-Fa-f]{2})'
+/** The schemes an `Authorization` value is carried behind. The scheme survives; its value does not. */
+const AUTH_SCHEME = '(?:Bearer|Basic|Token|Digest)'
+/**
+ * Names narrow enough to be trusted in PROSE, where there is no `?` to say «this is an address».
+ * `key` and `session` are deliberately absent: a receipt prints the path walked, and a step reads
+ * `key:Control+K` — the wide list would redact the keystroke and tell the reader nothing.
+ */
+const PROSE_NAME_SOURCE =
+  'token|access[_-]?token|id[_-]?token|refresh[_-]?token|api[_-]?key|apikey|secret|client[_-]?secret|password|passwd|pwd|authorization|signature'
 
 /**
- * redactText(text) — every credential-carrying address inside a piece of TEXT, destroyed.
+ * THE FORMS, IN ORDER. Each keeps everything up to the value and replaces the value alone, so a
+ * reader is told a removal happened instead of being left to wonder — and so the machine-readable
+ * half of a receipt stays parseable (nothing here emits a character JSON would have to escape).
+ */
+const SECRET_FORMS = Object.freeze([
+  // 1. the address form: ?token=… &token=… ;token=… #token=…
+  { re: new RegExp(`([?&;#](?:${SECRET_PARAM_SOURCE})=)(${SECRET_VALUE_SOURCE}*)`, 'gi'), keep: 1 },
+  // 2. the same address with no `?` in front of it (a query string quoted from its second half),
+  //    the header form «Authorization: Bearer …», and the prose form «token: …» / «"token": "…"»
+  {
+    re: new RegExp(
+      `${NAME_START}((?:${PROSE_NAME_SOURCE})["']?[ \\t]*[:=][ \\t]*["']?(?:${AUTH_SCHEME}[ \\t]+)?)(${SECRET_VALUE_SOURCE}+)`,
+      'gi'
+    ),
+    keep: 1,
+  },
+  // 3. the address after somebody percent-encoded it: …%3Ftoken%3D…
+  { re: new RegExp(`${NAME_START}((?:${SECRET_PARAM_SOURCE})%3[Dd])(${PCT_VALUE_SOURCE}+)`, 'gi'), keep: 1 },
+  // 4. a credential behind its scheme with no name anywhere in front of it — the shape a client
+  //    library echoes when it logs the request it is about to make
+  { re: new RegExp(`(\\b${AUTH_SCHEME}[ \\t]+)([A-Za-z0-9._~+/=-]{8,})`, 'g'), keep: 1 },
+])
+
+/**
+ * ═══════ THE MASK KNOWS THE KEY ITSELF, NOT ONLY THE SHAPE IT USUALLY WEARS ═══════
+ *
+ * A rule about FORM answers «does this look like a credential?», and that question has an endless
+ * supply of wrong answers: the same token rides out as `Authorization: Bearer …`, as `token: …` in
+ * a sentence, as a query string quoted from its second half with no `?` in front of it, as
+ * `%3Ftoken%3D…` inside an encoded address — and, in the end, entirely bare, because nothing
+ * obliges a driver to name what it is printing. Every one of those was a hole in a mask that only
+ * knew forms.
+ *
+ * So the first net is the VALUE. This process knows which strings are keys before it prints a
+ * single line: the daemon's own configured token, the window token in its environment, whatever an
+ * `Authorization` value carries, the credential in the address it was pointed at. Those strings are
+ * replaced wherever they occur, in any form and in none. The form rules stay as the SECOND net, for
+ * the credential this process was never told about.
+ *
+ * The list is module state on purpose: the mask sits on the process's output, and the output has
+ * no argument to pass a list through.
+ */
+const knownSecrets = []
+let knownSecretsRe = null
+
+/** Shorter than this is not a key, and masking it would eat the prose a receipt exists to give. */
+export const SECRET_VALUE_MIN = 6
+/** A bound on the list, so a pathological environment cannot build an unbounded alternation. */
+export const SECRET_VALUE_CAP = 64
+
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * registerSecretValues(values) — teach the mask a string it must never print. Idempotent, bounded,
+ * and it never throws: it is called on the way up, before the process has said anything.
+ *
+ * The percent-encoded spelling of each value is registered beside it, because an address carrying
+ * a credential with punctuation in it arrives encoded and would otherwise not match itself.
+ */
+export function registerSecretValues(values) {
+  const incoming = Array.isArray(values) ? values : [values]
+  for (const raw of incoming) {
+    if (typeof raw !== 'string') continue
+    const value = raw.trim()
+    if (value.length < SECRET_VALUE_MIN) continue
+    let encoded = value
+    try {
+      encoded = encodeURIComponent(value)
+    } catch {
+      /* a lone surrogate cannot be encoded — the plain spelling still counts */
+    }
+    for (const form of encoded === value ? [value] : [value, encoded]) {
+      if (knownSecrets.length >= SECRET_VALUE_CAP || knownSecrets.includes(form)) continue
+      knownSecrets.push(form)
+    }
+  }
+  // Longest first: one secret that contains another must be destroyed whole.
+  knownSecrets.sort((a, b) => b.length - a.length || (a < b ? -1 : 1))
+  knownSecretsRe = knownSecrets.length ? new RegExp(knownSecrets.map(escapeRegExp).join('|'), 'gi') : null
+  return knownSecrets.length
+}
+
+/** Forget every known value. Exists for tests — a process only ever learns keys. */
+export function forgetSecretValues() {
+  knownSecrets.length = 0
+  knownSecretsRe = null
+}
+
+/** The values the mask currently knows, longest first. Read-only copy. */
+export function knownSecretValues() {
+  return [...knownSecrets]
+}
+
+/**
+ * Names of ENVIRONMENT variables whose value is a credential, judged by the tail of the name —
+ * `SMA_WINDOW_TOKEN`, `…_PASSWORD`, `…_API_KEY`. This is also how a password typed by the `env:`
+ * step form becomes something the mask can recognise on the way out.
+ */
+export const SECRET_ENV_RE = /(?:^|_)(?:token|secret|password|passwd|pwd|api[_-]?key|apikey|authorization|auth)$/i
+
+/** `Bearer <value>` → `<value>`; anything else → itself. The credential, not the scheme. */
+const behindScheme = (value) => {
+  const m = /^[ \t]*(?:Bearer|Basic|Token|Digest)[ \t]+(\S+)[ \t]*$/i.exec(value)
+  return m ? m[1] : value
+}
+
+/**
+ * collectSecretValues({env, config, url}) — every string this process can know to be a key.
+ *
+ * PURE: it is handed the environment, the parsed daemon config and the target address; reading
+ * the config off disk belongs to the runner, so this stays testable without a home directory.
+ * Fail-open throughout — an unreadable source costs its own values and never the whole list.
+ */
+export function collectSecretValues({ env = null, config = null, url = '' } = {}) {
+  const found = []
+  const take = (value) => {
+    if (typeof value !== 'string' || value.trim().length < SECRET_VALUE_MIN) return
+    found.push(value.trim())
+    const bare = behindScheme(value.trim())
+    if (bare !== value.trim() && bare.length >= SECRET_VALUE_MIN) found.push(bare)
+  }
+
+  if (env && typeof env === 'object') {
+    for (const [name, value] of Object.entries(env)) {
+      if (SECRET_ENV_RE.test(String(name))) take(value)
+    }
+  }
+
+  // The daemon's config carries the door key at its top level and one per federated peer; the
+  // walk is generic and bounded, so a key added to that file later is covered the day it lands.
+  const walk = (node, depth) => {
+    if (!node || typeof node !== 'object' || depth > 6 || found.length >= SECRET_VALUE_CAP) return
+    for (const [name, value] of Object.entries(node)) {
+      if (typeof value === 'string') {
+        if (SECRET_PARAM_RE.test(name)) take(value)
+      } else if (value && typeof value === 'object') {
+        walk(value, depth + 1)
+      }
+    }
+  }
+  walk(config, 0)
+
+  // The address this run was pointed at carries the very credential the receipt was caught
+  // publishing — it is the one key that is always present, and it is known before the first line.
+  if (typeof url === 'string' && url !== '') {
+    try {
+      const parsed = new URL(url)
+      for (const [name, value] of parsed.searchParams) if (SECRET_PARAM_RE.test(name)) take(value)
+      const hash = parsed.hash.startsWith('#') ? new URLSearchParams(parsed.hash.slice(1)) : null
+      if (hash) for (const [name, value] of hash) if (SECRET_PARAM_RE.test(name)) take(value)
+    } catch {
+      /* not an address this runtime can parse — the form rules still cover whatever is in it */
+    }
+  }
+  return [...new Set(found)]
+}
+
+/**
+ * redactText(text) — every credential inside a piece of TEXT, destroyed: first the values this
+ * process knows to be keys, then the shapes a credential is usually written in.
  *
  * WHY A SECOND REDACTOR HAD TO EXIST. redactUrl is handed an address, and it is handed one at
  * every point this engine records a URL of its own. But a driver failure is not an address — it
@@ -905,7 +1086,105 @@ const SECRET_IN_TEXT_RE = new RegExp(`([?&;#])(${SECRET_PARAM_SOURCE})=([^\\s&#"
  */
 export function redactText(text) {
   if (typeof text !== 'string' || text === '') return text
-  return text.replace(SECRET_IN_TEXT_RE, (_match, separator, name) => `${separator}${name}=${REDACTED}`)
+  let out = knownSecretsRe ? text.replace(knownSecretsRe, REDACTED) : text
+  for (const form of SECRET_FORMS) {
+    form.re.lastIndex = 0
+    out = out.replace(form.re, (...args) => `${args[form.keep]}${REDACTED}`)
+  }
+  return out
+}
+
+/** How much of an unfinished line the mask holds back by default. */
+export const SECRET_FRAME_TAIL = 1024
+
+/**
+ * ═══════ A KEY CUT IN HALF BY A WRITE IS STILL A KEY ═══════
+ *
+ * The mask reads one chunk at a time, and a chunk is not a sentence: a driver that writes its
+ * line in two calls hands the mask `…?token=28be9f` and then `01c7&view=queue`, and neither half
+ * matches anything. The credential is printed whole, in order, and no rule ever sees it.
+ *
+ * So the mask holds a TAIL. Everything up to the last newline is final — no credential contains
+ * one — and whatever follows it is kept until the next chunk arrives or the process leaves, at
+ * which point it is scanned with its continuation attached. The held tail is capped so a stream
+ * that never emits a newline still moves; the cap is the longest thing a credential could be.
+ *
+ * @param {(text:string)=>string} redact
+ * @param {number} limit — how much of an unfinished line may be held back
+ * @returns {{push:(text:string)=>string, flush:()=>string, held:()=>number}}
+ */
+export function createFrameMask(redact, limit = SECRET_FRAME_TAIL) {
+  const cap = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : SECRET_FRAME_TAIL
+  let held = ''
+  return {
+    push(text) {
+      const buffered = held + (typeof text === 'string' ? text : '')
+      let cut = buffered.lastIndexOf('\n') + 1
+      if (buffered.length - cut > cap) cut = buffered.length - cap
+      held = buffered.slice(cut)
+      return cut === 0 ? '' : redact(buffered.slice(0, cut))
+    },
+    flush() {
+      const rest = held
+      held = ''
+      return rest === '' ? '' : redact(rest)
+    },
+    held: () => held.length,
+  }
+}
+
+/** The tail this process must hold: never less than the longest key it knows, plus its context. */
+export function secretFrameTail() {
+  const longest = knownSecrets.reduce((n, s) => Math.max(n, s.length), 0)
+  return Math.max(SECRET_FRAME_TAIL, longest + 1)
+}
+
+/** How long the way out waits for a queued line to reach the operating system before it forces. */
+export const EXIT_GRACE_MS = 2000
+
+/**
+ * ═══════ THE LAST LINE IS THE ONE THAT MATTERS, AND IT WAS THE ONE BEING LOST ═══════
+ *
+ * `process.exit()` does not flush. On POSIX a stdout that is a pipe — which is what it is whenever
+ * anything is reading this run, a scene, a CI job, a shell redirect — is written ASYNCHRONOUSLY,
+ * so everything still queued at the moment of the call is dropped on the floor. The lines at risk
+ * are exactly the ones a reader came for: «NOT RUN — this is not a pass», the receipt itself, and
+ * the absolute path printed on the last line. A run that failed could therefore be read as a run
+ * that said nothing, which is the same lie the whole engine exists to refuse.
+ *
+ * So leaving is a two-step: flush what the mask is holding, then wait for the streams to report
+ * that everything queued has actually left, and only then shut the door. The wait is bounded — a
+ * reader that walked away must not turn a failed run into a hung one — and the bound is a WAIT,
+ * never a cut made in advance.
+ *
+ * @param {{handles:Array<{close:(done:()=>void)=>void}>, exit:(code:number)=>void,
+ *          grace?:number, timer?:Function}} opts
+ * @returns {(code:number)=>void}
+ */
+export function createLeave({ handles = [], exit, grace = EXIT_GRACE_MS, timer = setTimeout } = {}) {
+  let leaving = false
+  let gone = false
+  return function leave(code) {
+    if (leaving) return
+    leaving = true
+    const shut = () => {
+      if (gone) return
+      gone = true
+      exit(code)
+    }
+    let waiting = handles.length
+    if (waiting === 0) return shut()
+    const forced = timer(shut, grace)
+    // The bound must not be what keeps the process alive: when the streams drain first, the run
+    // leaves at once, and the timer that was never needed does not hold the door open behind it.
+    if (forced && typeof forced.unref === 'function') forced.unref()
+    for (const handle of handles) {
+      handle.close(() => {
+        waiting -= 1
+        if (waiting === 0) shut()
+      })
+    }
+  }
 }
 
 /** Первые восемь байт всякого PNG. Файл, который на них кончается, — подпись без картинки. */

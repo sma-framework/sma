@@ -40,7 +40,9 @@
  */
 
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import { pathToFileURL } from 'node:url'
 
 import {
@@ -55,6 +57,9 @@ import {
   SWEEP_CAP,
   VIEWPORTS,
   classify,
+  collectSecretValues,
+  createFrameMask,
+  createLeave,
   imageFacts,
   isStreamClose,
   missingDriverMessage,
@@ -63,13 +68,43 @@ import {
   receiptsRoot,
   redactText,
   redactUrl,
+  registerSecretValues,
   renderReceipt,
   resolveDriveViewport,
+  secretFrameTail,
   sweepSparseNote,
   typeText,
   verdict,
   worstOverflow,
 } from './lib/ui-drive.mjs'
+
+/**
+ * ═════════ THE KEYS THIS RUN KNOWS BEFORE IT SAYS ANYTHING ═════════
+ *
+ * A rule about the SHAPE of a credential answers «does this look like a key?», and that question
+ * has an endless supply of wrong answers — a bare token in a driver's sentence looks like nothing
+ * at all. The values themselves are knowable, though, and they are knowable HERE: the daemon's own
+ * configured token, the window token in the environment, the credential in the address this run
+ * was pointed at. They are learned before the first line is printed, so the mask below starts out
+ * knowing what it is looking for rather than guessing from punctuation.
+ *
+ * Fail-open: an unreadable config costs its own values and never the run — the shape rules are
+ * still standing behind this, exactly as they were.
+ */
+const daemonConfig = () => {
+  try {
+    return JSON.parse(readFileSync(process.env.SMA_DAEMON_CONFIG || join(homedir(), '.sma-daemon', 'config.json'), 'utf8'))
+  } catch {
+    return null
+  }
+}
+registerSecretValues(
+  collectSecretValues({
+    env: process.env,
+    config: daemonConfig(),
+    url: process.argv.slice(2).find((a) => /^https?:/i.test(a)) || '',
+  })
+)
 
 /**
  * ═════════════ THE MASK STANDS ON THE EXIT, NOT AT EACH WRITER ═════════════
@@ -85,21 +120,73 @@ import {
  * driver's lines, the text of any exception, caught or not — passes through it, and there is no
  * way to print past it. It costs one scan per chunk of output and removes the whole class.
  *
- * BYTES THAT WERE NOT TOUCHED TRAVEL AS THEY CAME: a buffer is re-encoded only when a credential
- * was actually found in it, so a multi-byte character split across two chunks does not pay for a
- * scan that found nothing.
+ * A CHUNK IS NOT A SENTENCE. Nothing obliges a writer to hand the mask a whole line: a key split
+ * across two calls used to be printed whole, in order, with neither half matching anything. So the
+ * mask holds back whatever follows the last newline (createFrameMask) and scans it with its
+ * continuation attached; the held tail leaves with the process, through this same door.
+ *
+ * A MULTI-BYTE CHARACTER SPLIT BY A CHUNK BOUNDARY IS REASSEMBLED rather than mangled — holding a
+ * tail means decoding, and a decoder that keeps its state is the only way that decoding is honest.
  */
+const masked = []
 function maskStream(stream) {
   const write = stream.write.bind(stream)
-  stream.write = (chunk, encoding, callback) => {
-    const text = typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : null
-    const safe = text === null ? null : redactText(text)
-    if (safe === null || safe === text) return write(chunk, encoding, callback)
-    return write(safe, 'utf8', typeof encoding === 'function' ? encoding : callback)
+  const decoder = new StringDecoder('utf8')
+  const frame = createFrameMask(redactText, secretFrameTail())
+  let inFlight = 0
+  let drained = null
+  const settle = () => {
+    if (inFlight > 0 || !drained) return
+    const done = drained
+    drained = null
+    done()
   }
+  const send = (text, callback) => {
+    inFlight += 1
+    return write(text, 'utf8', () => {
+      inFlight -= 1
+      if (typeof callback === 'function') callback()
+      settle()
+    })
+  }
+  stream.write = (chunk, encoding, callback) => {
+    const text =
+      typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) || ArrayBuffer.isView(chunk) ? decoder.write(chunk) : null
+    if (text === null) return write(chunk, encoding, callback)
+    const cb = typeof encoding === 'function' ? encoding : callback
+    const out = frame.push(text)
+    if (out === '') {
+      if (typeof cb === 'function') queueMicrotask(cb)
+      return true
+    }
+    return send(out, cb)
+  }
+  masked.push({
+    close(done) {
+      const tail = frame.flush() + decoder.end()
+      if (tail !== '') send(tail)
+      if (inFlight === 0) done()
+      else drained = done
+    },
+  })
 }
 maskStream(process.stdout)
 maskStream(process.stderr)
+
+/**
+ * The one way out of this process — see createLeave. `process.exit()` does not flush, and on POSIX
+ * a stdout that is a pipe is written asynchronously, so the lines most worth reading («NOT RUN»,
+ * the receipt, the path on the last line) were the ones being dropped. Every exit below goes
+ * through here, and every caller RETURNS after calling it: leaving is now a wait, not an execution
+ * barrier, so the code after it would otherwise keep running.
+ */
+const leave = (() => {
+  const go = createLeave({ handles: masked, exit: (code) => process.exit(code) })
+  return (code) => {
+    process.exitCode = code
+    go(code)
+  }
+})()
 
 /**
  * ═══════ THE ONE PRINTER THAT DOES NOT USE THE STREAM: THE RUNTIME'S OWN ═══════
@@ -117,7 +204,7 @@ maskStream(process.stderr)
 const fatal = (err) => {
   const text = err instanceof Error ? err.message : String(err)
   process.stdout.write(`SMA ui-drive: NOT RUN — ${text.split('\n')[0]}\n  This is not a pass.\n`)
-  process.exit(3)
+  leave(3)
 }
 process.on('uncaughtException', fatal)
 process.on('unhandledRejection', fatal)
@@ -355,7 +442,7 @@ async function main() {
   const minViewport = mvIdx >= 0 ? Number(argv[mvIdx + 1]) : 0
   if (mvIdx >= 0 && (!Number.isFinite(minViewport) || minViewport <= 0)) {
     process.stdout.write('SMA ui-drive: --min-viewport needs a positive pixel number.\n')
-    process.exit(2)
+    return leave(2)
   }
   // --at <desktop|tablet|mobile>: the operator DECLARES the width the scripted path and the
   // sweep are walked at. Both used to be nailed to the desktop, so a claim about a narrow
@@ -368,7 +455,7 @@ async function main() {
     const asked = resolveDriveViewport(argv[atIdx + 1])
     if (!asked.ok) {
       process.stdout.write(`SMA ui-drive: ${asked.reason}\n`)
-      process.exit(2)
+      return leave(2)
     }
     pathViewport = asked.viewport
   }
@@ -380,7 +467,7 @@ async function main() {
       `SMA ui-drive: --at ${pathViewport.name} (${pathViewport.width}px) is below --min-viewport ${minViewport} — ` +
         'the width you asked the path to walk is the one you declared the app does not serve. Nothing was run.\n'
     )
-    process.exit(2)
+    return leave(2)
   }
   const positional = argv.filter(
     (a, i) =>
@@ -395,19 +482,19 @@ async function main() {
     process.stdout.write(
       'usage: node scripts/sma/ui-drive.mjs <url> [step ...] [--no-sweep] [--min-viewport <px>] [--at <desktop|tablet|mobile>]\n'
     )
-    process.exit(2)
+    return leave(2)
   }
 
   const parsed = parseSteps(stepArgv)
   if (!parsed.ok) {
     process.stdout.write(`SMA ui-drive: bad steps — nothing was run.\n${parsed.errors.map((e) => `  - ${e}`).join('\n')}\n`)
-    process.exit(2)
+    return leave(2)
   }
 
   const driver = await resolveDriver()
   if (!driver.ok) {
     process.stdout.write(`${missingDriverMessage(driver.reason)}\n${driverHint()}\n`)
-    process.exit(3)
+    return leave(3)
   }
 
   const startedAt = new Date().toISOString()
@@ -425,7 +512,7 @@ async function main() {
     // A stale browser cache lands here — the same install command is the fix, and the
     // run is still NOT RUN rather than an empty pass.
     process.stdout.write(`${missingDriverMessage(`browser will not launch — ${err.message.split('\n')[0]}`)}\n`)
-    process.exit(3)
+    return leave(3)
   }
 
   const consoleErrors = []
@@ -684,11 +771,11 @@ async function main() {
   // nowhere else — and the run that most needs its receipt found is the one made in a copy
   // whose working directory the reader never had.
   process.stdout.write(`${receipt}\nReceipt: ${resolve(outDir, 'RUN.md')}\n`)
-  process.exit(v.exitCode)
+  return leave(v.exitCode)
 }
 
 main().catch((err) => {
   // Failing loud is the whole point of this tool; a crash must not read as a clean run.
   process.stdout.write(`SMA ui-drive: NOT RUN — ${err.message}\n  This is not a pass.\n`)
-  process.exit(3)
+  return leave(3)
 })
