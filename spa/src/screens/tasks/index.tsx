@@ -22,6 +22,7 @@ import {
   doneRowIndex,
   doneUnfoldRow,
   doneView,
+  rosterLine,
   splitByProject,
 } from './units'
 import type { BoardColumn, DoneTab, WorkUnit } from './units'
@@ -294,20 +295,11 @@ export function Screen() {
   /**
    * The roster in one sentence — who is on the work right now.
    *
-   * И «РАБОТНИКОВ НЕТ» — ТОЖЕ ПРИГОВОР, вынесенный до первого ответа. Дверь состояния на
-   * холодную отвечала 33 465 мс (замер 31.08.2026), и всё это время шапка этого экрана
-   * сообщала «Работников нет» при ЧЕТЫРЁХ РАБОТАЮЩИХ. Тот же дефект, что двумя абзацами ниже
-   * лечит `answered` для списка: пустой список у окна, которое ещё не спрашивало, и пустой
-   * список у окна, которому ответили «пусто», — разные утверждения.
+   * Считает его `rosterLine` в проекции, а не эта вёрстка: число берётся готовым из чисел
+   * двери (`kpis.workersTotal` / `workersBusy` — пул очереди), поэтому шапка не может назвать
+   * работниками весь состав ролей. Почему это правило и чем за него заплачено — там же.
    */
-  const workerLine = useMemo(() => {
-    if (data === undefined) return 'Работники — читаю…'
-    const rows = data.workers ?? []
-    if (rows.length === 0) return 'Работников нет'
-    if (rows.length === 1) return `Работник: ${rows[0].id} · ${rows[0].presence}`
-    const busy = rows.filter((w) => !!w.taskId).length
-    return `Работников: ${rows.length} · занято ${busy}`
-  }, [data])
+  const workerLine = useMemo(() => rosterLine(data), [data])
 
   // ЧТО ОТКРЫТО — рассказано оболочке. Список и раскрытая фаза — это ОДИН экран, и снаружи
   // их не различить: без этого рассказа окно разговора говорило бы «Задачи», пока человек
