@@ -386,7 +386,10 @@ export async function runMerge(o = {}) {
       // что-то — падаем наружу, но уже с именами файлов и их числом.
       const found = conflictedFiles({ cwd, execGit })
       if (!found.answered || found.count === 0) throw err
-      const fixed = resolveMechanical({ cwd, execGit, files: found.files, rules: o.mechanicalRules ?? MECHANICAL_DEFAULTS, io: o.io, run: o.run })
+      // ЗДЕСЬ ВЕРШИНА — ЭТО `ours`: ветка въезжает В main, и «своя» сторона и есть вершина.
+      // Названо явно, а не оставлено умолчанию: у другой двери (сведение ветки) направление
+      // обратное, и молчаливое совпадение с умолчанием — это не договор, а совпадение.
+      const fixed = resolveMechanical({ cwd, execGit, files: found.files, rules: o.mechanicalRules ?? MECHANICAL_DEFAULTS, io: o.io, run: o.run, trunkSide: 'ours' })
       if (fixed.remaining.length > 0) {
         conflictDetail = {
           conflict: true,
