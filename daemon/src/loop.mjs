@@ -898,9 +898,16 @@ function hostCommitAfterSession(deps, { task, route, workDir, include } = {}) {
   // схлопнутой строке утащил бы в коммит и обстановку. Дверь ответа выше спрашивает то же
   // самое крупнее — ей достаточно знать, ЕСТЬ ли грязь; здесь нужно знать, ЧТО именно, и
   // правило «чьё это» обе читают одно (workerDirt).
+  //
+  // `core.quotePath=false` — ПО ТОЙ ЖЕ ПРИЧИНЕ: по умолчанию git отдаёт неанглийское имя
+  // файла в восьмеричных escape-последовательностях внутри кавычек, и путь, снятый с такой
+  // строки, не откроется ничем. Дверь ответа этого не замечает — она считает строки; рука,
+  // которая по ним коммитит, потеряла бы ровно ту работу, чьё имя написано не по-английски.
   let dirty = ''
   try {
-    dirty = String(deps.execGit(['status', '--porcelain', '--untracked-files=all'], { cwd: workDir }) || '').trim()
+    dirty = String(
+      deps.execGit(['-c', 'core.quotePath=false', 'status', '--porcelain', '--untracked-files=all'], { cwd: workDir }) || '',
+    ).trim()
   } catch (err) {
     writeLog(deps, {
       type: 'task.host_commit_failed',

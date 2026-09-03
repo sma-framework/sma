@@ -762,6 +762,20 @@ describe('песочница запретила индекс — коммит з
     expect(copy.base).toBeTruthy()
   })
 
+  it('имя файла написано не по-английски — работа всё равно доезжает до ветки', async () => {
+    // По умолчанию git отдаёт такое имя восьмеричными escape-последовательностями в кавычках,
+    // и путь, снятый с такой строки, не открывается ничем: работа потерялась бы молча.
+    const { workDir } = await runTick({
+      provisioned: true,
+      worktreeCopy: true,
+      emptyBranch: true,
+      sessionLeaves: { 'docs/проба-записи.md': 'проба записи\n' },
+    })
+
+    const files = git(['-c', 'core.quotePath=false', 'show', '--name-only', '--format=', 'HEAD'], workDir).trim()
+    expect(files).toContain('docs/проба-записи.md')
+  })
+
   it('в копии нечего фиксировать → коммита нет вовсе: пустого «чтобы был» эта рука не делает', async () => {
     const { workDir, copy, logged } = await runTick({ provisioned: true, worktreeCopy: true })
 
