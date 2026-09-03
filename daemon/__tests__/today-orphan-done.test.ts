@@ -31,7 +31,7 @@ import { describe, it, expect } from 'vitest'
 
 import { scanBacklog } from '../src/intake/backlog-scan.mjs'
 import { deriveState } from '../src/front/state.mjs'
-import { ofProject, orphanNote, orphansOf } from '../../spa/src/screens/today/orphans'
+import { closedWords, ofProject, orphanNote, orphansOf } from '../../spa/src/screens/today/orphans'
 
 const NOW = 1_700_003_600_000
 const PROJECT = 'sma'
@@ -159,6 +159,85 @@ describe('готовое без проекта не исчезает с «Сег
   })
 })
 
+/**
+ * ЗАГОЛОВОК НОЧИ И ЛЕНТА ПОД НИМ ГОВОРЯТ ОБ ОДНОЙ И ТОЙ ЖЕ НОЧИ.
+ *
+ * Строка-счёт под лентой появилась раньше заголовка, и какое-то время экран спорил сам с собой
+ * в трёх сантиметрах по вертикали: наверху «команда закрыла N задач» — по ПРОСЕЯННОМУ списку,
+ * внизу «ещё столько-то готовых без проекта». Занижение было ровно на число, названное строкой
+ * под ним, и первым читается как раз заголовок.
+ *
+ * Здесь проверяется весь провод, а не фраза: настоящая дверь состояния собирает `done[]`,
+ * настоящее сито делит его на своё и бесхозное, и уже по этим двум числам складывается итог.
+ */
+describe('заголовок «Сегодня» считает всю закрытую ночь, а не только просеянную', () => {
+  it('две готовые строки проекта и одна готовая без проекта — в заголовке 3, и 1 из них названа бесхозной', async () => {
+    const state = await derive([
+      completed({ id: 'own-1', title: 'своя работа', project: PROJECT }),
+      completed({ id: 'own-2', title: 'вторая своя', project: PROJECT }),
+      completed({ id: 'bare-1', title: 'готово без владельца' }),
+    ])
+
+    const shown = ofProject(state.done, PROJECT).filter((r: { failed?: unknown }) => !r.failed)
+    const bare = orphansOf(state.done, PROJECT).filter((r: { failed?: unknown }) => !r.failed)
+    expect(shown.length).toBe(2)
+    expect(bare.length).toBe(1)
+
+    const words = closedWords(shown.length, bare.length)
+    // Число — обо всей ночи: две карточки на экране плюс одна, о которой сказано словами.
+    expect(words).toBe('Пока вас не было, команда закрыла 3 задачи, из них 1 без проекта')
+    expect(words).toContain('1 без проекта')
+  })
+
+  it('сгоревшая работа в итог не идёт — ни своя, ни бесхозная: «закрыла» о ней неправда', async () => {
+    const state = await derive([
+      completed({ id: 'own-1', title: 'своя работа', project: PROJECT }),
+      { ...completed({ id: 'own-2', title: 'своя сгоревшая', project: PROJECT }), status: 'failed' },
+      completed({ id: 'bare-1', title: 'готово без владельца' }),
+      { ...completed({ id: 'bare-2', title: 'сгорело без владельца' }), status: 'failed' },
+    ])
+
+    const shown = ofProject(state.done, PROJECT).filter((r: { failed?: unknown }) => !r.failed)
+    const bare = orphansOf(state.done, PROJECT).filter((r: { failed?: unknown }) => !r.failed)
+    expect(closedWords(shown.length, bare.length)).toBe(
+      'Пока вас не было, команда закрыла 2 задачи, из них 1 без проекта',
+    )
+  })
+
+  it('бесхозных нет — фраза остаётся ровно прежней: оговорка о беде, которой нет, сама беда', async () => {
+    const state = await derive([
+      completed({ id: 'own-1', title: 'своя работа', project: PROJECT }),
+      completed({ id: 'own-2', title: 'вторая своя', project: PROJECT }),
+      // Чужой проект спрятан по делу и в счёт бесхозного не идёт — значит и в оговорку тоже.
+      completed({ id: 'alien-1', title: 'работа соседнего проекта', project: 'other' }),
+    ])
+
+    const shown = ofProject(state.done, PROJECT).filter((r: { failed?: unknown }) => !r.failed)
+    const bare = orphansOf(state.done, PROJECT).filter((r: { failed?: unknown }) => !r.failed)
+    expect(bare.length).toBe(0)
+    expect(closedWords(shown.length, bare.length)).toBe('Пока вас не было, команда закрыла 2 задачи')
+  })
+
+  it('слово согласовано с числом, а мусор вместо числа читается нулём', () => {
+    expect(closedWords(1, 0)).toBe('Пока вас не было, команда закрыла 1 задачу')
+    expect(closedWords(0, 1)).toBe('Пока вас не было, команда закрыла 1 задачу, из них 1 без проекта')
+    expect(closedWords(4, 1)).toBe('Пока вас не было, команда закрыла 5 задач, из них 1 без проекта')
+    expect(closedWords(20, 2)).toBe('Пока вас не было, команда закрыла 22 задачи, из них 2 без проекта')
+    expect(closedWords(0, 0)).toBe('Пока вас не было, команда закрыла 0 задач')
+    expect(closedWords(Number.NaN, -3)).toBe('Пока вас не было, команда закрыла 0 задач')
+  })
+
+  it('число согласовано со счётом ночи: 32 показаны, 14 названы, в заголовке — 46', () => {
+    const rows = [
+      ...Array.from({ length: 32 }, (_, i) => ({ id: `own-${i}`, project: PROJECT })),
+      ...Array.from({ length: 14 }, (_, i) => ({ id: `bare-${i}`, project: null })),
+    ]
+    const shown = ofProject(rows, PROJECT).length
+    const bare = orphansOf(rows, PROJECT).length
+    expect(closedWords(shown, bare)).toBe('Пока вас не было, команда закрыла 46 задач, из них 14 без проекта')
+  })
+})
+
 describe('провод: экран считает бесхозное тем же модулем, что и просеивает', () => {
   const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
 
@@ -171,6 +250,9 @@ describe('провод: экран считает бесхозное тем же
     expect(screen).toContain('ofProject(rows, activeProject)')
     expect(screen).toContain('orphansOf(data?.done ?? [], activeProject)')
     expect(screen).toContain('orphanFinished={orphanFinished}')
+    // И заголовок — из того же модуля: собственная фраза в разметке разошлась бы со строкой
+    // под лентой на следующей же правке одной из них.
+    expect(screen).toContain('closedWords(finished.length, orphanFinished)')
 
     // Лента слова не сочиняет — она печатает то, что сказал модуль.
     expect(feed).toContain("from './orphans'")
