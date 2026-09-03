@@ -24,6 +24,7 @@ import { rmSync } from 'node:fs'
 import { Readable } from 'node:stream'
 
 import { createFrontServer } from '../src/front/server.mjs'
+import { failedTestWords, runReportWords } from '../../spa/src/screens/today/DoneUnfold'
 
 const TOKEN = 'a'.repeat(64)
 const BASE = 'b'.repeat(40)
@@ -313,5 +314,27 @@ describe('раскрытие готовой работы — дверь карт
 
     expect(body.accepted).toBeNull()
     expect(body.returns).toEqual({ rounds: 0, notes: [] })
+  })
+})
+
+/**
+ * ДВЕ ФРАЗЫ ПАНЕЛИ, ПРОВЕРЕННЫЕ ПОРОЗНЬ. Провод выше отвечает на вопрос «доехали ли поля до
+ * карточки»; здесь — на вопрос «что панель СКАЖЕТ, когда поля не приехали». Второе не следует
+ * из первого: молчание прогонятеля и молчание двери выглядят на карточке одинаково, а обе
+ * фразы существуют ровно затем, чтобы отличать «названо» от «не названо».
+ */
+describe('панель раскрытия: пустое поле становится фразой о пустоте, а не прочерком', () => {
+  it('имена упавших названы через разделитель, а их отсутствие — словами', () => {
+    expect(failedTestWords({ failedTests: ['a > один', 'b > два'] } as any)).toBe('a > один · b > два')
+    expect(failedTestWords({ failedTests: [] } as any)).toBe('имён упавших тестов прогонятель не назвал')
+    // Квитанции нет вовсе — и это тот же случай: выдуманное имя послало бы чинить не тот тест.
+    expect(failedTestWords(null)).toBe('имён упавших тестов прогонятель не назвал')
+  })
+
+  it('путь к отчёту отдаётся как известный, а его отсутствие — как неизвестное', () => {
+    const known = runReportWords({ report: '/data/landing/wt-R-1-2026.json' } as any)
+    expect(known).toEqual({ text: '/data/landing/wt-R-1-2026.json', known: true })
+    expect(runReportWords({ report: null } as any).known).toBe(false)
+    expect(runReportWords(null)).toEqual({ text: 'отчёта прогона не сохранилось', known: false })
   })
 })

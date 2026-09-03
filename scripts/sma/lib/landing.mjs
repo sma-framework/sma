@@ -76,7 +76,7 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -91,6 +91,7 @@ import {
   RECEIPT_FILE,
 } from './badge.mjs'
 import { audit, receiptDriftFiles, writeNumbers } from './doc-audit.mjs'
+import { maskSecrets } from './history-search.mjs'
 import { CAPTURE_CAP_BYTES, outputTail, resolveSuiteEntry, saidBy, summarizeRedRun } from './merge-smoke.mjs'
 import { refreshBundleMark } from './spa-freshness.mjs'
 
@@ -158,8 +159,8 @@ function firstLine(text) {
 }
 
 /**
- * summarizeVitestReport(text) → `{failedTest, failedTests, failureDetail}` — ЧТО ИМЕННО УПАЛО,
- * прочитанное из ОТЧЁТА сьютера, а не из его печати на экране.
+ * summarizeVitestReport(text) → `{failedTest, failedTests, failedCount, failureDetail}` — ЧТО
+ * ИМЕННО УПАЛО, прочитанное из ОТЧЁТА сьютера, а не из его печати на экране.
  *
  * ПОЧЕМУ НЕ ХВАТАЕТ РАЗБОРА ВЫВОДА. Полный прогон идёт с отчётом в файл, и печатать при этом
  * ему почти нечего: разбор экранного вывода (`summarizeRedRun`) находит там пусто и честно
@@ -170,11 +171,21 @@ function firstLine(text) {
  * Файл, упавший на сборке и не доехавший ни до одного утверждения, назван САМИМ ФАЙЛОМ —
  * это правда о нём, а имя теста там не существует.
  *
+ * СКОЛЬКО УПАЛО — ОТДЕЛЬНОЕ ЧИСЛО, А НЕ ДЛИНА ПОКАЗАННОГО СПИСКА. Список режется до
+ * `FAILED_TESTS_SHOWN` — отказ читают глазами, — и до этой строки резался ВНУТРИ, ничего не
+ * оставляя от общего числа: сорок красных тестов приезжали к человеку как «упало 5», а фраза
+ * «… ещё N» не могла показаться ни разу, потому что вычиталась из уже обрезанного списка.
+ * Поэтому здесь два ответа: `failedTests` — те, кого назовут по имени, `failedCount` — сколько
+ * их всего. Число берётся у самого отчёта (`numFailedTests`), когда он насчитал БОЛЬШЕ, чем
+ * собралось имён: имён меньше, если какой-то файл не расписал свои утверждения, — и число,
+ * меньшее показанного списка, было бы враньём в другую сторону.
+ *
  * @param {string} text — содержимое отчёта сьютера
- * @returns {{failedTest: (string|null), failedTests: string[], failureDetail: (string|null)}}
+ * @returns {{failedTest: (string|null), failedTests: string[], failedCount: number,
+ *   failureDetail: (string|null)}}
  */
 export function summarizeVitestReport(text) {
-  const empty = { failedTest: null, failedTests: [], failureDetail: null }
+  const empty = { failedTest: null, failedTests: [], failedCount: 0, failureDetail: null }
   let report = null
   try {
     report = JSON.parse(String(text ?? ''))
@@ -208,9 +219,11 @@ export function summarizeVitestReport(text) {
     }
   }
   if (names.length === 0) return empty
+  const counted = Number(report && report.numFailedTests)
   return {
     failedTest: names[0],
     failedTests: names.slice(0, FAILED_TESTS_SHOWN),
+    failedCount: Number.isFinite(counted) && counted > names.length ? counted : names.length,
     failureDetail: details.length ? details.slice(0, DETAIL_LINES).join('\n') : null,
   }
 }
@@ -223,7 +236,69 @@ function safeLabel(label) {
 }
 
 /**
- * keepRedRun({keepDir, label, reportText, output, clock}) → `{savedReport, savedLog}` либо
+ * СКОЛЬКО СОХРАНЁННЫХ ПРОГОНОВ ЖИВЁТ В ЭТОМ КАТАЛОГЕ. Каждая красная посадка кладёт сюда два
+ * файла, и `.log` — это весь пойманный вывод набора, до потолка захвата. Каталог, в который
+ * только пишут, растёт ровно столько, сколько живёт машина: за неделю ночных приёмок это
+ * сотни файлов и десятки мегабайт, и ни один из них после первого разбора никому не нужен.
+ * Двадцать — это глубина, на которую человек реально возвращается («последние отказы»), а не
+ * архив: старше двадцатого прогона вопрос задают ветке и коммиту, а не хвосту вывода.
+ */
+export const LANDING_REPORTS_KEEP = 20
+
+/**
+ * Чем сохранённый прогон отличается от чужого файла в том же каталоге — концом имени, который
+ * поставила `keepRedRun`: минута в ISO с заменёнными двоеточиями. Уборка ходит ТОЛЬКО по этому
+ * признаку, поэтому положенное сюда кем-то другим она не трогает вовсе, а не «не должна».
+ */
+const KEPT_RUN_STAMP_RE = /-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)$/
+
+/**
+ * pruneKeptRuns({keepDir, keep}) → `{removed}` — УБОРКА, которая идёт РЯДОМ С ЗАПИСЬЮ.
+ *
+ * Отдельного часового у этого каталога нет и не заводится: единственный, кто знает, что в нём
+ * прибавилось, — тот, кто только что положил файл. Порядок берётся из ИМЕНИ, а не из времени
+ * файла: имя несёт минуту прогона, а время файла на копии, приехавшей с другой машины, значит
+ * что угодно. Пара файлов одного прогона уходит целиком — отчёт без своего хвоста вывода
+ * отвечает на половину вопроса.
+ *
+ * FAIL-OPEN во всём: каталога нет, файл не удалился — уборка молчит и возвращает то, что
+ * успела. Посадка, упавшая на подметании, была бы хуже полного каталога.
+ */
+export function pruneKeptRuns({ keepDir, keep = LANDING_REPORTS_KEEP } = {}) {
+  const removed = []
+  if (!keepDir) return { removed }
+  let names
+  try {
+    names = readdirSync(keepDir)
+  } catch {
+    return { removed } // каталога ещё нет — убирать нечего
+  }
+  const bases = new Set()
+  for (const name of names) {
+    const base = name.endsWith('.json') ? name.slice(0, -5) : name.endsWith('.log') ? name.slice(0, -4) : null
+    if (base && KEPT_RUN_STAMP_RE.test(base)) bases.add(base)
+  }
+  const ordered = [...bases].sort((a, b) => {
+    const at = a.match(KEPT_RUN_STAMP_RE)[1]
+    const bt = b.match(KEPT_RUN_STAMP_RE)[1]
+    return at === bt ? a.localeCompare(b) : at < bt ? -1 : 1
+  })
+  const limit = Number.isFinite(keep) && keep >= 0 ? keep : LANDING_REPORTS_KEEP
+  for (const base of ordered.slice(0, Math.max(0, ordered.length - limit))) {
+    for (const ext of ['.json', '.log']) {
+      try {
+        unlinkSync(join(keepDir, `${base}${ext}`))
+        removed.push(`${base}${ext}`)
+      } catch {
+        /* файла этой пары нет или он занят — уборка не обязана быть полной */
+      }
+    }
+  }
+  return { removed }
+}
+
+/**
+ * keepRedRun({keepDir, label, reportText, output, clock, keep}) → `{savedReport, savedLog}` либо
  * `{keepNote}` — ОТЧЁТ КРАСНОГО ПРОГОНА, ПОЛОЖЕННЫЙ ТУДА, ГДЕ ЕГО МОЖНО ОТКРЫТЬ ПОТОМ.
  *
  * Два файла, а не один: отчёт сьютера (`.json`) отвечает на «какие тесты упали и с чем», хвост
@@ -231,28 +306,44 @@ function safeLabel(label) {
  * что-то, когда сьютер умер, не написав отчёта. Имя строится из названного ярлыка и минуты:
  * два отказа одной строки — два разных файла, и ни один не затирает другого.
  *
+ * ХВОСТ ВЫВОДА ЛОЖИТСЯ ПРОСЕЯННЫМ. `.log` — это весь пойманный stdout и stderr набора, то
+ * есть всё, что печатали тесты, включая окружение, которое они печатали не подумав. Файл после
+ * этого лежит месяцами в доме данных, открывается глазами и уезжает в чужие руки вместе с
+ * разбором отказа — поэтому он проходит тот же экран учётных данных (`maskSecrets`), которым
+ * продукт просеивает выдачу поиска по истории. Один экран на обе двери: заводить здесь свой
+ * значило бы разойтись с ним молча в первый же день.
+ *
+ * ОТЧЁТ СЬЮТЕРА (`.json`) КЛАДЁТСЯ БАЙТ В БАЙТ. Экран работает по непробельным отрезкам, а в
+ * JSON такой отрезок несёт на себе кавычки и запятую — просеивание съело бы их вместе с
+ * находкой и оставило файл, который не разберёт ни один читатель. Обещание здесь ровно такое:
+ * просеян ВЫВОД, а машинный отчёт остаётся тем, что написал сьютер.
+ *
  * FAIL-OPEN: не записалось — сказано словами. Посадка, упавшая на попытке сохранить объяснение
- * отказа, превратила бы честный красный в поломку.
+ * отказа, превратила бы честный красный в поломку. Записалась половина — названа и она, и
+ * причина: путь к отчёту стоит дороже, чем ровность ответа.
  */
-export function keepRedRun({ keepDir, label, reportText, output, clock } = {}) {
+export function keepRedRun({ keepDir, label, reportText, output, clock, keep } = {}) {
   if (!keepDir) return { keepNote: NO_KEEP_DIR_NOTE }
   const at = new Date(typeof clock === 'function' ? clock() : Date.now()).toISOString().replace(/[:.]/g, '-')
   const base = join(keepDir, `${safeLabel(label)}-${at}`)
+  const kept = {}
   try {
     mkdirSync(keepDir, { recursive: true })
-    const kept = {}
     if (typeof reportText === 'string' && reportText.trim()) {
       const path = `${base}.json`
       writeFileSync(path, reportText, 'utf8')
       kept.savedReport = path
     }
     const logPath = `${base}.log`
-    writeFileSync(logPath, String(output ?? ''), 'utf8')
+    writeFileSync(logPath, maskSecrets(String(output ?? '')), 'utf8')
     kept.savedLog = logPath
-    return kept
   } catch (err) {
-    return { keepNote: `отчёт красного прогона не сохранён (${String((err && err.message) || err)})` }
+    return { ...kept, keepNote: `отчёт красного прогона не сохранён (${String((err && err.message) || err)})` }
   }
+  // УБОРКА — ПОСЛЕ ЗАПИСИ И НИКОГДА ВМЕСТО НЕЁ: только что положенный прогон уже в каталоге и
+  // считается двадцатым, а не выброшенным вместе со старыми.
+  pruneKeptRuns({ keepDir, keep })
+  return kept
 }
 
 // ── ПЕРЕСБОРКА ОКНА: слияние принесло исходник, раздача осталась вчерашней ───────────────
@@ -561,7 +652,7 @@ export function runFullSuiteAsync(o = {}) {
       const fromSaid = summarizeRedRun(said)
       const failedTest = fromReport.failedTest || fromSaid.failedTest
       const failureDetail = fromReport.failureDetail || fromSaid.failureDetail
-      const kept = keepRedRun({ keepDir, label: o.label, reportText, output: said, clock: o.clock })
+      const kept = keepRedRun({ keepDir, label: o.label, reportText, output: said, clock: o.clock, keep: o.keep })
       resolve({
         passed: false,
         ran: true,
@@ -570,6 +661,9 @@ export function runFullSuiteAsync(o = {}) {
         ...(failedTest ? { failedTest } : {}),
         ...(failureDetail ? { failureDetail } : {}),
         ...(fromReport.failedTests.length ? { failedTests: fromReport.failedTests } : {}),
+        // СКОЛЬКО ИХ ВСЕГО — рядом с показанными именами и отдельно от них: список режется до
+        // пяти, число не режется никогда, иначе «упало 5» из сорока красных.
+        ...(fromReport.failedCount ? { failedCount: fromReport.failedCount } : {}),
         ...kept,
       })
     })
