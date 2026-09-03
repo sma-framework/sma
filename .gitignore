@@ -4,6 +4,12 @@ node_modules/
 # The built window. A release builds it from spa/; the repository never carries it.
 daemon/static/app/
 
+# Its neighbours for the length of one build: the scratch directory a build writes into
+# before it is swapped into place, the displaced copy that swap holds for two renames, and
+# the previous window a landing keeps aside until the branch's verdict is in. All three are
+# derived, all three are transient, and none of them belongs in a diff.
+daemon/static/.app-*/
+
 .claude/
 CLAUDE.md
 
