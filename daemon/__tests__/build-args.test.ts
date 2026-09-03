@@ -28,6 +28,7 @@ import {
   ProfileParityError,
   assertProfileParity,
   buildClaudeArgs,
+  codexGitExcludesFor,
   codexHomeFor,
   codexTempFor,
   CODEX_WINDOWS_SANDBOX_MARKER,
@@ -429,6 +430,52 @@ describe('buildArgs — the Codex home is created, seeded and authenticated', ()
     const spec = build(cfg, env, fsImpl)(codexTask(), codexRoute())
 
     expect(existsSync(String(spec.env.TEMP))).toBe(true)
+  })
+
+  /**
+   * ═══════ СПИСОК ИСКЛЮЧЕНИЙ GIT — ТОЖЕ ПРОВОД, А НЕ НАМЕРЕНИЕ ═══════
+   *
+   * Замерено 03.09.2026 живой пробой: КАЖДАЯ команда работника в песочнице несла в выводе
+   * `warning: unable to access '~/.config/git/ignore': Permission denied`. Песочница прячет
+   * профиль пользователя от заведённых ею ограниченных пользователей, а git спрашивает
+   * `$XDG_CONFIG_HOME/git/ignore` ровно тогда, когда `core.excludesFile` не задан, — и получает
+   * отказ вместо «нет такого файла». Лечится адресом ровно так же, как Temp выше.
+   *
+   * ДВА УТВЕРЖДЕНИЯ, И ОБА О ПРОДУКТЕ: переопределение доезжает до окружения ТЕМИ ключами,
+   * которые git и правда читает, и файл, на который оно указывает, ЛЕЖИТ НА ДИСКЕ. Ключ без
+   * файла вернул бы git обратно в профиль, то есть ровно ту строку, ради которой всё это.
+   */
+  it('git of the sandboxed session is pointed at an excludes file inside the task home', () => {
+    const { cfg, env, fsImpl } = codexFixture()
+    const spec = build(cfg, env, fsImpl)(codexTask(), codexRoute())
+
+    const home = String(spec.env.CODEX_HOME)
+    // ИМЕННО ЭТА ТРОЙКА: git читает переопределения окружения по счётчику и парам ключ/значение,
+    // и ключ без счётчика — это ключ, который никто не прочитает.
+    expect(spec.env.GIT_CONFIG_COUNT).toBe('1')
+    expect(spec.env.GIT_CONFIG_KEY_0).toBe('core.excludesFile')
+    expect(spec.env.GIT_CONFIG_VALUE_0).toBe(codexGitExcludesFor(home))
+    // …и он ВНУТРИ временного каталога задачи — того единственного места, которое песочница
+    // наверняка и открывает, и читает.
+    expect(String(spec.env.GIT_CONFIG_VALUE_0).startsWith(codexTempFor(home))).toBe(true)
+    expect(existsSync(String(spec.env.GIT_CONFIG_VALUE_0))).toBe(true)
+  })
+
+  // СИСТЕМНЫЙ КОНФИГ НЕ ВЫКЛЮЧАЕТСЯ: там живут `core.autocrlf`, фильтры и помощник учётных
+  // данных, и вместе с предупреждением ушло бы то, ЧТО работник кладёт в коммит.
+  it('the system git config is left alone — only the one setting that warns is overridden', () => {
+    const { cfg, env, fsImpl } = codexFixture()
+    const spec = build(cfg, env, fsImpl)(codexTask(), codexRoute())
+
+    expect(spec.env.GIT_CONFIG_NOSYSTEM).toBeUndefined()
+    expect(spec.env.GIT_CONFIG_GLOBAL).toBeUndefined()
+  })
+
+  // ПОЛОСА CLAUDE ХОДИТ БЕЗ ПЕСОЧНИЦЫ: её git читает профиль человека и ничего не прячет.
+  it('the Claude lane keeps its own git configuration: nothing is overridden where nothing is hidden', () => {
+    const spec = build(CONFIG, ENV)(task(), route())
+    expect(spec.env.GIT_CONFIG_COUNT).toBeUndefined()
+    expect(spec.env.GIT_CONFIG_KEY_0).toBeUndefined()
   })
 
   // ПОЛОСА CLAUDE ХОДИТ ВООБЩЕ БЕЗ ПЕСОЧНИЦЫ — раздавать права там некому, и перенаправлять её
