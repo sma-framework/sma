@@ -58,6 +58,8 @@ import {
   SPA_NO_SCRIPT_NOTE,
   SPA_UNTOUCHED_NOTE,
   STAMP_PATHS,
+  SUITE_WORKERS_ENV,
+  SUITE_WORKERS_LANDING,
   summarizeVitestReport,
   versionMarkerIsCosmetic,
 } from '../lib/landing.mjs'
@@ -1209,6 +1211,59 @@ describe('красный полный прогон: имена берутся и
       // (б) ИМЕНА ЗАПОЛНЕНЫ ВСЕГДА, КОГДА ЕСТЬ ОТЧЁТ.
       expect(answer.failedTest).toContain('landing.test.ts')
       expect(answer.failedTests.length).toBeGreaterThan(1)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  }, 60000)
+
+  it('посадочный прогон зовёт сьютера на ВСЮ машину — переменная доехала до его запуска', async () => {
+    // Посадка на машине одна: полный набор идёт здесь ОДИН раз, соседнего прогона нет, и
+    // потолок в треть потоков растягивал эту дверь втрое. Проверяется не намерение, а то,
+    // ЧТО ПОЛУЧИЛ дочерний процесс: потолок читается сьютером из окружения, и «поставили,
+    // но не передали» видно только отсюда.
+    const home = mkdtempSync(join(tmpdir(), 'sma-landing-workers-'))
+    try {
+      let handed: any = null
+      const answer: any = await runFullSuiteAsync({
+        cwd: home,
+        reportPath: join(home, 'report.json'),
+        exists: () => true,
+        resolveEntry: () => join(home, 'suite-entry.mjs'),
+        env: { PATH: 'сохранённое окружение' },
+        spawn: (bin: string, args: string[], opts: any) => {
+          handed = { bin, args, opts }
+          return fakeSuiteSpawn(redReport(), '')(bin, args)
+        },
+      })
+
+      expect(answer.ran).toBe(true)
+      expect(handed, 'сьютера не запускали вовсе').toBeTruthy()
+      expect(handed.opts.env[SUITE_WORKERS_ENV]).toBe(SUITE_WORKERS_LANDING)
+      expect(SUITE_WORKERS_LANDING).toBe('max')
+      // окружение ДОПОЛНЕНО, а не подменено: без PATH дочерний node не найдёт и себя
+      expect(handed.opts.env.PATH).toBe('сохранённое окружение')
+      expect(handed.opts.cwd).toBe(home)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  }, 60000)
+
+  it('названный снаружи потолок сильнее посадочного — обстановку знает тот, кто его назвал', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sma-landing-workers-said-'))
+    try {
+      let handed: any = null
+      await runFullSuiteAsync({
+        cwd: home,
+        reportPath: join(home, 'report.json'),
+        exists: () => true,
+        resolveEntry: () => join(home, 'suite-entry.mjs'),
+        env: { PATH: 'p', [SUITE_WORKERS_ENV]: '2' },
+        spawn: (bin: string, args: string[], opts: any) => {
+          handed = { bin, args, opts }
+          return fakeSuiteSpawn(redReport(), '')(bin, args)
+        },
+      })
+      expect(handed.opts.env[SUITE_WORKERS_ENV]).toBe('2')
     } finally {
       rmSync(home, { recursive: true, force: true })
     }

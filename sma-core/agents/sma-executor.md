@@ -270,7 +270,7 @@ A mature suite has two tiers, and confusing them is what makes a twenty-minute t
 
 | Tier | When | What it runs | Door |
 |------|------|--------------|------|
-| **fast** | continuously, while you work | unit tests only — no real child processes, no real repo copies, no Postgres; target: tens of seconds | `npm run test:fast` (or the project's equivalent) |
+| **fast** | continuously, while you work | unit tests only — no real child processes, no real repo copies, no Postgres; minutes, against the tens of minutes of the full suite | `npm run test:fast` (or the project's equivalent) |
 | **full** | ONCE, before you hand the work in, after merging the trunk into your branch | everything, including the live suites | `npm test` |
 
 **While working:** run the fast tier plus the files your edit actually touched — `npm run test:related -- <changed file>`, or the test file by path (`npx vitest run <path>`). That answers the only question you have mid-task: *did I break what I just touched?*

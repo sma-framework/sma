@@ -13,6 +13,10 @@
  *   1. ПОТОЛОК: один прогон берёт не больше трети потоков машины, и число это ВЫЧИСЛЕНО из
  *      процессора, а не вписано константой. Константа была бы правдой про ту машину, на
  *      которой её замерили, и молча стала бы удавкой или той же полкой на следующей.
+ *      Треть — правда про соседей и ложь про прогон, который на машине ОДИН: посадка меряет
+ *      сведённое дерево один раз и стояла втрое дольше нужного. Поэтому потолок снимается
+ *      переменной окружения, и здесь же проверено, что она доезжает до собранного конфига —
+ *      и что посадка называет ту же переменную, а не похожую.
  *   2. ДВА ЯРУСА: быстрый (юнит, без настоящих процессов, копий и Postgres — его гоняют по
  *      ходу работы) и полный (всё, один раз перед сдачей). Кто попал в быстрый ярус, решает
  *      ПРАВИЛО, читающее исходник самого теста, а не список имён, который начал бы врать с
@@ -30,19 +34,47 @@
 import { readFileSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
 import { join, resolve } from 'node:path'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 
 import fullConfig, {
   MACHINE_THREADS,
   RUN_MAX_WORKERS,
   SERIAL_SUITES,
+  TEST_WORKERS_ENV,
   allSuites,
   isLiveSuite,
+  resolveMaxWorkers,
   unitSuites,
 } from '../../../vitest.config.mjs'
 import fastConfig from '../../../vitest.fast.config.mjs'
+import { SUITE_WORKERS_ENV, SUITE_WORKERS_LANDING } from '../lib/landing.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..', '..', '..')
+
+/** Треть машины — потолок по умолчанию, тот самый, что делят соседние прогоны. */
+const SHARE = Math.max(1, Math.floor(availableParallelism() / 3))
+
+/**
+ * Собранные конфиги ОБОИХ ярусов, прочитанные заново с названным окружением.
+ *
+ * Именно перечитанные: потолок вычисляется при загрузке модуля, поэтому проверять переменную
+ * на уже загруженном конфиге значило бы проверять окружение этого прогона, а не правило.
+ */
+async function maxWorkersWithEnv(said: string | undefined) {
+  const before = process.env[TEST_WORKERS_ENV]
+  if (said === undefined) delete process.env[TEST_WORKERS_ENV]
+  else process.env[TEST_WORKERS_ENV] = said
+  vi.resetModules()
+  try {
+    const full = ((await import('../../../vitest.config.mjs')) as any).default
+    const fast = ((await import('../../../vitest.fast.config.mjs')) as any).default
+    return { full: full.test.maxWorkers as number, fast: fast.test.maxWorkers as number }
+  } finally {
+    if (before === undefined) delete process.env[TEST_WORKERS_ENV]
+    else process.env[TEST_WORKERS_ENV] = before
+    vi.resetModules()
+  }
+}
 
 type ProjectLike = { test?: { name?: string; include?: string[]; exclude?: string[] } }
 const projectsOf = (cfg: unknown): ProjectLike[] =>
@@ -55,19 +87,60 @@ describe('потолок потоков на один прогон', () => {
     // Не «равно четырём»: на шестипоточной машине четыре — это снова полка, а на
     // тридцатидвухпоточной — удавка. Проверяется ПРАВИЛО, по которому число получено.
     expect(MACHINE_THREADS).toBe(availableParallelism())
-    expect(RUN_MAX_WORKERS).toBe(Math.max(1, Math.floor(availableParallelism() / 3)))
+    expect(resolveMaxWorkers({})).toBe(SHARE)
   })
 
-  it('потолок — не больше трети потоков, и никогда не ноль', () => {
-    expect(RUN_MAX_WORKERS).toBeGreaterThanOrEqual(1)
-    expect(RUN_MAX_WORKERS).toBeLessThanOrEqual(Math.ceil(MACHINE_THREADS / 3))
+  it('потолок по умолчанию — не больше трети потоков, и никогда не ноль', () => {
+    expect(SHARE).toBeGreaterThanOrEqual(1)
     // три прогона умещаются рядом — это и есть смысл трети
-    expect(RUN_MAX_WORKERS * 3).toBeLessThanOrEqual(MACHINE_THREADS)
+    expect(SHARE * 3).toBeLessThanOrEqual(MACHINE_THREADS)
+    // единица даже там, где треть машины меньше одного рабочего
+    expect(resolveMaxWorkers({}, 1)).toBe(1)
+    expect(resolveMaxWorkers({}, 2)).toBe(1)
   })
 
   it('потолок ДОЕХАЛ до конфига, который читает vitest, — оба яруса', () => {
+    // Именно `resolveMaxWorkers(process.env)`, а не «треть»: этот же набор гоняет посадка,
+    // и она называет свой потолок переменной — сверка с третью краснела бы на ней.
+    expect(RUN_MAX_WORKERS).toBe(resolveMaxWorkers(process.env))
     expect((fullConfig as { test?: { maxWorkers?: number } }).test?.maxWorkers).toBe(RUN_MAX_WORKERS)
     expect((fastConfig as { test?: { maxWorkers?: number } }).test?.maxWorkers).toBe(RUN_MAX_WORKERS)
+  })
+})
+
+describe('прогон, который на машине один, снимает потолок переменной окружения', () => {
+  it('правило: «max» — вся машина, число — столько же, мусор — обратно треть', () => {
+    expect(resolveMaxWorkers({ [TEST_WORKERS_ENV]: 'max' }, 12)).toBe(12)
+    expect(resolveMaxWorkers({ [TEST_WORKERS_ENV]: 'MAX' }, 12)).toBe(12)
+    expect(resolveMaxWorkers({ [TEST_WORKERS_ENV]: '7' }, 12)).toBe(7)
+    // выше машинного не бывает быстрее — больше процессов на те же потоки
+    expect(resolveMaxWorkers({ [TEST_WORKERS_ENV]: '99' }, 12)).toBe(12)
+    // сорванная переменная не отнимает машину у соседей и не роняет прогон
+    for (const junk of ['', '   ', '0', '-3', 'сколько-нибудь']) {
+      expect(resolveMaxWorkers({ [TEST_WORKERS_ENV]: junk }, 12), junk).toBe(4)
+    }
+    expect(resolveMaxWorkers({}, 12)).toBe(4)
+  })
+
+  it('переменная ДОЕХАЛА до обоих собранных конфигов — прочитанных с ней и без неё', async () => {
+    const without = await maxWorkersWithEnv(undefined)
+    expect(without.full).toBe(SHARE)
+    expect(without.fast).toBe(SHARE)
+
+    const whole = await maxWorkersWithEnv('max')
+    expect(whole.full).toBe(MACHINE_THREADS)
+    expect(whole.fast).toBe(MACHINE_THREADS)
+
+    const named = await maxWorkersWithEnv('1')
+    expect(named.full).toBe(1)
+    expect(named.fast).toBe(1)
+  })
+
+  it('посадка называет ТУ ЖЕ переменную и то самое значение «вся машина»', () => {
+    // Имя повторено в landing.mjs строкой намеренно (боевая установка живёт без сьютера) —
+    // значит, разъехаться две строки могут только здесь, и краснеть за это этому тесту.
+    expect(SUITE_WORKERS_ENV).toBe(TEST_WORKERS_ENV)
+    expect(resolveMaxWorkers({ [SUITE_WORKERS_ENV]: SUITE_WORKERS_LANDING }, 12)).toBe(12)
   })
 })
 
