@@ -282,14 +282,30 @@ export const RED_RUN_NAME_MISSING = 'имя упавшего теста прог
  * Приёмщик не мог отличить настоящий красный от ложного, который полный прогон даёт под
  * нагрузкой. Прогонятель теперь кладёт отчёт в дом данных демона и называет путь; ритуал его
  * ДОНОСИТ — как и имя теста, ничего не выясняя сам.
+ *
+ * …А КОГДА ОТЧЁТА НЕТ, НАЗЫВАЕТСЯ ПРИЧИНА, А НЕ ЕЁ ОТСУТСТВИЕ. Прогонятель уже отличает «дом
+ * данных не назван» от «запись не удалась» и говорит это словами (`keepNote`), но слово не
+ * доезжало никуда: отказ просто молчал об отчёте, и человек шёл искать файл, которого не
+ * могло быть. Два случая чинятся в РАЗНЫХ местах — настройка демона против диска, — и
+ * различать их обязан тот, кто читает отказ.
+ *
+ * `distNote` — ЧТО СТАЛО С РАЗДАЧЕЙ, и это отдельное слово от всех трёх выше: отказ отката
+ * возвращает раздачу окна на место, и человеку важно знать, вернулась она или нет.
+ *
+ * …И ПОЧЕМУ ЗДЕСЬ ОБЪЕКТ, А НЕ ЧЕТЫРЕ ПОЗИЦИИ. Слов у красного отказа стало четыре, и третья
+ * позиция успела означать РАЗНОЕ в двух ветках сразу: в одной там ехало «почему отчёта нет»,
+ * в другой — «что стало с раздачей». Обе стороны были правы, и обе молча ломали друг друга
+ * при сведении, потому что у позиции нет имени. У поля имя есть, и дописать пятое слово
+ * теперь можно, не тронув ни одного зовущего.
  */
-export function redRunReason(failedTest, savedReport, distNote) {
+export function redRunReason({ failedTest, savedReport, keepNote, distNote } = {}) {
   const named = typeof failedTest === 'string' && failedTest.trim() ? failedTest.trim() : null
   const kept = typeof savedReport === 'string' && savedReport.trim() ? savedReport.trim() : null
+  const why = typeof keepNote === 'string' && keepNote.trim() ? keepNote.trim() : null
   const dist = typeof distNote === 'string' && distNote.trim() ? distNote.trim() : null
   return (
     `тесты на сведённом рабочем дереве красные — слияние не зафиксировано; упал: ${named ?? RED_RUN_NAME_MISSING}` +
-    (kept ? `; отчёт прогона: ${kept}` : '') +
+    (kept ? `; отчёт прогона: ${kept}` : why ? `; отчёта прогона нет: ${why}` : '') +
     (dist ? `; ${dist}` : '')
   )
 }
@@ -505,8 +521,14 @@ export async function runMerge(o = {}) {
     // ИМЕНА ВСЕХ УПАВШИХ И ГДЕ ЛЕЖИТ ОТЧЁТ — та же роль доносчика: ритуал не открывает
     // отчёта и не считает падений, он передаёт то, что сказал прогонятель.
     let failedTests = []
+    // СКОЛЬКО УПАЛО ВСЕГО — число, которое НЕ выводится из длины списка: список прогонятель
+    // режет до читаемого, и «упало 5» из сорока красных отправляло приёмщика чинить пятую
+    // часть беды. Ритуал и здесь только доносит: своего счёта у него нет.
+    let failedCount = 0
     let savedReport = null
     let savedLog = null
+    // ПОЧЕМУ ОТЧЁТА НЕТ — тоже слово прогонятеля, и оно едет туда же, куда путь к отчёту.
+    let keepNote = null
 
     // (4a) ПЕРЕД ПРОГОНОМ — ГОДИТСЯ ЛИ СРЕДА. Спрашивается ТОЛЬКО когда прогонятель есть:
     // сборке без прогонятеля нечего защищать, и отказ там остановил бы работу ни за что.
@@ -660,8 +682,10 @@ export async function runMerge(o = {}) {
         failedTests = (Array.isArray(tr.failedTests) ? tr.failedTests : [])
           .filter((s) => typeof s === 'string' && s.trim())
           .map((s) => s.trim())
+        failedCount = Number.isFinite(tr.failedCount) && tr.failedCount > 0 ? Math.trunc(tr.failedCount) : 0
         savedReport = typeof tr.savedReport === 'string' && tr.savedReport.trim() ? tr.savedReport.trim() : null
         savedLog = typeof tr.savedLog === 'string' && tr.savedLog.trim() ? tr.savedLog.trim() : null
+        keepNote = typeof tr.keepNote === 'string' && tr.keepNote.trim() ? tr.keepNote.trim() : null
       }
     }
 
@@ -688,12 +712,14 @@ export async function runMerge(o = {}) {
         repo: cwd,
         testsPassed: false,
         refused: true,
-        reason: redRunReason(failedTest, savedReport, back && back.note),
+        reason: redRunReason({ failedTest, savedReport, keepNote, distNote: back && back.note }),
         ...(failedTest ? { failedTest } : {}),
         ...(failedTests.length ? { failedTests } : {}),
+        ...(failedCount ? { failedCount } : {}),
         ...(failureDetail ? { failureDetail } : {}),
         ...(savedReport ? { savedReport } : {}),
         ...(savedLog ? { savedLog } : {}),
+        ...(keepNote ? { keepNote } : {}),
         ...(spaBuild ? { spaBuild } : {}),
         ...(back ? { spaRestored: back } : {}),
         ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
@@ -713,9 +739,11 @@ export async function runMerge(o = {}) {
         receipt,
         ...(failedTest ? { failedTest } : {}),
         ...(failedTests.length ? { failedTests } : {}),
+        ...(failedCount ? { failedCount } : {}),
         ...(failureDetail ? { failureDetail } : {}),
         ...(savedReport ? { savedReport } : {}),
         ...(savedLog ? { savedLog } : {}),
+        ...(keepNote ? { keepNote } : {}),
         ...(back ? { spaRestored: back } : {}),
         ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
       }
