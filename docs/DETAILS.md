@@ -509,6 +509,37 @@ words each release was announced in — fix lists included, because a release no
 was broken is worth nothing to the person who hit it. Where a release's mechanism has its own
 canonical document, this history links to it instead of reprinting it.
 
+### 5.9.0 — a second lane, and a board a person can clear
+
+The fleet now runs on two lanes. The Codex lane went end to end under the daemon: the
+sandbox's rights are sown into each task's own temporary home instead of the shared one, the
+guard waits for that seeding before it judges, the shared repository's object store is
+writable from inside the sandbox so a commit lands on the first try, a redirect that cannot
+reach a running session is refused in words before anything is killed, and a parity table
+lists — cell by cell, with the command that proves each answer — what the second lane can and
+cannot do beside the first. The attempt row on disk carries its lane name, so the books and
+the window say the same thing about who did the work. The conveyor got stricter about its own
+state: a worker that has just taken a task is never read as free, a cancelled attempt gives
+its seat back, the concurrency ceiling behind double claims is named and enforced, a row that
+lost a race is deferred rather than pinned at the head, a stage of a phase enters above
+ordinary tasks while a lane keeps a seat of its own, and a person can move a queued row's
+place from the window without cancelling it. Landing rebuilds the window itself and stamps
+the badge and the graph on the merged tree; a refusal names the failing test and the honest
+count; the hold by declared files ignores stamps; the test run keeps a thread ceiling so the
+machine stays usable; the guard against self-serving tests sees tests run through launchers
+and counts only a substantive edit of an existing test as a vote; a turn that ends while a
+background task is still alive is called exactly that, not «no journal». The window learned a
+«Done» column that unfolds — freshest first, paged, with an honest «more N» — a last word
+about work that will not be done (obsolete, no subject, done another way) so the «waiting
+for you» column can be cleared by hand, a «Today» screen that shows the night's closings, one
+switch per agent, a phase-stage card that shows the deed instead of a command line, a
+conversation that searches all four books, and no hard width floor on any screen. A refusal
+on one subscription window no longer closes the whole account, the weekly window is not shown
+a day stale, the daemon lifts itself after a restart instead of dying silently, the bot does
+not resend every summons on restart, the token never rides an error text of the run driver,
+the backlog's home and the project its rows are minted into are two settings rather than the
+connected project, and the backlog scan reads priority and dependencies.
+
 ### 5.8.0 — the conveyor tells the truth about itself
 
 A broad hardening of the fleet conveyor, shipped as one release after two days of live running.
