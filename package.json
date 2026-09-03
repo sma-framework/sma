@@ -54,7 +54,7 @@
     "test:fast": "vitest run --config vitest.fast.config.mjs",
     "test:related": "vitest related --run",
     "badge": "vitest run --reporter=json --outputFile=.vitest-report.json && node scripts/sma/lib/badge.mjs --from-vitest .vitest-report.json",
-    "build:spa": "npm --prefix spa run build",
+    "build:spa": "node scripts/sma/lib/spa-dist.mjs",
     "daemon:stop": "node supervisor/daemon-control.mjs stop",
     "daemon:restart": "node supervisor/daemon-control.mjs restart",
     "daemon:watch": "node supervisor/daemon-watch.mjs",

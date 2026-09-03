@@ -255,11 +255,20 @@ export const ENV_UNFIT_NOTE = 'среда прогона непригодна �
  */
 export const SPA_BUILD_FAILED_CODE = 'spa_build_failed'
 export const SPA_BUILD_FAILED_NOTE = 'сборка окна не прошла — прогона не было'
-export function spaBuildReason(tail) {
+/**
+ * `distNote` — ЧТО СТАЛО С РАЗДАЧЕЙ, а не только со сборкой. Сборщик стирает выходной каталог
+ * ПЕРЕД тем, как начать писать: упавшая сборка оставляла человека вовсе без окна, а отказ
+ * говорил только «сборка не прошла» — и человек шёл чинить сборку, не зная, что заодно
+ * пропала раздача. Слово о раздаче приходит от того, кто её и держал, и приезжает сюда
+ * готовым: ритуалу нечего выяснять о чужом каталоге.
+ */
+export function spaBuildReason(tail, distNote) {
   const said = typeof tail === 'string' && tail.trim() ? tail.trim() : null
+  const dist = typeof distNote === 'string' && distNote.trim() ? distNote.trim() : null
   return (
     'окно не собралось на сведённом дереве — слияние не зафиксировано; ' +
-    (said ? `хвост сборки: ${said}` : 'сборщик не сказал ни строки — смотрите вывод сборки')
+    (said ? `хвост сборки: ${said}` : 'сборщик не сказал ни строки — смотрите вывод сборки') +
+    (dist ? `; ${dist}` : '')
   )
 }
 
@@ -274,13 +283,42 @@ export const RED_RUN_NAME_MISSING = 'имя упавшего теста прог
  * нагрузкой. Прогонятель теперь кладёт отчёт в дом данных демона и называет путь; ритуал его
  * ДОНОСИТ — как и имя теста, ничего не выясняя сам.
  */
-export function redRunReason(failedTest, savedReport) {
+export function redRunReason(failedTest, savedReport, distNote) {
   const named = typeof failedTest === 'string' && failedTest.trim() ? failedTest.trim() : null
   const kept = typeof savedReport === 'string' && savedReport.trim() ? savedReport.trim() : null
+  const dist = typeof distNote === 'string' && distNote.trim() ? distNote.trim() : null
   return (
     `тесты на сведённом рабочем дереве красные — слияние не зафиксировано; упал: ${named ?? RED_RUN_NAME_MISSING}` +
-    (kept ? `; отчёт прогона: ${kept}` : '')
+    (kept ? `; отчёт прогона: ${kept}` : '') +
+    (dist ? `; ${dist}` : '')
   )
+}
+
+/**
+ * ЧТО РИТУАЛ ДЕЛАЕТ С РАЗДАЧЕЙ ОКНА НА ОТКАЗЕ — И ПОЧЕМУ ЭТО ЕГО ДЕЛО.
+ *
+ * `merge --abort` возвращает рабочее дерево к вершине — но раздача окна (`daemon/static/app`)
+ * гитом не отслеживается вовсе, и откат её не касается ни одним байтом. Прогонятель посадки
+ * пересобирает окно ДО прогона, поэтому красный прогон оставлял на диске окно, собранное из
+ * ОТКАЗАННОЙ ветки: демон показывал человеку то, чего на вершине нет, и ни один сторож этого
+ * не видел (исходник чист, раздача новее исходника — по всем линейкам «свежо»).
+ *
+ * Возврат — ЧУЖАЯ работа, и ритуал её не делает: он её ЗОВЁТ. Прогонятель отложил прежнюю
+ * раздачу и он же кладёт её назад; ритуал знает ровно то, что откат обязан быть полным, и
+ * доносит ответ до квитанции. Прогонятеля без такой заботы (дымовой, чужая копия) отказ
+ * проходит как раньше — вызывать нечего, и молчания на этом месте тоже нет: поле просто не
+ * появляется.
+ *
+ * FAIL-OPEN: возврат, который сам упал, назван словами и НЕ превращает честный отказ в
+ * поломку ритуала — ветка всё равно не вошла.
+ */
+async function putWindowBack(restoreWindow, cwd) {
+  if (typeof restoreWindow !== 'function') return null
+  try {
+    return (await restoreWindow({ cwd })) || null
+  } catch (err) {
+    return { restored: false, note: `раздачу окна вернуть не удалось (${String((err && err.message) || err)})` }
+  }
 }
 
 /** The tree is left mid-merge only when the undo itself failed — and then it is NAMED. */
@@ -314,8 +352,8 @@ function unfinishedMergeHint(cwd) {
  *   - concurrent hold: {merged:false, softDenied:true, override, holder}
  *   - nothing to merge: {merged:true, alreadyUpToDate:true, testsPassed:null, testsNote, branch, resultSha:null, receipt}
  *   - env broken:      {merged:false, refused:true, envBroken:true, testsPassed:null, testsNote, reason, branch, receipt}
- *   - window unbuilt:  {merged:false, refused:true, spaBuildFailed:true, reasonCode, testsPassed:null, testsNote, reason, branch, receipt[, failureDetail, spaBuild]}
- *   - refused (red):   {merged:false, testsPassed:false, refused:true, branch, receipt[, failedTest, failureDetail][, unfinishedMerge, howToClear]}
+ *   - window unbuilt:  {merged:false, refused:true, spaBuildFailed:true, reasonCode, testsPassed:null, testsNote, reason, branch, receipt[, failureDetail, spaBuild, spaRestored]}
+ *   - refused (red):   {merged:false, testsPassed:false, refused:true, branch, receipt[, failedTest, failureDetail][, spaRestored][, unfinishedMerge, howToClear]}
  *   - merged:          {merged:true, testsPassed:boolean|null, testsNote?, branch, resultSha, receipt}
  *   - error:           {ok:false, message[, unfinishedMerge, howToClear]}
  */
@@ -323,6 +361,8 @@ export async function runMerge(o = {}) {
   const branch = o.branch
   const execGit = o.execGit ?? defaultExecGit
   const runTests = o.runTests
+  /** Кто вернёт раздачу окна, если ветка не войдёт (см. `putWindowBack` выше). */
+  const restoreWindow = typeof o.restoreWindow === 'function' ? o.restoreWindow : null
   const claimOpts = o.claimsDir ? { claimsDir: o.claimsDir } : {}
   const journalDir = o.journalDir
   const terminalId = o.by ?? 'unknown'
@@ -559,6 +599,13 @@ export async function runMerge(o = {}) {
         } catch {
           unfinished = true
         }
+        // РАЗДАЧА. Сборка упала — прогонятель уже вернул прежнее окно сам и сказал об этом
+        // словами; вызов ниже добирает случай, когда откладывать было что, а вернуть ещё не
+        // успели, и в обоих случаях снимает отложенное с диска.
+        const back = await putWindowBack(restoreWindow, cwd)
+        const distNote =
+          (spaBuild && typeof spaBuild.distNote === 'string' && spaBuild.distNote.trim() ? spaBuild.distNote.trim() : null) ||
+          (back && typeof back.note === 'string' && back.note.trim() ? back.note.trim() : null)
         const receipt = {
           branch,
           resultSha: null,
@@ -568,9 +615,10 @@ export async function runMerge(o = {}) {
           refused: true,
           spaBuildFailed: true,
           reasonCode: SPA_BUILD_FAILED_CODE,
-          reason: spaBuildReason(tail),
+          reason: spaBuildReason(tail, distNote),
           ...(tail ? { failureDetail: tail } : {}),
           ...(spaBuild ? { spaBuild } : {}),
+          ...(back ? { spaRestored: back } : {}),
           ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
         }
         try {
@@ -590,6 +638,7 @@ export async function runMerge(o = {}) {
           reason: receipt.reason,
           ...(tail ? { failureDetail: tail } : {}),
           ...(spaBuild ? { spaBuild } : {}),
+          ...(back ? { spaRestored: back } : {}),
           branch,
           receipt,
           ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
@@ -628,19 +677,25 @@ export async function runMerge(o = {}) {
       } catch {
         unfinished = true
       }
+      // …И РАЗДАЧА ОКНА ВОЗВРАЩАЕТСЯ ВМЕСТЕ С ИСХОДНИКОМ. Откат вернул `spa/src` к вершине, а
+      // собранный бандл отказанной ветки лежал бы дальше и раздавался человеку как вершина:
+      // гитом он не отслеживается, и `merge --abort` о нём не знает. Возврат идёт ПОСЛЕ
+      // отката — раздача обязана соответствовать тому дереву, которое осталось на диске.
+      const back = await putWindowBack(restoreWindow, cwd)
       const receipt = {
         branch,
         resultSha: null,
         repo: cwd,
         testsPassed: false,
         refused: true,
-        reason: redRunReason(failedTest, savedReport),
+        reason: redRunReason(failedTest, savedReport, back && back.note),
         ...(failedTest ? { failedTest } : {}),
         ...(failedTests.length ? { failedTests } : {}),
         ...(failureDetail ? { failureDetail } : {}),
         ...(savedReport ? { savedReport } : {}),
         ...(savedLog ? { savedLog } : {}),
         ...(spaBuild ? { spaBuild } : {}),
+        ...(back ? { spaRestored: back } : {}),
         ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
       }
       try {
@@ -661,6 +716,7 @@ export async function runMerge(o = {}) {
         ...(failureDetail ? { failureDetail } : {}),
         ...(savedReport ? { savedReport } : {}),
         ...(savedLog ? { savedLog } : {}),
+        ...(back ? { spaRestored: back } : {}),
         ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
       }
     }
@@ -745,6 +801,10 @@ export async function runMerge(o = {}) {
         unfinished = true
       }
     }
+    // …И РАЗДАЧА ОКНА — ТОЖЕ ЧАСТЬ ОТКАТА. Прогонятель, бросивший после сборки, оставил бы на
+    // диске окно ветки, которая не вошла, ровно как красный прогон; лечится это одним и тем же
+    // вызовом, и стоять он обязан здесь, а не только на разобранных путях отказа.
+    const back = await putWindowBack(restoreWindow, cwd)
     if (claimed) {
       try {
         releaseMergeClaim({ by: o.by, journalDir, ...claimOpts })
@@ -769,6 +829,7 @@ export async function runMerge(o = {}) {
             ...(conflictDetail.conflictNotes ? { conflictNotes: conflictDetail.conflictNotes } : {}),
           }
         : {}),
+      ...(back ? { spaRestored: back } : {}),
       ...(unfinished ? { unfinishedMerge: true, howToClear: unfinishedMergeHint(cwd) } : {}),
     }
   }

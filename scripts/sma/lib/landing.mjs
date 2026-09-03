@@ -44,6 +44,14 @@
  *      СВОЙ отказ со своими словами, а не оттенок красного прогона (чинят его в другом месте:
  *      сломанный бандлер — это не упавший тест).
  *
+ *      …И ПЕРЕСБОРКА ОБРАТИМА, ПОТОМУ ЧТО ВЕРДИКТ ПО ВЕТКЕ ЕЩЁ НЕ ВЫНЕСЕН. Раздача гитом не
+ *      отслеживается, а значит `merge --abort` её не касается: собранное окно ОТКАЗАННОЙ ветки
+ *      оставалось на диске и раздавалось человеку как вершина — молча, потому что по всем
+ *      линейкам свежести оно новее исходника. Поэтому прежняя раздача откладывается копией
+ *      рядом ДО сборки, `restoreWindow` возвращает её на любом отказе ритуала, а штамп
+ *      состоявшейся посадки копию убирает. Упавшая сборка возвращает прежнее окно сама и
+ *      немедленно: «сборка не прошла» не имеет права означать «и окна больше нет».
+ *
  *   3. `refreshBundleMark` — МЕТКА СВЕЖЕСТИ РАЗДАЧИ, и она ставится ПОСЛЕ штампа, ровно там,
  *      где вся фиксация уже позади. Причина — в порядке шагов, а не в бандлере: окно
  *      собирается ДО прогона, а коммит слияния, несущий `spa/src`, рождается ПОСЛЕ зелёного
@@ -56,6 +64,12 @@
  *      раздачи — ни байта содержимого, только метка, и только у того, кто эту раздачу собрал.
  *      Линейка при этом одна на обе стороны (`spa-freshness.mjs`): мерить обещание чем-то
  *      своим значило бы разойтись со сторожем молча.
+ *
+ *      МЕТИТСЯ ПОДМЕНЁННАЯ РАЗДАЧА, А НЕ ОТЛОЖЕННАЯ КОПИЯ, — и метится ТОЛЬКО она. Метка
+ *      говорит «этот бандл собран из этого дерева», и потому её ставит лишь та посадка, что
+ *      действительно собрала окно И вошла в вершину. Возвращённая прежняя раздача обещания не
+ *      несёт: она собрана из ДРУГОГО дерева, и пометить её значило бы соврать сторожу ровно
+ *      тем, чем он живёт.
  *
  * ПОЧЕМУ ПРОГОН ЖИВЁТ ВНУТРИ РИТУАЛА, А НЕ ПОСЛЕ НЕГО. Ритуал слияния устроен так, что тесты
  * идут по сведённому дереву ДО фиксации: красный прогон означает «ветка не вошла», а не
@@ -80,6 +94,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+// ГАШЕНИЕ ДЕРЕВА ПРОЦЕССОВ — ОТТУДА, ГДЕ ОНО УЖЕ ИЗМЕРЕНО И ОПИСАНО. Сборка окна на Windows
+// идёт через оболочку, и потолок, убивающий одного ребёнка, оставляет внука-сборщика жить с
+// мёртвым родителем; это ровно тот случай, ради которого `killProcessTree` и написан.
+import { killProcessTree } from '../../../daemon/src/runner/spawn.mjs'
 import {
   applyBadge,
   BADGE_READMES,
@@ -91,7 +109,8 @@ import {
   RECEIPT_FILE,
 } from './badge.mjs'
 import { audit, receiptDriftFiles, writeNumbers } from './doc-audit.mjs'
-import { CAPTURE_CAP_BYTES, outputTail, resolveSuiteEntry, saidBy, summarizeRedRun } from './merge-smoke.mjs'
+import { CAPTURE_CAP_BYTES, outputTail, resolveSuiteEntry, summarizeRedRun } from './merge-smoke.mjs'
+import { DIST_NOTHING_KEPT_NOTE, dropKept, keepDist, restoreDist } from './spa-dist.mjs'
 import { refreshBundleMark } from './spa-freshness.mjs'
 
 /** Карта замера — производное место, которое штамп пересобирает вместе со значком. */
@@ -266,8 +285,37 @@ export const SPA_BUILD_SCRIPT = 'build:spa'
 /**
  * Потолок сборки. Измерено на этой машине: окно собирается за ~2 с. Десять минут — порядок
  * величины запаса, за которым «сборка идёт» уже неотличимо от «сборка зависла».
+ *
+ * ЧИСЛО ЗДЕСЬ — ЗНАЧЕНИЕ ПО УМОЛЧАНИЮ, А НЕ ЗАКОН. Машина слабее этой, холодный кеш сборщика
+ * или ветка, впервые тянущая новый пакет, двигают «~2 с» на порядок, и потолок, который нельзя
+ * назвать снаружи, превращается в отказ посадки, не имеющий отношения ни к ветке, ни к коду.
  */
 export const SPA_BUILD_TIMEOUT_MS = 10 * 60 * 1000
+
+/** …и вот чем его называют снаружи. Мусор в переменной читается как «не названо». */
+export const SPA_BUILD_TIMEOUT_ENV = 'SMA_SPA_BUILD_TIMEOUT_MS'
+
+/**
+ * Сколько вывода сборки держится в памяти. Раньше здесь стоял потолок буфера синхронного
+ * запуска (4 МБ), и переполнить его умеет всякая многословная сборка: запуск падал с ENOBUFS,
+ * а посадка читала это как «сборка не прошла» — окно объявлялось несобираемым за то, что
+ * сборщик слишком много говорил. Теперь вывод течёт мимо, а в памяти живёт КАТЯЩИЙСЯ ХВОСТ:
+ * причина сборки стоит в последних строках, и никакая длина вывода больше ничего не решает.
+ */
+export const SPA_OUTPUT_TAIL_BYTES = 256 * 1024
+
+/** Потолок сборки достигнут — прогона не было, и это НЕ «сборка упала». */
+export const SPA_TIMED_OUT_NOTE = 'сборка окна не уложилась в потолок времени — её дерево процессов погашено'
+
+/**
+ * spaBuildTimeoutMs(env) — потолок сборки для ЭТОГО запуска: названный снаружи или общий.
+ * Ноль и отрицательное — это не «без потолка», а мусор: такой потолок отказал бы посадке
+ * мгновенно и молча.
+ */
+export function spaBuildTimeoutMs(env = process.env) {
+  const said = Number((env && env[SPA_BUILD_TIMEOUT_ENV]) ?? NaN)
+  return Number.isFinite(said) && said > 0 ? said : SPA_BUILD_TIMEOUT_MS
+}
 
 /** Сборки не было — и вот почему. Каждая причина своими словами, ни одна не выдана за отказ. */
 export const SPA_UNTOUCHED_NOTE = 'окно этим слиянием не тронуто — пересобирать было нечего'
@@ -315,7 +363,8 @@ export function hasSpaBuildScript({ cwd, readFile } = {}) {
 }
 
 /**
- * runSpaBuild({cwd, exec, timeoutMs}) → `{built:true, ms}` | `{built:false, ms, exitCode, tail}`.
+ * runSpaBuild({cwd, spawn, killTree, timeoutMs, platform}) → Promise к
+ * `{built:true, ms}` | `{built:false, ms, exitCode, tail, timedOut?}`.
  *
  * ПОЧЕМУ ЗДЕСЬ ИМЯ КОМАНДЫ, А НЕ ПУТЬ К ДВОИЧНОМУ ФАЙЛУ. Прогонятель тестов запускается через
  * `process.execPath` именно потому, что имя пакетного менеджера на Windows — это `.cmd`,
@@ -331,36 +380,107 @@ export function hasSpaBuildScript({ cwd, readFile } = {}) {
  * станет поломкой. Склеиваем сами, и склеивать нечего: оба слова — литералы этого файла,
  * дерево едет отдельным полем `cwd`, и ни одна чужая строка в команду не попадает.
  *
- * Вывод ЛОВИТСЯ и обрезается до хвоста: у сборки причина стоит в последних строках, и отказ
- * без них — это «сломалось» без единого слова о том, где.
+ * ═══ И ИМЕННО ПОЭТОМУ ПОТОЛОК ГАСИТ ДЕРЕВО, А НЕ РЕБЁНКА ═══════════════════════════════
+ *
+ * Оболочка — это ОТДЕЛЬНЫЙ процесс, а сборщик — её внук. Синхронный запуск с полем `timeout`
+ * бил сигналом ровно по оболочке: она умирала, посадка получала «сборка не уложилась», а
+ * сборщик продолжал молоть — с мёртвым родителем, в дереве, где уже идёт откат слияния.
+ * «Умерла для учёта, жива для машины». Приказ дереву отдаётся ДО того, как кто-нибудь трогает
+ * самого ребёнка: записи о родителе живут ровно пока родитель жив, и убитый первым родитель
+ * оставляет внука сиротой, которого больше не с чего найти.
+ *
+ * ВЫВОД ТЕЧЁТ, А НЕ КОПИТСЯ. Синхронный запуск держал весь вывод в буфере и падал на его
+ * потолке (ENOBUFS) — то есть многословная сборка объявлялась НЕСОБИРАЕМОЙ. Здесь в памяти
+ * живёт катящийся хвост фиксированного размера: причина стоит в последних строках, и длина
+ * вывода больше не решает ничего.
  */
 export function runSpaBuild(o = {}) {
   const cwd = o.cwd || process.cwd()
-  const exec = typeof o.exec === 'function' ? o.exec : execFileSync
-  const timeoutMs = Number.isFinite(o.timeoutMs) ? o.timeoutMs : SPA_BUILD_TIMEOUT_MS
+  const spawnImpl = typeof o.spawn === 'function' ? o.spawn : spawn
+  const killTree = typeof o.killTree === 'function' ? o.killTree : killProcessTree
+  const timeoutMs = Number.isFinite(o.timeoutMs) ? o.timeoutMs : spaBuildTimeoutMs()
+  const platform = o.platform || process.platform
   const startedAt = Date.now()
-  const shell = process.platform === 'win32'
+  const shell = platform === 'win32'
   const npm = shell ? 'npm.cmd' : 'npm'
-  try {
-    exec(shell ? `${npm} run ${SPA_BUILD_SCRIPT}` : npm, shell ? [] : ['run', SPA_BUILD_SCRIPT], {
-      cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      encoding: 'utf8',
-      maxBuffer: CAPTURE_CAP_BYTES,
-      timeout: timeoutMs,
-      windowsHide: true,
-      shell,
-    })
-    return { built: true, ms: Date.now() - startedAt }
-  } catch (err) {
-    const said = `${saidBy(err)}\n${(err && err.message) || ''}`
-    return {
-      built: false,
-      ms: Date.now() - startedAt,
-      exitCode: Number.isFinite(err && err.status) ? err.status : null,
-      tail: outputTail(said),
+
+  return new Promise((resolve) => {
+    let child
+    try {
+      child = spawnImpl(shell ? `${npm} run ${SPA_BUILD_SCRIPT}` : npm, shell ? [] : ['run', SPA_BUILD_SCRIPT], {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        shell,
+      })
+    } catch (err) {
+      resolve({ built: false, ms: Date.now() - startedAt, exitCode: null, tail: outputTail(String((err && err.message) || err)) })
+      return
     }
-  }
+
+    // КАТЯЩИЙСЯ ХВОСТ: держим ПОСЛЕДНИЕ байты обоих потоков, а не первые. У сборки причина
+    // стоит в конце, и «первые 4 МБ» — это ровно те строки, которые никому не нужны.
+    let said = ''
+    const keep = (chunk) => {
+      said += String(chunk)
+      if (said.length > SPA_OUTPUT_TAIL_BYTES) said = said.slice(said.length - SPA_OUTPUT_TAIL_BYTES)
+    }
+    for (const stream of [child.stdout, child.stderr]) {
+      if (!stream || typeof stream.on !== 'function') continue
+      if (typeof stream.setEncoding === 'function') stream.setEncoding('utf8')
+      stream.on('data', keep)
+    }
+
+    let deadline = false
+    const timer = setTimeout(() => {
+      deadline = true
+      // ДЕРЕВО ПЕРВЫМ, ребёнок — запасным путём: см. шапку выше.
+      let ordered = false
+      try {
+        ordered = killTree({ pid: child.pid, platform }) === true
+      } catch {
+        ordered = false
+      }
+      if (!ordered) {
+        try {
+          child.kill()
+        } catch {
+          /* ребёнок опередил потолок — обработчик выхода уже сказал своё */
+        }
+      }
+    }, timeoutMs)
+
+    let settled = false
+    const answer = (value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+
+    child.on('error', (err) => {
+      answer({
+        built: false,
+        ms: Date.now() - startedAt,
+        exitCode: null,
+        tail: outputTail(`${said}\n${(err && err.message) || err}`),
+      })
+    })
+    child.on('exit', (code, signal) => {
+      const ms = Date.now() - startedAt
+      if (deadline) {
+        return answer({ built: false, ms, exitCode: null, timedOut: true, tail: outputTail(`${said}\n${SPA_TIMED_OUT_NOTE}`) })
+      }
+      if (code === 0) return answer({ built: true, ms })
+      answer({
+        built: false,
+        ms,
+        exitCode: Number.isFinite(code) ? code : null,
+        ...(signal ? { signal: String(signal) } : {}),
+        tail: outputTail(said),
+      })
+    })
+  })
 }
 
 /** Настоящий git: execFileSync с МАССИВОМ аргументов (никакой подстановки через оболочку). */
@@ -790,8 +910,9 @@ export function verifyLanding({ cwd, io } = {}) {
 }
 
 /**
- * createLanding({cwd, execGit, runSuite, fallbackRunner, io}) → `{runTests, stamp, state}` —
- * ПОСАДКА ОДНОЙ КАРТОЧКИ, собранная так, что оба её действия знают об одном и том же прогоне.
+ * createLanding({cwd, execGit, runSuite, fallbackRunner, io}) → `{runTests, stamp,
+ * restoreWindow, state}` — ПОСАДКА ОДНОЙ КАРТОЧКИ, собранная так, что все её действия знают
+ * об одном и том же прогоне и об одной и той же отложенной раздаче.
  *
  * ПОЧЕМУ ЭТО ФАБРИКА, А НЕ ДВЕ СВОБОДНЫЕ ФУНКЦИИ. Решение «гнать или не гнать» принимается
  * ВНУТРИ ритуала слияния (на сведённом, ещё не зафиксированном дереве), а штамп ставится ПОСЛЕ
@@ -818,7 +939,18 @@ export function createLanding(o = {}) {
   const keepDir =
     (typeof o.keepDir === 'string' && o.keepDir.trim() ? o.keepDir.trim() : null) ||
     (dataDir ? join(dataDir, LANDING_REPORTS_DIRNAME) : null)
-  const state = { decided: null, reason: null, ran: false, reportPath: null, tree: null, spaBuild: null }
+  const state = {
+    decided: null,
+    reason: null,
+    ran: false,
+    reportPath: null,
+    tree: null,
+    spaBuild: null,
+    /** Путь к отложенной прежней раздаче — живёт РОВНО до вердикта по ветке. */
+    spaKept: null,
+    spaRestored: null,
+    cwd: o.cwd || null,
+  }
 
   /**
    * ОКНО ПЕРЕСОБИРАЕТСЯ ЗДЕСЬ — между слиянием и прогоном, и ни на шаг позже. Прогон судит
@@ -827,40 +959,85 @@ export function createLanding(o = {}) {
    * когда прогон решат не гонять: вершине с устаревшей раздачей всё равно, гоняли по ней
    * набор или доверились квитанции, — человек в браузере увидит старое окно.
    *
+   * ═══ ПРЕЖНЯЯ РАЗДАЧА ОТКЛАДЫВАЕТСЯ РЯДОМ ДО ВЕРДИКТА ══════════════════════════════════
+   *
+   * Раздача гитом не отслеживается, и `merge --abort` её не касается: собранное отказанной
+   * веткой окно осталось бы на диске и раздавалось человеку как вершина. Поэтому копия
+   * прежней раздачи кладётся рядом ДО сборки и возвращается на место, если ветка не вошла
+   * (`restoreWindow`); вошла — копию убирает штамп. Упавшая сборка возвращает её НЕМЕДЛЕННО
+   * и сама: сборщик мог снести раздачу прежде, чем упасть, и «сборка не прошла» не должно
+   * означать «и окна больше нет».
+   *
    * @returns {{built:(boolean|null), touched:boolean, ms?:number, note?:string, files?:string[]}}
    */
-  function buildWindow({ cwd, mergedTree }) {
+  async function buildWindow({ cwd, mergedTree }) {
     const seen = spaTouched({ cwd, execGit, mergedTree })
     if (seen.asked && !seen.touched) return { built: null, touched: false, note: SPA_UNTOUCHED_NOTE }
     if (!hasSpaBuildScript({ cwd, readFile: io.readFile })) {
       return { built: null, touched: true, note: SPA_NO_SCRIPT_NOTE }
     }
     const said = { touched: true, files: seen.files, ...(seen.asked ? {} : { note: SPA_DIFF_UNKNOWN_NOTE }) }
+
+    const keep = keepDist({ root: cwd, clock: o.clock })
+    state.spaKept = keep.kept || null
+    const held = keep.kept ? { distKept: true } : { distKept: false, distNote: keep.keepNote || DIST_NOTHING_KEPT_NOTE }
+
+    /** Упавшая сборка не имеет права оставить человека без окна — возвращаем прежнее сразу. */
+    const putBack = () => {
+      if (!state.spaKept) return { distNote: keep.keepNote || DIST_NOTHING_KEPT_NOTE }
+      const back = restoreDist({ root: cwd, kept: state.spaKept })
+      state.spaKept = null
+      return { distRestored: back.restored === true, distNote: back.note }
+    }
+
     let answer
     try {
-      answer = runBuild({ cwd, script: SPA_BUILD_SCRIPT }) || {}
+      answer = (await runBuild({ cwd, script: SPA_BUILD_SCRIPT })) || {}
     } catch (err) {
       // Сборщик, который БРОСИЛ, — это не собранное окно. Молчаливое «ну и ладно» здесь
       // вернуло бы ровно ту беду, ради которой всё это написано.
-      return { ...said, built: false, ms: 0, tail: String((err && err.message) || err).slice(0, 400) }
+      return { ...said, ...held, built: false, ms: 0, tail: String((err && err.message) || err).slice(0, 400), ...putBack() }
     }
+    const built = answer.built === true
     return {
       ...said,
-      built: answer.built === true,
+      ...held,
+      built,
       ...(Number.isFinite(answer.ms) ? { ms: answer.ms } : {}),
       ...(Number.isFinite(answer.exitCode) ? { exitCode: answer.exitCode } : {}),
+      ...(answer.timedOut === true ? { timedOut: true } : {}),
       ...(answer.tail ? { tail: String(answer.tail) } : {}),
+      ...(built ? {} : putBack()),
     }
+  }
+
+  /**
+   * restoreWindow() — ВЕТКА НЕ ВОШЛА, И РАЗДАЧА ВОЗВРАЩАЕТСЯ К ВЕРШИНЕ. Зовёт её ритуал
+   * слияния на КАЖДОМ своём отказе после прогонятеля: `merge --abort` возвращает исходник,
+   * а раздачу — никто, потому что её нет ни в одном коммите. Без этого вызова демон
+   * продолжал бы раздавать окно, собранное из ОТКАЗАННОЙ ветки, и ни один сторож этого не
+   * увидел бы: исходник чист, раздача новее исходника — по всем линейкам «свежо».
+   *
+   * @returns {{restored:boolean, note:string}}
+   */
+  function restoreWindow(call = {}) {
+    const cwd = call.cwd || state.cwd || o.cwd
+    if (!state.spaKept) return { restored: false, note: DIST_NOTHING_KEPT_NOTE }
+    const back = restoreDist({ root: cwd, kept: state.spaKept })
+    state.spaKept = null
+    state.spaRestored = back
+    return back
   }
 
   async function runTests(call = {}) {
     const cwd = call.cwd || o.cwd
+    state.cwd = cwd
     const mergedTree = call.mergedTree ?? mergedTreeSha({ cwd, execGit })
     state.tree = mergedTree
 
     // (0) ОКНО — ПЕРВЫМ ДЕЛОМ. Отказ сборки уходит СВОИМ признаком: ритуал по нему откажет
     //     своими словами, а не выдаст поломку бандлера за упавший тест.
-    const spa = buildWindow({ cwd, mergedTree })
+    const spa = await buildWindow({ cwd, mergedTree })
     state.spaBuild = spa
     if (spa.built === false) {
       return {
@@ -915,6 +1092,14 @@ export function createLanding(o = {}) {
    */
   function stamp(call = {}) {
     const cwd = call.cwd || o.cwd
+    // ВЕТКА ВОШЛА — ОТЛОЖЕННОЕ ОКНО БОЛЬШЕ НЕ НУЖНО. Раздача на диске собрана ровно из того
+    // дерева, которое стало вершиной; копия прежней с этой секунды — мусор, а не страховка.
+    // СТОИТ ПЕРВЫМ И РАНЬШЕ МЕТКИ (см. ниже) НАМЕРЕННО: метку ставят на ПОДМЕНЁННУЮ раздачу,
+    // и отложенная копия не должна дожить до этой строки даже как сосед на диске.
+    if (state.spaKept) {
+      dropKept({ kept: state.spaKept })
+      state.spaKept = null
+    }
     let measurement = null
     if (state.decided === 'ran') {
       if (!state.ran) {
@@ -985,5 +1170,5 @@ export function createLanding(o = {}) {
     }
   }
 
-  return { runTests, stamp, state }
+  return { runTests, stamp, restoreWindow, state }
 }
