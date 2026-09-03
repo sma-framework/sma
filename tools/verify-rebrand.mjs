@@ -27,6 +27,11 @@
  *       `describe/it/test` call under a test directory. A title is the one string in
  *       a test file that is prose rather than data — see the note under (d)'s
  *       exclusions.
+ *   (h) TEST FIXTURE IDS: no HOUSE-SHAPED id survives in the ordinary literals of a
+ *       test — the data half of the same files check (g) reads for titles. Narrower
+ *       than (g) on purpose: three shapes a test never has a reason to invent
+ *       (`SB-<n>`, `D-<n>.<n>`, `49.<n>`), while the register ids a test is genuinely
+ *       ABOUT stay legal. Armed 2026-09-03 — see TEST_FIXTURE_ID.
  *
  * WHAT "PUBLISHED" MEANS HERE — the git-tracked set, and the reason for it.
  * A push publishes the REPOSITORY, not the npm tarball: `files[]` in package.json
@@ -208,8 +213,15 @@ const INTERNAL_ID = /\b(?:[TDQ]-\d+(?:\.\d+)?-(?:[A-Z]{2,}-)?\d+[a-z]?|SB-\d{3})
  *   decision / question — `D-11-08`, `D-9.2-11`, `D-9.5-04a`, `D-11-DEFER-22`. The
  *     WORD segment is the half an earlier pattern walked past.
  *   threat            — `T-9.1-03`, `T-11-11-01`, `T-02-01`.
- *   private backlog   — `SB-031`. Three digits, so a bare `SB-1` is not assumed.
+ *   private backlog   — `SB-176`, `SB-31`, `SB-1901`. ANY digit count: the three-digit
+ *     form was the shape the register happened to be minting when this was written,
+ *     and a two-digit id leaks exactly as much as a three-digit one. The prefix is
+ *     two capitals that spell nothing else in this tree, so the digit count was
+ *     never what made the shape safe to ban.
  *   short registers   — `LP-2`, `FI-9`, `WR-02`, `CR-01`.
+ *   decision, BARE     — `D-9.2`, `Q-11.4`. The compound shape above wants a counter
+ *     after the phase number; the half-written form (phase number, no counter) is the
+ *     same filing number with its tail cut off and was riding through on that.
  *   grill / consequence — the COMPOUND form only (`CH-9.4-06-1`, `CONS-9.2-07-A`,
  *     `CONS-09-01-A`): a phase segment plus a counter. The BARE form is the
  *     ADOPTER'S vocabulary and stays legal — `CONS-1` is an id in the
@@ -220,8 +232,14 @@ const INTERNAL_ID = /\b(?:[TDQ]-\d+(?:\.\d+)?-(?:[A-Z]{2,}-)?\d+[a-z]?|SB-\d{3})
  *   generation tag    — `SMA-3`, with ONE carve-out: `SMA-2` names the LEGACY
  *     PRODUCT this repo imports from (`sma-core/bin/lib/sma2-import.cjs` exists to
  *     read it), so it is product vocabulary, not a filing number.
- *   house phase       — `49.9-11` and the Russian phrase «фаза 49», the two ways the
- *     vendor's own phase numbering shows up in prose.
+ *   house phase       — `49.2`, `49.9-11` and the Russian phrase «фаза 49», the three
+ *     ways the vendor's own phase numbering shows up. The BARE form (`49.2`, with no
+ *     counter after it) is the one that actually leaks: the vendor's phase directories
+ *     are named `49.2-…`, so that is the string a fixture copies and a comment quotes.
+ *     It is armed with its digit-and-dot guards intact, which is what keeps a version
+ *     (`5.49.2`) and a longer number (`149.2`) out; a bare decimal that genuinely means
+ *     forty-nine-point-something in a shipped string is a price or a percentage nobody
+ *     writes, and if one ever appears it is cheaper to reword than to keep the hole.
  *
  * NOT here, deliberately: `BL-<n>`, which is the PRODUCT's backlog id — minted and
  * parsed by `scripts/sma/lib/batch.mjs`, documented in `docs/VENDOR-LEDGER.md`.
@@ -229,13 +247,14 @@ const INTERNAL_ID = /\b(?:[TDQ]-\d+(?:\.\d+)?-(?:[A-Z]{2,}-)?\d+[a-z]?|SB-\d{3})
  */
 const REGISTER_SHAPES = [
   String.raw`[DQ]-\d+(?:\.\d+)?-(?:\d+[a-z]?|[A-Z][A-Z0-9]*(?:-\d+[a-z]?)?)`,
+  String.raw`[DQ]-\d+\.\d+`,
   String.raw`T-\d+(?:\.\d+)?-\d+(?:-\d+)?[a-z]?`,
-  String.raw`SB-\d{3}`,
+  String.raw`SB-\d+`,
   String.raw`(?:LP|FI)-\d+`,
   String.raw`(?:CH|CONS)-\d+(?:\.\d+)?-\d+(?:-[A-Za-z0-9]+)?`,
   String.raw`(?:WR|CR)-\d{2}`,
   String.raw`SMA-[013-9](?!\d)`,
-  String.raw`49\.\d+-\d+`,
+  String.raw`49\.\d+`,
 ]
 const REGISTER_ID = new RegExp(
   String.raw`(?<![\p{L}\p{N}.])(?:${REGISTER_SHAPES.join('|')})(?![\p{L}\p{N}])` +
@@ -359,6 +378,13 @@ function splitSource(text) {
           inTemplate = false
           quote = ''
           titleOpen = false
+          // A CLOSED LITERAL ENDS A STRING. Two literals on one line are collected into one
+          // entry, and without this separator they were collected into one WORD: in
+          // `{ id: 'SB-031', title: 'починить дверь' }` the id ran straight into the title,
+          // and every pattern here ends on a not-a-letter-or-digit boundary, so the shape
+          // stopped matching. A miss, and a silent one. The separator is a space because the
+          // same text is printed back in the report; the boundary is what matters.
+          literal += ' '
           code('"') // a closed literal is not an open paren: the next quote starts fresh
           j++
           continue
@@ -532,7 +558,7 @@ for (const r of PUBLISHED) {
   }
 }
 
-// ---- (g) internal register ids in test titles --------------------------------
+// ---- (g) test titles, (h) test fixture ids -----------------------------------
 /**
  * A test directory. Its files are exempt from check (d) because their literals are
  * DATA — a test of this very scanner has to spell a forbidden shape to prove the
@@ -541,12 +567,42 @@ for (const r of PUBLISHED) {
  * printed to whoever reads the report, and the house law bans these shapes in product
  * files at all. So the exemption keeps its narrow half and loses the wide one.
  *
- * Scope is the FIRST STRING ARGUMENT and nothing else — the same wide shape set that
- * check (d) applies to any other user-facing string. Fixtures and demo payloads stay
- * out by path, exactly as they are for check (f).
+ * Check (g)'s scope is the FIRST STRING ARGUMENT and nothing else — the same wide shape
+ * set that check (d) applies to any other user-facing string. Fixtures and demo payloads
+ * stay out by path, exactly as they are for check (f).
  */
 const TEST_DIR = /(^|\/)__tests__(\/|$)/
+/**
+ * TEST_FIXTURE_ID — check (h). The NARROW half of the same law, applied to the literals
+ * check (d) does not read: a test's own fixture data.
+ *
+ * The hole it closes was found by reading a delivery, not by the gate: forty-odd task ids
+ * shaped `SB-176` were sitting in `daemon/__tests__` as the identifiers of made-up tasks,
+ * and every check above walked past them — (d) by the path exemption, (f) because they are
+ * not comments, (g) because they are not titles. A fixture id is INVENTED, so unlike a
+ * decision counter it has no reason to carry the house register's shape; the same test says
+ * exactly as much with `R-176`.
+ *
+ * WHY NARROW, AND WHY THESE THREE. Dropping the path exemption wholesale would be wrong and
+ * check (g)'s own suite is the proof: a test that a decision id survives a restart has to
+ * spell `D-11-08`, and a threat-register test has to spell `T-9.1-43` — those literals are
+ * the SUBJECT of the assertion, and banning them would fail a test for testing. The three
+ * shapes armed here are the ones that are never a subject:
+ *   `SB-<n>`   — the private backlog. Nothing in this product parses it: the registry
+ *                grammar takes any `[A-Z][A-Z0-9]*-<n>` (see `ITEM_RE` in the intake scan),
+ *                so the prefix in a fixture is decoration, and this one is house decoration.
+ *   `D-<n>.<n>` — a decision id carrying a PHASE number. The counter form (`D-11-08`) can be
+ *                data; the phase-numbered form names the vendor's own roadmap.
+ *   `49.<n>`   — the vendor's phase numbering, the string its phase directories are named
+ *                after and the one a fixture copies verbatim.
+ * Everything else a test invents stays its own business.
+ */
+const TEST_FIXTURE_ID = new RegExp(
+  String.raw`(?<![\p{L}\p{N}.])(?:SB-\d+|[DQ]-\d+\.\d+|49\.\d+)(?![\p{L}\p{N}])`,
+  'u',
+)
 let testTitlesScanned = 0
+let testLiteralsScanned = 0
 for (const r of PUBLISHED) {
   if (!CODE_EXT.test(r)) continue
   if (!TEST_DIR.test(r)) continue
@@ -556,10 +612,15 @@ for (const r of PUBLISHED) {
   const buf = fs.readFileSync(abs)
   if (buf.includes(0)) continue // already reported as unreadable by check (d)
   for (const h of splitSource(buf.toString('utf8')).literals) {
-    if (!h.title) continue
-    testTitlesScanned++
-    if (!REGISTER_ID.test(h.text) && !PREDICTION_ID.test(h.text) && !INTERNAL_PLAN_STRING.test(h.text)) continue
-    errors.push(`TEST-TITLE: ${r}:${h.n}: ${h.text.trim().slice(0, 120)}`)
+    if (h.title) {
+      testTitlesScanned++
+      if (!REGISTER_ID.test(h.text) && !PREDICTION_ID.test(h.text) && !INTERNAL_PLAN_STRING.test(h.text)) continue
+      errors.push(`TEST-TITLE: ${r}:${h.n}: ${h.text.trim().slice(0, 120)}`)
+      continue
+    }
+    testLiteralsScanned++
+    if (!TEST_FIXTURE_ID.test(h.text)) continue
+    errors.push(`TEST-FIXTURE-ID: ${r}:${h.n}: ${h.text.trim().slice(0, 120)}`)
   }
 }
 
@@ -600,6 +661,7 @@ console.log(`published files scanned for internal ids: ${idScanned} (of which ma
 console.log(`published markdown scanned for internal plan shapes: ${shippedDocsScanned}`)
 console.log(`shipped source files scanned for comment-text ids: ${commentFilesScanned}`)
 console.log(`test titles scanned: ${testTitlesScanned}`)
+console.log(`test fixture literals scanned: ${testLiteralsScanned}`)
 if (errors.length) {
   console.error(`\nFAIL — ${errors.length} violation(s):`)
   for (const e of errors) console.error('  ' + e)

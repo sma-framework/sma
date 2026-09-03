@@ -221,7 +221,7 @@ describe('схема строки реестра: счёт подходов мо
   it('сырое число эпохи в startedAt на долговечную строку не попадает — оно становится моментом', () => {
     const dir = mkLedgerDir()
     const written: any = recordAttempt(dir, {
-      taskId: 'SB-176',
+      taskId: 'R-176',
       attempt: 1,
       outcome: 'completed',
       receiptRef: 'reverify:abc',
@@ -230,7 +230,7 @@ describe('схема строки реестра: счёт подходов мо
     })
     expect(written.startedAt).toBe(new Date(EPOCH).toISOString())
     // …и на ДИСКЕ то же самое, а не только в возвращённой форме: читателя строки интересует файл
-    const [stored]: any = readAttempts(dir, 'SB-176')
+    const [stored]: any = readAttempts(dir, 'R-176')
     expect(typeof stored.startedAt).toBe('string')
     expect(stored.startedAt).toBe(new Date(EPOCH).toISOString())
     expect(stored.endedAt).toBe(new Date(EPOCH + 60_000).toISOString())
@@ -239,14 +239,14 @@ describe('схема строки реестра: счёт подходов мо
   it('уже правильный ISO дверь не трогает — приведение это лечение вида, а не вторая запись', () => {
     const dir = mkLedgerDir()
     const iso = '2026-08-31T11:03:00.000Z'
-    const written: any = recordAttempt(dir, { taskId: 'SB-176', attempt: 1, outcome: 'failed', startedAt: iso })
+    const written: any = recordAttempt(dir, { taskId: 'R-176', attempt: 1, outcome: 'failed', startedAt: iso })
     expect(written.startedAt).toBe(iso)
   })
 
   it('отметка, которая моментом не читается, ключа не получает — отсутствие честнее мусора', () => {
     const dir = mkLedgerDir()
     const written: any = recordAttempt(dir, {
-      taskId: 'SB-177',
+      taskId: 'R-177',
       attempt: 1,
       outcome: 'failed',
       failureReason: 'provider_error',
@@ -254,30 +254,30 @@ describe('схема строки реестра: счёт подходов мо
     })
     expect('startedAt' in written).toBe(false)
     // строка при этом ЗАПИСАНА: аудит не теряется из-за формы одной своей отметки
-    const [stored]: any = readAttempts(dir, 'SB-177')
+    const [stored]: any = readAttempts(dir, 'R-177')
     expect(stored.outcome).toBe('failed')
     expect(stored.recordedAt).toBeDefined()
   })
 
   it('номер подхода строго больше всякого ЗАКОНЧЕННОГО — вторая попытка не пишется единицей', () => {
     const dir = mkLedgerDir()
-    recordAttempt(dir, { taskId: 'SB-178', attempt: 1, outcome: 'failed', failureReason: 'provider_error' })
-    recordAttempt(dir, { taskId: 'SB-178', attempt: 2, outcome: 'completed', receiptRef: 'reverify:abc' })
+    recordAttempt(dir, { taskId: 'R-178', attempt: 1, outcome: 'failed', failureReason: 'provider_error' })
+    recordAttempt(dir, { taskId: 'R-178', attempt: 2, outcome: 'completed', receiptRef: 'reverify:abc' })
     // очередь забыла прожитое и называет подход первым — реестр помнит два законченных
-    expect(nextAttemptNumber(readAttempts(dir, 'SB-178'), 1)).toBe(3)
+    expect(nextAttemptNumber(readAttempts(dir, 'R-178'), 1)).toBe(3)
   })
 
   it('идущий подход остаётся собой: второй писатель ТОЙ ЖЕ попытки её номер не двигает', () => {
     const dir = mkLedgerDir()
     // переход пишет свою строку без исхода — попытка идёт прямо сейчас
-    recordAttempt(dir, { taskId: 'SB-179', attempt: 3, startedAt: '2026-09-01T10:00:00.000Z' })
-    expect(nextAttemptNumber(readAttempts(dir, 'SB-179'), 3)).toBe(3)
+    recordAttempt(dir, { taskId: 'R-179', attempt: 3, startedAt: '2026-09-01T10:00:00.000Z' })
+    expect(nextAttemptNumber(readAttempts(dir, 'R-179'), 3)).toBe(3)
   })
 
   it('больший номер очереди принимается как есть — реестр поднимает счёт, но не опускает', () => {
     const dir = mkLedgerDir()
-    recordAttempt(dir, { taskId: 'SB-181', attempt: 1, outcome: 'failed', failureReason: 'timeout' })
-    expect(nextAttemptNumber(readAttempts(dir, 'SB-181'), 7)).toBe(7)
+    recordAttempt(dir, { taskId: 'R-181', attempt: 1, outcome: 'failed', failureReason: 'timeout' })
+    expect(nextAttemptNumber(readAttempts(dir, 'R-181'), 7)).toBe(7)
   })
 
   it('молчащий реестр не выдумывает прожитого: первый подход остаётся первым', () => {

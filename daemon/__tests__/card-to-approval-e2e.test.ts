@@ -32,7 +32,7 @@ import { recordAttempt, readAttempts, closureOf } from '../src/queue/attempt-led
 import { resolveRoute } from '../src/policy/routing.mjs'
 
 const TOKEN = 'a'.repeat(64)
-const CARD = 'SB-176'
+const CARD = 'R-176'
 
 const tmpDirs: string[] = []
 function mkLedgerDir(): string {

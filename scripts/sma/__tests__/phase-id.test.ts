@@ -97,7 +97,7 @@ describe('splitPhaseDirName — the phase number, and where the slug starts', ()
     // canonical shapes — unchanged
     ['08-user-accounts', '08', 'user-accounts'],
     ['49-foundation', '49', 'foundation'],
-    ['49.5-orchestration', '49.5', 'orchestration'],
+    ['32.5-orchestration', '32.5', 'orchestration'],
     ['12A-hotfix', '12A', 'hotfix'],
     ['CK-08-user-accounts', 'CK-08', 'user-accounts'],
     // a slug that itself starts with digit segments must not be eaten
@@ -133,7 +133,7 @@ describe('phaseTokenMatches — which directory answers to which phase', () => {
     ['08-1-30-49-7-batch-import', '8'],
     ['phase-8-user-accounts', '8'],
     ['phase-7-checkout-flow', '7'],
-    ['49.5-orchestration', '49.5'],
+    ['32.5-orchestration', '32.5'],
     ['49-foundation', '49'],
     ['08-user-accounts', '08'],
     ['CK-08-user-accounts', '8'],
@@ -167,13 +167,13 @@ describe('phaseTokenMatches — which directory answers to which phase', () => {
 
 describe('the query layer resolves the directories the token fix unblocked', () => {
   it('find-phase locates a directory whose slug starts with digit segments', () => {
-    const proj = makeProject('digit-slug', ['09-49-7-search-rewrite', '49.5-orchestration', '49-foundation'], '# Roadmap\n')
+    const proj = makeProject('digit-slug', ['09-49-7-search-rewrite', '32.5-orchestration', '49-foundation'], '# Roadmap\n')
     expect(tools(proj, ['find-phase', '9'])).toMatchObject({
       found: true,
       directory: '.planning/phases/09-49-7-search-rewrite',
       phase_number: '09',
     })
-    expect(tools(proj, ['find-phase', '49.5'])).toMatchObject({ found: true, phase_number: '49.5' })
+    expect(tools(proj, ['find-phase', '32.5'])).toMatchObject({ found: true, phase_number: '32.5' })
     expect(tools(proj, ['find-phase', '49'])).toMatchObject({ found: true, phase_number: '49' })
   })
 
