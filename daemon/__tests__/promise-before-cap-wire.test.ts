@@ -439,6 +439,177 @@ describe('обещание, приехавшее после захвата и д
   })
 })
 
+// ═══════════ 2b · ТА ЖЕ ГОНКА НА КУЗНЕЧНОЙ ПОЛОСЕ ══════════════════════════════════════════
+//
+// Полоса кузницы — вторая дверь запуска, и у неё своя история забытых мин: копия,
+// материализация, провизия, тумблер работника — каждая чинилась на пути кода и оставалась
+// здесь, пока кто-нибудь не платил за это окном подписки. Опоздавшее обещание было ровно
+// такой же: чтение стояло только в тике, а здесь потолок считался по объекту, отданному при
+// захвате. Кузнечная работа стоит той же подписки, и «мелкая» она ровно по той же причине —
+// потому что слова к ней приехали секундой позже, чем её взяли.
+
+const AGENT_DRAFT = `---
+name: twitter-parser
+description: Работник, который читает публичные твиты по теме и собирает черновик сводки.
+lane: research
+can:
+  - читать публичные веб-страницы
+  - писать черновики в .planning
+cannot:
+  - трогать секреты
+---
+# Twitter parser
+Собирает короткую сводку по теме.
+`
+
+const DRAFT_PATH = '.claude/agents/twitter-parser.md'
+
+/** Заказ кузнице — то, ЧТО ковать. Правится он не дверью слов, и это здесь сказано вслух. */
+const FORGE_ORDER = 'парсит Twitter по хэштегу и пишет сводку'
+
+/**
+ * Один настоящий тик над настоящей очередью, но по КУЗНЕЧНОЙ полосе — и слова, приезжающие
+ * дверью правки ровно между захватом и стартом.
+ */
+async function runForgeTick(over: { lateWords?: string[] } = {}) {
+  const projectDir = mkDir('sma-forge-promise-proj-')
+  const ledgerDir = mkDir('sma-forge-promise-ledger-')
+  const workDir = mkDir('sma-forge-promise-copy-')
+
+  const queue = createMemoryQueue({ clock: () => NOW, expireMs: 300000 })
+  await queue.enqueue({
+    id: 'F-1',
+    source: 'roster',
+    title: 'сделай агента, который парсит Twitter',
+    lane: 'forge',
+    forge: { kind: 'agent', description: FORGE_ORDER },
+  })
+
+  const front = frontWith(queue)
+  const wordsAnswers: number[] = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const adapter: any = {
+    ...queue,
+    async claimNext(workerId: string, opts: any) {
+      const claimed = await queue.claimNext(workerId, opts)
+      if (claimed && over.lateWords) {
+        const res = await post(front, '/api/task/words', { taskId: claimed.id, acceptance: over.lateWords })
+        wordsAnswers.push(res.statusCode)
+      }
+      return claimed
+    },
+  }
+
+  const config = {
+    workers: [
+      {
+        id: 'creator',
+        lane: 'forge',
+        provider: 'claude',
+        enabled: true,
+        account: { name: 'local-1', configDir: '/accounts/local-1', oauthTokenEnv: 'SMA_TEST_TOKEN' },
+      },
+    ],
+    agingHours: 24,
+    backlogScanMinutes: 60,
+    repoDir: projectDir,
+    pipeline: { enabled: true },
+  }
+
+  const realBuildArgs = createBuildArgs({ config, env: SPAWN_ENV, fsImpl: settingsFs() })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const specs: any[] = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const journal: any[] = []
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const deps: any = {
+    adapter,
+    ledger: {
+      recordAttempt: (row: any) => recordAttempt(ledgerDir, row),
+      readAttempts: (id: string) => readAttempts(ledgerDir, id),
+      attemptLog: ({ attemptId }: any) => createAttemptLogWriter({ dir: ledgerDir, attemptId }),
+    },
+    config,
+    routing: { resolveRoute },
+    windows: () => true,
+    projectDir: () => projectDir,
+    buildArgs: (task: any, route: any, options: any) => {
+      const spec = realBuildArgs(task, route, options)
+      specs.push({ task, options, spec })
+      return spec
+    },
+    verbRunner: makeVerbRunner({
+      worktree: { code: 0, stdout: JSON.stringify({ ok: true, path: workDir, branch: 'wt/F-1', materialized: [] }) },
+    }),
+    spawnWorker: (spec: any) => {
+      // Кузница отдаёт работнику СВОЙ промпт — его и видно на выходе.
+      specs[specs.length - 1].prompt = spec.prompt
+      spec.onLine?.('APPROACH_NOTE: описал черновик по образцу существующего')
+      spec.onLine?.(RESULT_OK)
+      spec.onExit?.({ code: 0, signal: null })
+      return { pid: 4243, kill: () => {} }
+    },
+    // Черновик, который «работник закоммитил»: гейт кузницы читает его с этого шва.
+    fsImpl: {
+      readFileSync: (p: string) => {
+        if (String(p).replace(/\\/g, '/').endsWith(DRAFT_PATH)) return AGENT_DRAFT
+        throw new Error(`ENOENT ${p}`)
+      },
+    },
+    bookUsage: () => {},
+    report: async () => {},
+    clock: () => NOW,
+    journal: (entry: any) => journal.push(entry),
+    execGit: () => DRAFT_PATH,
+  }
+
+  const res = await tick(deps)
+  return { res, specs, journal, queue, wordsAnswers }
+}
+
+describe('кузнечная полоса читает обещание перед потолком — тем же чтением, что и путь кода', () => {
+  it('КРАСНАЯ: взятая до слов ковка НЕ уходит в процесс с мелким потолком', async () => {
+    const { specs, wordsAnswers } = await runForgeTick({ lateWords: FIVE_CRITERIA })
+
+    // Дверь правки слов сработала на уже ВЗЯТОЙ строке — иначе дело было бы не о гонке.
+    expect(wordsAnswers).toEqual([200])
+    expect(specs).toHaveLength(1)
+
+    // Число на командной строке ЗАПУСКАЕМОГО процесса, а не запись о том, что его считали.
+    expect(capAt(specs[0].spec.args)).toBe(String(LARGE))
+    expect(capAt(specs[0].spec.args)).not.toBe(String(BASE))
+    // И сборщик аргументов видел сами слова, а не только их число ходов.
+    expect(specs[0].task.acceptance).toEqual(FIVE_CRITERIA)
+  })
+
+  it('и приход слов назван вслух на этой полосе тоже — молча потолок не меняется', async () => {
+    const { journal } = await runForgeTick({ lateWords: FIVE_CRITERIA })
+    const said = journal.find((e) => e.type === 'task.promise_arrived')
+    expect(said).toBeTruthy()
+    expect(said.taskId).toBe('F-1')
+    expect(said.detail).toContain('acceptance')
+  })
+
+  it('слов никто не написал — потолок остаётся базовым, и никакого запаса не выдумано', async () => {
+    const { specs, journal } = await runForgeTick()
+    expect(capAt(specs[0].spec.args)).toBe(String(BASE))
+    expect(journal.some((e) => e.type === 'task.promise_arrived')).toBe(false)
+  })
+
+  it('промпт работника собран ПОСЛЕ чтения слов и по-прежнему несёт заказ кузнице', async () => {
+    // ГРАНИЦА, НАЗВАННАЯ ВСЛУХ: текст, который читает «Создатель», строится из ЗАКАЗА
+    // (`forge.description`) — того, что ковать, — а дверь правки слов заказа не трогает
+    // (она правит `description`/`acceptance` строки). Поэтому опоздавшее обещание меняет
+    // здесь ПОТОЛОК и объект, по которому собрана команда, а не текст самого задания:
+    // утверждать обратное значило бы описать провод, которого нет.
+    const { specs } = await runForgeTick({ lateWords: FIVE_CRITERIA })
+    expect(specs[0].prompt).toContain(FORGE_ORDER)
+    // …и это ровно тот же объект задачи, что уже дочитал слова, — команда собрана после чтения.
+    expect(specs[0].task.acceptance).toEqual(FIVE_CRITERIA)
+  })
+})
+
 // ═══════════ 3 · ДОСКА НАЗЫВАЕТ ЧИСЛО, ПОКА ЕГО ЕЩЁ МОЖНО ИЗМЕНИТЬ ═════════════════════════
 
 describe('строка без обещания говорит человеку, какой потолок она за это получит', () => {
@@ -470,6 +641,20 @@ describe('строка без обещания говорит человеку, 
     await queue.enqueue({ id: 'BL-9', source: 'backlog', title: 'крупная по оценке', lane: 'prod', storyPoints: 8, acceptance: 'зелёные тесты' })
     const payload: any = await boardOf(queue, { workers: [], agingHours: 24, pipeline: { enabled: true } })
     expect(payload.queue.find((q: any) => q.id === 'BL-9').noPromise).toBeUndefined()
+  })
+
+  it('оценка в ОДИН пункт — тоже объявленный размер, хотя ярус у неё мелкий', async () => {
+    // Крупную оценку от подсказки закрывал размер работы, а мелкую (1–2) не закрывал никто:
+    // строка с честно поставленной единицей читалась «о размере не сказано ничего» и звала
+    // дописать то, что уже дописано. Оценка спрашивается сама, а не через свой ярус.
+    const queue = createMemoryQueue({ clock: () => NOW })
+    await queue.enqueue({ id: 'R-7', source: 'roster', title: 'мелкая, но оценённая', lane: 'prod', storyPoints: 1 })
+    await queue.enqueue({ id: 'R-8', source: 'roster', title: 'ничего о себе не сказала', lane: 'prod' })
+    const payload: any = await boardOf(queue, { workers: [], agingHours: 24, pipeline: { enabled: true, maxTurns: 160 } })
+
+    expect(payload.queue.find((q: any) => q.id === 'R-7').noPromise).toBeUndefined()
+    // …и сосед без единого признака подсказку по-прежнему получает: замолчали не все.
+    expect(payload.queue.find((q: any) => q.id === 'R-8').noPromise).toEqual({ cap: 160 })
   })
 
   it('и это доезжает СЛОВОМ до строки на доске, а не остаётся полем в ответе двери', async () => {
