@@ -1206,6 +1206,22 @@ export function Screen() {
                   .join(' · ')}
               </span>
             </div>
+            {/*
+              СЛЕД СТУПЕНИ — ВНУТРИ КАРТОЧКИ, А НЕ НАД НЕЙ. Заголовок ступени говорит словами
+              («Фаза 21 · обсуждение — ждёт…»), и командной строке там не место: человек,
+              глядящий на доску, читал `/sma-discuss-phase 21 --batch --text` и не мог понять
+              ни фазы, ни ступени, ни того, чего от него хотят. Но сама команда ему нужна —
+              ею ступень повторяют руками, — и здесь она стоит там, где на неё смотрят
+              осознанно: моноширинной строкой под названием работы, с подписью, зачем она.
+            */}
+            {task?.command ? (
+              <div className="mt-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <span className="text-[11px] text-tx3">Ступень запускается командой</span>
+                <code className="rounded-[6px] bg-input px-1.5 py-[2px] font-mono text-[11.5px] text-tx2">
+                  {task.command}
+                </code>
+              </div>
+            ) : null}
           </div>
 
           {status === 'awaiting_approval' ? (
