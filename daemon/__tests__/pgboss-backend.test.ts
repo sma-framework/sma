@@ -348,6 +348,20 @@ function makeFakeBackend({
       }
       return { rows: [] }
     }
+    if (sql.startsWith('UPDATE pgboss.job') && sql.includes('SET priority')) {
+      // setPriority(): МЕСТО СТРОКИ В ОЧЕРЕДИ. Смоделирован ровно как написан — ОБА поля одним
+      // движением: собственная колонка выборки (по ней очередь и выбирает следующую работу) и
+      // число в полезной нагрузке (из него его читает всякий, кто смотрит на строку). Подделка,
+      // пишущая одно из двух, удостоверяла бы перестановку, после которой экран и очередь
+      // говорят о строке разное.
+      const [jobId, priority] = params
+      const j = jobs.get(String(jobId))
+      if (j) {
+        j.priority = Number(priority)
+        j.data = { ...(j.data || {}), priority: Number(priority) }
+      }
+      return { rows: [] }
+    }
     if (sql.startsWith('UPDATE pgboss.job') && sql.includes('workerId')) {
       // assignWorker(): the executing worker written into the job payload, keyed by JOB id.
       const [jobId, workerId] = params
@@ -652,6 +666,44 @@ describe('pg-boss backend — stopping work that is waiting after a lost attempt
     const claimed: any = await adapter.claimNext('w1', {})
     expect(claimed.id).toBe('BL-196')
     expect(claimed.description).toBe('вторая редакция')
+  })
+
+  /**
+   * И ПЕРЕСТАНОВКА МЕСТА В ОЧЕРЕДИ — ДВУМЯ ПОЛЯМИ, А НЕ ОДНИМ.
+   *
+   * У этой очереди место строки живёт в ДВУХ местах: собственная колонка, по которой идёт
+   * выборка, и число в полезной нагрузке, из которого его читает всякий, кто смотрит на строку.
+   * Написанное в одну колонку переставило бы очередь, оставив на экране прежнее число;
+   * написанное в один payload поменяло бы число на экране, не сдвинув строку никуда. Дело
+   * смотрит на ОБА поля и на то, что из этого вышло на выдаче.
+   */
+  it('перестановка места пишет и колонку выборки, и число на строке — и следующая выдача берёт переставленную', async () => {
+    const c = mkClock()
+    const { adapter, jobs } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog({ id: 'BL-196', priority: 10 }))
+    await adapter.enqueue(backlog({ id: 'BL-197', priority: 0 }))
+
+    expect(await adapter.setPriority('BL-197', 20)).toBe(true)
+    const moved = [...jobs.values()].find((j: any) => j.data && j.data.id === 'BL-197')
+    expect(moved.priority, 'колонка выборки — это то, чем очередь и выбирает следующую').toBe(20)
+    expect(moved.data.priority, 'и число на строке, из которого его читает экран').toBe(20)
+
+    const row = (await adapter.list({})).find((r: any) => r.id === 'BL-197')
+    expect(row.priority, 'читающий путь обязан называть новое место').toBe(20)
+
+    const claimed: any = await adapter.claimNext('w1', {})
+    expect(claimed.id, 'выдача обязана взять переставленную строку раньше прежней головы').toBe('BL-197')
+  })
+
+  it('перестановка не находит строку, чья работа кончилась, — что закрыто, то закрыто', async () => {
+    const c = mkClock()
+    const { adapter } = makeFakeBackend({ clock: c.clock, expireMs: 5000, ledgerDir: mkLedgerDir() })
+    await adapter.enqueue(backlog())
+    await adapter.claimNext('w1', {})
+    await adapter.complete('BL-196', { receiptRef: 'reverify:зелено' })
+
+    expect(await adapter.setPriority('BL-196', 30)).toBe(false)
+    expect(await adapter.setPriority('BL-нет-такой', 30)).toBe(false)
   })
 
   /**

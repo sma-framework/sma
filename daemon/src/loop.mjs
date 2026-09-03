@@ -126,7 +126,7 @@ import { insideCopiesDir } from './queue/worktree-cleanup.mjs'
 import { sweepBugJournal, causeOf } from './queue/bug-journal.mjs'
 // Потолок мест читает ДОМ ИДУЩИХ ПОПЫТОК, а не тик: одно чтение настройки на весь демон —
 // его же спрашивает дверь состояния, чтобы назвать человеку «занято X из N».
-import { concurrencyCap, seatCeiling, seatWorkers, confirmProcessGone } from './queue/in-flight.mjs'
+import { concurrencyCap, seatCeiling, seatWorkers, laneReservations, confirmProcessGone } from './queue/in-flight.mjs'
 // ATTEMPT_FILES_CAP is IMPORTED, never re-declared: the ceiling on the changed-file list
 // belongs to the module that owns the row's key list, and a second copy of the number here
 // would be a second ceiling waiting to drift away from the first.
@@ -4970,6 +4970,18 @@ export async function tick(deps = {}) {
     const inFlight = deps.inFlight
     const cap = concurrencyCap(config)
     const seats = seatCeiling(config)
+    // ТРЕТИЙ ОГРАНИЧИТЕЛЬ — И ОН ЖЕ ЕДИНСТВЕННЫЙ, КОТОРЫЙ ОТКРЫВАЕТ, А НЕ ЗАКРЫВАЕТ. Мест было
+    // одно число на машину, общее для всех полос: четыре занятых полосой продукта означали, что
+    // свободный работник канцелярской полосы не начнёт НИЧЕГО — в том числе ступень фазы, ради
+    // которой он и включён. Полосы были разведены по работникам и не разведены по местам.
+    // Закрепление читается там же, где живёт потолок, и по нему же тик спрашивает место дважды:
+    // сперва из общего пула, а если общий кончился — ИМЕНЕМ ПОЛОСЫ, чьё место свободно.
+    // Закрепляется место ТОЛЬКО за полосой, на которой есть кому работать: придержать место для
+    // полосы, где ни один работник взять работу не может, значит просто потерять единицу потолка
+    // (замерено делом: машина с одними исполнителями продукта переставала брать работу вовсе).
+    // Список рабочих полос уже выведен выше маршрутом — второго его вычисления не заводится.
+    const reserved = laneReservations(config, lanes)
+    let claimLanes = lanes
     if (inFlight && typeof inFlight.reserve === 'function') {
       // Место берётся ОДНИМ синхронным шагом и ДО захвата. Иначе два проходящих внахлёст тика
       // оба увидели бы пустой дом (захват — это await), оба прошли бы потолок и оба взяли бы
@@ -4978,7 +4990,26 @@ export async function tick(deps = {}) {
       // НУЛЬ МЕСТ — ЭТО ОТКАЗ, А НЕ УМОЛЧАНИЕ. Дом при нуле выдал бы место по своему полу в
       // единицу, поэтому случай назван здесь и до него: работников не осталось ни одного, брать
       // работу некому, и это простой, а не работа.
-      seat = seats >= 1 ? inFlight.reserve(seats) : null
+      seat = seats >= 1 ? inFlight.reserve(seats, { reserved }) : null
+      // ОБЩИЙ ПУЛ КОНЧИЛСЯ — НО У ПОЛОСЫ ЕСТЬ СВОЁ МЕСТО. Спрашивается только у полос, которые
+      // МОГУТ работать прямо сейчас (у них свободен работник), и захват после этого сужается до
+      // одной этой полосы: закреплённое место, отданное чужой работе, — это отсутствие
+      // закрепления, написанное длиннее.
+      if (!seat && seats >= 1) {
+        for (const lane of lanes) {
+          if (!reserved.has(lane)) continue
+          const own = inFlight.reserve(seats, { reserved, lane })
+          if (own) {
+            seat = own
+            claimLanes = [lane]
+            writeLog(deps, {
+              type: 'tick.lane_seat',
+              detail: `общих мест нет, полоса "${lane}" берёт своё закреплённое место — захват сужен до неё`,
+            })
+            break
+          }
+        }
+      }
       if (!seat) {
         writeLog(deps, {
           type: 'tick.concurrency_cap',
@@ -5023,7 +5054,7 @@ export async function tick(deps = {}) {
     // be too late in the durable queue — there the fetch IS the claim, and a row recognised as
     // stopped afterwards has already been handed out (the same reason the batch turn is decided
     // inside the queue). So the orders go in with the lanes, and both backends keep the promise.
-    const task = await adapter.claimNext(workerId, { lanes, holds })
+    const task = await adapter.claimNext(workerId, { lanes: claimLanes, holds })
     if (!task) {
       result.idle = true // skipTimerWhenNoActionableWork
       return result
@@ -5034,7 +5065,9 @@ export async function tick(deps = {}) {
     // (`confirmProcessGone` по имени захода), а `finally` всего тика отдаёт его вторым разом —
     // вместе с занятостью работника, которая живёт до конца ворот.
     const seatAttemptId = attemptIdFor(task.id, task.attempt)
-    if (inFlight && typeof inFlight.name === 'function') inFlight.name(seat, task.id, null, seatAttemptId)
+    // …и ПОЛОСА — тем же одним вызовом: место, взятое из общего пула, узнаёт свою полосу только
+    // здесь, а без неё закрепление считало бы занятую полосу свободной (см. `name` в доме мест).
+    if (inFlight && typeof inFlight.name === 'function') inFlight.name(seat, task.id, null, seatAttemptId, task.lane)
 
     // (3a0) THE LANE'S CAPABILITY ENVELOPE. Resolved here because it is a
     // property of the LANE the task was claimed into — known before the route is, and

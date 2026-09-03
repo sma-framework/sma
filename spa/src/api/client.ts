@@ -348,6 +348,21 @@ export function setTaskWords(input: {
 }
 
 /**
+ * ПЕРЕСТАВИТЬ МЕСТО СТРОКИ В ОЧЕРЕДИ — целым числом, тем же, каким его называет постановка.
+ * Больше — раньше; шкала та же, по которой строки реестра встают полосами срочности.
+ *
+ * Строке, чья работа кончилась, дверь отвечает отказом: место в очереди у закрытой работы
+ * ничего не значит. До этой двери переставить работу можно было только отменив её и создав
+ * заново — с новым номером и без истории подходов.
+ */
+export function setTaskPriority(input: {
+  taskId: string
+  priority: number
+}): Promise<{ ok: boolean; taskId: string; priority: number }> {
+  return postJson('/api/task/priority', { taskId: input.taskId, priority: input.priority })
+}
+
+/**
  * Accept finished work. Only a person ever calls this.
  * Собственное имя машины сюда не передаётся — своя машина — это отсутствие ключа.
  */

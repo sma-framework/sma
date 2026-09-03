@@ -92,7 +92,8 @@ const PROVIDERS: readonly { value: string | null; label: string }[] = [
 ] as const
 
 /** Where in the queue it lands. Higher is fetched first; 0 is the daemon's own default. */
-const ORDERS: readonly { value: number; label: string }[] = [
+/** Места в очереди, словами человека. ЭКСПОРТИРОВАН: карточка переставляет строку теми же двумя. */
+export const ORDERS: readonly { value: number; label: string }[] = [
   { value: 0, label: 'по очереди' },
   { value: 10, label: 'вперёд очереди' },
 ] as const
