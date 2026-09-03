@@ -15,132 +15,39 @@
  * второе принадлежит проверке пакета (`package-check`), которая спрашивает про наличие окна
  * перед публикацией. Разделение намеренное: у одного дефекта один хозяин.
  *
+ * САМА ЛИНЕЙКА ЖИВЁТ НЕ ЗДЕСЬ, а в `scripts/sma/lib/spa-freshness.mjs`, и это не переезд ради
+ * порядка. Второй её читатель — посадка: собрав окно и зафиксировав слияние, она обновляет
+ * метку свежести раздачи и обязана мерить ТЕМ ЖЕ, чем её потом измерят здесь. Две линейки в
+ * двух файлах разошлись бы молча — а расходятся такие вещи всегда в сторону ложного красного,
+ * которое чинят руками в три часа ночи. Шапка модуля объясняет обе линейки и обоих часовых;
+ * ниже — сцены, на которых у гейта есть собственный красный.
+ *
  * ЧАСОВ ЗДЕСЬ НЕТ. Гейт сравнивает время двух деревьев между собой, а не с «сейчас».
- *
- * ЧЕМ МЕРИТЬ ВОЗРАСТ ИСХОДНИКА — двумя разными линейками, и выбор между ними не вкусовой.
- * Файловый mtime честен ровно тогда, когда файл правил человек. В свежеотрезанной рабочей
- * копии его штампует checkout временем «сейчас»: исходники выглядят новее любого бандла, и
- * гейт краснеет там, где `spa` никто не трогал. Поэтому:
- *   — `spa/src` по git чист → возраст исходника берётся у ПОСЛЕДНЕГО КОММИТА, тронувшего
- *     `spa/src` (`git log -1 --format=%ct`). Время коммита checkout не переписывает, и оно
- *     одинаково в любой копии дерева;
- *   — по `spa/src` есть незакоммиченные правки → mtime файлов честны, меряем как раньше.
- * Суть гейта от этого не слабеет: коммит в `spa/src` новее раздачи — такой же красный, как
- * и правка в рабочем дереве. Если git недоступен (распакованный тарбол, не репозиторий) —
- * остаётся файловая линейка: хуже, но не молча.
- *
- * ДВА ЧАСОВЫХ (оба со своим случаем ниже, иначе они молча превращали бы гейт в пустой):
- *   — нет `spa/src` — это установленная копия, у неё нет исходника окна, и спрашивать с неё
- *     свежесть бандла не за что;
- *   — нет ни одного файла в `daemon/static/app` — сравнивать не с чем. «Окна нет вовсе» —
- *     вопрос проверки пакета, а не этого гейта; молчать здесь честнее, чем краснеть чужим
- *     красным на свежем клоне, где бандл ещё не собирали.
- *
- * Сама сверка вынесена в чистую функцию и прогоняется на ПОДДЕЛЬНОЙ сцене во временном
- * каталоге — на протухшей и на свежей. Гейт, у которого нет своего красного, зелен ровно
- * потому, что ничего не искал.
  */
 
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, it, expect } from 'vitest'
 
+import {
+  freshnessVerdict,
+  refreshBundleMark,
+  sourceHistory,
+  SPA_BUNDLE_PATH,
+  SPA_SOURCE_PATH,
+} from '../../scripts/sma/lib/spa-freshness.mjs'
+
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
-const SOURCE_DIR = join(ROOT, 'spa', 'src')
-const BUNDLE_DIR = join(ROOT, 'daemon', 'static', 'app')
-
-type Newest = { path: string; mtimeMs: number } | null
-
-/**
- * Что git знает про исходник окна: тронут ли он в рабочем дереве и когда его коммитили в
- * последний раз. `null` — git ничего не сказал (не репозиторий, нет git, нет коммитов по
- * этому пути); тогда зовущий остаётся на файловых mtime.
- */
-type SourceHistory = { dirty: boolean; commitMs: number } | null
-
-function sourceHistory(root: string, relative: string): SourceHistory {
-  const git = (args: string[]): string =>
-    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-  try {
-    if (git(['status', '--porcelain', '--', relative]).trim()) return { dirty: true, commitMs: 0 }
-    const seconds = git(['log', '-1', '--format=%ct', '--', relative]).trim()
-    if (!/^\d+$/.test(seconds)) return null
-    return { dirty: false, commitMs: Number(seconds) * 1000 }
-  } catch {
-    return null
-  }
-}
-
-/**
- * Самый свежий файл дерева — рекурсивно, по фактическому времени изменения.
- *
- * `withFileTypes` не годится: в рабочей копии каталог сборки — ссылка на дерево, где собирают,
- * и `isDirectory()` на записи каталога сказал бы «нет». Поэтому тип спрашивается у `statSync`,
- * который по ссылке проходит. Отсутствующее дерево — не ошибка, а `null`: у часовых выше это
- * законный ответ.
- */
-function newestFile(dir: string): Newest {
-  let best: Newest = null
-  const walk = (current: string) => {
-    let entries: string[]
-    try {
-      entries = readdirSync(current)
-    } catch {
-      return
-    }
-    for (const name of entries) {
-      const full = join(current, name)
-      let info
-      try {
-        info = statSync(full)
-      } catch {
-        continue
-      }
-      if (info.isDirectory()) walk(full)
-      else if (!best || info.mtimeMs > best.mtimeMs) best = { path: full, mtimeMs: info.mtimeMs }
-    }
-  }
-  walk(dir)
-  return best
-}
-
-/**
- * Вердикт гейта. `applicable: false` — это часовой, а не зелёный: сравнивать было нечего.
- * `basis` называет линейку, которой мерили возраст исходника, — чтобы красное сообщение не
- * врало про причину и чтобы сцены ниже проверяли не только исход, но и выбор линейки.
- */
-function freshnessVerdict(sourceDir: string, bundleDir: string, history: SourceHistory): {
-  applicable: boolean
-  stale: boolean
-  basis: 'commit' | 'files'
-  sourceMs: number
-  source: Newest
-  bundle: Newest
-} {
-  const source = newestFile(sourceDir)
-  const bundle = newestFile(bundleDir)
-  if (!source || !bundle) {
-    return { applicable: false, stale: false, basis: 'files', sourceMs: 0, source, bundle }
-  }
-  const byCommit = history !== null && !history.dirty
-  const sourceMs = byCommit ? history.commitMs : source.mtimeMs
-  return {
-    applicable: true,
-    stale: sourceMs > bundle.mtimeMs,
-    basis: byCommit ? 'commit' : 'files',
-    sourceMs,
-    source,
-    bundle,
-  }
-}
+const SOURCE_DIR = join(ROOT, ...SPA_SOURCE_PATH.split('/'))
+const BUNDLE_DIR = join(ROOT, ...SPA_BUNDLE_PATH.split('/'))
 
 describe('раздаваемая сборка окна не старше исходников', () => {
   it('в этом дереве бандл не старше исходника spa/src', () => {
-    const verdict = freshnessVerdict(SOURCE_DIR, BUNDLE_DIR, sourceHistory(ROOT, 'spa/src'))
+    const verdict = freshnessVerdict(SOURCE_DIR, BUNDLE_DIR, sourceHistory({ cwd: ROOT }))
     if (!verdict.applicable) return // часовой: нет исходника окна или нет собранного бандла
     const cause =
       verdict.basis === 'commit'
@@ -163,13 +70,13 @@ describe('раздаваемая сборка окна не старше исх�
   function scene(): { dir: string; root: string; source: string; bundle: string } {
     const dir = mkdtempSync(join(tmpdir(), 'spa-freshness-'))
     const root = join(dir, 'tree')
-    const source = join(root, 'spa', 'src')
-    const bundle = join(root, 'daemon', 'static', 'app')
+    const source = join(root, ...SPA_SOURCE_PATH.split('/'))
+    const bundle = join(root, ...SPA_BUNDLE_PATH.split('/'))
     mkdirSync(source, { recursive: true })
     mkdirSync(join(bundle, 'assets'), { recursive: true })
     writeFileSync(join(source, 'main.tsx'), 'export const x = 1\n')
     writeFileSync(join(bundle, 'assets', 'index-abc.js'), 'var x=1\n')
-    writeFileSync(join(root, '.gitignore'), 'daemon/static/app/\n')
+    writeFileSync(join(root, '.gitignore'), `${SPA_BUNDLE_PATH}/\n`)
     return { dir, root, source, bundle }
   }
 
@@ -200,7 +107,7 @@ describe('раздаваемая сборка окна не старше исх�
       stamp(join(bundle, 'assets', 'index-abc.js'), 1_500_000) // сборка сделана после того коммита
       stamp(join(source, 'main.tsx'), 2_000_000) // а checkout проштамповал исходник «сейчас»
 
-      const history = sourceHistory(root, 'spa/src')
+      const history = sourceHistory({ cwd: root })
       expect(history).toEqual({ dirty: false, commitMs: 1_000_000_000 })
 
       const verdict = freshnessVerdict(source, bundle, history)
@@ -223,7 +130,7 @@ describe('раздаваемая сборка окна не старше исх�
       writeFileSync(join(source, 'main.tsx'), 'export const x = 2\n') // правка живёт только в дереве
       stamp(join(source, 'main.tsx'), 2_000_000)
 
-      const history = sourceHistory(root, 'spa/src')
+      const history = sourceHistory({ cwd: root })
       expect(history?.dirty).toBe(true)
 
       const verdict = freshnessVerdict(source, bundle, history)
@@ -244,7 +151,7 @@ describe('раздаваемая сборка окна не старше исх�
       stamp(join(bundle, 'assets', 'index-abc.js'), 1_500_000)
       stamp(join(source, 'main.tsx'), 1_000_000) // а mtime исходника — старый, как после checkout
 
-      const history = sourceHistory(root, 'spa/src')
+      const history = sourceHistory({ cwd: root })
       expect(history).toEqual({ dirty: false, commitMs: 2_000_000_000 })
 
       const verdict = freshnessVerdict(source, bundle, history)
@@ -263,7 +170,7 @@ describe('раздаваемая сборка окна не старше исх�
     try {
       stamp(join(bundle, 'assets', 'index-abc.js'), 1_000_000)
       stamp(join(source, 'main.tsx'), 1_000_100)
-      expect(sourceHistory(join(dir, 'tree'), 'spa/src')).toBe(null) // не репозиторий — git молчит
+      expect(sourceHistory({ cwd: join(dir, 'tree') })).toBe(null) // не репозиторий — git молчит
       expect(freshnessVerdict(source, bundle, null).stale).toBe(true)
 
       stamp(join(source, 'main.tsx'), 1_000_000)
@@ -279,6 +186,45 @@ describe('раздаваемая сборка окна не старше исх�
     try {
       expect(freshnessVerdict(join(dir, 'нет-такого'), bundle, null).applicable).toBe(false)
       expect(freshnessVerdict(source, join(dir, 'нет-такого'), null).applicable).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * ВТОРОЙ ЧИТАТЕЛЬ ЛИНЕЙКИ — обновление метки. Проверяется здесь, у самой линейки, потому что
+   * утверждение у них общее: после обновления метки тот же вердикт обязан позеленеть, и ни один
+   * байт раздачи при этом не изменился.
+   */
+  it('обновление метки лечит ровно то красное, которое даёт коммит, созданный после сборки', () => {
+    const { dir, root, source, bundle } = scene()
+    try {
+      initRepo(root)
+      commitAll(root, 2_000_000) // коммит слияния лёг ПОСЛЕ сборки — так и бывает на посадке
+      stamp(join(source, 'main.tsx'), 1_000_000)
+      const asset = join(bundle, 'assets', 'index-abc.js')
+      stamp(asset, 1_500_000)
+      const bytesBefore = readFileSync(asset, 'utf8')
+
+      const history = sourceHistory({ cwd: root })
+      expect(freshnessVerdict(source, bundle, history).stale, 'без метки гейт краснеет — ради этого всё').toBe(true)
+
+      const mark = refreshBundleMark({ cwd: root, now: 2_500_000_000 })
+      expect(mark.refreshed, 'метку получает каждый файл раздачи, а не один').toBe(1)
+
+      expect(freshnessVerdict(source, bundle, history).stale).toBe(false)
+      expect(readFileSync(asset, 'utf8'), 'метка двигает время, а не содержимое раздачи').toBe(bytesBefore)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('раздачи нет вовсе — метку двигать не на чем, и об этом сказано словами', () => {
+    const { dir, root } = scene()
+    try {
+      const mark = refreshBundleMark({ cwd: root, dir: join(dir, 'нет-такого') })
+      expect(mark.refreshed).toBe(0)
+      expect(mark.note).toBeTruthy()
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
